@@ -184,6 +184,9 @@ Specifically:
   core frame sink
 - `frames_dropped` increments when the dispatcher drops a frame before sink invocation
 
+A pre-dispatch coalesced repeating frame is released by Core and counted as
+dropped, but is not delivered because it never reaches a frame sink.
+
 Counters are updated by core prior to sink invocation and remain part of
 the canonical snapshot model.
 

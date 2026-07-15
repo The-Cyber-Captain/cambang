@@ -1120,7 +1120,6 @@ StreamFrameCoalesceResult coalesce_front_repeating_stream_frame_if_superseded(
   auto& frame = std::get<CmdProviderFrame>(cmd.payload).frame;
   const uint64_t integrated_ts_ns = capture_latency_trace_now_ns();
   const bool received_counted = streams.on_frame_received(frame.stream_id, integrated_ts_ns);
-  const bool released_counted = streams.on_frame_released(frame.stream_id);
   const bool dropped_counted = streams.on_frame_dropped(frame.stream_id);
   frame.release_now();
   global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
@@ -1130,14 +1129,13 @@ StreamFrameCoalesceResult coalesce_front_repeating_stream_frame_if_superseded(
   frame.release_user = nullptr;
 
   out.coalesced = true;
-  out.stream_counters_changed = received_counted || released_counted || dropped_counted;
+  out.stream_counters_changed = received_counted || dropped_counted;
   capture_latency_trace_printf(
-      "stream_frame_coalesced stream_id=%llu acquisition_session_id=%llu provider_fact_depth_after=%llu received_counted=%u released_counted=%u dropped_counted=%u delivered=0 publication_requested=1",
+      "stream_frame_coalesced stream_id=%llu acquisition_session_id=%llu provider_fact_depth_after=%llu received_counted=%u dropped_counted=%u delivered=0 publication_requested=1",
       static_cast<unsigned long long>(front_summary.stream_id),
       static_cast<unsigned long long>(front_summary.acquisition_session_id),
       static_cast<unsigned long long>(provider_facts.size()),
       received_counted ? 1u : 0u,
-      released_counted ? 1u : 0u,
       dropped_counted ? 1u : 0u);
   return out;
 }
@@ -4360,7 +4358,6 @@ bool CoreRuntime::suppress_repeating_stream_frame_for_capture_(ProviderToCoreCom
   auto& frame = std::get<CmdProviderFrame>(cmd.payload).frame;
   const uint64_t integrated_ts_ns = capture_latency_trace_now_ns();
   const bool received_counted = streams_.on_frame_received(frame.stream_id, integrated_ts_ns);
-  const bool released_counted = streams_.on_frame_released(frame.stream_id);
   const bool dropped_counted = streams_.on_frame_dropped(frame.stream_id);
   frame.release_now();
   global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
@@ -4369,18 +4366,17 @@ bool CoreRuntime::suppress_repeating_stream_frame_for_capture_(ProviderToCoreCom
   frame.release = nullptr;
   frame.release_user = nullptr;
 
-  if (received_counted || released_counted || dropped_counted) {
+  if (received_counted || dropped_counted) {
     request_publish_from_core_unchecked();
   }
   capture_latency_trace_printf(
-      "stream_frame_suppressed_for_capture stream_id=%llu acquisition_session_id=%llu device_id=%llu received_counted=%u released_counted=%u dropped_counted=%u delivered=0 publication_requested=%u",
+      "stream_frame_suppressed_for_capture stream_id=%llu acquisition_session_id=%llu device_id=%llu received_counted=%u dropped_counted=%u delivered=0 publication_requested=%u",
       static_cast<unsigned long long>(summary.stream_id),
       static_cast<unsigned long long>(summary.acquisition_session_id),
       static_cast<unsigned long long>(summary.device_instance_id),
       received_counted ? 1u : 0u,
-      released_counted ? 1u : 0u,
       dropped_counted ? 1u : 0u,
-      (received_counted || released_counted || dropped_counted) ? 1u : 0u);
+      (received_counted || dropped_counted) ? 1u : 0u);
   return true;
 }
 
@@ -4605,6 +4601,13 @@ void CoreRuntime::on_core_start() {
 
 void CoreRuntime::on_core_timer_tick() {
   assert(core_thread_.is_core_thread());
+
+#if defined(CAMBANG_INTERNAL_SMOKE)
+  if (smoke_hold_provider_fact_timer_ticks_.load(std::memory_order_acquire)) {
+    core_thread_.request_timer_tick();
+    return;
+  }
+#endif
 
   const auto now = std::chrono::steady_clock::now();
   const uint64_t now_ns = static_cast<uint64_t>(

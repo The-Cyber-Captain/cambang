@@ -34,6 +34,7 @@ Non-Goals
 #include <iostream>
 #include <memory>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <random>
 #include <sstream>
@@ -566,6 +567,95 @@ static bool wait_for_snapshot_pred(
     auto s = buf.snapshot_copy();
     return s && pred(*s);
   });
+}
+
+struct SmokeOwnedFramePayload {
+  std::atomic<uint64_t>* releases = nullptr;
+  std::vector<uint8_t> bytes{};
+};
+
+static void release_runtime_queue_smoke_frame(void* user, const FrameView* /*frame*/) {
+  auto* payload = static_cast<SmokeOwnedFramePayload*>(user);
+  if (!payload) {
+    return;
+  }
+  if (payload->releases) {
+    payload->releases->fetch_add(1, std::memory_order_relaxed);
+  }
+  delete payload;
+}
+
+struct RuntimeQueueSinkObservation {
+  uint64_t acquisition_session_id = 0;
+  uint64_t acquisition_mark = 0;
+  uint8_t tag = 0;
+};
+
+class RuntimeQueueRecordingSink final : public ICoreFrameSink {
+public:
+  CoreVisibilityPath on_frame(FrameView frame) override {
+    RuntimeQueueSinkObservation obs{};
+    obs.acquisition_session_id = frame.acquisition_session_id;
+    if (frame.data != nullptr && frame.size_bytes != 0) {
+      obs.tag = frame.data[0];
+    }
+    if (frame.acquisition_timing.has_value()) {
+      obs.acquisition_mark = frame.acquisition_timing->value.acquisition_mark();
+    }
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      observations_.push_back(obs);
+    }
+    frame.release_now();
+    frame.release = nullptr;
+    frame.release_user = nullptr;
+    return CoreVisibilityPath::RGBA_DIRECT;
+  }
+
+  std::vector<RuntimeQueueSinkObservation> observations() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return observations_;
+  }
+
+  void reset() {
+    std::lock_guard<std::mutex> lock(mu_);
+    observations_.clear();
+  }
+
+private:
+  mutable std::mutex mu_;
+  std::vector<RuntimeQueueSinkObservation> observations_{};
+};
+
+static FrameView make_runtime_queue_smoke_frame(uint64_t acquisition_session_id,
+                                                uint64_t acquisition_mark,
+                                                uint8_t tag,
+                                                std::atomic<uint64_t>& releases) {
+  auto* payload = new SmokeOwnedFramePayload{};
+  payload->releases = &releases;
+  payload->bytes = {tag, 0, 0, 255};
+
+  FrameView frame{};
+  frame.device_instance_id = kDeviceInstanceId;
+  frame.stream_id = kStreamId;
+  frame.acquisition_session_id = acquisition_session_id;
+  frame.width = 1;
+  frame.height = 1;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.data = payload->bytes.data();
+  frame.size_bytes = payload->bytes.size();
+  frame.stride_bytes = 4;
+  frame.release = &release_runtime_queue_smoke_frame;
+  frame.release_user = payload;
+  const auto tick_period = *TickPeriod::create(11, 3);
+  const auto timing = *ImageAcquisitionTiming::create(
+      acquisition_mark,
+      tick_period,
+      ImageAcquisitionClockDomain::DOMAIN_OPAQUE,
+      ImageAcquisitionReferenceEvent::FRAME_AVAILABLE,
+      ImageAcquisitionComparability::SAME_IMAGE_ONLY);
+  frame.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{timing, FactOrigin::DERIVED};
+  return frame;
 }
 
 static int test_core_spec_state_imaging_spec_retention_smoke() {
@@ -1961,6 +2051,310 @@ static bool setup_one_runtime_created_stream(CoreRuntime& rt, StubProvider& prov
   }
 
   return true;
+}
+
+struct RuntimeQueueCaseExpectation {
+  const char* case_name = "";
+  uint64_t expected_received_delta = 0;
+  uint64_t expected_delivered_delta = 0;
+  uint64_t expected_dropped_delta = 0;
+  uint64_t expected_visibility_presented_delta = 0;
+  std::vector<uint8_t> expected_sink_tags{};
+  std::vector<uint64_t> expected_sink_marks{};
+  std::vector<uint64_t> expected_sink_session_ids{};
+  std::vector<const std::atomic<uint64_t>*> release_counters{};
+  std::vector<uint64_t> forbidden_last_frame_marks{};
+};
+
+static const StreamState* find_snapshot_stream(
+    const CamBANGStateSnapshot& snapshot,
+    uint64_t stream_id) {
+  for (const auto& stream : snapshot.streams) {
+    if (stream.stream_id == stream_id) {
+      return &stream;
+    }
+  }
+  return nullptr;
+}
+
+static int run_runtime_queue_stream_frame_case(
+    const RuntimeQueueCaseExpectation& expectation,
+    const std::function<int(CoreRuntime&, CoreStreamRegistry::StreamRecord, RuntimeQueueRecordingSink&)>& enqueue_case) {
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  RuntimeQueueRecordingSink sink;
+  StubProvider prov;
+  rt.set_snapshot_publisher(&buf);
+  rt.smoke_set_frame_sink(&sink);
+
+  if (!rt.start()) {
+    std::cerr << expectation.case_name << ": CoreRuntime failed to start\n";
+    return 1;
+  }
+  if (!setup_one_runtime_created_stream(rt, prov)) {
+    std::cerr << expectation.case_name << ": runtime lifecycle setup failed\n";
+    rt.stop();
+    return 1;
+  }
+  if (rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    std::cerr << expectation.case_name << ": failed to start stream\n";
+    rt.stop();
+    return 1;
+  }
+  prov.flush_callbacks_for_smoke();
+  if (!wait_until([&]() {
+        CoreStreamRegistry::StreamRecord rec{};
+        return get_stream_record(rt, kStreamId, rec) && rec.started &&
+               rec.frames_received >= 1 && rec.frames_released >= 1;
+      }, 400, 2)) {
+    std::cerr << expectation.case_name << ": initial started-stream frame did not settle\n";
+    rt.stop();
+    return 1;
+  }
+  if (!wait_for_core_barrier(rt)) {
+    std::cerr << expectation.case_name << ": failed to establish baseline core barrier\n";
+    rt.stop();
+    return 1;
+  }
+  rt.request_publish();
+  if (!wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& snapshot) {
+        const auto* stream = find_snapshot_stream(snapshot, kStreamId);
+        return stream != nullptr &&
+               stream->frames_received >= 1 &&
+               stream->frames_delivered >= 1;
+      })) {
+    std::cerr << expectation.case_name << ": baseline snapshot missing started stream counters\n";
+    rt.stop();
+    return 1;
+  }
+
+  CoreStreamRegistry::StreamRecord baseline_record{};
+  if (!get_stream_record(rt, kStreamId, baseline_record)) {
+    std::cerr << expectation.case_name << ": missing baseline stream record\n";
+    rt.stop();
+    return 1;
+  }
+  const auto baseline_snapshot = get_last_snapshot(buf);
+  const auto* baseline_stream = baseline_snapshot ? find_snapshot_stream(*baseline_snapshot, kStreamId) : nullptr;
+  if (!baseline_stream) {
+    std::cerr << expectation.case_name << ": baseline snapshot missing stream\n";
+    rt.stop();
+    return 1;
+  }
+
+  sink.reset();
+  rt.smoke_hold_provider_fact_timer_ticks(true);
+  const int enqueue_rc = enqueue_case(rt, baseline_record, sink);
+  if (enqueue_rc != 0) {
+    rt.smoke_hold_provider_fact_timer_ticks(false);
+    rt.stop();
+    return enqueue_rc;
+  }
+
+  rt.smoke_hold_provider_fact_timer_ticks(false);
+  if (!wait_until([&]() {
+        for (const auto* releases : expectation.release_counters) {
+          if (!releases || releases->load(std::memory_order_relaxed) != 1) {
+            return false;
+          }
+        }
+        return true;
+      }, 400, 2)) {
+    std::cerr << expectation.case_name << ": frame release counts did not settle to exactly once\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.request_publish();
+  if (!wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& snapshot) {
+        const auto* stream = find_snapshot_stream(snapshot, kStreamId);
+        return stream != nullptr &&
+               stream->frames_received >= baseline_stream->frames_received + expectation.expected_received_delta &&
+               stream->frames_delivered >= baseline_stream->frames_delivered + expectation.expected_delivered_delta &&
+               stream->frames_dropped >= baseline_stream->frames_dropped + expectation.expected_dropped_delta;
+      })) {
+    std::cerr << expectation.case_name << ": final snapshot counters did not settle\n";
+    rt.stop();
+    return 1;
+  }
+  if (!wait_for_core_barrier(rt)) {
+    std::cerr << expectation.case_name << ": failed to establish post-case core barrier\n";
+    rt.stop();
+    return 1;
+  }
+
+  CoreStreamRegistry::StreamRecord final_record{};
+  if (!get_stream_record(rt, kStreamId, final_record)) {
+    std::cerr << expectation.case_name << ": missing final stream record\n";
+    rt.stop();
+    return 1;
+  }
+  const auto final_snapshot = get_last_snapshot(buf);
+  const auto* final_stream = final_snapshot ? find_snapshot_stream(*final_snapshot, kStreamId) : nullptr;
+  if (!final_stream) {
+    std::cerr << expectation.case_name << ": final snapshot missing stream\n";
+    rt.stop();
+    return 1;
+  }
+
+  const uint64_t received_delta = final_record.frames_received - baseline_record.frames_received;
+  const uint64_t delivered_delta = final_record.frames_released - baseline_record.frames_released;
+  const uint64_t dropped_delta = final_record.frames_dropped - baseline_record.frames_dropped;
+  if (received_delta != expectation.expected_received_delta ||
+      delivered_delta != expectation.expected_delivered_delta ||
+      dropped_delta != expectation.expected_dropped_delta) {
+    std::cerr << expectation.case_name << ": stream record delta mismatch received=" << received_delta
+              << " delivered=" << delivered_delta
+              << " dropped=" << dropped_delta << "\n";
+    rt.stop();
+    return 1;
+  }
+
+  const uint64_t snapshot_received_delta = final_stream->frames_received - baseline_stream->frames_received;
+  const uint64_t snapshot_delivered_delta = final_stream->frames_delivered - baseline_stream->frames_delivered;
+  const uint64_t snapshot_dropped_delta = final_stream->frames_dropped - baseline_stream->frames_dropped;
+  const uint64_t snapshot_visibility_presented_delta =
+      final_stream->visibility_frames_presented - baseline_stream->visibility_frames_presented;
+  if (snapshot_received_delta != expectation.expected_received_delta ||
+      snapshot_delivered_delta != expectation.expected_delivered_delta ||
+      snapshot_dropped_delta != expectation.expected_dropped_delta ||
+      snapshot_visibility_presented_delta != expectation.expected_visibility_presented_delta) {
+    std::cerr << expectation.case_name << ": snapshot delta mismatch received=" << snapshot_received_delta
+              << " delivered=" << snapshot_delivered_delta
+              << " dropped=" << snapshot_dropped_delta
+              << " visibility_presented=" << snapshot_visibility_presented_delta << "\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (final_stream->last_frame_ts_ns != final_record.last_frame_ts_ns ||
+      final_record.last_frame_ts_ns <= baseline_record.last_frame_ts_ns) {
+    std::cerr << expectation.case_name << ": core chronology mismatch snapshot_last_frame_ts_ns="
+              << final_stream->last_frame_ts_ns
+              << " record_last_frame_ts_ns=" << final_record.last_frame_ts_ns
+              << " baseline_last_frame_ts_ns=" << baseline_record.last_frame_ts_ns << "\n";
+    rt.stop();
+    return 1;
+  }
+  for (const uint64_t forbidden_mark : expectation.forbidden_last_frame_marks) {
+    if (final_record.last_frame_ts_ns == forbidden_mark) {
+      std::cerr << expectation.case_name << ": core chronology incorrectly matched provider acquisition mark "
+                << forbidden_mark << "\n";
+      rt.stop();
+      return 1;
+    }
+  }
+
+  const auto observations = sink.observations();
+  if (observations.size() != expectation.expected_sink_tags.size()) {
+    std::cerr << expectation.case_name << ": sink observation count mismatch expected="
+              << expectation.expected_sink_tags.size()
+              << " actual=" << observations.size() << "\n";
+    rt.stop();
+    return 1;
+  }
+  for (size_t i = 0; i < observations.size(); ++i) {
+    if (observations[i].tag != expectation.expected_sink_tags[i] ||
+        observations[i].acquisition_mark != expectation.expected_sink_marks[i] ||
+        observations[i].acquisition_session_id != expectation.expected_sink_session_ids[i]) {
+      std::cerr << expectation.case_name << ": sink observation mismatch at index=" << i
+                << " tag=" << static_cast<unsigned>(observations[i].tag)
+                << " mark=" << observations[i].acquisition_mark
+                << " acquisition_session_id=" << observations[i].acquisition_session_id << "\n";
+      rt.stop();
+      return 1;
+    }
+  }
+
+  rt.stop();
+  return 0;
+}
+
+static int test_runtime_queue_stream_frame_coalescing_same_key_accounting_smoke() {
+  std::atomic<uint64_t> stale_releases{0};
+  std::atomic<uint64_t> surviving_releases{0};
+  const RuntimeQueueCaseExpectation expectation{
+      "same-key coalescing",
+      2,
+      1,
+      1,
+      1,
+      {2},
+      {22002},
+      {7701},
+      {&stale_releases, &surviving_releases},
+      {11001, 22002}};
+  return run_runtime_queue_stream_frame_case(
+      expectation,
+      [&](CoreRuntime& rt, CoreStreamRegistry::StreamRecord /*baseline_record*/, RuntimeQueueRecordingSink& /*sink*/) {
+        rt.provider_callbacks()->on_frame(make_runtime_queue_smoke_frame(7701, 11001, 1, stale_releases));
+        rt.provider_callbacks()->on_frame(make_runtime_queue_smoke_frame(7701, 22002, 2, surviving_releases));
+        if (!wait_until([&]() { return rt.smoke_ingress_depth_for_stream(kStreamId) == 0; }, 400, 1)) {
+          std::cerr << "same-key coalescing: provider ingress did not drain into the runtime queue\n";
+          return 1;
+        }
+        return 0;
+      });
+}
+
+static int test_runtime_queue_stream_frame_coalescing_barrier_preservation_smoke() {
+  std::atomic<uint64_t> first_releases{0};
+  std::atomic<uint64_t> second_releases{0};
+  const RuntimeQueueCaseExpectation expectation{
+      "barrier preservation",
+      2,
+      2,
+      0,
+      2,
+      {3, 4},
+      {33003, 44004},
+      {8802, 8802},
+      {&first_releases, &second_releases},
+      {33003, 44004}};
+  return run_runtime_queue_stream_frame_case(
+      expectation,
+      [&](CoreRuntime& rt, CoreStreamRegistry::StreamRecord /*baseline_record*/, RuntimeQueueRecordingSink& /*sink*/) {
+        rt.provider_callbacks()->on_frame(make_runtime_queue_smoke_frame(8802, 33003, 3, first_releases));
+        if (!wait_until([&]() { return rt.smoke_ingress_depth_for_stream(kStreamId) == 0; }, 400, 1)) {
+          std::cerr << "barrier preservation: first frame did not drain into the runtime queue\n";
+          return 1;
+        }
+        ProviderCameraFacts barrier_facts{};
+        rt.provider_callbacks()->on_camera_static_facts(kDeviceInstanceId, barrier_facts);
+        rt.provider_callbacks()->on_frame(make_runtime_queue_smoke_frame(8802, 44004, 4, second_releases));
+        if (!wait_until([&]() { return rt.smoke_ingress_depth_for_stream(kStreamId) == 0; }, 400, 1)) {
+          std::cerr << "barrier preservation: second frame did not drain into the runtime queue\n";
+          return 1;
+        }
+        return 0;
+      });
+}
+
+static int test_runtime_queue_stream_frame_coalescing_key_separation_smoke() {
+  std::atomic<uint64_t> first_releases{0};
+  std::atomic<uint64_t> second_releases{0};
+  const RuntimeQueueCaseExpectation expectation{
+      "key separation",
+      2,
+      2,
+      0,
+      2,
+      {5, 6},
+      {55005, 66006},
+      {9903, 9904},
+      {&first_releases, &second_releases},
+      {55005, 66006}};
+  return run_runtime_queue_stream_frame_case(
+      expectation,
+      [&](CoreRuntime& rt, CoreStreamRegistry::StreamRecord /*baseline_record*/, RuntimeQueueRecordingSink& /*sink*/) {
+        rt.provider_callbacks()->on_frame(make_runtime_queue_smoke_frame(9903, 55005, 5, first_releases));
+        rt.provider_callbacks()->on_frame(make_runtime_queue_smoke_frame(9904, 66006, 6, second_releases));
+        if (!wait_until([&]() { return rt.smoke_ingress_depth_for_stream(kStreamId) == 0; }, 400, 1)) {
+          std::cerr << "key separation: provider ingress did not drain into the runtime queue\n";
+          return 1;
+        }
+        return 0;
+      });
 }
 
 static int test_strict_destroy_rejects_started_stream_smoke() {
@@ -4322,6 +4716,30 @@ int main(int argc, char** argv) {
                              [&] { return test_baseline_live_one_frame_and_snapshot(rt, buf, prov); })) {
       if (reporter.verbose()) reporter.print_summary();
       reporter.print_fail_line("core_spine_smoke", "test_baseline_live_one_frame_and_snapshot", r);
+      return r;
+    }
+    if (int r = reporter.run("test_runtime_queue_stream_frame_coalescing_same_key_accounting_smoke",
+                             [] { return test_runtime_queue_stream_frame_coalescing_same_key_accounting_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_runtime_queue_stream_frame_coalescing_same_key_accounting_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_runtime_queue_stream_frame_coalescing_barrier_preservation_smoke",
+                             [] { return test_runtime_queue_stream_frame_coalescing_barrier_preservation_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_runtime_queue_stream_frame_coalescing_barrier_preservation_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_runtime_queue_stream_frame_coalescing_key_separation_smoke",
+                             [] { return test_runtime_queue_stream_frame_coalescing_key_separation_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_runtime_queue_stream_frame_coalescing_key_separation_smoke",
+                               r);
       return r;
     }
     if (int r = reporter.run("test_destroy_never_started_stream_smoke",

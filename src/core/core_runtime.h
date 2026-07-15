@@ -529,6 +529,21 @@ enum class TryCloseDeviceStatus : uint8_t {
   static constexpr uint8_t shutdown_phase_exit_code() noexcept {
     return static_cast<uint8_t>(ShutdownPhase::EXIT);
   }
+
+  void smoke_set_frame_sink(ICoreFrameSink* sink) noexcept {
+    dispatcher_.set_frame_sink(sink);
+  }
+
+  void smoke_hold_provider_fact_timer_ticks(bool hold) noexcept {
+    smoke_hold_provider_fact_timer_ticks_.store(hold, std::memory_order_release);
+    if (!hold) {
+      core_thread_.request_timer_tick();
+    }
+  }
+
+  uint32_t smoke_ingress_depth_for_stream(uint64_t stream_id) const noexcept {
+    return ingress_.ingress_depth_for_stream(stream_id);
+  }
 #endif
 
   void set_snapshot_publisher(IStateSnapshotPublisher* publisher) noexcept {
@@ -875,6 +890,10 @@ private:
 
   CoreDispatcher dispatcher_;
   ProviderCallbackIngress ingress_;
+
+#if defined(CAMBANG_INTERNAL_SMOKE)
+  std::atomic<bool> smoke_hold_provider_fact_timer_ticks_{false};
+#endif
 
   std::deque<ProviderToCoreCommand> provider_facts_;
   size_t provider_capture_facts_queued_ = 0;

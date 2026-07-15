@@ -147,8 +147,12 @@ native-object, error, and other non-lossy stream facts remain conservative; they
 are not dropped or reordered behind stream frames by this integration rule.
 Repeating stream frames may also be coalesced before expensive dispatch only
 when a newer queued frame for the same stream/session supersedes the older frame
-before any non-lossy barrier; stream received/released/dropped counters and
+before any non-lossy barrier; stream received/dropped counters and
 framebuffer lease telemetry are updated before the stale frame is released.
+The stale frame is counted as received and dropped, not delivered: Core releases
+it before sink invocation.
+The same pre-sink accounting rule applies when active capture preemption
+suppresses a repeating stream frame before sink handoff.
 
 ------------------------------------------------------------------------
 

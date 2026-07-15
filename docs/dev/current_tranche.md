@@ -1,108 +1,145 @@
 # Current Tranche
 
-## Unified Image Acquisition Timing
+## Pre-Dispatch Stream-Frame Coalescing Accounting
 
 ### Objective
 
-Replace the ambiguous `capture_timestamp` model with one truthful Image
-Acquisition Timing model shared by capture members and stream results.
+Correct and verify Core accounting for repeating stream frames superseded in
+`CoreRuntime` before dispatcher delivery.
 
-Separate provider-authored acquisition timing from Core-owned retained-frame
-identity, remove duplicate timing transport, retire the old public timestamp
-surface directly, and preserve stream hot-path performance.
+A superseded frame that never reaches a sink must be counted as received and
+dropped, but not delivered. Its payload must still be released exactly once.
 
-### Locked Decisions
+### Confirmed defect
 
-* Image Acquisition Timing contains acquisition mark, rational tick period,
-  clock domain, reference event, and comparability scope.
-* It is provider-authored, optional where unavailable, and carried once on the
-  existing `FrameView` event. Acquisition mark zero is valid.
-* It is distinct from Capture Date-Time, lifecycle/performance timing, and
-  retained-frame identity.
-* Core-owned retained-frame identity, not acquisition timing, provides retained
-  payload/backing correlation, freshness, deduplication, evidence identity, and
-  result signatures.
-* No separate per-frame timing callback, eager Godot conversion, compatibility
-  alias, or avoidable stream hot-path allocation is permitted.
+The current pre-dispatch coalescing path records the stale frame through:
 
-### Stage A — Internal Model and Authority
+- `on_frame_received`;
+- `on_frame_released`;
+- `on_frame_dropped`;
+- direct payload release without sink invocation.
 
-Implement and review this stage before public API replacement:
+The snapshot builder projects the internal `frames_released` counter as public
+`frames_delivered`. This therefore reports a frame that never reached a sink as
+both delivered and dropped.
 
-* use the canonical source-neutral `ImageAcquisitionTiming` contract already
-  defined for providers and Core;
-* carry complete optional timing on `FrameView`;
-* retain that timing on stream results and capture image members;
-* source capture-member timing only from the accepted member frame and remove
-  acquisition timing from `ProviderCaptureImageFacts`;
-* introduce Core-owned retained-frame identity at successful retention;
-* replace timestamp-based identity, correlation, freshness, deduplication,
-  evidence, and signature uses;
-* remove acquisition timing from Core ordering, queue chronology, lifecycle
-  elapsed-time, and latency authority; use the appropriate existing Core-owned
-  ordering or monotonic chronology instead;
-* remove redundant timestamp fields used only for payload/backing correlation;
-* update SyntheticProvider and StubProvider truthfully.
+### Locked accounting semantics
 
-The existing public timestamp methods and member key may remain during Stage A
-only as checked projections derived from canonical retained timing. A projection
-is valid only when the rational mark converts exactly to whole nanoseconds with
-a non-zero denominator and no overflow; otherwise it is `0`. It is never
-internal truth, identity, correlation, ordering, or fallback, and remains a
-mandatory Stage B removal.
-
-Stage A must make no public Godot API shape change.
-
-### Stage B — Public Replacement and Closeout
-
-Expose complete timing lazily as:
+For two eligible frames with the same coalescing key, where the older frame is
+superseded and the newer frame reaches the sink:
 
 ```text
-get_image_member(index).camera_facts.acquisition_timing
-stream_result.camera_facts.acquisition_timing
+frames_received  = 2
+frames_delivered = 1
+frames_dropped   = 1
 ```
 
-Directly remove:
+Payload release and delivery accounting are distinct:
+
+- a stale pre-dispatch frame is released by Core but is not delivered;
+- a surviving frame is delivered only when handed to an installed sink;
+- each payload must be released exactly once through its established ownership
+  path.
+
+Within the current model, `frames_released` is the internal backing counter for
+public `frames_delivered`; it must not be incremented for pre-sink release.
+
+### Coalescing rules to preserve
+
+The production coalescing key is:
 
 ```text
-CamBANGCaptureResult.get_capture_timestamp()
-get_image_member(index).capture_timestamp
-CamBANGStreamResult.get_capture_timestamp()
+(stream_id, acquisition_session_id)
 ```
 
-Also remove every Stage A projection and remaining in-scope acquisition
-`timestamp` term, field, fixture, assertion, and document reference that exists
-solely for the old surface.
+Eligibility requires:
 
-Do not retain aliases, deprecated keys, compatibility wrappers, duplicate
-transport, or parallel scalar timing truth.
+```text
+capture_id == 0
+stream_id != 0
+```
 
-`get_capture_datetime_unix_nanoseconds()` remains unchanged and distinct.
+Coalescing must not cross the first non-repeating provider fact. Lifecycle,
+native-object, error, capture, and other non-repeating facts remain non-lossy
+barriers.
 
-### Verification
+Acquisition timing, retained-frame identity, backing identity, and payload
+identity do not participate in the coalescing key.
 
-Stage A must prove one authoritative internal timing path; truthful absent,
-zero, equal, opaque, and incomparable timing; identity independent of timing;
-and no extra frame event, eager Godot conversion, or public API change.
+### Required work
 
-Stage B must prove the approved equivalent public shapes, direct absence of all
-three old timestamp surfaces, exact bracket/rig/stream timing retention, and
-removal of every intermediate projection.
+1. Make the narrowest production correction so a stale coalesced frame records
+   received and dropped accounting, releases exactly once, and does not record
+   delivery.
+2. Audit other pre-sink drop paths for the same delivered-and-dropped
+   contradiction; correct only confirmed equivalent cases.
+3. Add native verification through the real `CoreRuntime` provider-fact queue
+   for:
+    - same-key supersession;
+    - a non-lossy barrier between otherwise coalescible frames;
+    - frames differing in one coalescing-key component.
+4. Verify sink observations, exact counters, ordering, Core-owned receipt
+   chronology, acquisition-timing separation, and exactly-once payload release.
 
-Complete the affected focused checks, full Core and provider-compliance
-verification, Windows and Android arm64 GDE builds, Scene 569, affected stream
-verification, representative Scene 870 baseline comparison, `git diff --check`,
-and final source/documentation terminology audit.
+A downstream direct-dispatcher test does not satisfy the runtime-queue coverage
+requirement.
 
-### Constraints
+### Scope constraints
 
-No Capture Date-Time or geolocation redesign, unrelated camera-fact/CameraSpec/
-ImagingSpec work, or Camera2/WinRT provider implementation.
+No:
 
-### Completion
+- public Godot API or binding changes;
+- snapshot schema or field-name changes;
+- acquisition-timing, Capture Date-Time, or identity redesign;
+- provider API or platform-provider work;
+- broad counter-system rename;
+- test-only duplicate coalescing implementation;
+- weakening of exact accounting assertions.
 
-The tranche closes only when one authoritative timing model and transport serve
-stream and capture, retained-frame identity is separate, the approved Godot
-surfaces replace the old API, every intermediate projection and obsolete term
-is removed, validation passes, and stream performance remains consistent with
-the accepted baseline.
+Production behaviour outside confirmed pre-sink accounting defects must remain
+unchanged.
+
+### Documentation
+
+Update existing canonical documentation only where needed to make the durable
+accounting distinction explicit:
+
+- `docs/architecture/frame_sinks.md`: release-on-drop does not constitute sink
+  delivery; pre-dispatch coalesced frames are dropped, not delivered.
+- `docs/architecture/core_runtime_model.md`: preserve the coalescing key,
+  eligibility, barrier rule, and stale-frame accounting.
+- `docs/architecture/state_snapshot.md`: only if its counter definitions do not
+  already unambiguously define delivered as sink handoff.
+
+Do not create a new architecture document for this tranche.
+
+### Validation
+
+Run the repository-supported maintainer build and the new or extended
+runtime-queue coalescing verifier.
+
+Also run all affected deterministic verification, including at minimum:
+
+```text
+phase3_snapshot_verify
+core_spine_smoke
+core_result_path_smoke
+core_dispatcher_bracket_routing_smoke
+provider_compliance_verify
+```
+
+Run the required GDE build matrix only if shared production GDE source changes.
+
+Run `git diff --check`.
+
+### Completion criteria
+
+This tranche is complete when:
+
+- stale pre-dispatch frames are no longer projected as delivered;
+- same-key supersession, barrier preservation, and key separation are directly
+  verified through the real runtime queue;
+- accounting, chronology, ordering, and exactly-once release are proven;
+- canonical documentation is consistent;
+- affected validation passes;
+- the final diff receives human review and approval.
