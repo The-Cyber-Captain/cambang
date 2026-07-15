@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -1077,12 +1078,18 @@ private:
     frame.format_fourcc = FOURCC_RGBA;
     const auto tick_period = TickPeriod::create(1, 1);
     if (!tick_period) return frame;
-    frame.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{
-        ImageAcquisitionTiming{capture_id != 0 ? capture_id : (stream_id != 0 ? stream_id : 1),
-                               *tick_period, ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
-                               ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
-                               ImageAcquisitionComparability::SAME_PROVIDER},
-        FactOrigin::DERIVED};
+    const uint64_t raw_mark = capture_id != 0 ? capture_id : (stream_id != 0 ? stream_id : 1);
+    const auto checked_mark = ImageAcquisitionTiming::checked_mark_from_unsigned(raw_mark);
+    if (checked_mark) {
+      const auto timing = ImageAcquisitionTiming::create(
+          *checked_mark,
+          *tick_period,
+          ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+          ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
+          ImageAcquisitionComparability::SAME_PROVIDER);
+      if (!timing) return frame;
+      frame.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{*timing, FactOrigin::DERIVED};
+    }
     frame.requested_retained_plan = requested_retained_plan;
     frame.retain_cpu_sidecar = requested_retained_plan.retain_cpu_sidecar();
     if (requested_retained_plan.primary_cpu()) {
@@ -1450,10 +1457,10 @@ int find_native_create_id_by_type(const std::vector<EventRec>& events, uint32_t 
   return -1;
 }
 
-int find_frame_index_by_ts(const std::vector<EventRec>& events, uint64_t ts_ns) {
+int find_frame_index_by_ts(const std::vector<EventRec>& events, int64_t ts_ns) {
   for (size_t i = 0; i < events.size(); ++i) {
     if (events[i].tag == "frame" && events[i].acquisition_timing &&
-        events[i].acquisition_timing->value.acquisition_mark == ts_ns) {
+        events[i].acquisition_timing->value.acquisition_mark() == ts_ns) {
       return static_cast<int>(i);
     }
   }
@@ -2955,8 +2962,8 @@ bool run_synthetic_timeline_picture_appearance_check() {
 
   const auto cb_events_for_frames = cb.snapshot_events();
   const int f0 = find_frame_index_by_ts(cb_events_for_frames, 0);
-  const int f1 = find_frame_index_by_ts(cb_events_for_frames, period_ns);
-  const int f2 = find_frame_index_by_ts(cb_events_for_frames, period_ns * 2);
+  const int f1 = find_frame_index_by_ts(cb_events_for_frames, static_cast<int64_t>(period_ns));
+  const int f2 = find_frame_index_by_ts(cb_events_for_frames, static_cast<int64_t>(period_ns * 2));
   if (f0 < 0 || f1 < 0 || f2 < 0) {
     std::cerr << "FAIL synthetic picture check frame evidence missing\n";
     (void)synthetic.shutdown();
@@ -4032,6 +4039,15 @@ bool run_provider_camera_fact_ingress_check() {
   if (!intrinsics || !distortion || !pose || !tick_period) {
     return fail_with_cleanup("FAIL provider camera facts test fact setup failed");
   }
+  const auto max_checked_mark = ImageAcquisitionTiming::checked_mark_from_unsigned(
+      static_cast<uint64_t>(std::numeric_limits<int64_t>::max()));
+  if (!max_checked_mark || *max_checked_mark != std::numeric_limits<int64_t>::max()) {
+    return fail_with_cleanup("FAIL provider camera facts max signed timing conversion rejected");
+  }
+  if (ImageAcquisitionTiming::checked_mark_from_unsigned(
+          static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1u)) {
+    return fail_with_cleanup("FAIL provider camera facts overflow timing conversion accepted");
+  }
   ProviderCaptureImageFacts member_zero{};
   member_zero.intrinsics = SourcedFact<Intrinsics>{*intrinsics, FactOrigin::NATIVE_REPORTED};
   member_zero.focus_state = SourcedFact<FocusState>{
@@ -4437,16 +4453,29 @@ bool run_core_capture_result_fact_resolution_check() {
       const CoreCaptureResultData::ImageMemberData& member) {
     const CaptureImageFacts& image = member.resolved_image_facts.image;
     return image.acquisition_timing && image.focus_state && image.realized_image_transform &&
+           member.acquisition_timing &&
            image.acquisition_timing->origin == FactOrigin::VIRTUAL_CAMERA_AUTHORED &&
-           image.acquisition_timing->value.acquisition_mark == member.legacy_capture_timestamp_ns &&
-           image.acquisition_timing->value.tick_period.numerator_ns() == 1 &&
-           image.acquisition_timing->value.tick_period.denominator() == 1 &&
-           image.acquisition_timing->value.clock_domain ==
+           image.acquisition_timing->origin == member.acquisition_timing->origin &&
+           image.acquisition_timing->value.acquisition_mark() ==
+               member.acquisition_timing->value.acquisition_mark() &&
+           image.acquisition_timing->value.tick_period().numerator_ns() == 1 &&
+           image.acquisition_timing->value.tick_period().denominator() == 1 &&
+           image.acquisition_timing->value.clock_domain() ==
                ImageAcquisitionClockDomain::PROVIDER_MONOTONIC &&
-           image.acquisition_timing->value.reference_event ==
+           image.acquisition_timing->value.reference_event() ==
                ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED &&
-           image.acquisition_timing->value.comparability ==
+           image.acquisition_timing->value.comparability() ==
                ImageAcquisitionComparability::SAME_PROVIDER &&
+           image.acquisition_timing->value.tick_period().numerator_ns() ==
+               member.acquisition_timing->value.tick_period().numerator_ns() &&
+           image.acquisition_timing->value.tick_period().denominator() ==
+               member.acquisition_timing->value.tick_period().denominator() &&
+           image.acquisition_timing->value.clock_domain() ==
+               member.acquisition_timing->value.clock_domain() &&
+           image.acquisition_timing->value.reference_event() ==
+               member.acquisition_timing->value.reference_event() &&
+           image.acquisition_timing->value.comparability() ==
+               member.acquisition_timing->value.comparability() &&
            image.focus_state->origin == FactOrigin::VIRTUAL_CAMERA_AUTHORED &&
            std::holds_alternative<FocusAtInfinity>(image.focus_state->value) &&
            image.realized_image_transform->origin == FactOrigin::VIRTUAL_CAMERA_AUTHORED &&

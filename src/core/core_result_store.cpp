@@ -419,8 +419,6 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
 
   SharedStreamResultData replaced_stream_result;
   std::lock_guard<std::mutex> lock(mutex_);
-  const uint64_t legacy_capture_timestamp_ns =
-      project_acquisition_timing_to_nanoseconds(frame.acquisition_timing);
   std::shared_ptr<CoreStreamResultData> stream_result;
   MutableCaptureResultData capture_result;
 
@@ -445,7 +443,6 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     mutable_stream_result->stream_id = frame.stream_id;
     mutable_stream_result->device_instance_id = frame.device_instance_id;
     mutable_stream_result->intent = stream_intent.value_or(StreamIntent::PREVIEW);
-    mutable_stream_result->legacy_capture_timestamp_ns = legacy_capture_timestamp_ns;
     mutable_stream_result->image_width = frame.width;
     mutable_stream_result->image_height = frame.height;
     mutable_stream_result->image_format_fourcc = frame.format_fourcc;
@@ -500,8 +497,7 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
             plan,
             std::move(payload),
             std::move(retained_gpu_backing),
-            retained_gpu_backing_descriptor,
-            legacy_capture_timestamp_ns);
+            retained_gpu_backing_descriptor);
     if (capture_result) {
       const bool has_default_cpu_payload =
           has_valid_capture_image_member_payload(capture_result->default_image.payload);
@@ -593,21 +589,6 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
         static_cast<unsigned long long>(frame.size_bytes));
   }
   return retained;
-}
-
-uint64_t CoreResultStore::project_acquisition_timing_to_nanoseconds(
-    const std::optional<SourcedFact<ImageAcquisitionTiming>>& timing) noexcept {
-  if (!timing) return 0;
-  const uint64_t numerator = timing->value.tick_period.numerator_ns();
-  const uint64_t denominator = timing->value.tick_period.denominator();
-  if (numerator == 0 || denominator == 0) return 0;
-  const uint64_t divisor = std::gcd(numerator, denominator);
-  const uint64_t reduced_numerator = numerator / divisor;
-  const uint64_t reduced_denominator = denominator / divisor;
-  if (timing->value.acquisition_mark % reduced_denominator != 0) return 0;
-  const uint64_t reduced_mark = timing->value.acquisition_mark / reduced_denominator;
-  if (reduced_mark > std::numeric_limits<uint64_t>::max() / reduced_numerator) return 0;
-  return reduced_mark * reduced_numerator;
 }
 
 bool CoreResultStore::try_issue_retained_frame_id(uint64_t& out_id) noexcept {
@@ -780,8 +761,6 @@ bool CoreResultStore::try_build_capture_image_member_data_from_frame(
     return false;
   }
   out_member.acquisition_timing = frame.acquisition_timing;
-  out_member.legacy_capture_timestamp_ns =
-      project_acquisition_timing_to_nanoseconds(out_member.acquisition_timing);
   out_member.payload_kind = plan.primary_kind;
   out_member.retained_access_truth = build_capture_image_member_retained_access_truth(out_member);
   out_member.access_classification =
@@ -825,8 +804,7 @@ MutableCaptureResultData CoreResultStore::build_default_image_capture_result(
     CoreRetainedBackingPlan plan,
     CoreResultPayloadCpuPacked payload,
     std::shared_ptr<void> retained_gpu_backing,
-    RetainedGpuBackingDescriptor retained_gpu_backing_descriptor,
-    uint64_t legacy_capture_timestamp_ns) {
+    RetainedGpuBackingDescriptor retained_gpu_backing_descriptor) {
   if (frame.capture_image.routing != CaptureImageRouting::DEFAULT_METERED ||
       frame.capture_image.image_member_index != 0u) {
     return nullptr;
@@ -853,7 +831,6 @@ MutableCaptureResultData CoreResultStore::build_default_image_capture_result(
   if (capture_result->default_image.applied_exposure_compensation_milli_ev != 0) {
     return nullptr;
   }
-  capture_result->default_image.legacy_capture_timestamp_ns = legacy_capture_timestamp_ns;
   capture_result->default_image.acquisition_timing = frame.acquisition_timing;
 
   CoreImageFactBundle facts = build_default_facts(frame.width, frame.height, frame.format_fourcc);

@@ -577,7 +577,16 @@ frame when the backend can supply it truthfully. The timing record carries:
 The acquisition mark is provider-authored descriptive metadata in the declared
 clock domain. It is not required to be wall-clock time, globally monotonic,
 unique, or comparable with another device/session, and a mark of zero is valid.
-Absence must remain distinct from a present zero-valued mark.
+Absence must remain distinct from a present zero-valued mark. Canonically, the
+mark is a nonnegative signed 64-bit value and the tick-period numerator in
+nanoseconds and denominator are positive signed 64-bit values retained in
+reduced form.
+
+Providers that start from unsigned or wider native counters must perform one
+checked conversion at the provider boundary. If a native acquisition mark
+cannot be represented within the canonical nonnegative signed 64-bit range,
+acquisition timing remains unavailable rather than wrapping, clamping, or being
+reinterpreted.
 
 The delivered frame is the single provider-to-Core transport for acquisition
 timing. Providers must not send the same acquisition event through a separate

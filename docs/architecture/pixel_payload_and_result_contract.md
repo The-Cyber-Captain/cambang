@@ -666,7 +666,10 @@ dictionary:
 These are exact per-member provider facts. In particular,
 `acquisition_timing.acquisition_mark` is in its declared provider domain and
 is not Capture Date-Time, capture-admission time, geolocation sample time, or
-another member's mark.
+another member's mark. Godot exposes all three numeric timing components
+directly as signed `int` values. The canonical acquisition mark is a
+nonnegative signed 64-bit value; the tick-period numerator in nanoseconds and
+denominator are positive signed 64-bit values.
 
 `get_capture_datetime_unix_nanoseconds()` exposes the shared UTC
 capture-admission instant. It is distinct from per-member Image Acquisition

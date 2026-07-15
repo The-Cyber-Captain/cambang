@@ -227,13 +227,41 @@ void verify_camera_fact_types() {
 
   const auto tick_period = TickPeriod::create(1, 1);
   assert(tick_period);
+  const auto reduced_period = TickPeriod::create(10, 4);
+  assert(reduced_period);
+  assert(reduced_period->numerator_ns() == 5);
+  assert(reduced_period->denominator() == 2);
   assert(!TickPeriod::create(0, 1));
+  assert(!TickPeriod::create(-1, 1));
   assert(!TickPeriod::create(1, 0));
-  image.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{
-      ImageAcquisitionTiming{0, *tick_period, ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
-                             ImageAcquisitionReferenceEvent::EXPOSURE_MIDPOINT,
-                             ImageAcquisitionComparability::SAME_DEVICE},
-      FactOrigin::NATIVE_REPORTED};
+  assert(!TickPeriod::create(1, -1));
+  const auto zero_mark_timing = ImageAcquisitionTiming::create(
+      0,
+      *tick_period,
+      ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+      ImageAcquisitionReferenceEvent::EXPOSURE_MIDPOINT,
+      ImageAcquisitionComparability::SAME_DEVICE);
+  const auto max_mark_timing = ImageAcquisitionTiming::create(
+      std::numeric_limits<int64_t>::max(),
+      *tick_period,
+      ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+      ImageAcquisitionReferenceEvent::EXPOSURE_MIDPOINT,
+      ImageAcquisitionComparability::SAME_DEVICE);
+  assert(zero_mark_timing);
+  assert(max_mark_timing);
+  assert(!ImageAcquisitionTiming::create(
+      -1,
+      *tick_period,
+      ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+      ImageAcquisitionReferenceEvent::EXPOSURE_MIDPOINT,
+      ImageAcquisitionComparability::SAME_DEVICE));
+  const auto max_checked_mark = ImageAcquisitionTiming::checked_mark_from_unsigned(
+      static_cast<uint64_t>(std::numeric_limits<int64_t>::max()));
+  assert(max_checked_mark && *max_checked_mark == std::numeric_limits<int64_t>::max());
+  assert(!ImageAcquisitionTiming::checked_mark_from_unsigned(
+      static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1u));
+  image.acquisition_timing =
+      SourcedFact<ImageAcquisitionTiming>{*zero_mark_timing, FactOrigin::NATIVE_REPORTED};
   const auto zero_focus = FocusAtDistance::create(0.0);
   const auto finite_focus = FocusAtDistance::create(-1.0);
   assert(zero_focus && finite_focus);
@@ -250,14 +278,14 @@ void verify_camera_fact_types() {
   image.focus_state = SourcedFact<FocusState>{*zero_focus, FactOrigin::DERIVED};
   assert(std::holds_alternative<FocusAtDistance>(image.focus_state->value));
   assert(std::get<FocusAtDistance>(image.focus_state->value).distance_m() == 0.0);
-  assert(image.acquisition_timing->value.clock_domain ==
+  assert(image.acquisition_timing->value.clock_domain() ==
          ImageAcquisitionClockDomain::PROVIDER_MONOTONIC);
-  assert(image.acquisition_timing->value.acquisition_mark == 0);
-  assert(image.acquisition_timing->value.tick_period.numerator_ns() == 1);
-  assert(image.acquisition_timing->value.tick_period.denominator() == 1);
-  assert(image.acquisition_timing->value.reference_event ==
+  assert(image.acquisition_timing->value.acquisition_mark() == 0);
+  assert(image.acquisition_timing->value.tick_period().numerator_ns() == 1);
+  assert(image.acquisition_timing->value.tick_period().denominator() == 1);
+  assert(image.acquisition_timing->value.reference_event() ==
          ImageAcquisitionReferenceEvent::EXPOSURE_MIDPOINT);
-  assert(image.acquisition_timing->value.comparability ==
+  assert(image.acquisition_timing->value.comparability() ==
          ImageAcquisitionComparability::SAME_DEVICE);
   assert(image.realized_image_transform->value.rotation == ImageRotationDegrees::DEGREES_0);
   assert(image.realized_image_transform->value.pixels_already_transformed);
@@ -361,37 +389,28 @@ int main() {
   assert(!stream_result->access_posture.has_retained_gpu_backing);
   assert(stream_result->retained_frame_id != 0);
   assert(!stream_result->image_facts.acquisition_timing);
-  assert(stream_result->legacy_capture_timestamp_ns == 0);
   const uint64_t cpu_stream_posture_id = stream_result->access_posture.posture_id;
 
   const auto integral_period = TickPeriod::create(5, 2);
   const auto reducible_period = TickPeriod::create(10, 4);
-  const auto non_integral_period = TickPeriod::create(1, 3);
-  const auto overflow_period = TickPeriod::create(std::numeric_limits<uint64_t>::max(), 1);
-  assert(integral_period && reducible_period && non_integral_period && overflow_period);
-  const auto timing = [](uint64_t mark, TickPeriod period,
+  assert(integral_period && reducible_period);
+  const auto timing = [](int64_t mark, TickPeriod period,
                          ImageAcquisitionClockDomain domain,
                          ImageAcquisitionComparability comparability) {
+    const auto created = ImageAcquisitionTiming::create(
+        mark,
+        period,
+        domain,
+        ImageAcquisitionReferenceEvent::EXPOSURE_MIDPOINT,
+        comparability);
+    assert(created);
     return SourcedFact<ImageAcquisitionTiming>{
-        ImageAcquisitionTiming{mark, period, domain,
-                               ImageAcquisitionReferenceEvent::EXPOSURE_MIDPOINT,
-                               comparability},
+        *created,
         FactOrigin::NATIVE_REPORTED};
   };
-  assert(CoreResultStore::project_acquisition_timing_to_nanoseconds(std::nullopt) == 0);
-  assert(CoreResultStore::project_acquisition_timing_to_nanoseconds(
-             timing(4, *integral_period, ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
-                    ImageAcquisitionComparability::SAME_DEVICE)) == 10);
-  assert(CoreResultStore::project_acquisition_timing_to_nanoseconds(
-             timing(4, *reducible_period, ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
-                    ImageAcquisitionComparability::SAME_DEVICE)) == 10);
-  assert(CoreResultStore::project_acquisition_timing_to_nanoseconds(
-             timing(1, *non_integral_period, ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
-                    ImageAcquisitionComparability::SAME_DEVICE)) == 0);
-  assert(CoreResultStore::project_acquisition_timing_to_nanoseconds(
-             timing(2, *overflow_period, ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
-                    ImageAcquisitionComparability::SAME_DEVICE)) == 0);
   assert(!TickPeriod::create(1, 0));
+  assert(reducible_period->numerator_ns() == 5);
+  assert(reducible_period->denominator() == 2);
 
   stream_frame.acquisition_timing = timing(
       0, *integral_period, ImageAcquisitionClockDomain::DOMAIN_OPAQUE,
@@ -403,10 +422,17 @@ int main() {
   assert(repeated_cpu_stream_result->access_posture.posture_id == cpu_stream_posture_id);
   assert(repeated_cpu_stream_result->retained_frame_id != stream_result->retained_frame_id);
   assert(repeated_cpu_stream_result->image_facts.acquisition_timing);
-  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.acquisition_mark == 0);
-  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.clock_domain ==
+  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.acquisition_mark() == 0);
+  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.tick_period().numerator_ns() ==
+         integral_period->numerator_ns());
+  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.tick_period().denominator() ==
+         integral_period->denominator());
+  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.clock_domain() ==
          ImageAcquisitionClockDomain::DOMAIN_OPAQUE);
-  assert(repeated_cpu_stream_result->legacy_capture_timestamp_ns == 0);
+  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.reference_event() ==
+         ImageAcquisitionReferenceEvent::EXPOSURE_MIDPOINT);
+  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.comparability() ==
+         ImageAcquisitionComparability::SAME_IMAGE_ONLY);
 
   store.retain_frame(stream_frame, StreamIntent::VIEWFINDER, kStreamEpochB, 0, requested_cpu);
   auto restarted_cpu_stream_result = store.get_latest_stream_result(20);
@@ -674,7 +700,14 @@ int main() {
     assert(first->retained_frame_id != 0);
     assert(second->retained_frame_id != 0);
     assert(first->retained_frame_id != second->retained_frame_id);
-    assert(first->legacy_capture_timestamp_ns == second->legacy_capture_timestamp_ns);
+    assert(first->image_facts.acquisition_timing);
+    assert(second->image_facts.acquisition_timing);
+    assert(first->image_facts.acquisition_timing->value.acquisition_mark() ==
+           second->image_facts.acquisition_timing->value.acquisition_mark());
+    assert(first->image_facts.acquisition_timing->value.tick_period().numerator_ns() ==
+           second->image_facts.acquisition_timing->value.tick_period().numerator_ns());
+    assert(first->image_facts.acquisition_timing->value.tick_period().denominator() ==
+           second->image_facts.acquisition_timing->value.tick_period().denominator());
   }
 
   {

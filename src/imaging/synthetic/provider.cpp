@@ -49,6 +49,22 @@ const TickPeriod& synthetic_acquisition_tick_period() {
   return period;
 }
 
+std::optional<ImageAcquisitionTiming> synthetic_acquisition_timing_from_unsigned(
+    uint64_t acquisition_mark,
+    ImageAcquisitionReferenceEvent reference_event,
+    ImageAcquisitionComparability comparability) {
+  const auto checked_mark = ImageAcquisitionTiming::checked_mark_from_unsigned(acquisition_mark);
+  if (!checked_mark) {
+    return std::nullopt;
+  }
+  return ImageAcquisitionTiming::create(
+      *checked_mark,
+      synthetic_acquisition_tick_period(),
+      ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+      reference_event,
+      comparability);
+}
+
 constexpr const char* kHardwareIdPrefix = "synthetic:";
 constexpr uint64_t kTriageLogIntervalNs = 1'000'000'000ull;
 
@@ -2142,12 +2158,13 @@ bool SyntheticProvider::generate_device_capture_payloads_(
     fv.width = req.width;
     fv.height = req.height;
     fv.format_fourcc = job.format_fourcc;
-    fv.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{
-        ImageAcquisitionTiming{capture_ts_ns, synthetic_acquisition_tick_period(),
-                               ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
-                               ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
-                               ImageAcquisitionComparability::SAME_PROVIDER},
-        FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+    if (const auto timing = synthetic_acquisition_timing_from_unsigned(
+            capture_ts_ns,
+            ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
+            ImageAcquisitionComparability::SAME_PROVIDER)) {
+      fv.acquisition_timing =
+          SourcedFact<ImageAcquisitionTiming>{*timing, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+    }
     fv.capture_image.routing = (i == 0)
         ? CaptureImageRouting::DEFAULT_METERED
         : CaptureImageRouting::ADDITIONAL_BRACKET;
@@ -3524,12 +3541,13 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     fv.retained_gpu_backing_descriptor.materialization_requires_gpu_readback = false;
   }
   fv.primary_backing_artifact = std::move(gpu_backing);
-  fv.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{
-      ImageAcquisitionTiming{scheduled_capture_ns, synthetic_acquisition_tick_period(),
-                             ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
-                             ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
-                             ImageAcquisitionComparability::SAME_PROVIDER},
-      FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  if (const auto timing = synthetic_acquisition_timing_from_unsigned(
+          scheduled_capture_ns,
+          ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
+          ImageAcquisitionComparability::SAME_PROVIDER)) {
+    fv.acquisition_timing =
+        SourcedFact<ImageAcquisitionTiming>{*timing, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  }
   fv.retain_cpu_sidecar = publish_cpu_payload;
   fv.requested_retained_plan = s.req.requested_retained_plan;
   if (publish_cpu_payload) {

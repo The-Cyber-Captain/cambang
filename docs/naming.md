@@ -450,6 +450,10 @@ Use **Image Acquisition Timing** for provider-authored descriptive timing of an
 acquired image or stream frame. Its acquisition mark is interpreted only with
 its rational tick period, clock domain, reference event, and comparability
 scope. Do not collapse it into a generic `capture_timestamp` scalar.
+The canonical acquisition mark is a nonnegative signed 64-bit value, and the
+tick-period numerator in nanoseconds and denominator are positive signed 64-bit
+values. Zero is a valid acquisition mark; the period is retained in reduced
+form.
 
 Image Acquisition Timing is not Capture Date-Time, snapshot publication time,
 Core chronology, retained-frame identity, backing identity, or freshness.
@@ -626,7 +630,7 @@ debugging logs.
 - Use suffixes to encode units for true scalar durations/instants: `_ns`, `_ms`, `_us`, `_100ns`, etc.
 - Use `acquisition_timing` for the complete provider-authored image-time fact; do not name its acquisition mark as a generic timestamp.
 - Keep Capture Date-Time, snapshot publication time, lifecycle/performance timing, and Image Acquisition Timing explicitly distinct.
-- Do not carry provider/platform type names outside provider code; translate backend timing into the source-neutral `ImageAcquisitionTiming` model at the provider boundary.
+- Do not carry provider/platform type names outside provider code; translate backend timing into the source-neutral `ImageAcquisitionTiming` model at the provider boundary, including one checked conversion from unsigned or wider native counters where needed.
 - Use a Core-owned retained-frame identity for retained-frame equality/freshness; do not encode identity semantics in timing names.
 
 ------------------------------------------------------------------------

@@ -63,9 +63,9 @@ bool valid_distortion(const Distortion& value) noexcept {
 }
 
 bool valid_acquisition_timing(const ImageAcquisitionTiming& value) noexcept {
-  return value.tick_period.numerator_ns() != 0 && value.tick_period.denominator() != 0 &&
-         valid(value.clock_domain) && valid(value.reference_event) &&
-         valid(value.comparability);
+  return value.acquisition_mark() >= 0 && value.tick_period().numerator_ns() > 0 &&
+         value.tick_period().denominator() > 0 && valid(value.clock_domain()) &&
+         valid(value.reference_event()) && valid(value.comparability());
 }
 
 bool valid_focus_state(const FocusState& value) noexcept {

@@ -83,40 +83,6 @@ const char* camera_nature_name(CameraNature value) {
   return "unknown";
 }
 
-const char* acquisition_clock_domain_name(ImageAcquisitionClockDomain value) {
-  switch (value) {
-    case ImageAcquisitionClockDomain::PROVIDER_MONOTONIC: return "provider_monotonic";
-    case ImageAcquisitionClockDomain::CORE_MONOTONIC: return "core_monotonic";
-    case ImageAcquisitionClockDomain::DOMAIN_OPAQUE: return "domain_opaque";
-  }
-  return "domain_opaque";
-}
-
-const char* acquisition_reference_event_name(ImageAcquisitionReferenceEvent value) {
-  switch (value) {
-    case ImageAcquisitionReferenceEvent::EXPOSURE_START: return "exposure_start";
-    case ImageAcquisitionReferenceEvent::EXPOSURE_MIDPOINT: return "exposure_midpoint";
-    case ImageAcquisitionReferenceEvent::SENSOR_READOUT_START: return "sensor_readout_start";
-    case ImageAcquisitionReferenceEvent::FRAME_AVAILABLE: return "frame_available";
-    case ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED: return "provider_observed";
-    case ImageAcquisitionReferenceEvent::UNKNOWN: return "unknown";
-  }
-  return "unknown";
-}
-
-const char* acquisition_comparability_name(ImageAcquisitionComparability value) {
-  switch (value) {
-    case ImageAcquisitionComparability::SAME_IMAGE_ONLY: return "same_image_only";
-    case ImageAcquisitionComparability::SAME_DEVICE: return "same_device";
-    case ImageAcquisitionComparability::SAME_PROVIDER: return "same_provider";
-    case ImageAcquisitionComparability::CROSS_DEVICE_SYNCHRONIZED:
-      return "cross_device_synchronized";
-    case ImageAcquisitionComparability::CORE_TIMELINE: return "core_timeline";
-    case ImageAcquisitionComparability::ORDERING_ONLY: return "ordering_only";
-  }
-  return "ordering_only";
-}
-
 const char* coordinate_domain_name(const CoordinateDomain& domain) {
   if (std::holds_alternative<CoordinateDomainAndroidSensorPreCorrectionActiveArray>(domain)) {
     return "android_sensor_pre_correction_active_array";
@@ -229,22 +195,6 @@ godot::Dictionary to_dict(const SourcedFact<CameraPose>& fact) {
   return out;
 }
 
-godot::Dictionary to_dict(const SourcedFact<ImageAcquisitionTiming>& fact) {
-  godot::Dictionary out;
-  out["origin"] = godot::String(fact_origin_name(fact.origin));
-  out["acquisition_mark"] = static_cast<int64_t>(fact.value.acquisition_mark);
-  out["tick_period_numerator_ns"] =
-      static_cast<int64_t>(fact.value.tick_period.numerator_ns());
-  out["tick_period_denominator"] =
-      static_cast<int64_t>(fact.value.tick_period.denominator());
-  out["clock_domain"] = godot::String(acquisition_clock_domain_name(fact.value.clock_domain));
-  out["reference_event"] =
-      godot::String(acquisition_reference_event_name(fact.value.reference_event));
-  out["comparability"] =
-      godot::String(acquisition_comparability_name(fact.value.comparability));
-  return out;
-}
-
 godot::Dictionary to_dict(const SourcedFact<FocusState>& fact) {
   godot::Dictionary out;
   out["origin"] = godot::String(fact_origin_name(fact.origin));
@@ -296,9 +246,7 @@ godot::Dictionary camera_facts_to_dict(const CoreResolvedCaptureImageFacts& fact
   if (facts.camera.intrinsics) out["intrinsics"] = to_dict(*facts.camera.intrinsics);
   if (facts.camera.distortion) out["distortion"] = to_dict(*facts.camera.distortion);
   if (facts.camera.pose) out["pose"] = to_dict(*facts.camera.pose);
-  if (facts.image.acquisition_timing) {
-    out["acquisition_timing"] = to_dict(*facts.image.acquisition_timing);
-  }
+  add_acquisition_timing_camera_fact(out, facts.image.acquisition_timing);
   if (facts.image.focus_state) out["focus_state"] = to_dict(*facts.image.focus_state);
   if (facts.image.realized_image_transform) {
     out["realized_image_transform"] = to_dict(*facts.image.realized_image_transform);
@@ -312,9 +260,6 @@ uint32_t CamBANGCaptureResult::get_height() const { return data_ ? data_->image_
 uint32_t CamBANGCaptureResult::get_format() const { return data_ ? data_->image_format_fourcc : 0; }
 int CamBANGCaptureResult::get_payload_kind() const {
   return data_ ? static_cast<int>(data_->payload_kind) : static_cast<int>(ResultPayloadKind::CPU_PACKED);
-}
-uint64_t CamBANGCaptureResult::get_capture_timestamp() const {
-  return data_ ? data_->default_image.legacy_capture_timestamp_ns : 0;
 }
 int64_t CamBANGCaptureResult::get_capture_datetime_unix_nanoseconds() const {
   return data_ && data_->has_admission_context
@@ -411,7 +356,6 @@ godot::Dictionary CamBANGCaptureResult::get_image_member(int image_member_index)
   out["role_name"] = (member->role == CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED)
       ? godot::String("DEFAULT_METERED")
       : godot::String("ADDITIONAL_BRACKET");
-  out["capture_timestamp"] = static_cast<int64_t>(member->legacy_capture_timestamp_ns);
   out["applied_exposure_compensation_milli_ev"] = static_cast<int64_t>(member->applied_exposure_compensation_milli_ev);
   out["has_realized_exposure_compensation_milli_ev"] = member->has_realized_exposure_compensation_milli_ev;
   out["realized_exposure_compensation_milli_ev"] = static_cast<int64_t>(member->realized_exposure_compensation_milli_ev);
@@ -624,7 +568,6 @@ void CamBANGCaptureResult::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_height"), &CamBANGCaptureResult::get_height);
   godot::ClassDB::bind_method(godot::D_METHOD("get_format"), &CamBANGCaptureResult::get_format);
   godot::ClassDB::bind_method(godot::D_METHOD("get_payload_kind"), &CamBANGCaptureResult::get_payload_kind);
-  godot::ClassDB::bind_method(godot::D_METHOD("get_capture_timestamp"), &CamBANGCaptureResult::get_capture_timestamp);
   godot::ClassDB::bind_method(godot::D_METHOD("get_capture_datetime_unix_nanoseconds"), &CamBANGCaptureResult::get_capture_datetime_unix_nanoseconds);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device_instance_id"), &CamBANGCaptureResult::get_device_instance_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_capture_id"), &CamBANGCaptureResult::get_capture_id);

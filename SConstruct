@@ -644,6 +644,7 @@ maintainer_tools_clean_outputs = [
     _program_path("core_result_path_smoke"),
     _program_path("core_capture_assembly_registry_smoke"),
     _program_path("core_dispatcher_bracket_routing_smoke"),
+    _program_path("godot_result_convert_smoke"),
     _program_path("pattern_render_bench"),
     _program_path("synthetic_timeline_verify"),
     _program_path("phase3_snapshot_verify"),
@@ -703,6 +704,22 @@ if build_maintainer_tools:
     core_dispatcher_bracket_routing_smoke_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "core_dispatcher_bracket_routing_smoke"),
         source=maintainer_tools_core_runtime_sources + ["src/smoke/core_dispatcher_bracket_routing_smoke.cpp"],
+    )
+    godot_result_convert_smoke_env = maintainer_tools_env.Clone()
+    godot_result_convert_smoke_env.Append(CPPPATH=[
+        os.path.join("thirdparty", "godot-cpp"),
+        os.path.join("thirdparty", "godot-cpp", "include"),
+        os.path.join("thirdparty", "godot-cpp", "gen"),
+        os.path.join("thirdparty", "godot-cpp", "gen", "include"),
+        os.path.join("thirdparty", "godot-cpp", "gdextension"),
+    ])
+    godot_result_convert_smoke_prog = godot_result_convert_smoke_env.Program(
+        target=os.path.join(out_dir, "godot_result_convert_smoke"),
+        source=[
+            os.path.join(maintainer_tools_obj_dir, "godot", "cambang_result_convert_timing.cpp"),
+            "src/smoke/godot_variant_runtime_minimal.cpp",
+            "src/smoke/godot_result_convert_smoke.cpp",
+        ],
     )
 
     pattern_bench_sources = _unique_sources(_glob_cpp(maintainer_tools_obj_dir, "pixels", "pattern") + ["src/smoke/pattern_render_bench.cpp"])
@@ -791,6 +808,7 @@ if build_maintainer_tools:
             core_result_path_smoke_prog,
             core_capture_assembly_registry_smoke_prog,
             core_dispatcher_bracket_routing_smoke_prog,
+            godot_result_convert_smoke_prog,
             pattern_bench_prog,
             synthetic_maintainer_tools_prog,
             phase3_maintainer_tools_prog,
@@ -890,6 +908,7 @@ if build_gde_graph:
         os.path.join(gde_obj_dir, "godot", "cambang_capture_result.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_capture_result_set.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_result_convert.cpp"),
+        os.path.join(gde_obj_dir, "godot", "cambang_result_convert_timing.cpp"),
         os.path.join(gde_obj_dir, "godot", "state_snapshot_export.cpp"),
         os.path.join(gde_obj_dir, "godot", "godot_gpu_display_service.cpp"),
         os.path.join(gde_obj_dir, "godot", "result_access_cost_evidence.cpp"),

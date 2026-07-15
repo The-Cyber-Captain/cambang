@@ -504,12 +504,17 @@ uint32_t CamBANGStreamResult::get_format() const { return data_ ? data_->image_f
 int CamBANGStreamResult::get_payload_kind() const {
   return data_ ? static_cast<int>(data_->payload_kind) : static_cast<int>(ResultPayloadKind::CPU_PACKED);
 }
-uint64_t CamBANGStreamResult::get_capture_timestamp() const {
-  return data_ ? data_->legacy_capture_timestamp_ns : 0;
-}
 uint64_t CamBANGStreamResult::get_stream_id() const { return data_ ? data_->stream_id : 0; }
 uint64_t CamBANGStreamResult::get_device_instance_id() const { return data_ ? data_->device_instance_id : 0; }
 int CamBANGStreamResult::get_intent() const { return data_ ? static_cast<int>(data_->intent) : 0; }
+godot::Dictionary CamBANGStreamResult::get_camera_facts() const {
+  if (!data_) {
+    return godot::Dictionary();
+  }
+  godot::Dictionary out;
+  add_acquisition_timing_camera_fact(out, data_->image_facts.acquisition_timing);
+  return out;
+}
 
 bool CamBANGStreamResult::has_image_properties() const { return data_ && data_->facts.has_image_properties; }
 bool CamBANGStreamResult::has_capture_attributes() const { return data_ && data_->facts.has_capture_attributes; }
@@ -791,10 +796,10 @@ void CamBANGStreamResult::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_height"), &CamBANGStreamResult::get_height);
   godot::ClassDB::bind_method(godot::D_METHOD("get_format"), &CamBANGStreamResult::get_format);
   godot::ClassDB::bind_method(godot::D_METHOD("get_payload_kind"), &CamBANGStreamResult::get_payload_kind);
-  godot::ClassDB::bind_method(godot::D_METHOD("get_capture_timestamp"), &CamBANGStreamResult::get_capture_timestamp);
   godot::ClassDB::bind_method(godot::D_METHOD("get_stream_id"), &CamBANGStreamResult::get_stream_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device_instance_id"), &CamBANGStreamResult::get_device_instance_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_intent"), &CamBANGStreamResult::get_intent);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_camera_facts"), &CamBANGStreamResult::get_camera_facts);
 
   godot::ClassDB::bind_method(godot::D_METHOD("has_image_properties"), &CamBANGStreamResult::has_image_properties);
   godot::ClassDB::bind_method(godot::D_METHOD("has_capture_attributes"), &CamBANGStreamResult::has_capture_attributes);

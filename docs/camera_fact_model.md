@@ -335,6 +335,14 @@ The public concept is Image Acquisition Timing, not an overloaded generic
 
 Its central value is an acquisition mark with explicit clock-domain and
 comparability meaning.
+The canonical numeric model uses a nonnegative signed 64-bit acquisition mark,
+plus positive signed 64-bit tick-period numerator-in-nanoseconds and
+denominator components. A mark of zero is valid; negative marks and zero or
+negative period components are invalid.
+The tick period is retained in canonical reduced form. Providers that begin
+with wider or unsigned native counters must checked-convert at the provider
+boundary; values outside the canonical range are treated as unavailable rather
+than wrapped or clamped.
 
 It is per-image-member descriptive timing rather than document metadata or
 capture-admission wall-clock context.

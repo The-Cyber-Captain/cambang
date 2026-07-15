@@ -67,7 +67,9 @@ func _run_impl() -> void:
 	var stream_result = await _wait_for_stream_result()
 	if _done:
 		return
-	_require(not stream_result.has_method("get_camera_facts"), "CamBANGStreamResult must not expose camera facts")
+	_require(stream_result.has_method("get_camera_facts"), "CamBANGStreamResult must expose camera facts")
+	_require(not stream_result.has_method("get_capture_timestamp"), "CamBANGStreamResult legacy capture timestamp accessor must be absent")
+	_assert_stream_camera_facts(stream_result, "initial stream")
 	_require(_set_three_member_profile(device) == OK, "three-member still profile request failed")
 	await _wait_for_three_member_profile()
 	if _done:
@@ -80,14 +82,14 @@ func _run_impl() -> void:
 	_assert_present_result(first, LOCATION_A, true, "initial")
 	if _done:
 		return
-	var first_timestamp := int(first.get_capture_timestamp())
+	var first_timing := _get_default_member_acquisition_timing(first)
 	var first_datetime := int(first.get_capture_datetime_unix_nanoseconds())
 	_step_ok("stopped-time location reached the completed three-member result")
 
 	_require(CamBANGServer.set_capture_geolocation(LOCATION_B) == OK, "running-time geolocation replacement failed")
 	_require(CamBANGServer.set_capture_geolocation({"latitude_degrees": -91.0, "longitude_degrees": 0.0}) != OK, "running invalid replacement must be rejected")
 	_assert_present_result(first, LOCATION_A, true, "initial immutable after running replacement")
-	_require(int(first.get_capture_timestamp()) == first_timestamp, "existing acquisition timestamp changed after replacement")
+	_require(_timing_dict_equals(_get_default_member_acquisition_timing(first), first_timing), "existing acquisition timing changed after replacement")
 	_require(int(first.get_capture_datetime_unix_nanoseconds()) == first_datetime, "existing admission datetime changed after replacement")
 	var second = await _capture(device, "replacement")
 	if _done:
@@ -220,11 +222,12 @@ func _assert_absent_result(result, label: String) -> void:
 
 func _assert_camera_facts(result, label: String) -> void:
 	_require(not result.has_method("get_camera_facts"), "%s: CamBANGCaptureResult must not expose get_camera_facts" % label)
-	_require(int(result.get_capture_timestamp()) > 0 and int(result.get_capture_timestamp()) == int(result.get_capture_timestamp()), "%s: acquisition timestamp behavior changed" % label)
+	_require(not result.has_method("get_capture_timestamp"), "%s: legacy capture timestamp accessor must be absent" % label)
 	for member_index in range(3):
 		var member: Dictionary = result.get_image_member(member_index)
 		_require(int(member.get("image_member_index", -1)) == member_index, "%s: member identity mismatch at %d" % [label, member_index])
 		_require(member.has("camera_facts"), "%s: camera_facts missing at member %d" % [label, member_index])
+		_require(not member.has("capture_timestamp"), "%s: legacy member capture_timestamp must be absent at %d" % [label, member_index])
 		var facts: Dictionary = member["camera_facts"]
 		_require(not facts.has("sensor_orientation"), "%s: obsolete sensor_orientation key must not be exposed" % label)
 		for classification in ["facing", "camera_nature", "sensor_orientation_degrees"]:
@@ -238,8 +241,14 @@ func _assert_camera_facts(result, label: String) -> void:
 		var timing: Dictionary = facts.get("acquisition_timing", {})
 		_require(
 			timing.get("origin", "") == "virtual_camera_authored"
-			and int(timing.get("acquisition_mark", -1)) == int(member.get("capture_timestamp", -2))
+			and timing.has("acquisition_mark")
+			and typeof(timing.get("acquisition_mark", null)) == TYPE_INT
+			and int(timing.get("acquisition_mark", -1)) >= 0
+			and typeof(timing.get("tick_period_numerator_ns", null)) == TYPE_INT
+			and int(timing.get("tick_period_numerator_ns", 0)) > 0
 			and int(timing.get("tick_period_numerator_ns", 0)) == 1
+			and typeof(timing.get("tick_period_denominator", null)) == TYPE_INT
+			and int(timing.get("tick_period_denominator", 0)) > 0
 			and int(timing.get("tick_period_denominator", 0)) == 1
 			and timing.get("clock_domain", "") == "provider_monotonic"
 			and timing.get("reference_event", "") == "provider_observed"
@@ -256,6 +265,39 @@ func _assert_camera_facts(result, label: String) -> void:
 			and transform.get("pixels_already_transformed", false) == true,
 			"%s: member %d realized image transform mismatch" % [label, member_index]
 		)
+
+
+func _assert_stream_camera_facts(stream_result, label: String) -> void:
+	var facts: Dictionary = stream_result.get_camera_facts()
+	var keys := facts.keys()
+	_require(keys.size() == 1 and keys[0] == "acquisition_timing", "%s: stream camera_facts must initially contain acquisition_timing only" % label)
+	var timing: Dictionary = facts.get("acquisition_timing", {})
+	_require(
+		timing.get("origin", "") == "virtual_camera_authored"
+		and timing.has("acquisition_mark")
+		and typeof(timing.get("acquisition_mark", null)) == TYPE_INT
+		and int(timing.get("acquisition_mark", -1)) >= 0
+		and typeof(timing.get("tick_period_numerator_ns", null)) == TYPE_INT
+		and int(timing.get("tick_period_numerator_ns", 0)) > 0
+		and int(timing.get("tick_period_numerator_ns", 0)) == 1
+		and typeof(timing.get("tick_period_denominator", null)) == TYPE_INT
+		and int(timing.get("tick_period_denominator", 0)) > 0
+		and int(timing.get("tick_period_denominator", 0)) == 1
+		and timing.get("clock_domain", "") == "provider_monotonic"
+		and timing.get("reference_event", "") == "provider_observed"
+		and timing.get("comparability", "") == "same_provider",
+		"%s: stream acquisition timing must retain canonical semantics" % label
+	)
+
+
+func _get_default_member_acquisition_timing(result) -> Dictionary:
+	var member: Dictionary = result.get_image_member(0)
+	var facts: Dictionary = member.get("camera_facts", {})
+	return facts.get("acquisition_timing", {})
+
+
+func _timing_dict_equals(left: Dictionary, right: Dictionary) -> bool:
+	return JSON.stringify(left) == JSON.stringify(right)
 
 
 func _timed_out() -> bool:

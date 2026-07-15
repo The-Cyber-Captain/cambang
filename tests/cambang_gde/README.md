@@ -104,7 +104,8 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - Triggers capture through the public `CamBANGDevice.trigger_capture() -> Error` flow, polls `CamBANGDevice.get_result()`, and verifies `CamBANGCaptureResult` exposes three indexed image members with member metadata/materialization coverage.
   - Scene 70 is a user-flow/result-wrapper verifier; exact Device/AcquisitionSession snapshot-shape proof belongs to native/snapshot verification harnesses.
   - Uses builtin scenario `stream_inspection_live` so headed verification can stay open with a visibly live stream for manual inspection/capture.
-  - Expected pass string: `OK: result_retrieval_verification passed`
+  - Headless success still prints `OK: result_retrieval_verification passed`.
+  - Authoritative terminal verdict: `[CamBANG][HarnessVerdict] scene=70_result_retrieval_verification status=<ok|fail|error> exit_code=<n> reason=<token>`
 - `scenes/71_capture_session_matrix_v3.tscn`
   - Capture/session matrix confidence harness covering staged stream-result binding and capture-result checkpoints.
   - Supported exercises: `bind_once_live_display`
@@ -278,10 +279,13 @@ Notes:
 - For bounded-observation verifiers (`61`, `62`), either omit `--quit-after` or set a generously
   large value such as `--quit-after 1000`.
 - `60_restart_boundary_abuse`, `61_tick_bounded_coalescing_abuse`, `62_snapshot_polling_immutability_abuse`,
-  `63_snapshot_observer_minimal`, `66_public_lifecycle_verify`, and
-  `70_result_retrieval_verification` are older/non-protocol scenes unless separately migrated.
+  `63_snapshot_observer_minimal`, and `66_public_lifecycle_verify`
+  are older/non-protocol scenes unless separately migrated.
   Their terminal `OK: ... PASS` / `FAIL: ...` lines are useful for direct Godot/manual checks,
   but they are not `run_godot.ps1` classification verdicts.
+- Scene 70 is migrated to the shared harness-verdict protocol for `run_godot.ps1`
+  classification while preserving its direct `OK: result_retrieval_verification passed`
+  completion line.
 - Large structured harness payloads should not rely on a single huge log line; `run_godot.ps1`
   understands framed log records and writes recovered payloads into `records/` under the run directory.
 - Harnesses that need this may implement the tiny local framed-record emitter in their own script.

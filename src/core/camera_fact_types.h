@@ -2,6 +2,8 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <utility>
@@ -489,31 +491,75 @@ enum class ImageAcquisitionComparability : uint8_t {
 
 class TickPeriod {
  public:
-  static std::optional<TickPeriod> create(uint64_t numerator_ns, uint64_t denominator) {
-    if (numerator_ns == 0 || denominator == 0) {
+  static std::optional<TickPeriod> create(int64_t numerator_ns, int64_t denominator) {
+    if (numerator_ns <= 0 || denominator <= 0) {
       return std::nullopt;
     }
-    return TickPeriod(numerator_ns, denominator);
+    const int64_t divisor = std::gcd(numerator_ns, denominator);
+    return TickPeriod(numerator_ns / divisor, denominator / divisor);
   }
 
-  uint64_t numerator_ns() const noexcept { return numerator_ns_; }
-  uint64_t denominator() const noexcept { return denominator_; }
+  int64_t numerator_ns() const noexcept { return numerator_ns_; }
+  int64_t denominator() const noexcept { return denominator_; }
 
  private:
-  TickPeriod(uint64_t numerator_ns, uint64_t denominator)
+  TickPeriod(int64_t numerator_ns, int64_t denominator)
       : numerator_ns_(numerator_ns), denominator_(denominator) {}
 
-  uint64_t numerator_ns_;
-  uint64_t denominator_;
+  int64_t numerator_ns_;
+  int64_t denominator_;
 };
 
-struct ImageAcquisitionTiming {
-  // Zero remains a valid mark when the declared clock domain provides it.
-  uint64_t acquisition_mark;
-  TickPeriod tick_period;
-  ImageAcquisitionClockDomain clock_domain;
-  ImageAcquisitionReferenceEvent reference_event;
-  ImageAcquisitionComparability comparability;
+class ImageAcquisitionTiming {
+ public:
+  static std::optional<ImageAcquisitionTiming> create(
+      int64_t acquisition_mark,
+      TickPeriod tick_period,
+      ImageAcquisitionClockDomain clock_domain,
+      ImageAcquisitionReferenceEvent reference_event,
+      ImageAcquisitionComparability comparability) {
+    if (acquisition_mark < 0) {
+      return std::nullopt;
+    }
+    return ImageAcquisitionTiming(
+        acquisition_mark,
+        std::move(tick_period),
+        clock_domain,
+        reference_event,
+        comparability);
+  }
+
+  static std::optional<int64_t> checked_mark_from_unsigned(uint64_t acquisition_mark) noexcept {
+    if (acquisition_mark > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+      return std::nullopt;
+    }
+    return static_cast<int64_t>(acquisition_mark);
+  }
+
+  int64_t acquisition_mark() const noexcept { return acquisition_mark_; }
+  const TickPeriod& tick_period() const noexcept { return tick_period_; }
+  ImageAcquisitionClockDomain clock_domain() const noexcept { return clock_domain_; }
+  ImageAcquisitionReferenceEvent reference_event() const noexcept { return reference_event_; }
+  ImageAcquisitionComparability comparability() const noexcept { return comparability_; }
+
+ private:
+  ImageAcquisitionTiming(
+      int64_t acquisition_mark,
+      TickPeriod tick_period,
+      ImageAcquisitionClockDomain clock_domain,
+      ImageAcquisitionReferenceEvent reference_event,
+      ImageAcquisitionComparability comparability)
+      : acquisition_mark_(acquisition_mark),
+        tick_period_(std::move(tick_period)),
+        clock_domain_(clock_domain),
+        reference_event_(reference_event),
+        comparability_(comparability) {}
+
+  int64_t acquisition_mark_;
+  TickPeriod tick_period_;
+  ImageAcquisitionClockDomain clock_domain_;
+  ImageAcquisitionReferenceEvent reference_event_;
+  ImageAcquisitionComparability comparability_;
 };
 
 class FocusAtDistance {

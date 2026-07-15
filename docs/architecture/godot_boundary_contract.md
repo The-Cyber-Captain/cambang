@@ -39,10 +39,13 @@ failure leaves the previously configured truth unchanged. Legacy ADC v1
 concurrency-only documents are not accepted through this public surface.
 
 Completed `CamBANGCaptureResult` objects expose resolved still-camera facts
-only through optional `get_image_member(index).camera_facts`, plus
-`get_capture_datetime_unix_nanoseconds()`, `has_geolocation()`, and
-`get_geolocation()`. This does not add a StreamResult fact surface, a generic
-`get_camera_facts()` method, or a camera-fact wrapper class.
+through optional `get_image_member(index).camera_facts`, and
+`CamBANGStreamResult` exposes stream-frame facts through `get_camera_facts()`.
+These surfaces include optional `acquisition_timing` with direct Godot `int`
+values for `acquisition_mark`, `tick_period_numerator_ns`, and
+`tick_period_denominator`, plus `get_capture_datetime_unix_nanoseconds()`,
+`has_geolocation()`, and `get_geolocation()`. This does not add a camera-fact
+wrapper class or any legacy scalar capture-timestamp alias.
 
 Capture geolocation is configured independently through:
 

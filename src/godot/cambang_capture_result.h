@@ -33,7 +33,6 @@ public:
   uint32_t get_height() const;
   uint32_t get_format() const;
   int get_payload_kind() const;
-  uint64_t get_capture_timestamp() const;
   int64_t get_capture_datetime_unix_nanoseconds() const;
   uint64_t get_device_instance_id() const;
   uint64_t get_capture_id() const;

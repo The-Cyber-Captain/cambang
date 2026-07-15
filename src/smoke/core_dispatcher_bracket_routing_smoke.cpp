@@ -19,7 +19,7 @@ int main() {
   dispatcher.set_capture_assembly_registry(&assembly_registry);
 
   std::vector<uint8_t> px(2 * 2 * 4, 9);
-  auto make_capture_frame = [&](CaptureImageRouting routing, uint64_t ts) {
+  auto make_capture_frame = [&](CaptureImageRouting routing, int64_t ts) {
     FrameView frame{};
     frame.capture_id = 900;
     frame.device_instance_id = 901;
@@ -35,12 +35,14 @@ int main() {
     frame.size_bytes = px.size();
     const auto tick_period = TickPeriod::create(1, 1);
     assert(tick_period);
-    frame.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{
-        ImageAcquisitionTiming{ts, *tick_period,
-                               ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
-                               ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
-                               ImageAcquisitionComparability::SAME_PROVIDER},
-        FactOrigin::DERIVED};
+    const auto timing = ImageAcquisitionTiming::create(
+        ts,
+        *tick_period,
+        ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+        ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
+        ImageAcquisitionComparability::SAME_PROVIDER);
+    assert(timing);
+    frame.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{*timing, FactOrigin::DERIVED};
     return frame;
   };
 
@@ -63,11 +65,13 @@ int main() {
 
   auto with_bracket = result_store.get_capture_result(900, 901);
   assert(with_bracket);
-  assert(with_bracket->default_image.legacy_capture_timestamp_ns == 1000);
+  assert(with_bracket->default_image.acquisition_timing);
+  assert(with_bracket->default_image.acquisition_timing->value.acquisition_mark() == 1000);
   assert(with_bracket->default_image.image_member_index == 0);
   assert(with_bracket->additional_images.size() == 1);
   assert(with_bracket->additional_images[0].role == CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET);
-  assert(with_bracket->additional_images[0].legacy_capture_timestamp_ns == 2000);
+  assert(with_bracket->additional_images[0].acquisition_timing);
+  assert(with_bracket->additional_images[0].acquisition_timing->value.acquisition_mark() == 2000);
   assert(with_bracket->default_image.retained_frame_id !=
          with_bracket->additional_images[0].retained_frame_id);
   assert(with_bracket->additional_images[0].image_member_index == 1);

@@ -54,6 +54,7 @@ const DEFER_STATUS_PANEL_FIXTURE_UNTIL_INSPECTION := true
 var _step := 0
 var _done := false
 var _quit_requested := false
+var _harness_verdict_emitted := false
 var _inspection_mode := false
 var _is_headless := false
 var _start_ms := 0
@@ -676,7 +677,14 @@ func _try_verify_stream_result() -> void:
 		)
 		_require(stream_result.get_stream_id() == _stream_id, "step %d FAIL: stream_id mismatch" % _step)
 		_require(stream_result.get_device_instance_id() == _device_instance_id, "step %d FAIL: stream device_instance_id mismatch" % _step)
+		_require(stream_result.has_method("get_camera_facts"), "step %d FAIL: stream get_camera_facts() accessor missing" % _step)
+		_require(not stream_result.has_method("get_capture_timestamp"), "step %d FAIL: stream legacy get_capture_timestamp() accessor must be absent" % _step)
 		_step_ok("stream direct properties verified")
+
+		var stream_camera_facts: Dictionary = stream_result.get_camera_facts()
+		_require(_scene70_has_only_acquisition_timing(stream_camera_facts), "step %d FAIL: stream camera_facts must contain acquisition_timing only" % _step)
+		_require(_scene70_has_canonical_acquisition_timing(stream_camera_facts.get("acquisition_timing", {})), "step %d FAIL: stream acquisition_timing shape invalid" % _step)
+		_step_ok("stream camera_facts acquisition_timing verified")
 
 		_require(typeof(stream_result.get_image_properties()) == TYPE_DICTIONARY, "step %d FAIL: stream image_properties accessor must return Dictionary" % _step)
 		_require(typeof(stream_result.get_capture_attributes()) == TYPE_DICTIONARY, "step %d FAIL: stream capture_attributes accessor must return Dictionary" % _step)
@@ -917,6 +925,7 @@ func _try_verify_capture_result() -> void:
 		"step %d FAIL: capture payload_kind must be CPU_PACKED or GPU_SURFACE" % _step
 	)
 	_require(capture_result.get_device_instance_id() == _device_instance_id, "step %d FAIL: capture device_instance_id mismatch" % _step)
+	_require(not capture_result.has_method("get_capture_timestamp"), "step %d FAIL: capture legacy get_capture_timestamp() accessor must be absent" % _step)
 	_step_ok("capture direct properties verified")
 
 	_require(typeof(capture_result.get_image_properties()) == TYPE_DICTIONARY, "step %d FAIL: capture image_properties accessor must return Dictionary" % _step)
@@ -960,10 +969,13 @@ func _try_verify_capture_result() -> void:
 		_require(not image_member.is_empty(), "step %d FAIL: capture get_image_member(%d) must return non-empty Dictionary" % [_step, i])
 		_require(int(image_member.get("image_member_index", -1)) == int(expected_member.get("image_member_index", -1)), "step %d FAIL: capture image_member(%d).image_member_index mismatch" % [_step, i])
 		_require(int(image_member.get("role", -1)) == int(expected_member.get("role", -1)), "step %d FAIL: capture image_member(%d).role mismatch" % [_step, i])
+		_require(not image_member.has("capture_timestamp"), "step %d FAIL: capture image_member(%d) legacy capture_timestamp must be absent" % [_step, i])
 		var expected_intended_ev := int(expected_member.get("intended_exposure_compensation_milli_ev", 0))
 		_require(int(image_member.get("applied_exposure_compensation_milli_ev", 0)) == expected_intended_ev, "step %d FAIL: capture image_member(%d) applied EV mismatch" % [_step, i])
 		_require(bool(image_member.get("has_realized_exposure_compensation_milli_ev", false)), "step %d FAIL: capture image_member(%d) realized EV must be present in synthetic normal mode" % [_step, i])
 		_require(int(image_member.get("realized_exposure_compensation_milli_ev", 0)) == int(image_member.get("applied_exposure_compensation_milli_ev", 0)), "step %d FAIL: capture image_member(%d) realized EV must equal applied EV in synthetic normal mode" % [_step, i])
+		var image_camera_facts: Dictionary = image_member.get("camera_facts", {})
+		_require(_scene70_has_canonical_acquisition_timing(image_camera_facts.get("acquisition_timing", {})), "step %d FAIL: capture image_member(%d) acquisition_timing shape invalid" % [_step, i])
 	var out_of_range_member: Dictionary = capture_result.get_image_member(expected_member_count)
 	_require(out_of_range_member.is_empty(), "step %d FAIL: capture get_image_member(expected_count) must return empty Dictionary for out-of-range" % _step)
 	var out_of_range_image: Image = capture_result.to_image_member(expected_member_count)
@@ -1062,6 +1074,28 @@ func _format_fixed_fact_lines(lines: Array) -> String:
 	while normalized.size() < FACT_LABEL_LINE_COUNT:
 		normalized.append(" ")
 	return "\n".join(normalized)
+
+
+func _scene70_has_only_acquisition_timing(facts: Dictionary) -> bool:
+	return facts.keys().size() == 1 and facts.has("acquisition_timing")
+
+
+func _scene70_has_canonical_acquisition_timing(timing: Dictionary) -> bool:
+	return (
+		timing.get("origin", "") == "virtual_camera_authored"
+		and timing.has("acquisition_mark")
+		and typeof(timing.get("acquisition_mark", null)) == TYPE_INT
+		and int(timing.get("acquisition_mark", -1)) >= 0
+		and typeof(timing.get("tick_period_numerator_ns", null)) == TYPE_INT
+		and int(timing.get("tick_period_numerator_ns", 0)) > 0
+		and int(timing.get("tick_period_numerator_ns", 0)) == 1
+		and typeof(timing.get("tick_period_denominator", null)) == TYPE_INT
+		and int(timing.get("tick_period_denominator", 0)) > 0
+		and int(timing.get("tick_period_denominator", 0)) == 1
+		and timing.get("clock_domain", "") == "provider_monotonic"
+		and timing.get("reference_event", "") == "provider_observed"
+		and timing.get("comparability", "") == "same_provider"
+	)
 
 
 func _clear_member_inspection_strip() -> void:
@@ -1815,6 +1849,18 @@ func _append_status(line: String) -> void:
 	_status_label.append_text(line + "\n")
 
 
+func _emit_harness_verdict(status: String, exit_code: int, reason: String) -> void:
+	if _harness_verdict_emitted:
+		return
+	_harness_verdict_emitted = true
+	print("[CamBANG][HarnessVerdict] scene=%s status=%s exit_code=%d reason=%s" % [
+		SCENE_LABEL,
+		status,
+		exit_code,
+		reason,
+	])
+
+
 func _ok(message: String) -> void:
 	if _done:
 		return
@@ -1851,6 +1897,7 @@ func _cleanup_and_quit(code: int) -> void:
 	_clear_member_inspection_strip()
 	if not _quit_requested:
 		_quit_requested = true
+		_emit_harness_verdict("ok" if code == 0 else "fail", code, "complete" if code == 0 else "failure")
 		_scene70_emit_summary_record(_scene70_build_summary(code))
 		CamBANGServer.stop_and_quit(code)
 

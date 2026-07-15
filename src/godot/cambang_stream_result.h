@@ -35,10 +35,10 @@ public:
   uint32_t get_height() const;
   uint32_t get_format() const;
   int get_payload_kind() const;
-  uint64_t get_capture_timestamp() const;
   uint64_t get_stream_id() const;
   uint64_t get_device_instance_id() const;
   int get_intent() const;
+  godot::Dictionary get_camera_facts() const;
 
   bool has_image_properties() const;
   bool has_capture_attributes() const;
