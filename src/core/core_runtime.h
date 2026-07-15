@@ -314,8 +314,10 @@ enum class TryCloseDeviceStatus : uint8_t {
       const CaptureStillImageBundle& still_image_bundle) noexcept;
   TrySetWarmHoldStatus try_set_device_warm_hold_ms(uint64_t device_instance_id, uint32_t warm_hold_ms) noexcept;
 
-  // Server-facing synchronous wrappers. They marshal registry/provider access onto
-  // the core thread and only return success after the work was accepted/submitted.
+  // Server-facing synchronous wrappers. They execute inline on the core thread;
+  // otherwise they marshal onto the existing core lane and wait only up to an
+  // internal bounded timeout. Timeout/rejection returns the method's
+  // conservative fallback and does not cancel already admitted work.
   TryTriggerDeviceCaptureStatus try_trigger_device_capture_with_capture_id_for_server(
       uint64_t device_instance_id,
       uint64_t capture_id);
@@ -509,6 +511,18 @@ enum class TryCloseDeviceStatus : uint8_t {
   CoreThread::PostResult try_post_core_thread_unchecked(CoreThread::Task task) {
     return core_thread_.try_post(std::move(task));
   }
+
+  CoreThread::PostResult smoke_try_post_command_task_unchecked(
+      CoreThread::Task task) {
+    return core_thread_.try_post_command(std::move(task));
+  }
+
+  void smoke_set_synchronous_core_marshalling_timeout_ms(
+      uint32_t timeout_ms) noexcept {
+    smoke_synchronous_core_marshalling_timeout_ms_.store(
+        timeout_ms, std::memory_order_release);
+  }
+
 #endif
 
   void request_publish();
@@ -701,12 +715,26 @@ private:
   void enqueue_provider_fact(ProviderToCoreCommand&& cmd);
   void enqueue_request(CoreThread::Task task);
   void request_publish_from_core_unchecked();
+  std::chrono::milliseconds synchronous_core_marshalling_timeout_() const
+      noexcept;
   void begin_capture_stream_preemption_(uint64_t capture_id, uint64_t device_instance_id);
   void begin_capture_stream_preemption_for_bundle_(const RigAdmittedRequestBundle& bundle);
   void release_result_safe_capture_stream_preemptions_();
   bool is_stream_preempted_for_capture_(uint64_t stream_id) const;
   bool suppress_repeating_stream_frame_for_capture_(ProviderToCoreCommand&& cmd);
   size_t suppress_queued_repeating_stream_frames_for_capture_();
+  TryStartStreamStatus try_start_stream_on_core_thread_(uint64_t stream_id);
+  TryStopStreamStatus try_stop_stream_on_core_thread_(uint64_t stream_id);
+  TryDestroyStreamStatus try_destroy_stream_on_core_thread_(uint64_t stream_id);
+  TryOpenDeviceStatus try_open_device_on_core_thread_(
+      const std::string& hardware_id,
+      uint64_t device_instance_id,
+      uint64_t root_id,
+      const CaptureTemplate& capture_tmpl);
+  TryCloseDeviceStatus try_close_device_on_core_thread_(uint64_t device_instance_id);
+  TrySetWarmHoldStatus try_set_device_warm_hold_ms_on_core_thread_(
+      uint64_t device_instance_id,
+      uint32_t warm_hold_ms);
   // Core-thread-only helpers. These read/write core-owned registries directly.
   bool materialize_capture_request_(uint64_t device_instance_id, CaptureRequest& out) const;
   TryTriggerDeviceCaptureStatus trigger_device_capture_with_capture_id_(
@@ -893,6 +921,7 @@ private:
 
 #if defined(CAMBANG_INTERNAL_SMOKE)
   std::atomic<bool> smoke_hold_provider_fact_timer_ticks_{false};
+  std::atomic<uint32_t> smoke_synchronous_core_marshalling_timeout_ms_{0};
 #endif
 
   std::deque<ProviderToCoreCommand> provider_facts_;

@@ -38,6 +38,7 @@ Non-Goals
 #include <optional>
 #include <random>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -529,6 +530,49 @@ static bool get_stream_record(CoreRuntime& rt, uint64_t stream_id, CoreStreamReg
   }
   std::cerr << "Failed to retrieve stream record (core queue saturated or stopped).\n";
   std::exit(1);
+}
+
+static bool get_device_record(CoreRuntime& rt,
+                              uint64_t device_instance_id,
+                              CoreDeviceRegistry::DeviceRecord& out) {
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    std::promise<bool> p;
+    auto fut = p.get_future();
+    const auto r = rt.try_post([&rt, device_instance_id, &out, &p]() mutable {
+      const auto* rec = rt.device_record(device_instance_id);
+      if (!rec) {
+        p.set_value(false);
+        return;
+      }
+      out = *rec;
+      p.set_value(true);
+    });
+    if (r == CoreThread::PostResult::Enqueued) {
+      if (fut.wait_for(std::chrono::seconds(2)) == std::future_status::ready) {
+        return fut.get();
+      }
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  std::cerr << "Failed to retrieve device record (core queue saturated or stopped).\n";
+  std::exit(1);
+}
+
+template <typename Fn>
+static bool run_on_core_thread(CoreRuntime& rt, Fn&& fn) {
+  std::promise<bool> p;
+  auto fut = p.get_future();
+  const auto pr = rt.try_post([&p, fn = std::forward<Fn>(fn)]() mutable {
+    p.set_value(fn());
+  });
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return false;
+  }
+  if (fut.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    return false;
+  }
+  return fut.get();
 }
 
 static bool wait_until(std::function<bool()> pred, int max_iters = 200, int sleep_ms = 5) {
@@ -1617,6 +1661,100 @@ private:
   IProviderCallbacks* callbacks_ = nullptr;
   std::atomic<uint64_t> open_called_{0};
   std::atomic<uint64_t> close_called_{0};
+};
+
+class ThrowingOpenDeviceProvider final : public ICameraProvider {
+public:
+  ProviderResult initialize(IProviderCallbacks* callbacks) override {
+    callbacks_ = callbacks;
+    return ProviderResult::success();
+  }
+
+  const char* provider_name() const override {
+    return "throwing_open_device_provider";
+  }
+  ProviderKind provider_kind() const noexcept override {
+    return ProviderKind::platform_backed;
+  }
+
+  StreamTemplate stream_template() const override {
+    StreamTemplate t{};
+    t.profile.width = 640;
+    t.profile.height = 480;
+    t.profile.format_fourcc = FOURCC_RGBA;
+    t.profile.target_fps_min = 30;
+    t.profile.target_fps_max = 30;
+    return t;
+  }
+
+  CaptureTemplate capture_template() const override {
+    CaptureTemplate t{};
+    t.profile = stream_template().profile;
+    return t;
+  }
+
+  bool supports_stream_picture_updates() const noexcept override { return false; }
+  bool supports_capture_picture_updates() const noexcept override { return false; }
+  bool supports_multi_image_still_sequence() const noexcept override { return false; }
+
+  ProviderResult enumerate_endpoints(
+      std::vector<CameraEndpoint>& out_endpoints) override {
+    CameraEndpoint ep{};
+    ep.hardware_id = "throwing:0";
+    ep.name = "Throwing Device";
+    out_endpoints.push_back(std::move(ep));
+    return ProviderResult::success();
+  }
+
+  ProviderResult open_device(const std::string&, uint64_t, uint64_t) override {
+    throw std::runtime_error("throwing_open_device_provider.open_device");
+  }
+
+  ProviderResult close_device(uint64_t) override {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+
+  ProviderResult create_stream(const StreamRequest&) override {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  ProviderResult destroy_stream(uint64_t) override {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  ProviderResult start_stream(uint64_t, const CaptureProfile&,
+                              const PictureConfig&) override {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  ProviderResult stop_stream(uint64_t) override {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  ProviderResult set_stream_picture_config(uint64_t,
+                                           const PictureConfig&) override {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  ProviderResult set_capture_picture_config(uint64_t,
+                                            const PictureConfig&) override {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  ProviderResult trigger_capture(const CaptureRequest&) override {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  ProviderResult abort_capture(uint64_t) override {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  ProviderResult apply_camera_spec_patch(const std::string&, uint64_t,
+                                         SpecPatchView) override {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  ProviderResult apply_imaging_spec_patch(uint64_t, SpecPatchView) override {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  ProviderResult shutdown() override {
+    callbacks_ = nullptr;
+    return ProviderResult::success();
+  }
+
+private:
+  IProviderCallbacks* callbacks_ = nullptr;
 };
 
 static const char* compiled_provider_name() {
@@ -3350,6 +3488,370 @@ static int test_capture_admission_context_smoke() {
   return 0;
 }
 
+static int test_bounded_sync_core_marshalling_cross_thread_success_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "Bounded marshalling success smoke: runtime start failed\n";
+    return 1;
+  }
+
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) {
+    std::cerr << "Bounded marshalling success smoke: stub setup failed\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (rt.try_set_device_warm_hold_ms(kDeviceInstanceId, 77) !=
+      TrySetWarmHoldStatus::OK) {
+    std::cerr << "Bounded marshalling success smoke: warm-hold update failed\n";
+    rt.stop();
+    return 1;
+  }
+
+  CoreDeviceRegistry::DeviceRecord rec{};
+  if (!wait_until([&]() {
+        return get_device_record(rt, kDeviceInstanceId, rec) &&
+               rec.warm_hold_ms == 77;
+      }, 200, 1)) {
+    std::cerr << "Bounded marshalling success smoke: warm-hold update did not converge\n";
+    rt.stop();
+    return 1;
+  }
+
+  CaptureRequest req{};
+  if (!rt.materialize_capture_request_for_server(kDeviceInstanceId, req) ||
+      req.device_instance_id != kDeviceInstanceId ||
+      req.still_image_bundle.members.size() != 1) {
+    std::cerr << "Bounded marshalling success smoke: capture request materialization failed\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.smoke_reset_capture_admission_clock_sample_count();
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(
+          kDeviceInstanceId, 99101) != TryTriggerDeviceCaptureStatus::OK) {
+    std::cerr << "Bounded marshalling success smoke: trigger capture failed\n";
+    rt.stop();
+    return 1;
+  }
+
+  std::optional<CaptureAdmissionContext> admission;
+  if (!wait_until([&]() {
+        admission = rt.smoke_capture_admission_context(99101, kDeviceInstanceId);
+        return admission.has_value();
+      }, 200, 1) ||
+      rt.smoke_capture_admission_clock_sample_count() != 1) {
+    std::cerr << "Bounded marshalling success smoke: capture admission context did not converge\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+static int test_bounded_sync_core_marshalling_core_thread_direct_execution_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "Bounded marshalling direct smoke: runtime start failed\n";
+    return 1;
+  }
+
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) {
+    std::cerr << "Bounded marshalling direct smoke: stub setup failed\n";
+    rt.stop();
+    return 1;
+  }
+
+  CaptureRequest req{};
+  const bool ran = run_on_core_thread(rt, [&]() {
+    if (rt.try_set_device_warm_hold_ms(kDeviceInstanceId, 88) !=
+        TrySetWarmHoldStatus::OK) {
+      return false;
+    }
+    return rt.materialize_capture_request_for_server(kDeviceInstanceId, req);
+  });
+  if (!ran || req.device_instance_id != kDeviceInstanceId) {
+    std::cerr << "Bounded marshalling direct smoke: core-thread direct execution failed\n";
+    rt.stop();
+    return 1;
+  }
+
+  CoreDeviceRegistry::DeviceRecord rec{};
+  if (!wait_until([&]() {
+        return get_device_record(rt, kDeviceInstanceId, rec) &&
+               rec.warm_hold_ms == 88;
+      }, 200, 1)) {
+    std::cerr << "Bounded marshalling direct smoke: warm-hold update was not retained\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+static int test_bounded_sync_core_marshalling_closed_rejection_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "Bounded marshalling closed smoke: runtime start failed\n";
+    return 1;
+  }
+
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) {
+    std::cerr << "Bounded marshalling closed smoke: stub setup failed\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+
+  CaptureRequest req{};
+  if (rt.try_set_device_warm_hold_ms(kDeviceInstanceId, 11) !=
+          TrySetWarmHoldStatus::Busy ||
+      rt.materialize_capture_request_for_server(kDeviceInstanceId, req) ||
+      rt.try_trigger_device_capture_with_capture_id_for_server(
+          kDeviceInstanceId, 99102) != TryTriggerDeviceCaptureStatus::Busy ||
+      !rt.backing_plan_evaluation_reports().empty() ||
+      !rt.recent_capture_lifecycle_timing_reports().empty()) {
+    std::cerr << "Bounded marshalling closed smoke: closed-admission fallback mismatch\n";
+    return 1;
+  }
+
+  return 0;
+}
+
+static int test_bounded_sync_core_marshalling_timeout_and_late_execution_smoke() {
+  constexpr uint64_t kSecondDeviceInstanceId = 2;
+  constexpr uint64_t kSecondRootId = 2;
+
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "Bounded marshalling timeout smoke: runtime start failed\n";
+    return 1;
+  }
+
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) {
+    std::cerr << "Bounded marshalling timeout smoke: stub setup failed\n";
+    rt.stop();
+    return 1;
+  }
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) {
+    std::cerr << "Bounded marshalling timeout smoke: endpoint enumeration failed\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (rt.retain_device_identity(kSecondDeviceInstanceId, eps[0].hardware_id) !=
+      CoreThread::PostResult::Enqueued) {
+    std::cerr << "Bounded marshalling timeout smoke: failed to retain second identity\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.smoke_set_synchronous_core_marshalling_timeout_ms(20);
+
+  auto release_gate = std::make_shared<std::promise<void>>();
+  std::shared_future<void> release_gate_done(release_gate->get_future());
+  std::atomic<bool> gate_started{false};
+  const auto gate_post = rt.smoke_try_post_command_task_unchecked(
+      [release_gate_done, &gate_started]() mutable {
+        gate_started.store(true, std::memory_order_release);
+        release_gate_done.wait();
+      });
+  if (gate_post != CoreThread::PostResult::Enqueued) {
+    std::cerr << "Bounded marshalling timeout smoke: failed to post command-lane gate\n";
+    rt.stop();
+    return 1;
+  }
+  while (!gate_started.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+
+  TryOpenDeviceStatus timed_out_status = TryOpenDeviceStatus::OK;
+  {
+    std::string late_hw = eps[0].hardware_id;
+    std::promise<TryOpenDeviceStatus> done;
+    auto completed = done.get_future();
+    std::thread caller([&rt, &done, late_hw]() mutable {
+      done.set_value(
+          rt.try_open_device(late_hw, kSecondDeviceInstanceId, kSecondRootId));
+    });
+    if (completed.wait_for(std::chrono::seconds(1)) !=
+        std::future_status::ready) {
+      release_gate->set_value();
+      caller.join();
+      std::cerr << "Bounded marshalling timeout smoke: wrapper did not return on timeout\n";
+      rt.stop();
+      return 1;
+    }
+    timed_out_status = completed.get();
+    caller.join();
+  }
+
+  if (timed_out_status != TryOpenDeviceStatus::Busy) {
+    release_gate->set_value();
+    std::cerr << "Bounded marshalling timeout smoke: timeout fallback mismatch\n";
+    rt.stop();
+    return 1;
+  }
+
+  release_gate->set_value();
+
+  CoreDeviceRegistry::DeviceRecord rec{};
+  if (!wait_until([&]() {
+        prov.flush_callbacks_for_smoke();
+        if (!wait_for_core_barrier(rt, std::chrono::milliseconds(50))) {
+          return false;
+        }
+        return get_device_record(rt, kSecondDeviceInstanceId, rec) && rec.open;
+      }, 400, 2)) {
+    std::cerr << "Bounded marshalling timeout smoke: admitted work did not execute after caller timeout\n";
+    rt.stop();
+    return 1;
+  }
+
+  CaptureRequest req{};
+  if (!wait_until([&]() {
+        return rt.materialize_capture_request(kSecondDeviceInstanceId, req);
+      }, 200, 1)) {
+    std::cerr << "Bounded marshalling timeout smoke: late-opened device never materialized\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (rt.try_close_device(kSecondDeviceInstanceId) != TryCloseDeviceStatus::OK) {
+    std::cerr << "Bounded marshalling timeout smoke: cleanup close failed\n";
+    rt.stop();
+    return 1;
+  }
+  if (!converge_stub_provider_core(rt, prov)) {
+    std::cerr << "Bounded marshalling timeout smoke: cleanup close did not converge\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+static int test_bounded_sync_core_marshalling_stop_race_smoke() {
+  CoreRuntime rt;
+  if (!rt.start() ||
+      !wait_until([&]() { return rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1)) {
+    std::cerr << "Bounded marshalling stop-race smoke: runtime start failed\n";
+    return 1;
+  }
+
+  RefusingDeviceProvider provider;
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    std::cerr << "Bounded marshalling stop-race smoke: provider initialize failed\n";
+    rt.stop();
+    return 1;
+  }
+  rt.attach_provider(&provider);
+
+  if (rt.retain_device_identity(kDeviceInstanceId, "refusing:0") !=
+      CoreThread::PostResult::Enqueued) {
+    std::cerr << "Bounded marshalling stop-race smoke: retain identity failed\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.smoke_set_synchronous_core_marshalling_timeout_ms(20);
+
+  auto release_gate = std::make_shared<std::promise<void>>();
+  std::shared_future<void> release_gate_done(release_gate->get_future());
+  std::atomic<bool> gate_started{false};
+  const auto gate_post = rt.smoke_try_post_command_task_unchecked(
+      [release_gate_done, &gate_started]() mutable {
+        gate_started.store(true, std::memory_order_release);
+        release_gate_done.wait();
+      });
+  if (gate_post != CoreThread::PostResult::Enqueued) {
+    std::cerr << "Bounded marshalling stop-race smoke: failed to post command-lane gate\n";
+    rt.stop();
+    return 1;
+  }
+  while (!gate_started.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+
+  std::promise<TryOpenDeviceStatus> done;
+  auto completed = done.get_future();
+  std::thread caller([&rt, &done]() mutable {
+    done.set_value(rt.try_open_device("refusing:0", kDeviceInstanceId, kRootId));
+  });
+  if (completed.wait_for(std::chrono::seconds(1)) != std::future_status::ready) {
+    release_gate->set_value();
+    caller.join();
+    rt.stop();
+    std::cerr << "Bounded marshalling stop-race smoke: wrapper did not return while gate held\n";
+    return 1;
+  }
+  const TryOpenDeviceStatus status = completed.get();
+  if (status != TryOpenDeviceStatus::Busy) {
+    release_gate->set_value();
+    caller.join();
+    rt.stop();
+    std::cerr << "Bounded marshalling stop-race smoke: timeout fallback mismatch\n";
+    return 1;
+  }
+
+  std::thread stopper([&rt]() { rt.stop(); });
+  release_gate->set_value();
+  caller.join();
+  stopper.join();
+
+  if (provider.open_called() != 1 || rt.is_running()) {
+    std::cerr << "Bounded marshalling stop-race smoke: admitted work/stop convergence mismatch. open_called="
+              << provider.open_called() << " running=" << rt.is_running() << "\n";
+    return 1;
+  }
+
+  return 0;
+}
+
+static int test_bounded_sync_core_marshalling_task_exception_containment_smoke() {
+  CoreRuntime rt;
+  if (!rt.start() ||
+      !wait_until([&]() { return rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1)) {
+    std::cerr << "Bounded marshalling exception smoke: runtime start failed\n";
+    return 1;
+  }
+
+  ThrowingOpenDeviceProvider provider;
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    std::cerr << "Bounded marshalling exception smoke: provider initialize failed\n";
+    rt.stop();
+    return 1;
+  }
+  rt.attach_provider(&provider);
+
+  if (rt.retain_device_identity(kDeviceInstanceId, "throwing:0") !=
+      CoreThread::PostResult::Enqueued) {
+    std::cerr << "Bounded marshalling exception smoke: retain identity failed\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (rt.try_open_device("throwing:0", kDeviceInstanceId, kRootId) !=
+      TryOpenDeviceStatus::Busy) {
+    std::cerr << "Bounded marshalling exception smoke: exception fallback mismatch\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
 static int test_open_device_snapshot_retains_default_capture_profile_smoke() {
   CoreRuntime rt;
   StateSnapshotBuffer buf;
@@ -4798,6 +5300,54 @@ int main(int argc, char** argv) {
                              [] { return test_device_capture_request_materialization_smoke(); })) {
       if (reporter.verbose()) reporter.print_summary();
       reporter.print_fail_line("core_spine_smoke", "test_device_capture_request_materialization_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_bounded_sync_core_marshalling_cross_thread_success_smoke",
+                             [] { return test_bounded_sync_core_marshalling_cross_thread_success_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_bounded_sync_core_marshalling_cross_thread_success_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_bounded_sync_core_marshalling_core_thread_direct_execution_smoke",
+                             [] { return test_bounded_sync_core_marshalling_core_thread_direct_execution_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_bounded_sync_core_marshalling_core_thread_direct_execution_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_bounded_sync_core_marshalling_closed_rejection_smoke",
+                             [] { return test_bounded_sync_core_marshalling_closed_rejection_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_bounded_sync_core_marshalling_closed_rejection_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_bounded_sync_core_marshalling_timeout_and_late_execution_smoke",
+                             [] { return test_bounded_sync_core_marshalling_timeout_and_late_execution_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_bounded_sync_core_marshalling_timeout_and_late_execution_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_bounded_sync_core_marshalling_stop_race_smoke",
+                             [] { return test_bounded_sync_core_marshalling_stop_race_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_bounded_sync_core_marshalling_stop_race_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_bounded_sync_core_marshalling_task_exception_containment_smoke",
+                             [] { return test_bounded_sync_core_marshalling_task_exception_containment_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_bounded_sync_core_marshalling_task_exception_containment_smoke",
+                               r);
       return r;
     }
     if (int r = reporter.run("test_open_device_snapshot_retains_default_capture_profile_smoke",

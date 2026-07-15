@@ -35,6 +35,12 @@ arbitration state - device/stream/rig core state machines -
 Godot-facing objects never mutate core state directly; they enqueue
 commands to core.
 
+Compatibility synchronous wrappers that expose Core-owned truth or admission to
+Godot-facing callers execute inline when already on the core thread; otherwise
+they post to their existing CoreThread lane and wait only up to an internal
+bounded timeout. Timeout or post rejection returns a conservative fallback to
+the caller and does not imply cancellation of already admitted core work.
+
 Provider callbacks never mutate core state directly; they enqueue
 provider events to core (serialized callback context per provider
 contract).
