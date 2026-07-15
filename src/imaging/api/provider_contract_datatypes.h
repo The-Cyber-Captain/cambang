@@ -1,14 +1,17 @@
 ﻿// src/provider/provider_contract_datatypes.h
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "core/capture_admission_context.h"
 #include "core/camera_fact_types.h"
+#include "core/resource_aggregate_telemetry.h"
 
 // Pattern preset vocabulary is provider-agnostic and lives in the Pattern Module.
 // It is safe to depend on here (no platform headers).
@@ -16,6 +19,14 @@
 #include "pixels/pattern/pattern_spec.h"
 
 namespace cambang {
+
+struct FrameReleaseOwner;
+
+enum class OwnedFrameReleaseResult : uint8_t {
+  Noop = 0,
+  Released,
+  ReleaseCallbackThrew,
+};
 
 // --- FourCC helpers ---------------------------------------------------------
 // Canonical CamBANG pixel formats use a FourCC-style 32-bit tag.
@@ -456,12 +467,60 @@ struct FrameView {
   using ReleaseFn = void (*)(void* user, const FrameView* frame);
   ReleaseFn release = nullptr;
   void* release_user = nullptr;
+  std::shared_ptr<FrameReleaseOwner> release_owner{};
 
-  void release_now() const {
-    if (release) {
-      release(release_user, this);
+  void release_now() const noexcept;
+};
+
+struct FrameReleaseOwner {
+  using ReleaseFn = FrameView::ReleaseFn;
+
+  FrameView callback_view{};
+  ReleaseFn release = nullptr;
+  void* release_user = nullptr;
+  uint64_t stream_id = 0;
+  uint64_t acquisition_session_id = 0;
+  std::atomic<bool> released{false};
+
+  template <typename OnThrowFn>
+  OwnedFrameReleaseResult release_once(OnThrowFn&& on_throw) noexcept {
+    if (released.exchange(true, std::memory_order_acq_rel)) {
+      return OwnedFrameReleaseResult::Noop;
     }
+
+    OwnedFrameReleaseResult result = OwnedFrameReleaseResult::Released;
+    try {
+      if (release) {
+        release(release_user, &callback_view);
+      }
+    } catch (...) {
+      result = OwnedFrameReleaseResult::ReleaseCallbackThrew;
+      on_throw();
+    }
+
+    global_resource_aggregate_telemetry().lease_released(
+        make_framebuffer_lease_scoped_resource_telemetry_key(
+            stream_id,
+            acquisition_session_id));
+    return result;
+  }
+
+  ~FrameReleaseOwner() {
+    (void)release_once([]() noexcept {});
   }
 };
+
+inline void FrameView::release_now() const noexcept {
+  if (release_owner) {
+    (void)release_owner->release_once([]() noexcept {});
+    return;
+  }
+  if (release) {
+    try {
+      release(release_user, this);
+    } catch (...) {
+    }
+  }
+}
 
 } // namespace cambang

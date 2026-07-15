@@ -89,7 +89,8 @@ deadline expires (timed wake) - shutdown is requested (notify)
 
 ### 3.2 Deterministic processing order
 
-On each wake, core processes in the following order:
+While the active generation retains publishable canonical truth, Core processes
+each normal loop turn in the following order:
 
 1.  **Drain provider events** (bounded to
     `kMaxProviderFactsPerCoreTurn = 64` per core-loop turn when no
@@ -104,6 +105,11 @@ This ordering is fixed to ensure: - "what happened" (provider events) is
 integrated in deterministic FIFO slices before "what is requested" (commands) -
 timers are honored deterministically - snapshot publication reflects the
 current retained Core truth after the processed slice and command turn
+
+Fatal transport containment is the exception to this normal loop ordering.
+Once CoreThread observes fatal transport failure, it follows the truth-loss and
+fatal-shutdown rules in §§3.5, 7.1, 9.2.a, and 10.2 instead of completing an
+ordinary provider/command/timer/publication turn.
 
 ### 3.3 Batching and fairness
 
@@ -159,6 +165,39 @@ The stale frame is counted as received and dropped, not delivered: Core releases
 it before sink invocation.
 The same pre-sink accounting rule applies when active capture preemption
 suppresses a repeating stream frame before sink handoff.
+
+### 3.5 Bounded transport and fatal truth loss
+
+Every CoreThread ingress lane is bounded.
+
+Ordinary and command admission may fail according to their documented
+request/backpressure contracts. Failure to admit an **essential provider fact**
+is different: lifecycle, native-object, error, and accepted-capture facts are
+part of the authoritative provider sequence.
+
+If an essential provider fact cannot be admitted because of capacity or
+allocation failure, Core latches a fatal transport failure for the active
+generation.
+
+The fatal signal uses a first-failure-wins, non-allocating path independent of
+the saturated task queues. Once latched:
+
+* all new ordinary, command, and essential admission closes;
+* CoreThread wakes and observes the failure on the Core thread;
+* provider-derived work may no longer mutate publishable canonical truth;
+* normal command, ordinary, timer, and publication processing does not continue
+  against an incomplete provider sequence;
+* CoreRuntime begins deterministic containment and teardown.
+
+CoreThread must enforce this boundary for work still in shared queues and for
+work already moved into a local execution batch. Closing the shared queue alone
+is not sufficient.
+
+Where fatal containment requires some Core-owned work to remain executable,
+CoreThread distinguishes teardown-critical work from provider-derived facts and
+normal request work. This classification is internal and must not become a
+second public scheduling model.
+
 
 ------------------------------------------------------------------------
 
@@ -274,21 +313,60 @@ clear error code.
 
 ------------------------------------------------------------------------
 
-## 7. `CoreNativeObjectRegistry` and snapshot publication
+## 7. Core registries, canonical truth, and transport failure
 
-`CoreNativeObjectRegistry` maintains the core-truth view of provider-reported
-native objects used to populate `CamBANGStateSnapshot.native_objects`.
+During a healthy active generation, Core registries maintain the canonical
+retained interpretation of facts accepted from the provider and of
+Core-directed lifecycle state.
 
-Responsibilities: - retain provider-reported native object records keyed by
-`native_id` - track created/destroyed state and timestamps - retain DESTROYED
-records for the retention window - provide registry truth to `SnapshotBuilder`
-(read-only on core thread). Snapshot publication is assembled by
-`SnapshotBuilder` and delivered through the `IStateSnapshotPublisher` boundary;
-`StateSnapshotBuffer` is the thread-safe latest-snapshot buffer used by current
-smoke/Godot bridging paths.
+`CoreNativeObjectRegistry` maintains the Core-truth view of provider-reported
+native objects used to populate
+`CamBANGStateSnapshot.native_objects`.
 
-Registry mutation occurs only on the core thread, based on provider
-events and core-directed teardown steps.
+Its responsibilities include:
+
+* retaining provider-reported native-object records keyed by `native_id`;
+* tracking created/destroyed state and timestamps;
+* retaining `DESTROYED` records for the configured retention window;
+* providing read-only registry truth to `SnapshotBuilder` on the Core thread.
+
+Snapshot publication is assembled by `SnapshotBuilder` and delivered through
+the `IStateSnapshotPublisher` boundary. `StateSnapshotBuffer` is the
+thread-safe latest-snapshot buffer used by current smoke and Godot bridging
+paths.
+
+Registry mutation occurs only on the Core thread, based on provider facts and
+Core-directed lifecycle or teardown steps.
+
+### 7.1 Truth-loss boundary
+
+A fatal provider/Core transport failure means at least one authoritative fact
+was not delivered or could not be processed through the required transport
+boundary. Core can no longer claim that its retained provider-derived state is
+a complete current account of the active provider generation.
+
+When CoreThread observes the first fatal transport failure, the active
+generation immediately crosses a **truth-loss boundary**.
+
+Beyond that boundary:
+
+* Core registries cease to be publishable canonical provider truth;
+* retained records may remain in memory only for containment, accounting,
+  ownership release, and teardown;
+* provider-derived queued or already-local work must not be applied as normal
+  registry truth;
+* no normal snapshot may be assembled from post-fault registry state;
+* dirty flags or registry mutations required solely for teardown do not reopen
+  publication;
+* the failed generation cannot return to healthy truth status.
+
+This does not require destroying registries immediately. Immediate destruction
+could prevent correct resource release or teardown reconciliation. It changes
+their authority: after truth loss they are teardown bookkeeping, not a source
+of current public state.
+
+A later successful start creates a new generation with fresh registries,
+transport-failure state, and baseline publication.
 
 ------------------------------------------------------------------------
 
@@ -312,14 +390,22 @@ Core updates `warm_remaining_ms` in snapshots based on deadline vs
 Core enforces native object record retention.
 
 Rules: - DESTROYED records remain in registry until retention expires -
-a retirement sweep removes expired records - **if the sweep removes any
-records, core marks snapshot dirty and publishes**
+a retirement sweep removes expired records - **if the sweep removes records
+while the generation retains publishable canonical truth, Core marks the
+snapshot dirty for normal publication**
 
-Retention sweep runs:
+While the active generation retains publishable canonical truth, the retention
+sweep runs:
 
-- Immediately before snapshot assembly (always), and
-- Optionally via scheduled timer to ensure timely retirement
-  even when no other activity occurs.
+- immediately before snapshot assembly; and
+- optionally via a scheduled timer to ensure timely retirement even when no
+  other activity occurs.
+
+If a sweep removes records during that healthy publishable state, Core marks
+the snapshot dirty.
+
+After the truth-loss boundary, retention cleanup may still occur for teardown
+or accounting, but it must not reopen snapshot publication.
 
 ------------------------------------------------------------------------
 
@@ -361,13 +447,41 @@ in §9.1 and §9.2.
 
 ### 9.2 Publish point
 
-Core publishes at most once per loop iteration (after draining
-events/commands and processing timers).
+While the active generation retains publishable canonical truth, Core publishes
+at most once per loop iteration after draining the permitted work slice and
+processing timers.
 
 Publish steps: 1. Run retention sweep (may mark dirty) 2. Assemble new
 `CamBANGStateSnapshot` (schema v1) 3. Atomically swap the snapshot
 pointer in `CamBANGServer` 4. Emit `state_published(gen, version, topology_version)`
 from `CamBANGServer`
+
+### 9.2.a Publication quarantine after truth loss
+
+Snapshot assembly and publication are permitted only while the active generation
+retains publishable canonical truth.
+
+Core must check the fatal transport state immediately before snapshot assembly.
+Once the generation has crossed the truth-loss boundary:
+
+* no new registry-derived snapshot is assembled or published;
+* previously queued dirty state does not force a post-fault publication;
+* timer, retention, provider-fact, and teardown activity cannot publish an
+  intermediate representation of incomplete provider truth;
+* the latest snapshot published before the fault remains the last coherent
+  observation of that generation.
+
+The last coherent immutable snapshot may remain available through the existing
+public boundary while fatal teardown is in progress. It is not replaced by a
+partially reconciled teardown snapshot.
+
+Completed stop clears the public latest snapshot to `NIL` through the existing
+stop contract. This rule does not introduce an immediate-on-fault `NIL`
+transition or a new Godot-visible API state.
+
+The next successful start advances `gen` and produces a fresh baseline snapshot
+through the normal baseline-publication rule.
+
 
 ### 9.2.x Core publication vs Godot-visible publication
 
@@ -419,33 +533,85 @@ coalescing cheaply; those do not redefine the Godot-visible counters.
 
 ## 10. Deterministic shutdown sequence
 
-When shutdown is requested:
+### 10.1 Normal requested shutdown
 
-1.  Stop accepting new commands (or reject with deterministic error)
-2.  Notify core loop
-3.  Core drains provider events (best effort) and stops streams
-4.  Core tears down device instances (respecting deterministic ordering)
-5.  Core requests provider shutdown
-6.  Core performs final retention sweep
-7.  Core publishes a final snapshot
-8.  Core thread exits
+When shutdown is requested while canonical provider truth remains intact:
 
-Providers must not block indefinitely on shutdown (provider contract).
-For an attached provider, `CoreRuntime::stop()` is the shutdown owner: hosts
-keep the provider attached and alive until `stop()` returns, then detach and
-release external ownership. Detaching first skips the provider object Core needs
-for deterministic stream/device teardown and the provider shutdown call.
-Core may internally model shutdown as explicit ordered phases,
-but the architectural guarantee is completion of steps 1–8
-before thread termination.
+1. Stop accepting new commands, or reject them deterministically.
+2. Notify the Core loop.
+3. Drain already-admitted provider facts according to the normal ordering
+   contract and stop streams.
+4. Tear down device instances in deterministic dependency order.
+5. Request provider shutdown.
+6. Perform the final retention sweep.
+7. Publish the final coherent snapshot where the normal shutdown contract
+   requires it.
+8. Exit the Core thread.
+9. Clear the public latest snapshot to `NIL` at completed stop.
+
+For an attached provider, `CoreRuntime::stop()` is the shutdown owner. Hosts keep
+the provider attached and alive until `stop()` returns, then detach and release
+external ownership. Detaching first skips the provider object Core needs for
+deterministic stream/device teardown and provider shutdown.
+
+Core may internally model normal shutdown as explicit ordered phases, but the
+architectural guarantee is completion of the required teardown and publication
+steps before thread termination.
+
+### 10.2 Fatal transport shutdown
+
+Fatal transport shutdown begins when the active generation crosses the
+truth-loss boundary.
+
+Its priorities are containment, exact ownership release, and deterministic
+termination—not reconstruction or publication of a provider sequence known to
+be incomplete.
+
+Core must:
+
+1. Close all new ordinary, command, and essential admission.
+2. Quarantine snapshot publication immediately.
+3. Prevent queued and already-local provider-derived work from mutating normal
+   canonical registries.
+4. Discard pending normal command and ordinary work safely.
+5. Retain or execute only explicitly teardown-critical Core-owned work.
+6. Stop provider production and invoke the existing Core-owned teardown
+   choreography.
+7. Release or destroy rejected and discarded payload-owning work exactly once.
+8. Clear internal generation state during completed teardown.
+9. Exit the Core thread deterministically.
+10. Clear the public latest snapshot to `NIL` at completed stop.
+
+No final registry-derived snapshot is published after fatal truth loss. The last
+coherent pre-fault snapshot remains the final published observation of the
+failed generation.
+
+Fatal transport teardown should reuse normal ownership and provider-shutdown
+machinery wherever that machinery does not depend on accepting or publishing
+further provider truth. It must not create a second independent shutdown
+architecture.
+
+A failed generation cannot be resumed. Restart creates a fresh generation and
+fresh baseline.
+
 ------------------------------------------------------------------------
 
 ## Provider Shutdown Barrier Semantics
 
-Providers must perform shutdown in a manner that preserves truthful
-lifecycle reporting while ensuring deterministic termination.
+Providers must perform shutdown with deterministic ownership release and
+termination.
 
-Provider shutdown proceeds through the following conceptual phases.
+When provider transport remains healthy, shutdown also preserves complete,
+ordered lifecycle and native-object reporting through the strand.
+
+When the strand has entered fatal transport failure, the provider must still
+stop production and release actual resources truthfully, but it cannot claim
+that the resulting lifecycle sequence was delivered completely to Core.
+The failed generation is already under the truth-loss and publication-quarantine
+contract.
+
+The following phases describe the common ownership sequence. Their event-delivery
+guarantees apply only while provider transport remains healthy.
 
 ### Phase A — Admission close
 
@@ -455,8 +621,12 @@ The provider transitions to a state where:
 - frame production is gated off
 - no new long-lived provider activity may begin
 
-Existing work already admitted to the provider strand may still
-complete.
+During normal healthy shutdown, work already admitted to the provider strand may
+still complete.
+
+After fatal strand failure, further normal callback delivery is prohibited.
+Queued work instead follows the strand's failure-aware release, barrier, and
+cleanup rules.
 
 ### Phase B — Stop production
 
@@ -466,7 +636,12 @@ Frame production is halted:
 - platform capture loops are disabled
 - synthetic schedulers or timers are cancelled
 
-This phase may generate lifecycle stop events or provider error events.
+While provider transport remains healthy, this phase may generate lifecycle
+stop events or provider error events through the normal strand path.
+
+After fatal strand failure, resource shutdown still proceeds, but attempted
+reporting must not reopen strand admission or imply that Core received a
+complete sequence.
 
 ### Phase C — Resource release
 
@@ -478,8 +653,13 @@ Providers release owned resources in dependency order:
 4. Device
 5. Provider
 
-At each boundary the provider emits the appropriate lifecycle and
-native-object events reflecting the actual state transition.
+While provider transport remains healthy, the provider emits the appropriate
+lifecycle and native-object events at each boundary.
+
+After fatal strand failure, the provider still releases resources in the same
+truthful dependency order, but unavailable transport may prevent those release
+facts from reaching Core. The provider must neither fabricate delivery nor keep
+resources alive merely to preserve an already-invalid registry sequence.
 
 Native-object lifecycle truth is emitted against current structural owner
 contexts (stream, acquisition_session, device, provider) rather than through a
@@ -502,13 +682,26 @@ A successful barrier guarantees that:
 The barrier does not require Core to have integrated those events into
 snapshot state before returning.
 
+If the provider strand has already entered fatal transport failure, normal
+barrier delivery may no longer be possible. In that case the barrier must
+complete with failure through a failure-aware path; it must not wait
+indefinitely and must not imply that the admitted provider-fact sequence reached
+Core intact.
+
+
 ### Phase E — Strand stop
 
-Once the drain barrier succeeds:
+After a successful normal drain barrier:
 
-- the provider strand stops accepting new events
-- any strand worker thread exits
-- provider shutdown may return
+* the provider strand stops accepting new events;
+* any strand worker thread exits;
+* provider shutdown may return.
+
+If the strand has entered fatal transport failure, shutdown does not require a
+successful normal barrier. The strand instead performs its documented
+failure-aware completion and cleanup, rejects further admission, releases queued
+payload ownership exactly once, reports the fatal failure once, and exits
+deterministically.
 
 ### Timeout behaviour
 
@@ -527,7 +720,16 @@ registry and snapshot system as surviving native objects.
 This behaviour preserves the **truthfulness rule** of the lifecycle
 registry.
 
-------------------------------------------------------------------------
+Provider-strand transport failure is stronger than an ordinary backend shutdown
+timeout. It means the provider/Core authoritative fact sequence is no longer
+known to be complete.
+
+Core therefore applies the fatal truth-loss and publication-quarantine contract.
+Surviving registry records may still be used for containment and teardown, but
+they must not be published as current canonical provider truth after the
+truth-loss boundary.
+
+
 ------------------------------------------------------------------------
 
 ## 11. Synthetic mode hook
@@ -607,14 +809,24 @@ ordering guarantees of provider callbacks.
 
 ## 12. Invariants summary
 
--   All core state mutation occurs on the dedicated core thread.
--   Provider callbacks are serialized into core via a single callback
-    context.
--   One repeating stream active per device instance (design choice).
--   Retention sweep removals must trigger snapshot publish.
--   Snapshot publication is atomic and lock-free for readers.
--   Shutdown proceeds deterministically and leaves a final published
-    snapshot.
+- All Core-owned state mutation occurs on the dedicated Core thread.
+- Provider callbacks are serialized into Core through one provider callback
+  context.
+- At most one repeating stream is active per device instance.
+- Retention-sweep removals mark the snapshot dirty only while the active
+  generation retains publishable canonical truth.
+- Snapshot publication is atomic and lock-free for readers.
+- Shutdown proceeds deterministically; completed stop clears the public
+  snapshot to `NIL`.
+- Core never publishes registry-derived state after the active generation has
+  lost authoritative provider truth.
+- Provider-strand and Core essential transport are hard-bounded.
+- Failure to admit an authoritative provider fact is fatal to the active
+  generation.
+- Fatal transport failure is signalled independently of the failed queue.
+- Rejected, reclaimed, or discarded payload ownership is released exactly once.
+- Restart after fatal transport failure creates a fresh generation and baseline.
+
 
 ## 13. Validation Strategy (Core vs Platform)
 ------------------------------------------------------------------------

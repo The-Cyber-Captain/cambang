@@ -1,62 +1,87 @@
 # Current tranche
 
-## Bounded synchronous Core marshalling
+## Bounded provider/Core transport
 
 ### Goal
 
-Remove indefinite caller waits from production-facing synchronous CoreRuntime
-wrappers while preserving successful-path behaviour, Core-thread ownership,
-queue-lane selection, and the locked Godot public API.
+Make provider-to-Core transport genuinely bounded and implement the documented
+fatal transport-failure behaviour without weakening registry, snapshot,
+ownership, or restart contracts.
 
-### Required behaviour
+### Architectural authority
 
-- Calls made from the Core thread continue to execute directly.
-- Cross-thread calls confirm successful Core task admission before waiting.
-- Every caller wait is finite and uses one named internal timeout policy.
-- Enqueue rejection, timeout, shutdown, task exception, and completion failure
-  return the method's existing conservative failure or unavailable result.
-- Exceptions do not escape Core-thread, Godot, or public boundaries.
-- A caller timeout does not imply that admitted Core work was cancelled.
-- Posted work remains lifetime-safe if it executes after the caller has timed out.
-- Successful calls retain their current observable semantics.
+Implement the provider transport-failure and Core truth-loss contracts documented
+in:
+
+* `docs/provider_architecture.md`
+* `docs/core_runtime_model.md`
+
+If the required contracts are not present and internally consistent in those
+documents, stop before implementation and report the missing documentation.
 
 ### Scope
 
-Primary implementation:
+* Hard-bound `CBProviderStrand` storage.
+* Hard-bound `CoreThread::essential_tasks_`.
+* Preserve repeating-stream-frame pressure dropping and exact release.
+* Treat failure to admit non-lossy provider truth as fatal to the active
+  generation.
+* Propagate strand failure to Core through a non-allocating out-of-band path.
+* Quarantine registry-derived snapshot publication at the documented truth-loss
+  boundary.
+* Distinguish provider-derived tasks from teardown-critical Core work where
+  required.
+* Contain provider-strand callback and allocation failures.
+* Preserve deterministic stop and restart.
 
-- `src/core/core_runtime.cpp`
+### Required implementation
 
-Supporting implementation or declarations may be added only where needed to
-avoid duplicated unsafe marshalling logic.
+* Queue storage never exceeds its configured or named capacity.
+* Non-lossy strand traffic may reclaim queued repeating frames, but is never
+  silently discarded.
+* Unrecoverable non-lossy admission failure latches one fatal reason and closes
+  further admission.
+* Fatal notification does not traverse a failed queue.
+* Essential `QueueFull` and `AllocFail` latch Core transport failure.
+* Already-queued and already-local work obeys the documented truth-loss rules.
+* Rejected or discarded payload-owning work releases ownership exactly once.
+* `flush()`, stop, teardown, and restart remain deterministic.
+* Exceptions do not escape provider or Core worker-thread boundaries.
 
-Add or adapt focused verification for:
+### Verification
 
-- successful cross-thread completion;
-- queue admission rejection;
-- caller timeout;
-- stop racing an admitted synchronous request;
-- task-body exception containment;
-- Core-thread direct execution;
-- late execution after caller timeout without dangling captures.
+Add deterministic checks for:
+
+* hard queue bounds;
+* repeating-frame drop and reclamation;
+* non-lossy saturation;
+* one-shot fatal propagation;
+* callback exception containment;
+* exact lease/release and ingress-depth accounting;
+* no registry or snapshot mutation beyond the truth-loss boundary;
+* last coherent snapshot and completed-stop `NIL` behaviour;
+* teardown-critical work after fault;
+* stop and restart with a fresh generation.
+
+Preserve existing provider-compliance, restart, capture, result, and snapshot
+verification.
 
 ### Exclusions
 
-- No Godot public API changes.
-- No provider ordering changes.
-- No provider-strand or Core essential-queue capacity changes.
-- No ProviderBroker locking redesign.
-- No timing-diagnostic cleanup.
-- No environment-variable cleanup.
-- No broad unrelated refactoring.
-- No weakening of existing tests or verifiers.
+* No Godot public API change.
+* No immediate-on-fault `NIL` change.
+* No ProviderBroker invocation-lock redesign.
+* No authoritative-fact coalescing.
+* No bounded-marshalling changes.
+* No diagnostic or environment-variable cleanup.
+* No unrelated scheduler framework or refactoring.
+* No weakening of tests.
 
 ### Completion criteria
 
-- No production-facing CoreRuntime wrapper in scope performs an unbounded
-  `future::get()` or `future::wait()`.
-- All new failure paths are conservative and visible through existing return
-  contracts.
-- Existing success-path verification remains green.
-- New bounded-wait and stop-race verification is deterministic and green.
-- Documentation accurately describes timeout as caller-side bounded waiting,
-  not cancellation.
+* Both transport queues are genuinely bounded.
+* Admission failure of authoritative provider truth is visible and fatal.
+* Registry and snapshot behaviour matches the permanent truth-loss contract.
+* Payload ownership remains exact.
+* Fatal teardown and subsequent restart are deterministic.
+* Required verifier suites pass.

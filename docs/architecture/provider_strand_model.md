@@ -10,7 +10,7 @@ Purpose: Clarifies the serialized callback / provider strand delivery model used
 Providers deliver events into the core using a **single serialized callback context** referred to as the *provider strand*.  
 The strand guarantees:
 
-- ordered delivery of non-frame events
+- ordered delivery of authoritative provider facts
 - deterministic lifecycle sequencing
 - absence of concurrent provider → core mutation
 
@@ -18,16 +18,17 @@ This document explains the delivery model but **does not redefine the canonical 
 
 ## Event Classes
 
-Provider facts fall into four broad classes:
+Provider facts fall into five broad classes:
 
 | Event Class | Example | Delivery Policy |
 |---|---|---|
 | Lifecycle | device add/remove, acquisition-session create/destroy, stream start/stop | must never be dropped |
 | Native-object | provider/device/acquisition-session/stream/support-resource object create/destroy reports | must never be dropped |
 | Error | provider, device, or stream error reports | must never be dropped |
-| Frame | video frame delivery | may be coalesced or dropped under backpressure |
+| Capture | accepted still-capture frame, capture completion/failure | must never be silently dropped |
+| Repeating frame | repeating stream-frame delivery | may be coalesced or dropped under backpressure |
 
-Lifecycle, native-object, and error events must always preserve ordering.
+Lifecycle, native-object, error, and accepted-capture facts must preserve authoritative ordering.
 
 After strand delivery, CoreRuntime may classify queued provider facts before
 integration. Capture-critical facts (capture started/frame/completed/failed,
@@ -51,8 +52,11 @@ been released.
 
 ## Backpressure
 
-Frame delivery may be coalesced or dropped to avoid unbounded buffering.  
-Providers must never drop lifecycle, native-object, or error events.
+Repeating stream-frame delivery may be coalesced or dropped to avoid unbounded buffering.
+Accepted still-capture frames are authoritative capture facts and must not be silently dropped.
+Providers must never silently drop lifecycle, native-object, error, or accepted-capture facts.
+
+Provider-strand capacity is a hard bound. When an authoritative fact cannot be admitted after any permitted repeating-frame reclamation, the active provider generation fails closed. The failure is reported once through the documented out-of-band transport-failure path, not through the failed queue.
 
 ## Synthetic and Stub Providers
 

@@ -56,6 +56,8 @@ Non-Goals
 #include "core/provider_callback_ingress.h"
 #include "core/resource_aggregate_telemetry.h"
 #include "core/state_snapshot_buffer.h"
+#include "imaging/api/frame_release_utils.h"
+#include "imaging/api/provider_strand.h"
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
 #include "imaging/stub/provider.h"
@@ -1788,11 +1790,14 @@ static StreamRequest make_req() {
 static int test_provider_callback_ingress_null_core_thread_drop_accounting() {
   ProviderCallbackIngress ingress(
       nullptr,
-      [](ProviderToCoreCommand&&) {
+      [](ProviderCallbackIngress::PendingCommand&) {
         std::cerr << "Null-core ProviderCallbackIngress unexpectedly invoked sink\n";
+        return ProviderCallbackIngress::SinkResult::Rejected;
       },
       []() -> uint64_t { return 0; },
-      [](uint64_t) { return false; });
+      [](uint64_t) { return false; },
+      [](ProviderTransportFailure) {},
+      []() { return true; });
 
   ingress.on_device_error(kDeviceInstanceId, ProviderError::ERR_PROVIDER_FAILED);
   auto stats_after_non_frame = ingress.stats_copy();
@@ -1858,9 +1863,11 @@ static int test_provider_callback_ingress_null_sink_frame_release_balances_telem
 
   ProviderCallbackIngress ingress(
       &core,
-      std::function<void(ProviderToCoreCommand&&)>(),
+      std::function<ProviderCallbackIngress::SinkResult(ProviderCallbackIngress::PendingCommand&)>(),
       []() -> uint64_t { return 0; },
-      [](uint64_t) { return false; });
+      [](uint64_t) { return false; },
+      [](ProviderTransportFailure) {},
+      []() { return true; });
 
   std::atomic<uint64_t> release_calls{0};
   uint8_t pixel[4] = {0, 0, 0, 0};
@@ -2408,6 +2415,858 @@ static int run_runtime_queue_stream_frame_case(
   return 0;
 }
 
+static int test_provider_callback_ingress_sink_ownership_transfer_smoke() {
+  struct NoopHooks final : CoreThread::IHooks {} hooks;
+  CoreThread core;
+  if (!core.start(&hooks)) {
+    std::cerr << "Failed to start CoreThread for ingress ownership-transfer smoke\n";
+    return 1;
+  }
+
+  std::atomic<uint64_t> reject_release_calls{0};
+  std::atomic<uint64_t> accept_release_calls{0};
+  std::atomic<uint64_t> transport_failure_count{0};
+  std::vector<ProviderToCoreCommand> accepted_commands;
+  std::mutex accepted_mu;
+
+  ProviderCallbackIngress rejecting_ingress(
+      &core,
+      [](ProviderCallbackIngress::PendingCommand&) {
+        return ProviderCallbackIngress::SinkResult::Rejected;
+      },
+      []() -> uint64_t { return 0; },
+      [](uint64_t) { return false; },
+      [](ProviderTransportFailure) {},
+      []() { return true; });
+
+  ProviderCallbackIngress accepting_then_faulting_ingress(
+      &core,
+      [&accepted_commands, &accepted_mu](ProviderCallbackIngress::PendingCommand& pending) {
+        std::lock_guard<std::mutex> lock(accepted_mu);
+        accepted_commands.push_back(std::move(pending.command()));
+        pending.mark_accepted();
+        return ProviderCallbackIngress::SinkResult::AcceptedWithFailure;
+      },
+      []() -> uint64_t { return 0; },
+      [](uint64_t) { return false; },
+      [&transport_failure_count](ProviderTransportFailure) {
+        transport_failure_count.fetch_add(1, std::memory_order_relaxed);
+      },
+      []() { return true; });
+
+  auto make_frame = [](std::atomic<uint64_t>& release_calls, uint64_t stream_id) {
+    uint8_t* pixel = new uint8_t[4]{0, 0, 0, 0};
+    FrameView frame{};
+    frame.device_instance_id = kDeviceInstanceId;
+    frame.stream_id = stream_id;
+    frame.acquisition_session_id = stream_id + 100;
+    frame.width = 1;
+    frame.height = 1;
+    frame.format_fourcc = FOURCC_RGBA;
+    frame.data = pixel;
+    frame.size_bytes = 4;
+    frame.stride_bytes = 4;
+    frame.release = [](void* user, const FrameView* frame) {
+      auto* state = static_cast<std::atomic<uint64_t>*>(user);
+      state->fetch_add(1, std::memory_order_relaxed);
+      delete[] frame->data;
+    };
+    frame.release_user = &release_calls;
+    return frame;
+  };
+
+  rejecting_ingress.on_frame(make_frame(reject_release_calls, 61001));
+  accepting_then_faulting_ingress.on_frame(make_frame(accept_release_calls, 61002));
+
+  auto barrier = std::make_shared<std::promise<void>>();
+  auto barrier_done = barrier->get_future();
+  const auto barrier_post = core.try_post([barrier]() mutable { barrier->set_value(); });
+  if (barrier_post != CoreThread::PostResult::Enqueued ||
+      barrier_done.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    core.stop();
+    std::cerr << "Failed to drain ingress ownership-transfer tasks\n";
+    return 1;
+  }
+
+  if (reject_release_calls.load(std::memory_order_relaxed) != 1 ||
+      rejecting_ingress.ingress_depth_for_stream(61001) != 0) {
+    core.stop();
+    std::cerr << "Expected pre-accept sink rejection to release exactly once and clear ingress depth. releases="
+              << reject_release_calls.load(std::memory_order_relaxed)
+              << " depth=" << rejecting_ingress.ingress_depth_for_stream(61001) << "\n";
+    return 1;
+  }
+
+  if (accept_release_calls.load(std::memory_order_relaxed) != 0 ||
+      accepting_then_faulting_ingress.ingress_depth_for_stream(61002) != 0 ||
+      transport_failure_count.load(std::memory_order_relaxed) != 1) {
+    core.stop();
+    std::cerr << "Expected accepted-ownership sink fault to preserve ownership transfer and signal one failure. releases="
+              << accept_release_calls.load(std::memory_order_relaxed)
+              << " depth=" << accepting_then_faulting_ingress.ingress_depth_for_stream(61002)
+              << " failures=" << transport_failure_count.load(std::memory_order_relaxed) << "\n";
+    return 1;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(accepted_mu);
+    if (accepted_commands.size() != 1 ||
+        accepted_commands[0].type != ProviderToCoreCommandType::PROVIDER_FRAME) {
+      core.stop();
+      std::cerr << "Expected exactly one accepted command after sink-side fault\n";
+      return 1;
+    }
+    auto& frame = std::get<CmdProviderFrame>(accepted_commands[0].payload).frame;
+    (void)release_owned_frame_once(frame, []() noexcept {});
+  }
+
+  if (accept_release_calls.load(std::memory_order_relaxed) != 1) {
+    core.stop();
+    std::cerr << "Expected accepted ownership to release exactly once when the owning sink later releases it. releases="
+              << accept_release_calls.load(std::memory_order_relaxed) << "\n";
+    return 1;
+  }
+
+  core.stop();
+  return 0;
+}
+
+struct StrandTestCallbacks final : IProviderCallbacks {
+  std::shared_future<void> block_gate;
+  std::atomic<bool> block_first_device_opened{false};
+  std::atomic<bool> throw_on_device_error{false};
+  std::function<void(const FrameView&)> frame_handler;
+  std::atomic<uint64_t> transport_failure_count{0};
+  std::atomic<uint8_t> last_transport_failure{
+      static_cast<uint8_t>(ProviderTransportFailure::None)};
+  std::atomic<uint64_t> frame_delivery_count{0};
+  std::atomic<uint64_t> frame_release_count{0};
+  mutable std::mutex events_mu;
+  std::vector<std::string> events;
+
+  uint64_t allocate_native_id(NativeObjectType) override { return 1; }
+  uint64_t core_monotonic_now_ns() override { return 0; }
+  bool is_stream_display_demand_active(uint64_t) override { return false; }
+  void on_transport_failure(ProviderTransportFailure failure) override {
+    last_transport_failure.store(static_cast<uint8_t>(failure), std::memory_order_release);
+    transport_failure_count.fetch_add(1, std::memory_order_relaxed);
+  }
+  void on_device_opened(uint64_t device_instance_id) override {
+    {
+      std::lock_guard<std::mutex> lock(events_mu);
+      events.push_back("device_opened:" + std::to_string(device_instance_id));
+    }
+    if (block_first_device_opened.exchange(false, std::memory_order_acq_rel) &&
+        block_gate.valid()) {
+      block_gate.wait();
+    }
+  }
+  void on_device_closed(uint64_t device_instance_id) override {
+    std::lock_guard<std::mutex> lock(events_mu);
+    events.push_back("device_closed:" + std::to_string(device_instance_id));
+  }
+  void on_stream_created(uint64_t) override {}
+  void on_stream_destroyed(uint64_t) override {}
+  void on_stream_started(uint64_t) override {}
+  void on_stream_stopped(uint64_t, ProviderError) override {}
+  void on_capture_started(uint64_t, uint64_t) override {}
+  void on_capture_completed(uint64_t, uint64_t) override {}
+  void on_capture_failed(uint64_t, uint64_t, ProviderError) override {}
+  void on_frame(const FrameView& frame) override {
+    if (frame_handler) {
+      frame_handler(frame);
+      return;
+    }
+    frame_delivery_count.fetch_add(1, std::memory_order_relaxed);
+    if (frame.release) {
+      frame.release(frame.release_user, &frame);
+      frame_release_count.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+  void on_device_error(uint64_t device_instance_id, ProviderError) override {
+    if (throw_on_device_error.load(std::memory_order_acquire)) {
+      throw std::runtime_error("strand_test_callbacks.on_device_error");
+    }
+    std::lock_guard<std::mutex> lock(events_mu);
+    events.push_back("device_error:" + std::to_string(device_instance_id));
+  }
+  void on_stream_error(uint64_t stream_id, ProviderError) override {
+    std::lock_guard<std::mutex> lock(events_mu);
+    events.push_back("stream_error:" + std::to_string(stream_id));
+  }
+  void on_native_object_created(const NativeObjectCreateInfo&) override {}
+  void on_native_object_destroyed(const NativeObjectDestroyInfo&) override {}
+
+  std::vector<std::string> snapshot_events() const {
+    std::lock_guard<std::mutex> lock(events_mu);
+    return events;
+  }
+};
+
+static int test_provider_strand_reclaim_and_fatal_capacity_smoke() {
+  CBProviderStrand strand;
+  StrandTestCallbacks callbacks;
+  auto gate = std::make_shared<std::promise<void>>();
+  callbacks.block_gate = gate->get_future().share();
+  callbacks.block_first_device_opened.store(true, std::memory_order_release);
+  strand.start(&callbacks, "strand_capacity_smoke", 1);
+
+  std::atomic<uint64_t> reclaimed_release_count{0};
+  uint8_t pixel[4] = {1, 2, 3, 4};
+  FrameView frame{};
+  frame.device_instance_id = kDeviceInstanceId;
+  frame.stream_id = kStreamId;
+  frame.acquisition_session_id = 99;
+  frame.width = 1;
+  frame.height = 1;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.data = pixel;
+  frame.size_bytes = sizeof(pixel);
+  frame.stride_bytes = 4;
+  frame.release = [](void* user, const FrameView*) {
+    auto* count = static_cast<std::atomic<uint64_t>*>(user);
+    count->fetch_add(1, std::memory_order_relaxed);
+  };
+  frame.release_user = &reclaimed_release_count;
+
+  strand.post_device_opened(11);
+  for (int i = 0; i < 1000; ++i) {
+    if (callbacks.snapshot_events().size() == 1u) {
+      break;
+    }
+    std::this_thread::yield();
+  }
+  strand.post_frame(frame);
+  strand.post_device_error(22, ProviderError::ERR_PROVIDER_FAILED);
+
+  gate->set_value();
+  if (!strand.flush()) {
+    const auto pre_fail_events = callbacks.snapshot_events();
+    strand.stop();
+    std::cerr << "Expected healthy strand flush after repeating-frame reclamation. transport_failures="
+              << callbacks.transport_failure_count.load(std::memory_order_relaxed)
+              << " last_reason="
+              << static_cast<unsigned>(
+                     callbacks.last_transport_failure.load(std::memory_order_acquire))
+              << " delivered_frames="
+              << callbacks.frame_delivery_count.load(std::memory_order_relaxed)
+              << " events=" << pre_fail_events.size() << "\n";
+    return 1;
+  }
+
+  const auto reclaimed_events = callbacks.snapshot_events();
+  if (reclaimed_release_count.load(std::memory_order_relaxed) != 1 ||
+      callbacks.transport_failure_count.load(std::memory_order_relaxed) != 0 ||
+      reclaimed_events.size() != 2 ||
+      reclaimed_events[0] != "device_opened:11" ||
+      reclaimed_events[1] != "device_error:22" ||
+      callbacks.frame_delivery_count.load(std::memory_order_relaxed) != 0) {
+    strand.stop();
+    std::cerr << "Repeating-frame reclamation changed. release_count="
+              << reclaimed_release_count.load(std::memory_order_relaxed)
+              << " transport_failures="
+              << callbacks.transport_failure_count.load(std::memory_order_relaxed)
+              << " delivered_frames="
+              << callbacks.frame_delivery_count.load(std::memory_order_relaxed)
+              << " events=" << reclaimed_events.size() << "\n";
+    return 1;
+  }
+
+  auto fatal_gate = std::make_shared<std::promise<void>>();
+  callbacks.block_gate = fatal_gate->get_future().share();
+  callbacks.block_first_device_opened.store(true, std::memory_order_release);
+  strand.post_device_opened(33);
+  for (int i = 0; i < 1000; ++i) {
+    if (callbacks.snapshot_events().size() >= 3u) {
+      break;
+    }
+    std::this_thread::yield();
+  }
+  strand.post_device_opened(44);
+  strand.post_stream_error(55, ProviderError::ERR_PROVIDER_FAILED);
+  fatal_gate->set_value();
+
+  if (strand.flush()) {
+    strand.stop();
+    std::cerr << "Expected fatal strand flush failure after authoritative saturation\n";
+    return 1;
+  }
+
+  if (callbacks.transport_failure_count.load(std::memory_order_relaxed) != 1 ||
+      callbacks.last_transport_failure.load(std::memory_order_acquire) !=
+          static_cast<uint8_t>(ProviderTransportFailure::AuthoritativeQueueFull)) {
+    strand.stop();
+    std::cerr << "Expected one-shot authoritative saturation failure. count="
+              << callbacks.transport_failure_count.load(std::memory_order_relaxed)
+              << " reason="
+              << static_cast<unsigned>(
+                     callbacks.last_transport_failure.load(std::memory_order_acquire))
+              << "\n";
+    return 1;
+  }
+
+  strand.post_device_error(66, ProviderError::ERR_PROVIDER_FAILED);
+  if (callbacks.transport_failure_count.load(std::memory_order_relaxed) != 1) {
+    strand.stop();
+    std::cerr << "Expected no secondary transport-failure signal after fatal latch\n";
+    return 1;
+  }
+
+  strand.stop();
+  return 0;
+}
+
+static int test_provider_strand_callback_exception_containment_smoke() {
+  CBProviderStrand strand;
+  StrandTestCallbacks callbacks;
+  callbacks.throw_on_device_error.store(true, std::memory_order_release);
+  if (!strand.start(&callbacks, "strand_exception_smoke", 4)) {
+    std::cerr << "Failed to start provider strand for callback exception containment smoke\n";
+    return 1;
+  }
+  strand.post_device_error(77, ProviderError::ERR_PROVIDER_FAILED);
+  if (strand.flush()) {
+    strand.stop();
+    std::cerr << "Expected flush failure after callback exception containment\n";
+    return 1;
+  }
+  if (callbacks.transport_failure_count.load(std::memory_order_relaxed) != 1 ||
+      callbacks.last_transport_failure.load(std::memory_order_acquire) !=
+          static_cast<uint8_t>(ProviderTransportFailure::CallbackException)) {
+    strand.stop();
+    std::cerr << "Expected callback exception to latch one fatal transport failure. count="
+              << callbacks.transport_failure_count.load(std::memory_order_relaxed)
+              << " reason="
+              << static_cast<unsigned>(
+                     callbacks.last_transport_failure.load(std::memory_order_acquire))
+              << "\n";
+    return 1;
+  }
+  strand.stop();
+  return 0;
+}
+
+static int test_singular_frame_release_owner_copy_smoke() {
+  std::atomic<uint64_t> release_calls{0};
+  uint8_t pixel[4] = {1, 2, 3, 4};
+  FrameView frame{};
+  frame.device_instance_id = kDeviceInstanceId;
+  frame.stream_id = kStreamId;
+  frame.acquisition_session_id = 701;
+  frame.width = 1;
+  frame.height = 1;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.data = pixel;
+  frame.size_bytes = sizeof(pixel);
+  frame.stride_bytes = 4;
+  frame.release = [](void* user, const FrameView*) {
+    auto* count = static_cast<std::atomic<uint64_t>*>(user);
+    count->fetch_add(1, std::memory_order_relaxed);
+  };
+  frame.release_user = &release_calls;
+
+  adopt_singular_frame_release_owner(frame);
+  FrameView copy_a = frame;
+  FrameView copy_b = frame;
+  FrameView copy_c = copy_a;
+  const auto release_result = release_owned_frame_once(copy_b, []() noexcept {});
+  copy_a = FrameView{};
+  copy_c = FrameView{};
+  frame = FrameView{};
+  copy_b = FrameView{};
+
+  if (release_result != OwnedFrameReleaseResult::Released ||
+      release_calls.load(std::memory_order_relaxed) != 1) {
+    std::cerr << "Expected shared release owner copies to invoke one global release. result="
+              << static_cast<int>(release_result)
+              << " releases=" << release_calls.load(std::memory_order_relaxed) << "\n";
+    return 1;
+  }
+  return 0;
+}
+
+static int test_provider_strand_frame_callback_copy_then_throw_smoke() {
+  auto make_frame = [](std::atomic<uint64_t>& release_calls, uint64_t stream_id) {
+    uint8_t pixel[4] = {9, 8, 7, 6};
+    FrameView frame{};
+    frame.device_instance_id = kDeviceInstanceId;
+    frame.stream_id = stream_id;
+    frame.acquisition_session_id = stream_id + 1000;
+    frame.width = 1;
+    frame.height = 1;
+    frame.format_fourcc = FOURCC_RGBA;
+    frame.data = pixel;
+    frame.size_bytes = sizeof(pixel);
+    frame.stride_bytes = 4;
+    frame.release = [](void* user, const FrameView*) {
+      auto* count = static_cast<std::atomic<uint64_t>*>(user);
+      count->fetch_add(1, std::memory_order_relaxed);
+    };
+    frame.release_user = &release_calls;
+    return frame;
+  };
+
+  {
+    CBProviderStrand strand;
+    StrandTestCallbacks callbacks;
+    std::atomic<uint64_t> release_calls{0};
+    callbacks.frame_handler = [](const FrameView& frame) {
+      FrameView copied = frame;
+      throw std::runtime_error("frame_copy_then_throw_before_acceptance");
+    };
+    if (!strand.start(&callbacks, "strand_frame_copy_throw_before_acceptance", 4)) {
+      std::cerr << "Failed to start provider strand for pre-accept frame callback throw smoke\n";
+      return 1;
+    }
+    strand.post_frame(make_frame(release_calls, 71001));
+    if (strand.flush()) {
+      strand.stop();
+      std::cerr << "Expected flush failure after frame callback throw before acceptance\n";
+      return 1;
+    }
+    strand.stop();
+    if (release_calls.load(std::memory_order_relaxed) != 1) {
+      std::cerr << "Expected exactly one release when frame callback copied then threw before acceptance. releases="
+                << release_calls.load(std::memory_order_relaxed) << "\n";
+      return 1;
+    }
+  }
+
+  {
+    CBProviderStrand strand;
+    StrandTestCallbacks callbacks;
+    std::atomic<uint64_t> release_calls{0};
+    std::vector<FrameView> accepted_frames;
+    callbacks.frame_handler = [&accepted_frames](const FrameView& frame) {
+      accepted_frames.push_back(frame);
+      throw std::runtime_error("frame_copy_then_throw_after_acceptance");
+    };
+    if (!strand.start(&callbacks, "strand_frame_copy_throw_after_acceptance", 4)) {
+      std::cerr << "Failed to start provider strand for accepted-copy frame callback throw smoke\n";
+      return 1;
+    }
+    strand.post_frame(make_frame(release_calls, 71002));
+    if (strand.flush()) {
+      strand.stop();
+      std::cerr << "Expected flush failure after frame callback throw after accepted copy\n";
+      return 1;
+    }
+    if (accepted_frames.size() != 1) {
+      strand.stop();
+      std::cerr << "Expected one accepted frame copy before callback throw. copies="
+                << accepted_frames.size() << "\n";
+      return 1;
+    }
+    const auto release_result = release_owned_frame_once(accepted_frames[0], []() noexcept {});
+    accepted_frames.clear();
+    strand.stop();
+    if (release_result == OwnedFrameReleaseResult::Noop ||
+        release_calls.load(std::memory_order_relaxed) != 1) {
+      std::cerr << "Expected accepted frame copy to retain one global release after callback throw. result="
+                << static_cast<int>(release_result)
+                << " releases=" << release_calls.load(std::memory_order_relaxed) << "\n";
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
+static int test_provider_strand_throwing_release_contained_smoke() {
+  CBProviderStrand strand;
+  StrandTestCallbacks callbacks;
+  callbacks.throw_on_device_error.store(true, std::memory_order_release);
+  if (!strand.start(&callbacks, "strand_throwing_release_smoke", 4)) {
+    std::cerr << "Failed to start provider strand for throwing release containment smoke\n";
+    return 1;
+  }
+
+  std::atomic<uint64_t> release_calls{0};
+  uint8_t pixel[4] = {9, 8, 7, 6};
+  FrameView frame{};
+  frame.device_instance_id = kDeviceInstanceId;
+  frame.stream_id = kStreamId;
+  frame.acquisition_session_id = 301;
+  frame.width = 1;
+  frame.height = 1;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.data = pixel;
+  frame.size_bytes = sizeof(pixel);
+  frame.stride_bytes = 4;
+  frame.release = [](void* user, const FrameView*) {
+    auto* count = static_cast<std::atomic<uint64_t>*>(user);
+    count->fetch_add(1, std::memory_order_relaxed);
+    throw std::runtime_error("throwing_release");
+  };
+  frame.release_user = &release_calls;
+
+  strand.post_device_error(123, ProviderError::ERR_PROVIDER_FAILED);
+  strand.post_frame(frame);
+  if (strand.flush()) {
+    strand.stop();
+    std::cerr << "Expected flush failure after callback exception with throwing queued-frame release\n";
+    return 1;
+  }
+  strand.stop();
+
+  if (release_calls.load(std::memory_order_relaxed) != 1 ||
+      callbacks.transport_failure_count.load(std::memory_order_relaxed) != 1 ||
+      callbacks.last_transport_failure.load(std::memory_order_acquire) !=
+          static_cast<uint8_t>(ProviderTransportFailure::CallbackException)) {
+    std::cerr << "Expected throwing queued-frame release to be contained during fatal strand drain. releases="
+              << release_calls.load(std::memory_order_relaxed)
+              << " failures=" << callbacks.transport_failure_count.load(std::memory_order_relaxed)
+              << " reason="
+              << static_cast<unsigned>(callbacks.last_transport_failure.load(std::memory_order_acquire))
+              << "\n";
+    return 1;
+  }
+
+  return 0;
+}
+
+static int test_provider_strand_bounded_flush_timeout_and_recovery_smoke() {
+  CBProviderStrand strand;
+  StrandTestCallbacks callbacks;
+  auto gate = std::make_shared<std::promise<void>>();
+  callbacks.block_gate = gate->get_future().share();
+  callbacks.block_first_device_opened.store(true, std::memory_order_release);
+  strand.smoke_set_flush_timeout_ms(20);
+  if (!strand.start(&callbacks, "strand_flush_timeout_smoke", 4)) {
+    std::cerr << "Failed to start provider strand for bounded flush timeout smoke\n";
+    return 1;
+  }
+  strand.post_device_opened(901);
+  for (int i = 0; i < 1000; ++i) {
+    if (callbacks.snapshot_events().size() == 1u) {
+      break;
+    }
+    std::this_thread::yield();
+  }
+  if (strand.flush()) {
+    gate->set_value();
+    strand.stop();
+    std::cerr << "Expected bounded flush timeout while worker callback was blocked\n";
+    return 1;
+  }
+  gate->set_value();
+  if (!strand.flush()) {
+    strand.stop();
+    std::cerr << "Expected strand to recover and flush successfully once the blocking callback was released\n";
+    return 1;
+  }
+  strand.smoke_break_next_barrier_once();
+  if (strand.flush()) {
+    strand.stop();
+    std::cerr << "Expected broken barrier completion seam to make flush fail\n";
+    return 1;
+  }
+  strand.stop();
+  return 0;
+}
+
+static int test_provider_strand_failed_start_is_reusable_smoke() {
+  CBProviderStrand strand;
+  StrandTestCallbacks callbacks;
+  strand.smoke_fail_start_once();
+  if (strand.start(&callbacks, "strand_start_fail_smoke", 4) || strand.running()) {
+    std::cerr << "Expected smoke-forced strand startup failure to return false and leave the strand stopped\n";
+    return 1;
+  }
+
+  if (!strand.start(&callbacks, "strand_start_reuse_smoke", 4)) {
+    std::cerr << "Expected strand restart after failed startup to succeed\n";
+    return 1;
+  }
+  if (!strand.flush()) {
+    strand.stop();
+    std::cerr << "Expected strand to remain reusable after failed startup\n";
+    return 1;
+  }
+  strand.stop();
+  return 0;
+}
+
+static int test_core_thread_fatal_latch_discards_local_batches_and_closes_admission_smoke() {
+  struct FatalHooks final : CoreThread::IHooks {
+    CoreThread* core = nullptr;
+    std::atomic<uint64_t> fatal_calls{0};
+    void on_core_transport_fatal(ProviderTransportFailure) override {
+      fatal_calls.fetch_add(1, std::memory_order_relaxed);
+      core->request_stop_when_idle_from_core();
+    }
+  } hooks;
+
+  CoreThread core;
+  hooks.core = &core;
+  if (!core.start(&hooks)) {
+    std::cerr << "Failed to start CoreThread for fatal-latch smoke\n";
+    return 1;
+  }
+
+  auto gate = std::make_shared<std::promise<void>>();
+  auto gate_future = gate->get_future().share();
+  auto started = std::make_shared<std::promise<void>>();
+  auto started_future = started->get_future();
+  std::atomic<uint64_t> blocked_task_runs{0};
+  std::atomic<uint64_t> trailing_essential_runs{0};
+  std::atomic<uint64_t> command_runs{0};
+  std::atomic<uint64_t> ordinary_runs{0};
+
+  if (core.try_post_essential([started, gate_future, &blocked_task_runs]() mutable {
+        blocked_task_runs.fetch_add(1, std::memory_order_relaxed);
+        started->set_value();
+        gate_future.wait();
+      }) != CoreThread::PostResult::Enqueued ||
+      core.try_post_essential([&trailing_essential_runs]() {
+        trailing_essential_runs.fetch_add(1, std::memory_order_relaxed);
+      }) != CoreThread::PostResult::Enqueued ||
+      core.try_post_command([&command_runs]() {
+        command_runs.fetch_add(1, std::memory_order_relaxed);
+      }) != CoreThread::PostResult::Enqueued ||
+      core.try_post([&ordinary_runs]() {
+        ordinary_runs.fetch_add(1, std::memory_order_relaxed);
+      }) != CoreThread::PostResult::Enqueued) {
+    core.stop();
+    std::cerr << "Failed to seed CoreThread local-batch discard smoke\n";
+    return 1;
+  }
+
+  if (started_future.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    core.stop();
+    std::cerr << "Timed out waiting for the blocking essential task to start\n";
+    return 1;
+  }
+
+  if (!core.notify_provider_transport_fatal(
+          ProviderTransportFailure::CoreEssentialQueueFull)) {
+    core.stop();
+    std::cerr << "Expected first CoreThread fatal latch signal to succeed\n";
+    return 1;
+  }
+  if (core.try_post([] {}) != CoreThread::PostResult::Closed ||
+      core.try_post_command([] {}) != CoreThread::PostResult::Closed ||
+      core.try_post_essential([] {}) != CoreThread::PostResult::Closed) {
+    gate->set_value();
+    core.stop();
+    std::cerr << "Expected CoreThread admission closure after fatal latch\n";
+    return 1;
+  }
+
+  gate->set_value();
+  core.stop();
+
+  if (blocked_task_runs.load(std::memory_order_relaxed) != 1 ||
+      trailing_essential_runs.load(std::memory_order_relaxed) != 0 ||
+      command_runs.load(std::memory_order_relaxed) != 0 ||
+      ordinary_runs.load(std::memory_order_relaxed) != 0 ||
+      hooks.fatal_calls.load(std::memory_order_relaxed) != 1) {
+    std::cerr << "Expected fatal latch to discard already-local queued work and invoke one fatal hook. blocked="
+              << blocked_task_runs.load(std::memory_order_relaxed)
+              << " trailing_essential=" << trailing_essential_runs.load(std::memory_order_relaxed)
+              << " command=" << command_runs.load(std::memory_order_relaxed)
+              << " ordinary=" << ordinary_runs.load(std::memory_order_relaxed)
+              << " fatal_calls=" << hooks.fatal_calls.load(std::memory_order_relaxed) << "\n";
+    return 1;
+  }
+
+  std::atomic<uint64_t> rerun_count{0};
+  if (!core.start(&hooks)) {
+    std::cerr << "Expected CoreThread to restart cleanly after fatal shutdown\n";
+    return 1;
+  }
+  auto barrier = std::make_shared<std::promise<void>>();
+  auto barrier_done = barrier->get_future();
+  if (core.try_post([&rerun_count, barrier]() mutable {
+        rerun_count.fetch_add(1, std::memory_order_relaxed);
+        barrier->set_value();
+      }) != CoreThread::PostResult::Enqueued ||
+      barrier_done.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    core.stop();
+    std::cerr << "Expected restarted CoreThread to execute new work\n";
+    return 1;
+  }
+  core.stop();
+  if (rerun_count.load(std::memory_order_relaxed) != 1) {
+    std::cerr << "Expected one task to run after CoreThread restart. ran="
+              << rerun_count.load(std::memory_order_relaxed) << "\n";
+    return 1;
+  }
+  return 0;
+}
+
+static int test_core_thread_frame_task_discard_shared_queue_smoke() {
+  struct FatalHooks final : CoreThread::IHooks {
+    std::shared_future<void> start_gate;
+    std::atomic<uint64_t> fatal_calls{0};
+    void on_core_start() override { start_gate.wait(); }
+    void on_core_transport_fatal(ProviderTransportFailure) override {
+      fatal_calls.fetch_add(1, std::memory_order_relaxed);
+    }
+  } hooks;
+
+  auto start_gate = std::make_shared<std::promise<void>>();
+  hooks.start_gate = start_gate->get_future().share();
+  CoreThread core;
+  if (!core.start(&hooks)) {
+    std::cerr << "Failed to start CoreThread for shared-queue frame-task discard smoke\n";
+    return 1;
+  }
+
+  std::atomic<uint64_t> release_calls{0};
+  std::atomic<uint64_t> sink_calls{0};
+  ProviderCallbackIngress ingress(
+      &core,
+      [&sink_calls](ProviderCallbackIngress::PendingCommand& pending) {
+        pending.mark_accepted();
+        sink_calls.fetch_add(1, std::memory_order_relaxed);
+        return ProviderCallbackIngress::SinkResult::Accepted;
+      },
+      []() -> uint64_t { return 0; },
+      [](uint64_t) { return false; },
+      [](ProviderTransportFailure) {},
+      []() { return true; });
+
+  uint8_t pixel[4] = {0, 1, 2, 3};
+  FrameView frame{};
+  frame.device_instance_id = kDeviceInstanceId;
+  frame.stream_id = 72001;
+  frame.acquisition_session_id = 82001;
+  frame.width = 1;
+  frame.height = 1;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.data = pixel;
+  frame.size_bytes = sizeof(pixel);
+  frame.stride_bytes = 4;
+  frame.release = [](void* user, const FrameView*) {
+    auto* count = static_cast<std::atomic<uint64_t>*>(user);
+    count->fetch_add(1, std::memory_order_relaxed);
+  };
+  frame.release_user = &release_calls;
+
+  ingress.on_frame(frame);
+  if (!core.notify_provider_transport_fatal(ProviderTransportFailure::CoreEssentialQueueFull)) {
+    start_gate->set_value();
+    core.stop();
+    std::cerr << "Expected fatal latch to succeed for shared-queue frame-task discard smoke\n";
+    return 1;
+  }
+  start_gate->set_value();
+  core.stop();
+
+  if (release_calls.load(std::memory_order_relaxed) != 1 ||
+      sink_calls.load(std::memory_order_relaxed) != 0 ||
+      ingress.ingress_depth_for_stream(72001) != 0 ||
+      hooks.fatal_calls.load(std::memory_order_relaxed) != 1) {
+    std::cerr << "Expected one release and no task-body execution for shared-queue frame-task discard. releases="
+              << release_calls.load(std::memory_order_relaxed)
+              << " sink_calls=" << sink_calls.load(std::memory_order_relaxed)
+              << " ingress_depth=" << ingress.ingress_depth_for_stream(72001)
+              << " fatal_calls=" << hooks.fatal_calls.load(std::memory_order_relaxed) << "\n";
+    return 1;
+  }
+  return 0;
+}
+
+static int test_core_thread_frame_task_discard_local_batch_smoke() {
+  struct FatalHooks final : CoreThread::IHooks {
+    std::shared_future<void> start_gate;
+    CoreThread* core = nullptr;
+    std::atomic<uint64_t> fatal_calls{0};
+    void on_core_start() override { start_gate.wait(); }
+    void on_core_transport_fatal(ProviderTransportFailure) override {
+      fatal_calls.fetch_add(1, std::memory_order_relaxed);
+      core->request_stop_when_idle_from_core();
+    }
+  } hooks;
+
+  auto start_gate = std::make_shared<std::promise<void>>();
+  hooks.start_gate = start_gate->get_future().share();
+  CoreThread core;
+  hooks.core = &core;
+  if (!core.start(&hooks)) {
+    std::cerr << "Failed to start CoreThread for local-batch frame-task discard smoke\n";
+    return 1;
+  }
+
+  auto block_gate = std::make_shared<std::promise<void>>();
+  auto block_future = block_gate->get_future().share();
+  auto blocker_started = std::make_shared<std::promise<void>>();
+  auto blocker_started_future = blocker_started->get_future();
+  std::atomic<uint64_t> sink_calls{0};
+  std::atomic<uint64_t> release_calls{0};
+
+  ProviderCallbackIngress ingress(
+      &core,
+      [&sink_calls](ProviderCallbackIngress::PendingCommand& pending) {
+        pending.mark_accepted();
+        sink_calls.fetch_add(1, std::memory_order_relaxed);
+        return ProviderCallbackIngress::SinkResult::Accepted;
+      },
+      []() -> uint64_t { return 0; },
+      [](uint64_t) { return false; },
+      [](ProviderTransportFailure) {},
+      []() { return true; });
+
+  if (core.try_post_essential([blocker_started, block_future]() mutable {
+        blocker_started->set_value();
+        block_future.wait();
+      }) != CoreThread::PostResult::Enqueued) {
+    core.stop();
+    std::cerr << "Failed to enqueue blocking essential task for local-batch discard smoke\n";
+    return 1;
+  }
+
+  uint8_t pixel[4] = {4, 5, 6, 7};
+  FrameView frame{};
+  frame.device_instance_id = kDeviceInstanceId;
+  frame.stream_id = kStreamId;
+  frame.capture_id = 72002;
+  frame.acquisition_session_id = 82002;
+  frame.width = 1;
+  frame.height = 1;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.data = pixel;
+  frame.size_bytes = sizeof(pixel);
+  frame.stride_bytes = 4;
+  frame.release = [](void* user, const FrameView*) {
+    auto* count = static_cast<std::atomic<uint64_t>*>(user);
+    count->fetch_add(1, std::memory_order_relaxed);
+  };
+  frame.release_user = &release_calls;
+
+  ingress.on_frame(frame);
+  start_gate->set_value();
+  if (blocker_started_future.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    block_gate->set_value();
+    core.stop();
+    std::cerr << "Timed out waiting for blocking essential task in local-batch discard smoke\n";
+    return 1;
+  }
+
+  if (!core.notify_provider_transport_fatal(ProviderTransportFailure::CoreEssentialQueueFull)) {
+    block_gate->set_value();
+    core.stop();
+    std::cerr << "Expected fatal latch to succeed for local-batch frame-task discard smoke\n";
+    return 1;
+  }
+  block_gate->set_value();
+  core.stop();
+
+  if (release_calls.load(std::memory_order_relaxed) != 1 ||
+      sink_calls.load(std::memory_order_relaxed) != 0 ||
+      ingress.ingress_depth_for_stream(kStreamId) != 0 ||
+      hooks.fatal_calls.load(std::memory_order_relaxed) != 1) {
+    std::cerr << "Expected one release and no task-body execution for local-batch frame-task discard. releases="
+              << release_calls.load(std::memory_order_relaxed)
+              << " sink_calls=" << sink_calls.load(std::memory_order_relaxed)
+              << " ingress_depth=" << ingress.ingress_depth_for_stream(kStreamId)
+              << " fatal_calls=" << hooks.fatal_calls.load(std::memory_order_relaxed) << "\n";
+    return 1;
+  }
+  return 0;
+}
+
 static int test_runtime_queue_stream_frame_coalescing_same_key_accounting_smoke() {
   std::atomic<uint64_t> stale_releases{0};
   std::atomic<uint64_t> surviving_releases{0};
@@ -2545,7 +3404,12 @@ static int test_strict_destroy_rejects_started_stream_smoke() {
   }
 
   if (!converge_stub_provider_core(rt, prov)) {
-    std::cerr << "Timed out converging destroy-after-stop fact\n";
+    const auto ingress_stats = rt.ingress_stats_copy();
+    std::cerr << "Timed out converging destroy-after-stop fact"
+              << " state=" << static_cast<int>(rt.state_copy())
+              << " ingress_closed=" << ingress_stats.commands_dropped_closed
+              << " ingress_full=" << ingress_stats.commands_dropped_full
+              << "\n";
     rt.stop();
     return 1;
   }
@@ -3102,6 +3966,198 @@ static int test_non_frame_provider_fact_survives_ordinary_queue_full(CoreRuntime
     return 1;
   }
 
+  return 0;
+}
+
+static int test_authoritative_frame_essential_overload_faults_transport_and_quarantines_snapshot(
+    CoreRuntime& rt,
+    StateSnapshotBuffer& buf,
+    StubProvider& prov) {
+  (void)prov;
+  prov.flush_callbacks_for_smoke();
+
+  if (!wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& snapshot) {
+        const auto* stream = find_snapshot_stream(snapshot, kStreamId);
+        return stream != nullptr;
+      })) {
+    std::cerr << "Timeout waiting for pre-fault snapshot before essential-overload transport test\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto before_fault = get_last_snapshot(buf);
+  if (!before_fault) {
+    std::cerr << "Missing pre-fault snapshot before essential-overload transport test\n";
+    rt.stop();
+    return 1;
+  }
+  const uint64_t before_gen = before_fault->gen;
+  const uint64_t before_version = before_fault->version;
+
+  if (!wait_for_core_barrier(rt)) {
+    std::cerr << "Failed to establish pre-essential-overload core barrier\n";
+    rt.stop();
+    return 1;
+  }
+
+  auto release_gate = std::make_shared<std::promise<void>>();
+  std::shared_future<void> release_gate_done(release_gate->get_future());
+  std::atomic<bool> gate_started{false};
+  const auto gate_post = rt.try_post_core_thread_unchecked([release_gate_done, &gate_started]() mutable {
+    gate_started.store(true, std::memory_order_release);
+    release_gate_done.wait();
+  });
+  if (gate_post != CoreThread::PostResult::Enqueued) {
+    std::cerr << "Failed to post essential-overload fatal gate\n";
+    rt.stop();
+    return 1;
+  }
+  while (!gate_started.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+
+  for (size_t i = 0; i < CoreThread::kMaxEssentialPendingTasks; ++i) {
+    const auto filler_post =
+        rt.smoke_try_post_essential_task_unchecked([]() {});
+    if (filler_post != CoreThread::PostResult::Enqueued) {
+      release_gate->set_value();
+      std::cerr << "Failed to fill essential queue. index=" << i
+                << " post_result=" << static_cast<int>(filler_post) << "\n";
+      rt.stop();
+      return 1;
+    }
+  }
+
+  std::atomic<uint64_t> release_calls{0};
+  uint8_t pixel[4] = {9, 8, 7, 6};
+  FrameView frame{};
+  frame.device_instance_id = kDeviceInstanceId;
+  frame.stream_id = kStreamId;
+  frame.capture_id = 990001;
+  frame.acquisition_session_id = 880001;
+  frame.width = 1;
+  frame.height = 1;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.data = pixel;
+  frame.size_bytes = sizeof(pixel);
+  frame.stride_bytes = 4;
+  frame.release = [](void* user, const FrameView*) {
+    auto* count = static_cast<std::atomic<uint64_t>*>(user);
+    count->fetch_add(1, std::memory_order_relaxed);
+  };
+  frame.release_user = &release_calls;
+
+  rt.provider_callbacks()->on_frame(frame);
+  release_gate->set_value();
+
+  if (!wait_until([&]() {
+        return rt.smoke_state_for_test() == CoreRuntimeState::STOPPED;
+      }, 2000, 1)) {
+    std::cerr << "Timed out waiting for fatal transport shutdown after essential overload\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto after_fault = get_last_snapshot(buf);
+  if (!after_fault || after_fault->gen != before_gen ||
+      after_fault->version != before_version ||
+      release_calls.load(std::memory_order_relaxed) != 1 ||
+      rt.smoke_ingress_depth_for_stream(kStreamId) != 0) {
+    std::cerr << "Essential-overload fatal path changed snapshot quarantine or release ownership. after_gen="
+              << (after_fault ? after_fault->gen : std::numeric_limits<uint64_t>::max())
+              << " after_version="
+              << (after_fault ? after_fault->version : std::numeric_limits<uint64_t>::max())
+              << " before_gen=" << before_gen
+              << " before_version=" << before_version
+              << " release_calls=" << release_calls.load(std::memory_order_relaxed)
+              << " ingress_depth=" << rt.smoke_ingress_depth_for_stream(kStreamId) << "\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.attach_provider(nullptr);
+  if (!rt.start()) {
+    std::cerr << "Failed to restart runtime after fatal transport shutdown\n";
+    rt.stop();
+    return 1;
+  }
+  if (!wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& snapshot) {
+        return snapshot.gen == before_gen + 1 && snapshot.version == 0;
+      })) {
+    std::cerr << "Timed out waiting for fresh baseline after fatal transport restart\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+static int test_authoritative_frame_truth_loss_discard_contains_throwing_release_smoke(
+    CoreRuntime& rt,
+    StateSnapshotBuffer& buf,
+    StubProvider& prov) {
+  rt.stop();
+  rt.attach_provider(nullptr);
+  if (!rt.start()) {
+    std::cerr << "Failed to restart runtime for throwing-release truth-loss smoke\n";
+    return 1;
+  }
+  if (!setup_one_stream(rt, prov)) {
+    std::cerr << "Stub provider setup failed for throwing-release truth-loss smoke\n";
+    rt.stop();
+    return 1;
+  }
+  if (!wait_for_snapshot_pred(buf, [](const CamBANGStateSnapshot& s) {
+        return !s.streams.empty();
+      })) {
+    std::cerr << "Timed out waiting for a live stream snapshot before throwing-release truth-loss smoke\n";
+    return 1;
+  }
+
+  std::atomic<uint64_t> release_calls{0};
+  uint8_t pixel[4] = {4, 3, 2, 1};
+  FrameView frame{};
+  frame.device_instance_id = kDeviceInstanceId;
+  frame.stream_id = 0;
+  frame.acquisition_session_id = 9090;
+  frame.capture_id = 880088;
+  frame.width = 1;
+  frame.height = 1;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.data = pixel;
+  frame.size_bytes = sizeof(pixel);
+  frame.stride_bytes = 4;
+  frame.release = [](void* user, const FrameView*) {
+    auto* count = static_cast<std::atomic<uint64_t>*>(user);
+    count->fetch_add(1, std::memory_order_relaxed);
+    throw std::runtime_error("truth_loss_throwing_release");
+  };
+  frame.release_user = &release_calls;
+
+  auto done = std::make_shared<std::promise<void>>();
+  auto done_future = done->get_future();
+  const auto pr = rt.try_post([&rt, frame, done]() mutable {
+    ProviderToCoreCommand cmd;
+    cmd.type = ProviderToCoreCommandType::PROVIDER_FRAME;
+    cmd.payload = CmdProviderFrame{frame};
+    rt.smoke_enqueue_provider_fact_unchecked(std::move(cmd));
+    rt.smoke_enter_provider_transport_truth_loss_unchecked();
+    done->set_value();
+  });
+  if (pr != CoreThread::PostResult::Enqueued ||
+      done_future.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    std::cerr << "Failed to enqueue or execute direct truth-loss discard smoke task\n";
+    return 1;
+  }
+
+  if (release_calls.load(std::memory_order_relaxed) != 1) {
+    std::cerr << "Expected throwing release during truth-loss discard to be contained and invoked exactly once. releases="
+              << release_calls.load(std::memory_order_relaxed) << "\n";
+    return 1;
+  }
+
+  rt.stop();
   return 0;
 }
 
@@ -5170,6 +6226,95 @@ int main(int argc, char** argv) {
                                r);
       return r;
     }
+    if (int r = reporter.run("test_provider_callback_ingress_sink_ownership_transfer_smoke",
+                             [] { return test_provider_callback_ingress_sink_ownership_transfer_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_provider_callback_ingress_sink_ownership_transfer_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_provider_strand_reclaim_and_fatal_capacity_smoke",
+                             [] { return test_provider_strand_reclaim_and_fatal_capacity_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_provider_strand_reclaim_and_fatal_capacity_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_provider_strand_callback_exception_containment_smoke",
+                             [] { return test_provider_strand_callback_exception_containment_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_provider_strand_callback_exception_containment_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_singular_frame_release_owner_copy_smoke",
+                             [] { return test_singular_frame_release_owner_copy_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_singular_frame_release_owner_copy_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_provider_strand_frame_callback_copy_then_throw_smoke",
+                             [] { return test_provider_strand_frame_callback_copy_then_throw_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_provider_strand_frame_callback_copy_then_throw_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_provider_strand_throwing_release_contained_smoke",
+                             [] { return test_provider_strand_throwing_release_contained_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_provider_strand_throwing_release_contained_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_provider_strand_bounded_flush_timeout_and_recovery_smoke",
+                             [] { return test_provider_strand_bounded_flush_timeout_and_recovery_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_provider_strand_bounded_flush_timeout_and_recovery_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_provider_strand_failed_start_is_reusable_smoke",
+                             [] { return test_provider_strand_failed_start_is_reusable_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_provider_strand_failed_start_is_reusable_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_core_thread_fatal_latch_discards_local_batches_and_closes_admission_smoke",
+                             [] { return test_core_thread_fatal_latch_discards_local_batches_and_closes_admission_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line(
+          "core_spine_smoke",
+          "test_core_thread_fatal_latch_discards_local_batches_and_closes_admission_smoke",
+          r);
+      return r;
+    }
+    if (int r = reporter.run("test_core_thread_frame_task_discard_shared_queue_smoke",
+                             [] { return test_core_thread_frame_task_discard_shared_queue_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_core_thread_frame_task_discard_shared_queue_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_core_thread_frame_task_discard_local_batch_smoke",
+                             [] { return test_core_thread_frame_task_discard_local_batch_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_core_thread_frame_task_discard_local_batch_smoke",
+                               r);
+      return r;
+    }
     if (int r = reporter.run("test_publish_gating_before_start",
                              [] { return test_publish_gating_before_start(); })) {
       if (reporter.verbose()) reporter.print_summary();
@@ -5288,6 +6433,30 @@ int main(int argc, char** argv) {
       reporter.print_fail_line("core_spine_smoke",
                                "test_non_frame_provider_fact_survives_ordinary_queue_full",
                                r);
+      return r;
+    }
+    if (int r = reporter.run("test_authoritative_frame_essential_overload_faults_transport_and_quarantines_snapshot",
+                             [&] {
+                               return test_authoritative_frame_essential_overload_faults_transport_and_quarantines_snapshot(
+                                   rt, buf, prov);
+                             })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line(
+          "core_spine_smoke",
+          "test_authoritative_frame_essential_overload_faults_transport_and_quarantines_snapshot",
+          r);
+      return r;
+    }
+    if (int r = reporter.run("test_authoritative_frame_truth_loss_discard_contains_throwing_release_smoke",
+                             [&] {
+                               return test_authoritative_frame_truth_loss_discard_contains_throwing_release_smoke(
+                                   rt, buf, prov);
+                             })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line(
+          "core_spine_smoke",
+          "test_authoritative_frame_truth_loss_discard_contains_throwing_release_smoke",
+          r);
       return r;
     }
     if (int r = reporter.run("test_shutdown_choreography",
@@ -5452,6 +6621,95 @@ int main(int argc, char** argv) {
     if (reporter.verbose()) reporter.print_summary();
     reporter.print_fail_line("core_spine_smoke",
                              "test_provider_callback_ingress_null_sink_frame_release_balances_telemetry",
+                             r);
+    return r;
+  }
+  if (int r = reporter.run("test_provider_callback_ingress_sink_ownership_transfer_smoke",
+                           [] { return test_provider_callback_ingress_sink_ownership_transfer_smoke(); })) {
+    if (reporter.verbose()) reporter.print_summary();
+    reporter.print_fail_line("core_spine_smoke",
+                             "test_provider_callback_ingress_sink_ownership_transfer_smoke",
+                             r);
+    return r;
+  }
+  if (int r = reporter.run("test_provider_strand_reclaim_and_fatal_capacity_smoke",
+                           [] { return test_provider_strand_reclaim_and_fatal_capacity_smoke(); })) {
+    if (reporter.verbose()) reporter.print_summary();
+    reporter.print_fail_line("core_spine_smoke",
+                             "test_provider_strand_reclaim_and_fatal_capacity_smoke",
+                             r);
+    return r;
+  }
+  if (int r = reporter.run("test_provider_strand_callback_exception_containment_smoke",
+                           [] { return test_provider_strand_callback_exception_containment_smoke(); })) {
+    if (reporter.verbose()) reporter.print_summary();
+    reporter.print_fail_line("core_spine_smoke",
+                             "test_provider_strand_callback_exception_containment_smoke",
+                             r);
+    return r;
+  }
+  if (int r = reporter.run("test_singular_frame_release_owner_copy_smoke",
+                           [] { return test_singular_frame_release_owner_copy_smoke(); })) {
+    if (reporter.verbose()) reporter.print_summary();
+    reporter.print_fail_line("core_spine_smoke",
+                             "test_singular_frame_release_owner_copy_smoke",
+                             r);
+    return r;
+  }
+  if (int r = reporter.run("test_provider_strand_frame_callback_copy_then_throw_smoke",
+                           [] { return test_provider_strand_frame_callback_copy_then_throw_smoke(); })) {
+    if (reporter.verbose()) reporter.print_summary();
+    reporter.print_fail_line("core_spine_smoke",
+                             "test_provider_strand_frame_callback_copy_then_throw_smoke",
+                             r);
+    return r;
+  }
+  if (int r = reporter.run("test_provider_strand_throwing_release_contained_smoke",
+                           [] { return test_provider_strand_throwing_release_contained_smoke(); })) {
+    if (reporter.verbose()) reporter.print_summary();
+    reporter.print_fail_line("core_spine_smoke",
+                             "test_provider_strand_throwing_release_contained_smoke",
+                             r);
+    return r;
+  }
+  if (int r = reporter.run("test_provider_strand_bounded_flush_timeout_and_recovery_smoke",
+                           [] { return test_provider_strand_bounded_flush_timeout_and_recovery_smoke(); })) {
+    if (reporter.verbose()) reporter.print_summary();
+    reporter.print_fail_line("core_spine_smoke",
+                             "test_provider_strand_bounded_flush_timeout_and_recovery_smoke",
+                             r);
+    return r;
+  }
+  if (int r = reporter.run("test_provider_strand_failed_start_is_reusable_smoke",
+                           [] { return test_provider_strand_failed_start_is_reusable_smoke(); })) {
+    if (reporter.verbose()) reporter.print_summary();
+    reporter.print_fail_line("core_spine_smoke",
+                             "test_provider_strand_failed_start_is_reusable_smoke",
+                             r);
+    return r;
+  }
+  if (int r = reporter.run("test_core_thread_fatal_latch_discards_local_batches_and_closes_admission_smoke",
+                           [] { return test_core_thread_fatal_latch_discards_local_batches_and_closes_admission_smoke(); })) {
+    if (reporter.verbose()) reporter.print_summary();
+    reporter.print_fail_line(
+        "core_spine_smoke",
+        "test_core_thread_fatal_latch_discards_local_batches_and_closes_admission_smoke",
+        r);
+    return r;
+  }
+  if (int r = reporter.run("test_core_thread_frame_task_discard_shared_queue_smoke",
+                           [] { return test_core_thread_frame_task_discard_shared_queue_smoke(); })) {
+    if (reporter.verbose()) reporter.print_summary();
+    reporter.print_fail_line("core_spine_smoke",
+                             "test_core_thread_frame_task_discard_shared_queue_smoke",
+                             r);
+    return r;
+  }
+  if (int r = reporter.run("test_core_thread_frame_task_discard_local_batch_smoke",
+                           [] { return test_core_thread_frame_task_discard_local_batch_smoke(); })) {
+    if (reporter.verbose()) reporter.print_summary();
+    reporter.print_fail_line("core_spine_smoke",
+                             "test_core_thread_frame_task_discard_local_batch_smoke",
                              r);
     return r;
   }

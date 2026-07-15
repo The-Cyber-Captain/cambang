@@ -512,9 +512,22 @@ enum class TryCloseDeviceStatus : uint8_t {
     return core_thread_.try_post(std::move(task));
   }
 
+  CoreThread::PostResult smoke_try_post_essential_task_unchecked(
+      CoreThread::Task task) {
+    return core_thread_.try_post_essential(std::move(task));
+  }
+
   CoreThread::PostResult smoke_try_post_command_task_unchecked(
       CoreThread::Task task) {
     return core_thread_.try_post_command(std::move(task));
+  }
+
+  void smoke_enqueue_provider_fact_unchecked(ProviderToCoreCommand&& cmd) {
+    enqueue_provider_fact(std::move(cmd));
+  }
+
+  void smoke_enter_provider_transport_truth_loss_unchecked() noexcept {
+    enter_provider_transport_truth_loss_from_core_();
   }
 
   void smoke_set_synchronous_core_marshalling_timeout_ms(
@@ -565,6 +578,9 @@ enum class TryCloseDeviceStatus : uint8_t {
   }
 
   [[nodiscard]] CoreDispatchStats dispatcher_stats() const noexcept { return dispatcher_.stats(); }
+  CoreRuntimeState smoke_state_for_test() const noexcept {
+    return state_.load(std::memory_order_acquire);
+  }
 
   const CoreStreamRegistry::StreamRecord* stream_record(uint64_t stream_id) const noexcept {
     return streams_.find(stream_id);
@@ -710,11 +726,18 @@ enum class TryCloseDeviceStatus : uint8_t {
 private:
   void on_core_start() override;
   void on_core_timer_tick() override;
+  void on_core_transport_fatal(ProviderTransportFailure failure) override;
   void on_core_stop() override;
 
   void enqueue_provider_fact(ProviderToCoreCommand&& cmd);
   void enqueue_request(CoreThread::Task task);
   void request_publish_from_core_unchecked();
+  bool provider_transport_accepting_() const noexcept;
+  void signal_provider_transport_failure_(ProviderTransportFailure failure) noexcept;
+  void enter_provider_transport_truth_loss_from_core_() noexcept;
+  void discard_provider_fact_for_truth_loss_(ProviderToCoreCommand&& cmd) noexcept;
+  void discard_queued_provider_facts_for_truth_loss_() noexcept;
+  void discard_queued_requests_for_truth_loss_() noexcept;
   std::chrono::milliseconds synchronous_core_marshalling_timeout_() const
       noexcept;
   void begin_capture_stream_preemption_(uint64_t capture_id, uint64_t device_instance_id);
@@ -909,6 +932,9 @@ private:
   bool has_topology_sig_ = false;
 
   std::atomic<CoreRuntimeState> state_{CoreRuntimeState::CREATED};
+  std::atomic<uint8_t> provider_transport_failure_{
+      static_cast<uint8_t>(ProviderTransportFailure::None)};
+  bool provider_transport_truth_lost_ = false;
 
   SnapshotBuilder snapshot_builder_;
   std::atomic<IStateSnapshotPublisher*> snapshot_publisher_{nullptr};
