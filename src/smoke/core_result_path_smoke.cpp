@@ -531,12 +531,26 @@ int main() {
   store.mark_stream_display_demand(999, 2'000'000'000ull);
   assert(!store.is_stream_display_demand_active(999, 2'000'000'000ull));
 
+  const auto generation_a_demand_token =
+      store.retain_stream_display_demand_lease(20);
+  assert(generation_a_demand_token != 0);
+  assert(store.stream_display_demand_refcount_for_smoke(20) == 1);
   store.remove_stream_result(20);
   assert(!store.get_latest_stream_result(20));
   assert(!store.is_stream_display_demand_active(20, 1'150'000'000ull));
+  assert(store.stream_display_demand_refcount_for_smoke(20) == 0);
 
   store.retain_frame(stream_frame, StreamIntent::VIEWFINDER, kStreamEpochA, 0, requested_cpu);
   assert(store.get_latest_stream_result(20));
+  const auto generation_b_demand_token =
+      store.retain_stream_display_demand_lease(20);
+  assert(generation_b_demand_token != 0);
+  assert(generation_b_demand_token != generation_a_demand_token);
+  assert(!store.release_stream_display_demand_lease(generation_a_demand_token));
+  assert(store.stream_display_demand_refcount_for_smoke(20) == 1);
+  assert(store.release_stream_display_demand_lease(generation_b_demand_token));
+  assert(!store.release_stream_display_demand_lease(generation_b_demand_token));
+  assert(store.stream_display_demand_refcount_for_smoke(20) == 0);
   store.mark_stream_display_demand(20, 3'000'000'000ull);
   assert(store.is_stream_display_demand_active(20, 3'010'000'000ull));
 
@@ -671,9 +685,15 @@ int main() {
   auto capture_set = store.get_capture_result_set(77);
   assert(capture_set.size() == 2);
 
+  const auto cleared_generation_demand_token =
+      store.retain_stream_display_demand_lease(20);
+  assert(cleared_generation_demand_token != 0);
+  assert(store.stream_display_demand_refcount_for_smoke(20) == 1);
   store.clear();
   assert(!store.get_latest_stream_result(20));
   assert(!store.is_stream_display_demand_active(20, 3'010'000'000ull));
+  assert(!store.release_stream_display_demand_lease(cleared_generation_demand_token));
+  assert(store.stream_display_demand_refcount_for_smoke(20) == 0);
 
   // mailbox/result independence smoke proxy: result path exists without a sink.
   CoreResultStore no_mailbox_store;

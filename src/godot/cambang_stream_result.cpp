@@ -1,6 +1,7 @@
 #include "godot/cambang_stream_result.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
@@ -24,6 +25,46 @@
 namespace cambang {
 
 namespace {
+
+#if defined(CAMBANG_INTERNAL_SMOKE)
+std::atomic<bool> g_force_live_cpu_post_transfer_failure_once{false};
+
+bool take_live_cpu_post_transfer_failure_for_smoke() noexcept {
+  return g_force_live_cpu_post_transfer_failure_once.exchange(
+      false, std::memory_order_acq_rel);
+}
+#endif
+
+bool adopt_live_cpu_rid(
+    const std::shared_ptr<SharedLiveCpuTextureRidState>& rid_state,
+    const godot::RID& texture_rid,
+    RenderResourceReleaseReservation reservation) noexcept {
+  bool ownership_transferred = false;
+  try {
+    if (!rid_state || !rid_state->replace_rid(texture_rid, reservation)) {
+      defer_render_resource_rid_release(
+          GodotRenderResourceKind::RenderingServerRid,
+          texture_rid,
+          std::move(reservation));
+      return false;
+    }
+    ownership_transferred = true;
+#if defined(CAMBANG_INTERNAL_SMOKE)
+    if (take_live_cpu_post_transfer_failure_for_smoke()) {
+      throw 1;
+    }
+#endif
+    return true;
+  } catch (...) {
+    if (!ownership_transferred) {
+      defer_render_resource_rid_release(
+          GodotRenderResourceKind::RenderingServerRid,
+          texture_rid,
+          std::move(reservation));
+    }
+    return false;
+  }
+}
 
 bool stream_display_trace_enabled() {
   const char* value = std::getenv("CAMBANG_DEV_SYNTH_GPU_TRACE");
@@ -386,11 +427,22 @@ bool refresh_live_cpu_display_view_entry(
       prior_height != height;
   const auto refresh_begin = std::chrono::steady_clock::now();
   if (need_recreate) {
-    const godot::RID texture_rid = rs->texture_2d_create(working_entry.image);
+    RenderResourceReleaseReservation reservation = reserve_render_resource_release();
+    if (!reservation) {
+      return false;
+    }
+    godot::RID texture_rid;
+    try {
+      texture_rid = rs->texture_2d_create(working_entry.image);
+    } catch (...) {
+      return false;
+    }
     if (!texture_rid.is_valid()) {
       return false;
     }
-    rid_state->replace_rid(texture_rid);
+    if (!adopt_live_cpu_rid(rid_state, texture_rid, std::move(reservation))) {
+      return false;
+    }
   } else {
     const godot::RID texture_rid = rid_state->snapshot_rid();
     if (!texture_rid.is_valid()) {
@@ -441,6 +493,7 @@ godot::Ref<godot::Texture2D> ensure_live_cpu_display_view(const SharedStreamResu
   std::shared_ptr<LiveCpuDisplayViewEntry> entry;
   {
     std::lock_guard<std::mutex> lock(g_live_cpu_display_views_mutex);
+    RenderResourceReleaseRegistryLockScope release_lock_scope;
     auto& slot = g_live_cpu_display_views[data->stream_id];
     if (!slot) {
       slot = std::make_shared<LiveCpuDisplayViewEntry>();
@@ -504,6 +557,50 @@ uint32_t CamBANGStreamResult::get_format() const { return data_ ? data_->image_f
 int CamBANGStreamResult::get_payload_kind() const {
   return data_ ? static_cast<int>(data_->payload_kind) : static_cast<int>(ResultPayloadKind::CPU_PACKED);
 }
+
+#if defined(CAMBANG_INTERNAL_SMOKE)
+bool exercise_live_cpu_post_transfer_failure_for_smoke() noexcept {
+  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
+  if (!rs) {
+    return false;
+  }
+  godot::RID rid;
+  RenderResourceReleaseReservation reservation;
+  bool local_ownership = false;
+  try {
+    godot::Ref<godot::Image> image = godot::Image::create(1, 1, false, godot::Image::FORMAT_RGBA8);
+    if (image.is_null()) {
+      return false;
+    }
+    reservation = reserve_render_resource_release();
+    if (!reservation) {
+      return false;
+    }
+    rid = rs->texture_2d_create(image);
+    if (!rid.is_valid()) {
+      return false;
+    }
+    local_ownership = true;
+    std::shared_ptr<SharedLiveCpuTextureRidState> state =
+        std::make_shared<SharedLiveCpuTextureRidState>();
+    g_force_live_cpu_post_transfer_failure_once.store(true, std::memory_order_release);
+    const bool failed_after_transfer =
+        !adopt_live_cpu_rid(state, rid, std::move(reservation));
+    local_ownership = false;
+    state.reset();
+    request_render_resource_release_drain_from_godot_thread();
+    return failed_after_transfer;
+  } catch (...) {
+    if (local_ownership) {
+      defer_render_resource_rid_release(
+          GodotRenderResourceKind::RenderingServerRid,
+          rid,
+          std::move(reservation));
+    }
+    return false;
+  }
+}
+#endif
 uint64_t CamBANGStreamResult::get_stream_id() const { return data_ ? data_->stream_id : 0; }
 uint64_t CamBANGStreamResult::get_device_instance_id() const { return data_ ? data_->device_instance_id : 0; }
 int CamBANGStreamResult::get_intent() const { return data_ ? static_cast<int>(data_->intent) : 0; }
@@ -842,6 +939,7 @@ void CamBANGStreamResult::refresh_live_stream_cpu_display_views(const CoreRuntim
   std::vector<RefreshCandidate> candidates;
   {
     std::lock_guard<std::mutex> lock(g_live_cpu_display_views_mutex);
+    RenderResourceReleaseRegistryLockScope release_lock_scope;
     candidates.reserve(g_live_cpu_display_views.size());
     for (const auto& kv : g_live_cpu_display_views) {
       candidates.push_back(RefreshCandidate{kv.first, kv.second});
@@ -857,9 +955,18 @@ void CamBANGStreamResult::refresh_live_stream_cpu_display_views(const CoreRuntim
     const uint64_t stream_id = candidate.stream_id;
     SharedStreamResultData data = runtime.get_latest_stream_result(stream_id);
     if (!data) {
-      std::lock_guard<std::mutex> lock(g_live_cpu_display_views_mutex);
-      const uint32_t removed_now =
-          static_cast<uint32_t>(g_live_cpu_display_views.erase(stream_id));
+      std::shared_ptr<LiveCpuDisplayViewEntry> removed;
+      {
+        std::lock_guard<std::mutex> lock(g_live_cpu_display_views_mutex);
+        RenderResourceReleaseRegistryLockScope release_lock_scope;
+        const auto it = g_live_cpu_display_views.find(stream_id);
+        if (it != g_live_cpu_display_views.end()) {
+          removed = std::move(it->second);
+          g_live_cpu_display_views.erase(it);
+        }
+      }
+      const uint32_t removed_now = removed ? 1u : 0u;
+      removed.reset();
       removed_count += removed_now;
       note_live_cpu_display_refresh_removed(removed_now);
       continue;
@@ -929,13 +1036,31 @@ void CamBANGStreamResult::remove_live_stream_cpu_display_view(uint64_t stream_id
   if (stream_id == 0) {
     return;
   }
-  std::lock_guard<std::mutex> lock(g_live_cpu_display_views_mutex);
-  g_live_cpu_display_views.erase(stream_id);
+  std::shared_ptr<LiveCpuDisplayViewEntry> removed;
+  {
+    std::lock_guard<std::mutex> lock(g_live_cpu_display_views_mutex);
+    RenderResourceReleaseRegistryLockScope release_lock_scope;
+    const auto it = g_live_cpu_display_views.find(stream_id);
+    if (it == g_live_cpu_display_views.end()) {
+      return;
+    }
+    removed = std::move(it->second);
+    g_live_cpu_display_views.erase(it);
+  }
+  // State destruction can enqueue a render RID. Never let it happen while the
+  // registry mutex is held.
+  removed.reset();
 }
 
 void CamBANGStreamResult::clear_live_stream_cpu_display_views() {
-  std::lock_guard<std::mutex> lock(g_live_cpu_display_views_mutex);
-  g_live_cpu_display_views.clear();
+  std::map<uint64_t, std::shared_ptr<LiveCpuDisplayViewEntry>> removed;
+  {
+    std::lock_guard<std::mutex> lock(g_live_cpu_display_views_mutex);
+    RenderResourceReleaseRegistryLockScope release_lock_scope;
+    removed.swap(g_live_cpu_display_views);
+  }
+  // As above, release entries only after the registry lock is gone.
+  removed.clear();
   clear_live_cpu_display_metrics();
 }
 

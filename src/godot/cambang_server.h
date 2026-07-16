@@ -129,9 +129,13 @@ public:
       const SharedCaptureResultData& data,
       uint32_t image_member_index) const;
   void mark_stream_display_demand(uint64_t stream_id);
-  void retain_stream_display_demand(uint64_t stream_id);
-  void release_stream_display_demand(uint64_t stream_id);
-  void release_stream_display_demand_async(uint64_t stream_id);
+  // Internal unbound targets. The dispatcher holds server lifetime across
+  // these narrow, thread-safe Core result-store operations.
+  uint64_t retain_stream_display_demand_from_owner(uint64_t stream_id) noexcept;
+  void release_stream_display_demand_from_owner(uint64_t lease_token) noexcept;
+#if defined(CAMBANG_INTERNAL_SMOKE)
+  uint32_t stream_display_demand_refcount_for_smoke(uint64_t stream_id) const noexcept;
+#endif
   godot::Error trigger_device_capture(
       uint64_t device_instance_id,
       uint64_t& out_capture_id);

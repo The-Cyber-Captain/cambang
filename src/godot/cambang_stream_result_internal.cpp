@@ -14,6 +14,8 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include "godot/cambang_server.h"
+#include "godot/display_demand_dispatcher.h"
+#include "godot/render_resource_release_service.h"
 
 namespace cambang {
 
@@ -33,6 +35,24 @@ std::mutex g_live_cpu_display_wrapper_borrow_mutex;
 std::map<uint64_t, CpuDisplayWrapperBorrow> g_live_cpu_display_wrapper_borrows;
 std::map<uint64_t, uint32_t> g_live_cpu_display_wrapper_borrow_counts;
 uint64_t g_next_live_cpu_display_wrapper_borrow_id = 1;
+
+DisplayDemandDispatcher g_display_demand_dispatcher;
+
+uint64_t retain_display_demand_target(void* target, uint64_t stream_id) noexcept {
+  return static_cast<CamBANGServer*>(target)->retain_stream_display_demand_from_owner(stream_id);
+}
+
+void release_display_demand_target(void* target, uint64_t lease_token) noexcept {
+  static_cast<CamBANGServer*>(target)->release_stream_display_demand_from_owner(lease_token);
+}
+
+void release_display_demand_from_owner(uint64_t lease_token) noexcept {
+  g_display_demand_dispatcher.release(lease_token);
+}
+
+uint64_t retain_display_demand_for_owner(uint64_t stream_id) noexcept {
+  return g_display_demand_dispatcher.retain(stream_id);
+}
 }
 
 godot::RID SharedLiveCpuTextureRidState::snapshot_rid() const {
@@ -40,24 +60,33 @@ godot::RID SharedLiveCpuTextureRidState::snapshot_rid() const {
   return texture_rid;
 }
 
-void SharedLiveCpuTextureRidState::replace_rid(const godot::RID& texture_rid_in) {
+bool SharedLiveCpuTextureRidState::replace_rid(
+    const godot::RID& texture_rid_in,
+    RenderResourceReleaseReservation& reservation) noexcept {
   godot::RID prior;
-  {
+  RenderResourceReleaseReservation prior_reservation;
+  try {
     std::lock_guard<std::mutex> lock(mutex);
     prior = texture_rid;
+    prior_reservation = std::move(release_reservation);
     texture_rid = texture_rid_in;
+    release_reservation = std::move(reservation);
+  } catch (...) {
+    return false;
   }
   if (!prior.is_valid() || prior == texture_rid_in) {
-    return;
+    return true;
   }
-  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
-  if (rs) {
-    rs->free_rid(prior);
-  }
+  defer_render_resource_rid_release(
+      GodotRenderResourceKind::RenderingServerRid,
+      prior,
+      std::move(prior_reservation));
+  return true;
 }
 
 void SharedLiveCpuTextureRidState::clear() {
-  replace_rid(godot::RID());
+  RenderResourceReleaseReservation no_reservation;
+  (void)replace_rid(godot::RID(), no_reservation);
 }
 
 SharedLiveCpuTextureRidState::~SharedLiveCpuTextureRidState() {
@@ -148,44 +177,39 @@ void notify_live_cpu_display_wrapper_refresh(uint64_t stream_id, uint32_t width,
   }
 }
 
-DisplayDemandToken::~DisplayDemandToken() {
-  if (display_demand_trace_enabled()) {
-    godot::UtilityFunctions::print("[CamBANG][DemandTrace] token_release stream_id=", static_cast<uint64_t>(stream_id_),
-                                   " token_ptr=", static_cast<uint64_t>(reinterpret_cast<std::uintptr_t>(this)),
-                                   " gpu_display_view=", gpu_display_view_);
+DisplayDemandLease::~DisplayDemandLease() noexcept {
+  release_display_demand_from_owner(lease_token_);
+}
+
+std::shared_ptr<DisplayDemandLease> retain_display_demand_lease(
+    uint64_t stream_id) {
+  if (stream_id == 0) {
+    return {};
   }
-  if (stream_id_ != 0) {
-    if (CamBANGServer* server = CamBANGServer::get_singleton()) {
-      server->release_stream_display_demand_async(stream_id_);
-    }
+  const uint64_t lease_token = retain_display_demand_for_owner(stream_id);
+  if (lease_token == 0) {
+    return {};
+  }
+  try {
+    std::shared_ptr<DisplayDemandLease> lease =
+        std::make_shared<DisplayDemandLease>(lease_token);
+    return lease;
+  } catch (...) {
+    release_display_demand_from_owner(lease_token);
+    return {};
   }
 }
 
-void DisplayDemandToken::init(uint64_t stream_id, bool gpu_display_view) {
-  stream_id_ = stream_id;
-  gpu_display_view_ = gpu_display_view;
-  if (display_demand_trace_enabled()) {
-    godot::UtilityFunctions::print("[CamBANG][DemandTrace] token_retain stream_id=", static_cast<uint64_t>(stream_id_),
-                                   " token_ptr=", static_cast<uint64_t>(reinterpret_cast<std::uintptr_t>(this)),
-                                   " gpu_display_view=", gpu_display_view_);
-  }
-  if (stream_id_ != 0) {
-    if (CamBANGServer* server = CamBANGServer::get_singleton()) {
-      server->retain_stream_display_demand(stream_id_);
-    }
-  }
+void install_display_demand_release_dispatcher(CamBANGServer* server) noexcept {
+  g_display_demand_dispatcher.install(
+      server, retain_display_demand_target, release_display_demand_target);
+}
+
+void uninstall_display_demand_release_dispatcher(CamBANGServer* server) noexcept {
+  g_display_demand_dispatcher.uninstall(server);
 }
 
 LiveCpuDisplayTexture2D::~LiveCpuDisplayTexture2D() {
-  if (display_demand_trace_enabled()) {
-    godot::UtilityFunctions::print(
-        "[CamBANG][DemandTrace] live_cpu_display_view_destroy stream_id=",
-        static_cast<uint64_t>(stream_id_),
-        " wrapper_id=",
-        static_cast<uint64_t>(get_instance_id()),
-        " borrow_id=",
-        static_cast<uint64_t>(borrow_id_));
-  }
   clear_runtime_references_();
 }
 
@@ -203,10 +227,7 @@ void LiveCpuDisplayTexture2D::init(
   borrow_id_ = register_live_cpu_display_wrapper_borrow(stream_id_);
   set_live_cpu_display_wrapper_instance_id(borrow_id_, static_cast<uint64_t>(get_instance_id()));
   if (retain_display_demand && stream_id_ != 0) {
-    display_demand_token_.instantiate();
-    if (display_demand_token_.is_valid()) {
-      display_demand_token_->init(stream_id_, false);
-    }
+    display_demand_lease_ = retain_display_demand_lease(stream_id_);
   }
   if (display_demand_trace_enabled()) {
     godot::UtilityFunctions::print(
@@ -322,13 +343,12 @@ godot::RID LiveCpuDisplayTexture2D::_get_rid() const {
 void LiveCpuDisplayTexture2D::clear_runtime_references_() {
   unregister_live_cpu_display_wrapper_borrow(borrow_id_);
   borrow_id_ = 0;
-  display_demand_token_.unref();
+  display_demand_lease_.reset();
   state_.reset();
   stream_id_ = 0;
 }
 
 void register_stream_result_internal_classes() {
-  godot::ClassDB::register_class<DisplayDemandToken>();
   godot::ClassDB::register_class<LiveCpuDisplayTexture2D>();
 }
 

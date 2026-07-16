@@ -240,6 +240,8 @@ using MutableCaptureResultData = std::shared_ptr<CoreCaptureResultData>;
 
 class CoreResultStore final {
 public:
+  using DisplayDemandLeaseToken = uint64_t;
+
   enum class DisplayDemandReason : uint8_t {
     NONE = 0,
     PERSISTENT_REFCOUNT = 1,
@@ -283,10 +285,13 @@ public:
   std::vector<SharedCaptureResultData> get_capture_result_set(uint64_t capture_id) const;
   void remove_stream_result(uint64_t stream_id);
   void mark_stream_display_demand(uint64_t stream_id, uint64_t now_ns);
-  void retain_stream_display_demand(uint64_t stream_id);
-  void release_stream_display_demand(uint64_t stream_id);
+  DisplayDemandLeaseToken retain_stream_display_demand_lease(uint64_t stream_id) noexcept;
+  bool release_stream_display_demand_lease(DisplayDemandLeaseToken token) noexcept;
   bool is_stream_display_demand_active(uint64_t stream_id, uint64_t now_ns) const;
   DisplayDemandState get_stream_display_demand_state(uint64_t stream_id, uint64_t now_ns) const;
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+  uint32_t stream_display_demand_refcount_for_smoke(uint64_t stream_id) const noexcept;
+#endif
   void clear();
 
 private:
@@ -347,6 +352,8 @@ private:
 
   std::map<uint64_t, uint64_t> stream_display_demand_last_seen_ns_;
   std::map<uint64_t, uint32_t> stream_display_demand_refcounts_;
+  std::map<DisplayDemandLeaseToken, uint64_t> stream_display_demand_leases_;
+  DisplayDemandLeaseToken next_display_demand_lease_token_ = 1;
   std::map<StreamAccessPostureDomainKey, uint64_t> stream_access_posture_ids_;
   std::map<CaptureAccessPostureDomainKey, uint64_t> capture_access_posture_ids_;
   uint64_t next_result_access_posture_id_ = 1;

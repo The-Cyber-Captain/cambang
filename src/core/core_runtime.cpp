@@ -4570,9 +4570,6 @@ bool CoreRuntime::start() {
   publish_requests_dropped_full_.store(0, std::memory_order_relaxed);
   publish_requests_dropped_closed_.store(0, std::memory_order_relaxed);
   publish_requests_dropped_allocfail_.store(0, std::memory_order_relaxed);
-  display_demand_release_async_dropped_full_.store(0, std::memory_order_relaxed);
-  display_demand_release_async_dropped_closed_.store(0, std::memory_order_relaxed);
-  display_demand_release_async_dropped_allocfail_.store(0, std::memory_order_relaxed);
 
   // Reset per-generation snapshot bookkeeping (schema v1).
   // gen is monotonic across the app/server lifetime and increments only when a new core loop
@@ -7160,59 +7157,12 @@ CoreRuntime::replace_external_camera_description_json_for_internal(
 }
 
 
-void CoreRuntime::release_stream_display_demand_async(uint64_t stream_id) {
-  if (stream_id == 0) {
-    return;
-  }
-  if (state_.load(std::memory_order_acquire) != CoreRuntimeState::LIVE ||
-      provider_transport_failure_.load(std::memory_order_acquire) !=
-          static_cast<uint8_t>(ProviderTransportFailure::None)) {
-    account_display_demand_release_async_post_failure_(
-        CoreThread::PostResult::Closed);
-    return;
-  }
-  const CoreThread::PostResult pr = core_thread_.try_post_essential([this, stream_id]() {
-    if (state_.load(std::memory_order_acquire) != CoreRuntimeState::LIVE ||
-        provider_transport_failure_.load(std::memory_order_acquire) !=
-            static_cast<uint8_t>(ProviderTransportFailure::None)) {
-      return;
-    }
-    result_store_.release_stream_display_demand(stream_id);
-  });
-  if (pr == CoreThread::PostResult::Enqueued) {
-    return;
-  }
-  account_display_demand_release_async_post_failure_(pr);
-}
-
-void CoreRuntime::account_display_demand_release_async_post_failure_(CoreThread::PostResult result) noexcept {
-  switch (result) {
-    case CoreThread::PostResult::QueueFull:
-      display_demand_release_async_dropped_full_.fetch_add(1, std::memory_order_relaxed);
-      break;
-    case CoreThread::PostResult::Closed:
-      display_demand_release_async_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
-      break;
-    case CoreThread::PostResult::AllocFail:
-      display_demand_release_async_dropped_allocfail_.fetch_add(1, std::memory_order_relaxed);
-      break;
-    case CoreThread::PostResult::Enqueued:
-      break;
-  }
-}
-
 CoreRuntime::Stats CoreRuntime::stats_copy() const noexcept {
   Stats s;
   s.publish_requests_coalesced = publish_requests_coalesced_.load(std::memory_order_relaxed);
   s.publish_requests_dropped_full = publish_requests_dropped_full_.load(std::memory_order_relaxed);
   s.publish_requests_dropped_closed = publish_requests_dropped_closed_.load(std::memory_order_relaxed);
   s.publish_requests_dropped_allocfail = publish_requests_dropped_allocfail_.load(std::memory_order_relaxed);
-  s.display_demand_release_async_dropped_full =
-      display_demand_release_async_dropped_full_.load(std::memory_order_relaxed);
-  s.display_demand_release_async_dropped_closed =
-      display_demand_release_async_dropped_closed_.load(std::memory_order_relaxed);
-  s.display_demand_release_async_dropped_allocfail =
-      display_demand_release_async_dropped_allocfail_.load(std::memory_order_relaxed);
   return s;
 }
 

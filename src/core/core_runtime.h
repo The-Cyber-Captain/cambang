@@ -233,9 +233,6 @@ enum class TryCloseDeviceStatus : uint8_t {
     uint64_t publish_requests_dropped_full = 0;
     uint64_t publish_requests_dropped_closed = 0;
     uint64_t publish_requests_dropped_allocfail = 0;
-    uint64_t display_demand_release_async_dropped_full = 0;
-    uint64_t display_demand_release_async_dropped_closed = 0;
-    uint64_t display_demand_release_async_dropped_allocfail = 0;
   };
 
   CoreRuntime();
@@ -650,11 +647,13 @@ enum class TryCloseDeviceStatus : uint8_t {
         std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
     result_store_.mark_stream_display_demand(stream_id, now_ns);
   }
-  void retain_stream_display_demand(uint64_t stream_id) {
-    result_store_.retain_stream_display_demand(stream_id);
+  CoreResultStore::DisplayDemandLeaseToken retain_stream_display_demand_lease(
+      uint64_t stream_id) noexcept {
+    return result_store_.retain_stream_display_demand_lease(stream_id);
   }
-  void release_stream_display_demand(uint64_t stream_id) {
-    result_store_.release_stream_display_demand(stream_id);
+  bool release_stream_display_demand_lease(
+      CoreResultStore::DisplayDemandLeaseToken token) noexcept {
+    return result_store_.release_stream_display_demand_lease(token);
   }
   bool is_stream_display_demand_active(uint64_t stream_id) const {
     const auto now = std::chrono::steady_clock::now();
@@ -662,7 +661,11 @@ enum class TryCloseDeviceStatus : uint8_t {
         std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
     return result_store_.is_stream_display_demand_active(stream_id, now_ns);
   }
-  void release_stream_display_demand_async(uint64_t stream_id);
+#if defined(CAMBANG_INTERNAL_SMOKE)
+  uint32_t stream_display_demand_refcount_for_smoke(uint64_t stream_id) const noexcept {
+    return result_store_.stream_display_demand_refcount_for_smoke(stream_id);
+  }
+#endif
 
 
   void attach_provider(ICameraProvider* provider) noexcept {
@@ -900,7 +903,6 @@ private:
       uint64_t now_ns,
       bool& has_next_delay,
       uint64_t& next_delay_ns) const;
-  void account_display_demand_release_async_post_failure_(CoreThread::PostResult result) noexcept;
   std::vector<SharedCaptureResultData> curate_capture_result_set_accept_all_assembly_successful_(
       std::vector<SharedCaptureResultData> candidates) const;
 
@@ -1206,9 +1208,6 @@ private:
   std::atomic<uint64_t> publish_requests_dropped_full_{0};
   std::atomic<uint64_t> publish_requests_dropped_closed_{0};
   std::atomic<uint64_t> publish_requests_dropped_allocfail_{0};
-  std::atomic<uint64_t> display_demand_release_async_dropped_full_{0};
-  std::atomic<uint64_t> display_demand_release_async_dropped_closed_{0};
-  std::atomic<uint64_t> display_demand_release_async_dropped_allocfail_{0};
   mutable std::mutex configured_imaging_spec_mutex_;
   uint64_t configured_camera_description_version_ = 0;
   uint64_t configured_imaging_spec_version_ = 0;

@@ -1,87 +1,85 @@
 # Current tranche
 
-## Bounded provider/Core transport
+## Godot render-resource deferred release
 
 ### Goal
 
-Make provider-to-Core transport genuinely bounded and implement the documented
-fatal transport-failure behaviour without weakening registry, snapshot,
-ownership, or restart contracts.
+Eliminate arbitrary-thread and under-lock destruction of Godot render resources
+and render-resource-owning wrappers across CPU and GPU display paths.
 
 ### Architectural authority
 
-Implement the provider transport-failure and Core truth-loss contracts documented
-in:
+Implement the ownership and thread-affinity contract in:
 
-* `docs/provider_architecture.md`
-* `docs/core_runtime_model.md`
+- `docs/architecture/pixel_payload_and_result_contract.md`, especially §7.7;
+- `docs/architecture/godot_boundary_contract.md`;
+- the repository C++ quality policy and audit checklist.
 
-If the required contracts are not present and internally consistent in those
-documents, stop before implementation and report the missing documentation.
+If those authorities conflict with current source, follow the documented
+contract and report the source conflict.
 
 ### Scope
 
-* Hard-bound `CBProviderStrand` storage.
-* Hard-bound `CoreThread::essential_tasks_`.
-* Preserve repeating-stream-frame pressure dropping and exact release.
-* Treat failure to admit non-lossy provider truth as fatal to the active
-  generation.
-* Propagate strand failure to Core through a non-allocating out-of-band path.
-* Quarantine registry-derived snapshot publication at the documented truth-loss
-  boundary.
-* Distinguish provider-derived tasks from teardown-critical Core work where
-  required.
-* Contain provider-strand callback and allocation failures.
-* Preserve deterministic stop and restart.
+- CPU live-display texture RID replacement and final-owner release.
+- CPU live-display registry erase, clear, and teardown.
+- GPU/RD RID deferred release.
+- `Texture2DRD` and equivalent wrapper deferred destruction.
+- Pending-release admission, drain, failure, and teardown paths.
+- Destructor exception containment.
+- Thread-affinity verification for creation, update, replacement, and release.
 
 ### Required implementation
 
-* Queue storage never exceeds its configured or named capacity.
-* Non-lossy strand traffic may reclaim queued repeating frames, but is never
-  silently discarded.
-* Unrecoverable non-lossy admission failure latches one fatal reason and closes
-  further admission.
-* Fatal notification does not traverse a failed queue.
-* Essential `QueueFull` and `AllocFail` latch Core transport failure.
-* Already-queued and already-local work obeys the documented truth-loss rules.
-* Rejected or discarded payload-owning work releases ownership exactly once.
-* `flush()`, stop, teardown, and restart remain deterministic.
-* Exceptions do not escape provider or Core worker-thread boundaries.
+- No arbitrary-thread destructor calls `RenderingServer::free_rid()`,
+  `RenderingDevice::free_rid()`, or equivalent render-resource operations.
+- No arbitrary-thread path destroys the final Godot wrapper reference when that
+  destruction can release a render resource.
+- CPU and GPU release use an approved Godot/render-resource drain.
+- Registry/cache/release-queue locks are not held during RID free or final
+  wrapper destruction.
+- Destructor-originating handoff is non-throwing.
+- Allocation failure, saturation, late teardown, and unavailable-drain paths do
+  not fall back to unsafe current-thread destruction.
+- Teardown drains accepted work before release-service uninstall.
+- Work that cannot safely drain during terminal teardown is explicitly
+  quarantined rather than unsafely destroyed.
+- Repeated start/stop/restart remains deterministic.
+- Existing display semantics and performance policy remain unchanged.
 
 ### Verification
 
 Add deterministic checks for:
 
-* hard queue bounds;
-* repeating-frame drop and reclamation;
-* non-lossy saturation;
-* one-shot fatal propagation;
-* callback exception containment;
-* exact lease/release and ingress-depth accounting;
-* no registry or snapshot mutation beyond the truth-loss boundary;
-* last coherent snapshot and completed-stop `NIL` behaviour;
-* teardown-critical work after fault;
-* stop and restart with a fresh generation.
+- CPU RID final owner destroyed from a worker thread;
+- CPU registry erase/clear with and without surviving wrappers;
+- CPU RID replacement;
+- GPU/RD RID final owner destroyed from a worker thread;
+- deferred `Texture2DRD` final-reference destruction;
+- enqueue failure and queue saturation;
+- teardown with pending RID and wrapper releases;
+- no release beneath registry or release-queue locks;
+- no direct `free_rid()` outside the approved drain;
+- no destructor exception escape;
+- restart after teardown.
 
-Preserve existing provider-compliance, restart, capture, result, and snapshot
-verification.
+Run the required native, Windows GDE, Android GDE, and affected Godot display
+verification, including representative Mobile and Compatibility paths.
 
 ### Exclusions
 
-* No Godot public API change.
-* No immediate-on-fault `NIL` change.
-* No ProviderBroker invocation-lock redesign.
-* No authoritative-fact coalescing.
-* No bounded-marshalling changes.
-* No diagnostic or environment-variable cleanup.
-* No unrelated scheduler framework or refactoring.
-* No weakening of tests.
+- No Godot public API or Dictionary-shape change.
+- No provider/Core transport change.
+- No ProviderBroker locking work.
+- No Backing Plan, Backing State, Operation Support, or access-cost redesign.
+- No display freshness or materialization-policy change.
+- No unrelated performance optimisation or cleanup.
+- No environment-variable controls.
+- No weakening of tests.
 
 ### Completion criteria
 
-* Both transport queues are genuinely bounded.
-* Admission failure of authoritative provider truth is visible and fatal.
-* Registry and snapshot behaviour matches the permanent truth-loss contract.
-* Payload ownership remains exact.
-* Fatal teardown and subsequent restart are deterministic.
-* Required verifier suites pass.
+- Every RID and render-wrapper destruction path has an identified safe context.
+- No arbitrary-thread or under-lock render-resource destruction remains.
+- Failure and terminal-teardown paths are safe and non-throwing.
+- Required verification passes on the actual supported Godot/platform paths.
+- Source, tests, and permanent documentation agree.

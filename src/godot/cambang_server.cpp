@@ -5,6 +5,7 @@
 #include "godot/cambang_stream.h"
 #include "godot/cambang_stream_result.h"
 #include "godot/cambang_stream_result_internal.h"
+#include "godot/render_resource_release_service.h"
 #include "godot/result_access_cost_evidence.h"
 #include "godot/retained_result_access_calibration.h"
 #include "godot/synthetic_gpu_backing_bridge.h"
@@ -1460,6 +1461,9 @@ godot::Error CamBANGServer::_start_with_provider_config(
     SyntheticRole synthetic_role,
     TimingDriver timing_driver,
     bool completion_gated_destructive_sequencing_enabled) {
+  if (!render_resource_release_runtime_available()) {
+    return godot::ERR_UNAVAILABLE;
+  }
   const CoreRuntimeState state = runtime_.state_copy();
   if (state == CoreRuntimeState::STARTING || state == CoreRuntimeState::LIVE) {
     return godot::ERR_ALREADY_IN_USE;
@@ -1570,7 +1574,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
 }
 
 void CamBANGServer::stop() {
-  synthetic_gpu_backing_warn_and_abandon_live_display_wrappers_before_stop();
+  synthetic_gpu_backing_warn_and_invalidate_live_display_wrappers_before_stop();
 
   // CoreRuntime owns attached-provider shutdown while the core thread is live.
   runtime_.stop();
@@ -2255,26 +2259,32 @@ void CamBANGServer::mark_stream_display_demand(uint64_t stream_id) {
   runtime_.mark_stream_display_demand(stream_id);
 }
 
-void CamBANGServer::retain_stream_display_demand(uint64_t stream_id) {
-  if (stream_id == 0 || !is_public_boundary_ready_()) {
-    return;
+uint64_t CamBANGServer::retain_stream_display_demand_from_owner(
+    uint64_t stream_id) noexcept {
+  if (stream_id == 0) {
+    return 0;
   }
-  runtime_.retain_stream_display_demand(stream_id);
+  try {
+    return runtime_.retain_stream_display_demand_lease(stream_id);
+  } catch (...) {
+    return 0;
+  }
 }
 
-void CamBANGServer::release_stream_display_demand(uint64_t stream_id) {
-  if (stream_id == 0 || !is_public_boundary_ready_()) {
+void CamBANGServer::release_stream_display_demand_from_owner(
+    uint64_t lease_token) noexcept {
+  if (lease_token == 0) {
     return;
   }
-  runtime_.release_stream_display_demand(stream_id);
+  (void)runtime_.release_stream_display_demand_lease(lease_token);
 }
 
-void CamBANGServer::release_stream_display_demand_async(uint64_t stream_id) {
-  if (stream_id == 0 || !is_public_boundary_ready_()) {
-    return;
-  }
-  runtime_.release_stream_display_demand_async(stream_id);
+#if defined(CAMBANG_INTERNAL_SMOKE)
+uint32_t CamBANGServer::stream_display_demand_refcount_for_smoke(
+    uint64_t stream_id) const noexcept {
+  return runtime_.stream_display_demand_refcount_for_smoke(stream_id);
 }
+#endif
 
 godot::Error CamBANGServer::trigger_device_capture(
     uint64_t device_instance_id,
@@ -2607,6 +2617,20 @@ void CamBANGServer::_on_godot_process_frame() {
   }
   last_tick_time_ns_ = now_ns;
 
+  // Destructor-originating render-resource handoffs are queue-only and may
+  // arrive from worker threads. Schedule their drain only from this Godot
+  // process-frame callback, never from the arbitrary owning thread.
+  request_render_resource_release_drain_from_godot_thread();
+  const RenderResourceReleaseFailure release_failure =
+      take_render_resource_release_failure();
+  if (release_failure != RenderResourceReleaseFailure::None) {
+    ERR_PRINT(godot::vformat(
+        "CamBANGServer: render-resource release service failed reason='%s'; stopping runtime.",
+        render_resource_release_failure_name(release_failure)));
+    if (runtime_.is_running()) {
+      stop();
+    }
+  }
   _on_godot_tick(delta_s);
   _drain_pending_stop_and_quit_();
 }
