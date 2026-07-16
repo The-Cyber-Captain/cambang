@@ -16,10 +16,18 @@ namespace cambang {
 struct SharedLiveCpuTextureRidState final {
   mutable std::mutex mutex;
   godot::RID texture_rid;
+  bool invalidated = false;
 
   godot::RID snapshot_rid() const;
   void replace_rid(const godot::RID& texture_rid_in);
   void clear();
+  // Marks this display view as torn-down truth (e.g. server stop) without
+  // releasing texture_rid itself; draw_allowed() reflects this immediately
+  // for any Godot object still holding this shared state. Mirrors
+  // SharedDisplayTextureRidState::mark_invalidated() in
+  // synthetic_gpu_backing_bridge.cpp.
+  void mark_invalidated();
+  bool draw_allowed() const;
   ~SharedLiveCpuTextureRidState();
 };
 
@@ -52,6 +60,10 @@ public:
       uint32_t height,
       bool retain_display_demand);
   void update_dimensions(uint32_t width, uint32_t height);
+  // Marks the underlying shared display state invalidated. Called via
+  // abandon_all_live_cpu_display_wrappers_before_stop() so outstanding
+  // wrappers stop drawing torn-down-generation content truthfully.
+  void invalidate();
 
   int32_t _get_width() const override;
   int32_t _get_height() const override;
@@ -93,6 +105,13 @@ uint64_t register_live_cpu_display_wrapper_borrow(uint64_t stream_id);
 void unregister_live_cpu_display_wrapper_borrow(uint64_t borrow_id);
 bool has_live_cpu_display_wrapper_borrow(uint64_t stream_id);
 void notify_live_cpu_display_wrapper_refresh(uint64_t stream_id, uint32_t width, uint32_t height);
+
+// Invalidates every outstanding LiveCpuDisplayTexture2D wrapper so a script
+// still holding one across a CamBANGServer stop/restart draws nothing rather
+// than a silently stale pre-stop frame. Mirrors
+// synthetic_gpu_backing_warn_and_abandon_live_display_wrappers_before_stop()
+// in synthetic_gpu_backing_bridge.cpp; call from the same stop sequence.
+void abandon_all_live_cpu_display_wrappers_before_stop();
 
 // Internal-only helper class registration required for Ref<DisplayDemandToken>::instantiate().
 void register_stream_result_internal_classes();

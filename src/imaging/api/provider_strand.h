@@ -43,6 +43,15 @@ public:
 
   bool running() const noexcept { return running_.load(std::memory_order_acquire); }
 
+  // Count of admissions where a non-lossy (Lifecycle/NativeObject/Error) event
+  // was pushed past capacity() because no queued Frame event was available to
+  // evict. This is expected to stay at 0 under normal operation; a nonzero and
+  // growing value indicates sustained non-lossy pressure that capacity_ can no
+  // longer bound (see provider_strand.cpp post()).
+  uint64_t non_lossy_over_capacity_count() const noexcept {
+    return non_lossy_over_capacity_count_.load(std::memory_order_relaxed);
+  }
+
   // ---- Fact posting helpers ----
   void post_device_opened(uint64_t device_instance_id);
   void post_device_closed(uint64_t device_instance_id);
@@ -128,6 +137,11 @@ private:
   std::condition_variable cv_;
   std::deque<Event> q_;
   size_t capacity_ = 0;
+  // Protected by mu_. Set true, atomically with stop()'s drain, in the same
+  // critical section; checked by post() before pushing so admission-close is
+  // deterministic relative to drain (no event can be pushed after drain has
+  // already run). Reset false by start().
+  bool closed_ = false;
 
   IProviderCallbacks* callbacks_ = nullptr;
   const char* debug_name_ = nullptr;
@@ -135,6 +149,7 @@ private:
   std::atomic<bool> running_{false};
   std::atomic<bool> stop_requested_{false};
   std::thread worker_;
+  std::atomic<uint64_t> non_lossy_over_capacity_count_{0};
 };
 
 } // namespace cambang

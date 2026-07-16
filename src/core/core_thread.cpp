@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <exception>
 #include <utility>
 
 namespace cambang {
@@ -16,6 +18,21 @@ constexpr size_t kMaxOrdinaryTasksPerCoreThreadTurn = 1;
 
 bool bounded_core_thread_work_full(size_t command_size, size_t ordinary_size) noexcept {
   return command_size + ordinary_size >= CoreThread::kMaxPendingTasks;
+}
+
+// The core thread is the sole owner of core state; an uncaught exception
+// escaping its entry function is UB and terminates the whole process. Every
+// unit of dispatched work (posted tasks, timer hook) must therefore run
+// inside this boundary rather than being invoked directly.
+template <typename Fn>
+void run_guarded(const char* label, Fn&& fn) noexcept {
+  try {
+    fn();
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "[CamBANG][CoreThread] uncaught exception in %s: %s\n", label, e.what());
+  } catch (...) {
+    std::fprintf(stderr, "[CamBANG][CoreThread] uncaught non-standard exception in %s\n", label);
+  }
 }
 
 } // namespace
@@ -393,7 +410,7 @@ void CoreThread::thread_main() {
 
   if (hooks_) {
     diagnostic_set_phase_from_core(DiagnosticPhase::EssentialLane);
-    hooks_->on_core_start();
+    run_guarded("on_core_start", [this]() { hooks_->on_core_start(); });
   }
 
   std::deque<Task> essential_local;
@@ -463,7 +480,7 @@ void CoreThread::thread_main() {
     for (size_t i = 0; i < essential_local.size(); ++i) {
       diagnostic_set_phase_from_core(DiagnosticPhase::EssentialLane);
       diagnostic_update_depths_(essential_local.size() - i, command_local.size(), ordinary_local.size());
-      essential_local[i]();
+      run_guarded("essential_task", essential_local[i]);
     }
     essential_local.clear();
     diagnostic_update_depths_(0, command_local.size(), ordinary_local.size());
@@ -471,7 +488,7 @@ void CoreThread::thread_main() {
     for (size_t i = 0; i < command_local.size(); ++i) {
       diagnostic_set_phase_from_core(DiagnosticPhase::CommandLane);
       diagnostic_update_depths_(0, command_local.size() - i, ordinary_local.size());
-      command_local[i]();
+      run_guarded("command_task", command_local[i]);
     }
     command_local.clear();
     diagnostic_update_depths_(0, 0, ordinary_local.size());
@@ -479,7 +496,7 @@ void CoreThread::thread_main() {
     for (size_t i = 0; i < ordinary_local.size(); ++i) {
       diagnostic_set_phase_from_core(DiagnosticPhase::OrdinaryLane);
       diagnostic_update_depths_(0, 0, ordinary_local.size() - i);
-      ordinary_local[i]();
+      run_guarded("ordinary_task", ordinary_local[i]);
     }
     ordinary_local.clear();
     diagnostic_update_depths_(0, 0, 0);
@@ -503,7 +520,7 @@ void CoreThread::thread_main() {
         // Timer tick runs strictly on the core thread.
         diagnostic_timer_running_.store(true, std::memory_order_relaxed);
         diagnostic_set_phase_from_core(DiagnosticPhase::TimerHook);
-        hooks_->on_core_timer_tick();
+        run_guarded("on_core_timer_tick", [this]() { hooks_->on_core_timer_tick(); });
         diagnostic_timer_running_.store(false, std::memory_order_relaxed);
         timer_tick_deferred_for_command = false;
       }
@@ -528,7 +545,7 @@ void CoreThread::thread_main() {
 
   if (hooks_) {
     diagnostic_set_phase_from_core(DiagnosticPhase::ShutdownStopChoreography);
-    hooks_->on_core_stop();
+    run_guarded("on_core_stop", [this]() { hooks_->on_core_stop(); });
   }
 }
 

@@ -60,6 +60,16 @@ void SharedLiveCpuTextureRidState::clear() {
   replace_rid(godot::RID());
 }
 
+void SharedLiveCpuTextureRidState::mark_invalidated() {
+  std::lock_guard<std::mutex> lock(mutex);
+  invalidated = true;
+}
+
+bool SharedLiveCpuTextureRidState::draw_allowed() const {
+  std::lock_guard<std::mutex> lock(mutex);
+  return !invalidated && texture_rid.is_valid();
+}
+
 SharedLiveCpuTextureRidState::~SharedLiveCpuTextureRidState() {
   clear();
 }
@@ -148,6 +158,29 @@ void notify_live_cpu_display_wrapper_refresh(uint64_t stream_id, uint32_t width,
   }
 }
 
+void abandon_all_live_cpu_display_wrappers_before_stop() {
+  std::vector<uint64_t> wrapper_instance_ids;
+  {
+    std::lock_guard<std::mutex> lock(g_live_cpu_display_wrapper_borrow_mutex);
+    wrapper_instance_ids.reserve(g_live_cpu_display_wrapper_borrows.size());
+    for (const auto& [borrow_id, borrow] : g_live_cpu_display_wrapper_borrows) {
+      (void)borrow_id;
+      if (borrow.wrapper_instance_id != 0) {
+        wrapper_instance_ids.push_back(borrow.wrapper_instance_id);
+      }
+    }
+  }
+
+  for (uint64_t wrapper_instance_id : wrapper_instance_ids) {
+    godot::Object* object = godot::ObjectDB::get_instance(wrapper_instance_id);
+    LiveCpuDisplayTexture2D* wrapper = godot::Object::cast_to<LiveCpuDisplayTexture2D>(object);
+    if (!wrapper) {
+      continue;
+    }
+    wrapper->invalidate();
+  }
+}
+
 DisplayDemandToken::~DisplayDemandToken() {
   if (display_demand_trace_enabled()) {
     godot::UtilityFunctions::print("[CamBANG][DemandTrace] token_release stream_id=", static_cast<uint64_t>(stream_id_),
@@ -227,6 +260,13 @@ void LiveCpuDisplayTexture2D::update_dimensions(uint32_t width, uint32_t height)
   emit_changed();
 }
 
+void LiveCpuDisplayTexture2D::invalidate() {
+  if (state_) {
+    state_->mark_invalidated();
+  }
+  emit_changed();
+}
+
 int32_t LiveCpuDisplayTexture2D::_get_width() const {
   return static_cast<int32_t>(width_);
 }
@@ -250,7 +290,10 @@ void LiveCpuDisplayTexture2D::_draw(
     const godot::Vector2& pos,
     const godot::Color& modulate,
     bool transpose) const {
-  const godot::RID texture_rid = state_ ? state_->snapshot_rid() : godot::RID();
+  if (!state_ || !state_->draw_allowed()) {
+    return;
+  }
+  const godot::RID texture_rid = state_->snapshot_rid();
   if (!texture_rid.is_valid()) {
     return;
   }
@@ -273,7 +316,10 @@ void LiveCpuDisplayTexture2D::_draw_rect(
     bool tile,
     const godot::Color& modulate,
     bool transpose) const {
-  const godot::RID texture_rid = state_ ? state_->snapshot_rid() : godot::RID();
+  if (!state_ || !state_->draw_allowed()) {
+    return;
+  }
+  const godot::RID texture_rid = state_->snapshot_rid();
   if (!texture_rid.is_valid()) {
     return;
   }
@@ -297,7 +343,10 @@ void LiveCpuDisplayTexture2D::_draw_rect_region(
     const godot::Color& modulate,
     bool transpose,
     bool clip_uv) const {
-  const godot::RID texture_rid = state_ ? state_->snapshot_rid() : godot::RID();
+  if (!state_ || !state_->draw_allowed()) {
+    return;
+  }
+  const godot::RID texture_rid = state_->snapshot_rid();
   if (!texture_rid.is_valid()) {
     return;
   }

@@ -2,6 +2,8 @@
 
 #include <cassert>
 #include <chrono>
+#include <cstdio>
+#include <exception>
 namespace cambang {
 
 namespace capture_latency_trace_diagnostics {
@@ -34,6 +36,10 @@ void CBProviderStrand::start(IProviderCallbacks* callbacks, const char* debug_na
   callbacks_ = callbacks;
   debug_name_ = debug_name;
   capacity_ = capacity;
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    closed_ = false;
+  }
   stop_requested_.store(false, std::memory_order_release);
   running_.store(true, std::memory_order_release);
   worker_ = std::thread([this]() { thread_main_(); });
@@ -54,9 +60,18 @@ void CBProviderStrand::stop() {
     worker_.join();
   }
 
-  // Any residual queued events are dropped deterministically (release frames).
+  // Close admission and drain atomically under mu_. Setting closed_ here,
+  // in the same critical section as the drain, closes the race where post()
+  // could otherwise observe stop_requested_==false, fall through its
+  // outside-the-lock fast-path check, and push an event after this drain has
+  // already run — an event that would then never be delivered (the worker
+  // thread has already exited above) and never accounted as dropped either.
+  // post() re-checks closed_ under this same mutex before pushing, so the two
+  // critical sections cannot interleave: any post() call is fully ordered
+  // before or after this one.
   {
     std::lock_guard<std::mutex> lk(mu_);
+    closed_ = true;
     for (auto& ev : q_) {
       drop_(ev);
     }
@@ -79,11 +94,23 @@ void CBProviderStrand::flush() {
 
 void CBProviderStrand::post(Event ev) {
   if (!running() || stop_requested_.load(std::memory_order_acquire)) {
+    // Best-effort fast-path exit for the common already-stopped/stopping
+    // case; not the correctness guarantee. stop_requested_ is set outside
+    // mu_, so this check alone cannot close the race with stop()'s drain
+    // (see closed_ check below, which is authoritative).
     drop_(ev);
     return;
   }
 
   std::unique_lock<std::mutex> lk(mu_);
+  if (closed_) {
+    // Authoritative check: stop()'s drain has already run (or is running) in
+    // the same critical section that sets closed_. Dropping here rather than
+    // pushing keeps admission-close deterministic relative to drain.
+    lk.unlock();
+    drop_(ev);
+    return;
+  }
   const EventClass cls = classify_(ev);
   if (capacity_ > 0 && q_.size() >= capacity_) {
     if (cls == EventClass::Frame) {
@@ -93,8 +120,12 @@ void CBProviderStrand::post(Event ev) {
       return;
     }
 
-    // Non-lossy classes must not be silently dropped once admitted.
-    // Prefer reclaiming space from an already-queued frame.
+    // Non-lossy classes must not be silently dropped once admitted
+    // (docs/architecture/provider_strand_model.md: lifecycle/native-object/
+    // error events "must never be dropped"). Prefer reclaiming space from an
+    // already-queued frame; if none is available, admission proceeds past
+    // capacity_ rather than violating the non-lossy contract.
+    bool evicted_frame = false;
     for (auto it = q_.begin(); it != q_.end(); ++it) {
       if (classify_(*it) == EventClass::Frame) {
         Event dropped = std::move(*it);
@@ -102,8 +133,15 @@ void CBProviderStrand::post(Event ev) {
         lk.unlock();
         drop_(dropped);
         lk.lock();
+        evicted_frame = true;
         break;
       }
+    }
+    if (!evicted_frame) {
+      // Diagnosable record of sustained non-lossy pressure exceeding
+      // capacity_; this is the only visibility gap in otherwise-correct
+      // non-lossy admission.
+      non_lossy_over_capacity_count_.fetch_add(1, std::memory_order_relaxed);
     }
   }
   q_.push_back(std::move(ev));
@@ -148,7 +186,16 @@ void CBProviderStrand::thread_main_() {
       q_.pop_front();
     }
 
-    deliver_(ev);
+    // deliver_() invokes arbitrary IProviderCallbacks virtual methods. An
+    // uncaught exception escaping this thread's entry function is UB and
+    // terminates the whole process, so it must not propagate past this point.
+    try {
+      deliver_(ev);
+    } catch (const std::exception& e) {
+      std::fprintf(stderr, "[CamBANG][CBProviderStrand] uncaught exception in deliver_: %s\n", e.what());
+    } catch (...) {
+      std::fprintf(stderr, "[CamBANG][CBProviderStrand] uncaught non-standard exception in deliver_\n");
+    }
   }
 }
 

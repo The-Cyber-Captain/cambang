@@ -1571,6 +1571,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
 
 void CamBANGServer::stop() {
   synthetic_gpu_backing_warn_and_abandon_live_display_wrappers_before_stop();
+  abandon_all_live_cpu_display_wrappers_before_stop();
 
   // CoreRuntime owns attached-provider shutdown while the core thread is live.
   runtime_.stop();
