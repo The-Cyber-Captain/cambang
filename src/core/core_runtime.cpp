@@ -3783,6 +3783,9 @@ CoreRuntime::backing_plan_evaluation_reports() const {
   if (pr != CoreThread::PostResult::Enqueued) {
     return {};
   }
+  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    return {};
+  }
   return completed.get();
 }
 
@@ -3801,6 +3804,9 @@ CoreRuntime::recent_capture_lifecycle_timing_reports() const {
     completion->set_value(recent_capture_lifecycle_timing_reports_on_core_thread_());
   });
   if (pr != CoreThread::PostResult::Enqueued) {
+    return {};
+  }
+  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
     return {};
   }
   return completed.get();
@@ -3832,6 +3838,9 @@ CoreRuntime::imaging_spec_retained_state_for_smoke() const {
   if (pr != CoreThread::PostResult::Enqueued) {
     return std::nullopt;
   }
+  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    return std::nullopt;
+  }
   return completed.get();
 }
 
@@ -3856,6 +3865,9 @@ CoreRuntime::active_external_camera_description_for_smoke(const std::string& cam
   if (pr != CoreThread::PostResult::Enqueued) {
     return std::nullopt;
   }
+  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    return std::nullopt;
+  }
   return completed.get();
 }
 
@@ -3872,6 +3884,9 @@ size_t CoreRuntime::active_external_camera_description_count_for_smoke() const {
   if (pr != CoreThread::PostResult::Enqueued) {
     return 0;
   }
+  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    return 0;
+  }
   return completed.get();
 }
 
@@ -3886,6 +3901,9 @@ uint64_t CoreRuntime::active_external_camera_description_version_for_smoke() con
     completion->set_value(active_camera_description_version_);
   });
   if (pr != CoreThread::PostResult::Enqueued) {
+    return 0;
+  }
+  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
     return 0;
   }
   return completed.get();
@@ -5502,6 +5520,14 @@ TryStartStreamStatus CoreRuntime::try_start_stream(uint64_t stream_id) noexcept 
     return TryStartStreamStatus::Busy;
   }
 
+  if (core_thread_.is_core_thread()) {
+    // This synchronous wrapper posts to the core thread and blocks on the
+    // result; called from the core thread itself it would self-deadlock (the
+    // posted task could never be popped by this same, now-blocked, thread).
+    // No current caller does this; fail fast rather than hang if one ever does.
+    return TryStartStreamStatus::Busy;
+  }
+
   auto result_promise = std::make_shared<std::promise<TryStartStreamStatus>>();
   std::future<TryStartStreamStatus> f = result_promise->get_future();
   const CoreThread::PostResult pr = try_post([this, stream_id, result_promise]() mutable {
@@ -5553,6 +5579,12 @@ TryStartStreamStatus CoreRuntime::try_start_stream(uint64_t stream_id) noexcept 
   if (pr != CoreThread::PostResult::Enqueued) {
     return TryStartStreamStatus::Busy;
   }
+  // Bounded wait: public synchronous wrappers must not block indefinitely
+  // (cpp_code_quality_policy.md); mirrors the 2s bound already used by the
+  // rig orchestration wrappers in this file.
+  if (f.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    return TryStartStreamStatus::Busy;
+  }
   return f.get();
 }
 
@@ -5563,6 +5595,12 @@ TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept {
 
   ICameraProvider* prov = provider_.load(std::memory_order_acquire);
   if (!prov) {
+    return TryStopStreamStatus::Busy;
+  }
+
+  if (core_thread_.is_core_thread()) {
+    // See try_start_stream(): this wrapper would self-deadlock if called from
+    // the core thread itself. Fail fast rather than hang.
     return TryStopStreamStatus::Busy;
   }
 
@@ -5605,6 +5643,9 @@ TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept {
   if (pr != CoreThread::PostResult::Enqueued) {
     return TryStopStreamStatus::Busy;
   }
+  if (f.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    return TryStopStreamStatus::Busy;
+  }
   return f.get();
 }
 
@@ -5615,6 +5656,12 @@ TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexc
 
   ICameraProvider* prov = provider_.load(std::memory_order_acquire);
   if (!prov) {
+    return TryDestroyStreamStatus::Busy;
+  }
+
+  if (core_thread_.is_core_thread()) {
+    // See try_start_stream(): this wrapper would self-deadlock if called from
+    // the core thread itself. Fail fast rather than hang.
     return TryDestroyStreamStatus::Busy;
   }
 
@@ -5666,6 +5713,9 @@ TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexc
   if (pr != CoreThread::PostResult::Enqueued) {
     return TryDestroyStreamStatus::Busy;
   }
+  if (f.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    return TryDestroyStreamStatus::Busy;
+  }
   return f.get();
 }
 
@@ -5679,6 +5729,12 @@ TryOpenDeviceStatus CoreRuntime::try_open_device(
 
   ICameraProvider* prov = provider_.load(std::memory_order_acquire);
   if (!prov) {
+    return TryOpenDeviceStatus::Busy;
+  }
+
+  if (core_thread_.is_core_thread()) {
+    // See try_start_stream(): this wrapper would self-deadlock if called from
+    // the core thread itself. Fail fast rather than hang.
     return TryOpenDeviceStatus::Busy;
   }
 
@@ -5720,6 +5776,9 @@ TryOpenDeviceStatus CoreRuntime::try_open_device(
   if (pr != CoreThread::PostResult::Enqueued) {
     return TryOpenDeviceStatus::Busy;
   }
+  if (f.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    return TryOpenDeviceStatus::Busy;
+  }
   return f.get();
 }
 
@@ -5730,6 +5789,12 @@ TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) 
 
   ICameraProvider* prov = provider_.load(std::memory_order_acquire);
   if (!prov) {
+    return TryCloseDeviceStatus::Busy;
+  }
+
+  if (core_thread_.is_core_thread()) {
+    // See try_start_stream(): this wrapper would self-deadlock if called from
+    // the core thread itself. Fail fast rather than hang.
     return TryCloseDeviceStatus::Busy;
   }
 
@@ -5817,6 +5882,9 @@ TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) 
   });
 
   if (pr != CoreThread::PostResult::Enqueued) {
+    return TryCloseDeviceStatus::Busy;
+  }
+  if (f.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
     return TryCloseDeviceStatus::Busy;
   }
   return f.get();
@@ -5963,6 +6031,11 @@ TrySetWarmHoldStatus CoreRuntime::try_set_device_warm_hold_ms(
   if (device_instance_id == 0) {
     return TrySetWarmHoldStatus::InvalidArgument;
   }
+  if (core_thread_.is_core_thread()) {
+    // See try_start_stream(): this wrapper would self-deadlock if called from
+    // the core thread itself. Fail fast rather than hang.
+    return TrySetWarmHoldStatus::Busy;
+  }
   auto status_promise = std::make_shared<std::promise<TrySetWarmHoldStatus>>();
   std::future<TrySetWarmHoldStatus> status_future = status_promise->get_future();
   const CoreThread::PostResult pr = try_post([this, device_instance_id, warm_hold_ms, status_promise]() {
@@ -5976,6 +6049,9 @@ TrySetWarmHoldStatus CoreRuntime::try_set_device_warm_hold_ms(
     status_promise->set_value(TrySetWarmHoldStatus::OK);
   });
   if (pr != CoreThread::PostResult::Enqueued) {
+    return TrySetWarmHoldStatus::Busy;
+  }
+  if (status_future.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
     return TrySetWarmHoldStatus::Busy;
   }
   return status_future.get();
@@ -6003,6 +6079,9 @@ bool CoreRuntime::materialize_capture_request_for_server(uint64_t device_instanc
     return false;
   }
 
+  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    return false;
+  }
   const auto result = completed.get();
   if (!result.first) {
     return false;
@@ -6239,6 +6318,9 @@ TryTriggerDeviceCaptureStatus CoreRuntime::try_trigger_device_capture_with_captu
     return TryTriggerDeviceCaptureStatus::Busy;
   }
 
+  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    return TryTriggerDeviceCaptureStatus::Busy;
+  }
   const TryTriggerDeviceCaptureStatus status = completed.get();
   const uint64_t wait_end_ns = capture_latency_trace_now_ns();
   capture_latency_trace_printf(
@@ -6554,6 +6636,9 @@ CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_material
   if (pr != CoreThread::PostResult::Enqueued) {
     return make_rig_preflight_failure(rig_id, RigPreflightFailure::RigNotFound);
   }
+  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    return make_rig_preflight_failure(rig_id, RigPreflightFailure::RigNotFound);
+  }
   return completed.get();
 }
 
@@ -6741,6 +6826,13 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_
             static_cast<uint32_t>(ProviderError::ERR_BAD_STATE)));
   }
 
+  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    return make_rig_orchestration_submission_failure(
+        make_rig_submission_provider_unavailable(
+            rig_id,
+            capture_id,
+            static_cast<uint32_t>(ProviderError::ERR_BAD_STATE)));
+  }
   RigTriggerOrchestrationResult result = completed.get();
   const uint64_t wait_end_ns = capture_latency_trace_now_ns();
   capture_latency_trace_printf(

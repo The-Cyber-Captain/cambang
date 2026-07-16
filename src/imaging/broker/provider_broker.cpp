@@ -724,21 +724,33 @@ ProviderResult ProviderBroker::apply_imaging_spec_patch(
 }
 
 ProviderResult ProviderBroker::shutdown() {
-  std::lock_guard<std::mutex> lock(active_provider_mutex_);
-  ProviderResult pr = ensure_initialized_or_err_();
-  if (!pr.ok()) {
-    return pr;
-  }
-  if (active_) {
-    ProviderResult spr = active_->shutdown();
-    active_.reset();
+  // A provider's shutdown() is not guaranteed prompt (docs/provider_architecture.md
+  // §8.1: "must be prompt, bounded... must not perform long backend drains
+  // while public/Godot callers are synchronously blocked"; the current
+  // SyntheticProvider::shutdown() joins outstanding capture threads and
+  // flushes/stops its strand). Take exclusive ownership of active_ and clear
+  // it under the lock so any other thread calling into the broker concurrently
+  // observes "not initialized" immediately (a fast, deterministic failure)
+  // instead of blocking on active_provider_mutex_ for however long teardown
+  // takes. The actual (possibly slow) provider->shutdown() call then runs
+  // without the lock held; no other code path can reach this exact provider
+  // instance any more since active_ was cleared before releasing the lock.
+  std::unique_ptr<ICameraProvider> provider_to_shutdown;
+  {
+    std::lock_guard<std::mutex> lock(active_provider_mutex_);
+    ProviderResult pr = ensure_initialized_or_err_();
+    if (!pr.ok()) {
+      return pr;
+    }
+    provider_to_shutdown = std::move(active_);
     initialized_ = false;
     callbacks_ = nullptr;
-    return spr;
   }
-  initialized_ = false;
-  callbacks_ = nullptr;
-  return ProviderResult::success();
+
+  if (!provider_to_shutdown) {
+    return ProviderResult::success();
+  }
+  return provider_to_shutdown->shutdown();
 }
 
 #if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
