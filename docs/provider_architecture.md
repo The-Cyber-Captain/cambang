@@ -285,110 +285,41 @@ Providers communicate facts to Core through the **provider strand**
 The strand is the single serialized callback context through which
 provider → Core facts are delivered.
 
-Provider facts fall into the following delivery classes:
+Provider facts fall into four event classes:
 
-| Event class     | Examples                                                               | Delivery policy    |
-| --------------- | ---------------------------------------------------------------------- | ------------------ |
-| Lifecycle       | device opened/closed, stream created/destroyed, stream started/stopped | Non-lossy          |
-| Native-object   | native object created/destroyed                                        | Non-lossy          |
-| Error           | device error, stream error, provider error                             | Non-lossy          |
-| Capture         | accepted still-capture frame, capture completion, capture failure      | Non-lossy          |
-| Repeating frame | repeating stream-frame delivery                                        | Pressure-droppable |
+| Event class | Examples | Delivery policy |
+|---|---|---|
+| Lifecycle | device opened/closed, stream created/destroyed, stream started/stopped | Non-lossy |
+| Native-object | native object created/destroyed | Non-lossy |
+| Error | device error, stream error, provider error | Non-lossy |
+| Frame | repeating frame delivery, capture frame delivery | Lossy |
 
-### 7.1 Authoritative non-lossy facts
+### 7.1 Non-lossy classes
 
-Lifecycle, native-object, error, and accepted still-capture facts are
-authoritative.
+Lifecycle, native-object, and error events are authoritative facts.
+These must:
 
-They must:
+- always be delivered once admitted to the strand
+- never be silently discarded due to queue pressure
+- preserve observed ordering relative to other non-frame facts
 
-* preserve observed ordering relative to other authoritative provider facts;
-* never be silently discarded;
-* either be admitted to the provider/Core transport or cause the active
-  provider generation to fail closed;
-* retain any payload or release ownership until that ownership is transferred
-  or released exactly once.
+### 7.2 Frame class
 
-Failure to admit an authoritative provider fact means Core can no longer prove
-that it has received a complete provider-fact sequence. That is a fatal
-provider-transport failure for the active generation, not ordinary frame
-backpressure.
+Frame events may be dropped under pressure, but frame dropping must not:
 
-### 7.2 Repeating stream frames
+- suppress lifecycle events
+- suppress native-object events
+- distort registry truthfulness
 
-Repeating stream frames represent supersedable latest-state image delivery.
-They may be dropped under pressure.
+### 7.3 Admitted-frame release lifetime invariant
 
-Dropping a repeating frame must not:
+Once a provider admits a frame to Core, the frame's payload memory,
+release token / `release_user`, and any storage touched by the release
+callback must remain valid until Core actually invokes the release callback.
 
-* suppress or reorder authoritative provider facts;
-* distort registry or capture truth;
-* leak or double-release its payload;
-* leave ingress-depth or received/dropped accounting unbalanced.
-
-At capacity, an authoritative fact may reclaim queued repeating-frame work
-where the implementation can do so without violating ordering across an
-authoritative barrier.
-
-Still-capture frames are not repeating-frame pressure work and must not be
-discarded under this rule.
-
-### 7.3 Hard-bounded provider transport
-
-Provider-strand capacity is a hard bound, not a threshold beyond which
-authoritative traffic may grow storage without limit.
-
-If an authoritative fact cannot be admitted after any permitted repeating-frame
-reclamation, the strand must:
-
-1. latch one fatal transport-failure reason using first-failure-wins semantics;
-2. close further event admission for that provider generation;
-3. ensure that the rejected event's owned payload, where applicable, is released
-   exactly once by the boundary that retains ownership after failed admission;
-4. report the failure once through an internal out-of-band provider/Core path
-   that does not traverse the failed strand;
-5. enter deterministic containment and shutdown behaviour.
-
-Allocation failure or an exception escaping provider-callback delivery has the
-same generation-fatal meaning because the authoritative transport sequence can
-no longer be guaranteed.
-
-The fatal signal must not require dynamic allocation or insertion into the
-failed queue.
-
-### 7.4 Admitted-frame release lifetime invariant
-
-Once a provider admits a frame to the provider/Core transport, the frame's
-payload memory, release token / `release_user`, and any storage touched by the
-release callback must remain valid until CamBANG invokes the release callback.
-
-The same exact-once release obligation applies when a frame is:
-
-* dropped as repeating-frame pressure work;
-* reclaimed to admit an authoritative fact;
-* rejected after transport failure;
-* discarded during fatal containment;
-* released during stop or queue cleanup.
-
-Providers may use provider-internal frame lease/release-safety state to uphold
-this invariant. This lease state is provider-internal bookkeeping and is
-**not** a registry-visible native object type.
-
-### 7.5 Failure containment and strand completion
-
-Exceptions must not escape the provider-strand worker boundary.
-
-A provider callback exception:
-
-* latches fatal transport failure;
-* prevents further normal fact delivery for that generation;
-* preserves deterministic release or completion of queued payloads and
-  barriers;
-* is reported through the same out-of-band fatal path.
-
-`flush()`, drain barriers, and `stop()` must have deterministic failure-aware
-completion. A fatal strand failure must not leave a caller waiting indefinitely
-for a barrier event that can no longer be delivered normally.
+Providers may use provider-internal frame lease/release-safety state to
+uphold this invariant. This lease state is provider-internal bookkeeping
+and is **not** a registry-visible native object type.
 
 ---
 
@@ -424,26 +355,6 @@ Future platform-backed providers must not:
 Backend-specific long work belongs on provider-owned worker / looper threads.
 Completion, errors, and lifecycle truth must be reported back through provider
 facts / callbacks according to the provider strand model.
-
-### 8.2 Transport failure boundary
-
-The provider strand serializes normal facts; it is not itself the only route by
-which failure of that transport can be reported.
-
-Fatal transport failure is reported through a narrow internal callback that:
-
-* is independent of the strand queue;
-* does not allocate as part of signalling;
-* may be called from the strand or another provider-owned thread;
-* reports only the first fatal reason for the active generation;
-* does not mutate Core registries directly.
-
-The receiving Core boundary converts that signal into Core-thread-owned
-containment and teardown. Providers must not attempt to repair, replay, or
-reconstruct missing authoritative facts after signalling transport failure.
-
-A subsequent successful start establishes a new provider generation with fresh
-transport state. It does not resume the failed fact sequence.
 
 ---
 

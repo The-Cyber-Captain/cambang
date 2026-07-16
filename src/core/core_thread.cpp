@@ -111,7 +111,6 @@ bool CoreThread::start(IHooks* hooks) {
     stop_requested_ = false;
     stop_when_idle_ = false;
     timer_tick_requested_ = false;
-    fatal_transport_hook_emitted_ = false;
     has_deadline_ = false;
     deadline_ns_ = 0;
     essential_tasks_.clear();
@@ -133,9 +132,6 @@ bool CoreThread::start(IHooks* hooks) {
   tasks_dropped_full_.store(0, std::memory_order_relaxed);
   tasks_dropped_closed_.store(0, std::memory_order_relaxed);
   tasks_dropped_allocfail_.store(0, std::memory_order_relaxed);
-  fatal_transport_reason_.store(
-      static_cast<uint8_t>(ProviderTransportFailure::None),
-      std::memory_order_release);
 
   thread_ = std::thread(&CoreThread::thread_main, this);
   return true;
@@ -210,7 +206,7 @@ CoreThread::PostResult CoreThread::try_post(Task task) {
 
   {
     std::lock_guard<std::mutex> lock(mu_);
-    if (stop_requested_ || transport_fatal_latched_()) {
+    if (stop_requested_) {
       tasks_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
       return PostResult::Closed;
     }
@@ -251,7 +247,7 @@ CoreThread::PostResult CoreThread::try_post_command(Task task) {
 
   {
     std::lock_guard<std::mutex> lock(mu_);
-    if (stop_requested_ || transport_fatal_latched_()) {
+    if (stop_requested_) {
       tasks_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
       return PostResult::Closed;
     }
@@ -279,8 +275,9 @@ CoreThread::PostResult CoreThread::try_post_command(Task task) {
 
 CoreThread::PostResult CoreThread::try_post_essential(Task task) {
   // Essential ingress point.
-  // This queue is intentionally separate from the ordinary bounded queue, but
-  // it still has a hard capacity so authoritative transport remains bounded.
+  // This queue is intentionally separate from the ordinary bounded queue so
+  // lifecycle/native/error/capture-terminal facts are not dropped only because
+  // ordinary frame/request work is saturated.
   if (!task) {
     return PostResult::Enqueued;
   }
@@ -292,14 +289,9 @@ CoreThread::PostResult CoreThread::try_post_essential(Task task) {
 
   {
     std::lock_guard<std::mutex> lock(mu_);
-    if (stop_requested_ || transport_fatal_latched_()) {
+    if (stop_requested_) {
       tasks_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
       return PostResult::Closed;
-    }
-
-    if (essential_tasks_.size() >= kMaxEssentialPendingTasks) {
-      tasks_dropped_full_.fetch_add(1, std::memory_order_relaxed);
-      return PostResult::QueueFull;
     }
 
     try {
@@ -315,20 +307,6 @@ CoreThread::PostResult CoreThread::try_post_essential(Task task) {
   essential_tasks_enqueued_.fetch_add(1, std::memory_order_relaxed);
   cv_.notify_one();
   return PostResult::Enqueued;
-}
-
-bool CoreThread::notify_provider_transport_fatal(
-    ProviderTransportFailure reason) noexcept {
-  uint8_t expected = static_cast<uint8_t>(ProviderTransportFailure::None);
-  if (!fatal_transport_reason_.compare_exchange_strong(
-          expected,
-          static_cast<uint8_t>(reason),
-          std::memory_order_acq_rel,
-          std::memory_order_acquire)) {
-    return false;
-  }
-  cv_.notify_one();
-  return true;
 }
 
 CoreThread::Stats CoreThread::stats_copy() const noexcept {
@@ -426,8 +404,6 @@ void CoreThread::thread_main() {
   for (;;) {
     bool do_timer_tick = false;
     bool stopping = false;
-    bool fatal_transport_observed = false;
-    ProviderTransportFailure fatal_reason = ProviderTransportFailure::None;
 
     {
       std::unique_lock<std::mutex> lock(mu_);
@@ -468,9 +444,6 @@ void CoreThread::thread_main() {
       }
 
       stopping = stop_requested_;
-      fatal_transport_observed = transport_fatal_latched_();
-      fatal_reason = static_cast<ProviderTransportFailure>(
-          fatal_transport_reason_.load(std::memory_order_acquire));
 
       if (timer_tick_requested_) {
         do_timer_tick = true;
@@ -482,35 +455,12 @@ void CoreThread::thread_main() {
       drain_tasks_locked(essential_local, command_local, ordinary_local);
     }
 
-    if (fatal_transport_observed) {
-      essential_local.clear();
-      command_local.clear();
-      ordinary_local.clear();
-      diagnostic_update_depths_(0, 0, 0);
-      if (hooks_ && !fatal_transport_hook_emitted_) {
-        fatal_transport_hook_emitted_ = true;
-        hooks_->on_core_transport_fatal(fatal_reason);
-      }
-    }
-
     // Execute all tasks serially.
     // Determinism guarantee:
     // - No two tasks execute concurrently.
     // - Essential FIFO tasks execute before command FIFO tasks drained in the same pump.
     // - Command FIFO tasks execute before ordinary FIFO tasks drained in the same pump.
     for (size_t i = 0; i < essential_local.size(); ++i) {
-      if (transport_fatal_latched_()) {
-        essential_local.clear();
-        command_local.clear();
-        ordinary_local.clear();
-        diagnostic_update_depths_(0, 0, 0);
-        if (hooks_ && !fatal_transport_hook_emitted_) {
-          fatal_transport_hook_emitted_ = true;
-          hooks_->on_core_transport_fatal(static_cast<ProviderTransportFailure>(
-              fatal_transport_reason_.load(std::memory_order_acquire)));
-        }
-        break;
-      }
       diagnostic_set_phase_from_core(DiagnosticPhase::EssentialLane);
       diagnostic_update_depths_(essential_local.size() - i, command_local.size(), ordinary_local.size());
       essential_local[i]();
@@ -519,17 +469,6 @@ void CoreThread::thread_main() {
     diagnostic_update_depths_(0, command_local.size(), ordinary_local.size());
 
     for (size_t i = 0; i < command_local.size(); ++i) {
-      if (transport_fatal_latched_()) {
-        command_local.clear();
-        ordinary_local.clear();
-        diagnostic_update_depths_(0, 0, 0);
-        if (hooks_ && !fatal_transport_hook_emitted_) {
-          fatal_transport_hook_emitted_ = true;
-          hooks_->on_core_transport_fatal(static_cast<ProviderTransportFailure>(
-              fatal_transport_reason_.load(std::memory_order_acquire)));
-        }
-        break;
-      }
       diagnostic_set_phase_from_core(DiagnosticPhase::CommandLane);
       diagnostic_update_depths_(0, command_local.size() - i, ordinary_local.size());
       command_local[i]();
@@ -538,16 +477,6 @@ void CoreThread::thread_main() {
     diagnostic_update_depths_(0, 0, ordinary_local.size());
 
     for (size_t i = 0; i < ordinary_local.size(); ++i) {
-      if (transport_fatal_latched_()) {
-        ordinary_local.clear();
-        diagnostic_update_depths_(0, 0, 0);
-        if (hooks_ && !fatal_transport_hook_emitted_) {
-          fatal_transport_hook_emitted_ = true;
-          hooks_->on_core_transport_fatal(static_cast<ProviderTransportFailure>(
-              fatal_transport_reason_.load(std::memory_order_acquire)));
-        }
-        break;
-      }
       diagnostic_set_phase_from_core(DiagnosticPhase::OrdinaryLane);
       diagnostic_update_depths_(0, 0, ordinary_local.size() - i);
       ordinary_local[i]();
@@ -601,11 +530,6 @@ void CoreThread::thread_main() {
     diagnostic_set_phase_from_core(DiagnosticPhase::ShutdownStopChoreography);
     hooks_->on_core_stop();
   }
-}
-
-bool CoreThread::transport_fatal_latched_() const noexcept {
-  return fatal_transport_reason_.load(std::memory_order_acquire) !=
-      static_cast<uint8_t>(ProviderTransportFailure::None);
 }
 
 } // namespace cambang

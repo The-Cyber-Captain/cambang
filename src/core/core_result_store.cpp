@@ -1018,14 +1018,6 @@ void CoreResultStore::remove_stream_result(uint64_t stream_id) {
     }
     stream_display_demand_last_seen_ns_.erase(stream_id);
     stream_display_demand_refcounts_.erase(stream_id);
-    for (auto lease_it = stream_display_demand_leases_.begin();
-         lease_it != stream_display_demand_leases_.end();) {
-      if (lease_it->second == stream_id) {
-        lease_it = stream_display_demand_leases_.erase(lease_it);
-      } else {
-        ++lease_it;
-      }
-    }
   }
 }
 
@@ -1038,7 +1030,6 @@ void CoreResultStore::clear() {
     old_capture_results.swap(capture_results_by_capture_id_);
     stream_display_demand_last_seen_ns_.clear();
     stream_display_demand_refcounts_.clear();
-    stream_display_demand_leases_.clear();
     stream_access_posture_ids_.clear();
     capture_access_posture_ids_.clear();
   }
@@ -1057,118 +1048,49 @@ void CoreResultStore::mark_stream_display_demand(uint64_t stream_id, uint64_t no
   stream_display_demand_last_seen_ns_[stream_id] = now_ns;
 }
 
-CoreResultStore::DisplayDemandLeaseToken
-CoreResultStore::retain_stream_display_demand_lease(uint64_t stream_id) noexcept {
+void CoreResultStore::retain_stream_display_demand(uint64_t stream_id) {
   if (stream_id == 0) {
-    return 0;
+    return;
   }
-  try {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (latest_stream_results_.find(stream_id) == latest_stream_results_.end() ||
-        next_display_demand_lease_token_ == 0) {
-      return 0;
-    }
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (latest_stream_results_.find(stream_id) == latest_stream_results_.end()) {
+    return;
+  }
+  uint32_t& refs = stream_display_demand_refcounts_[stream_id];
+  if (refs != std::numeric_limits<uint32_t>::max()) {
+    refs += 1u;
+  }
+  if (display_demand_trace_enabled()) {
+    std::printf("[CamBANG][DemandTrace] retain stream_id=%llu refcount=%u\n",
+                static_cast<unsigned long long>(stream_id),
+                refs);
+  }
+}
 
-    auto ref_it = stream_display_demand_refcounts_.find(stream_id);
-    bool inserted_refcount = false;
-    if (ref_it == stream_display_demand_refcounts_.end()) {
-      const auto inserted = stream_display_demand_refcounts_.emplace(stream_id, 0u);
-      ref_it = inserted.first;
-      inserted_refcount = inserted.second;
-    }
-    if (ref_it->second == std::numeric_limits<uint32_t>::max()) {
-      if (inserted_refcount) {
-        stream_display_demand_refcounts_.erase(ref_it);
-      }
-      return 0;
-    }
-
-    const DisplayDemandLeaseToken token = next_display_demand_lease_token_;
-    try {
-      const auto inserted = stream_display_demand_leases_.emplace(token, stream_id);
-      if (!inserted.second) {
-        if (inserted_refcount) {
-          stream_display_demand_refcounts_.erase(ref_it);
-        }
-        return 0;
-      }
-    } catch (...) {
-      if (inserted_refcount) {
-        stream_display_demand_refcounts_.erase(ref_it);
-      }
-      return 0;
-    }
-
-    ref_it->second += 1u;
-    next_display_demand_lease_token_ =
-        token == std::numeric_limits<DisplayDemandLeaseToken>::max() ? 0 : token + 1u;
+void CoreResultStore::release_stream_display_demand(uint64_t stream_id) {
+  if (stream_id == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto it = stream_display_demand_refcounts_.find(stream_id);
+  if (it == stream_display_demand_refcounts_.end()) {
+    return;
+  }
+  if (it->second <= 1u) {
     if (display_demand_trace_enabled()) {
-      std::printf(
-          "[CamBANG][DemandTrace] retain stream_id=%llu token=%llu refcount=%u\n",
-          static_cast<unsigned long long>(stream_id),
-          static_cast<unsigned long long>(token),
-          ref_it->second);
+      std::printf("[CamBANG][DemandTrace] release stream_id=%llu refcount=0\n",
+                  static_cast<unsigned long long>(stream_id));
     }
-    return token;
-  } catch (...) {
-    return 0;
+    stream_display_demand_refcounts_.erase(it);
+    return;
+  }
+  it->second -= 1u;
+  if (display_demand_trace_enabled()) {
+    std::printf("[CamBANG][DemandTrace] release stream_id=%llu refcount=%u\n",
+                static_cast<unsigned long long>(stream_id),
+                it->second);
   }
 }
-
-bool CoreResultStore::release_stream_display_demand_lease(
-    DisplayDemandLeaseToken token) noexcept {
-  if (token == 0) {
-    return false;
-  }
-  try {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto lease_it = stream_display_demand_leases_.find(token);
-    if (lease_it == stream_display_demand_leases_.end()) {
-      return false;
-    }
-    const uint64_t stream_id = lease_it->second;
-    const auto ref_it = stream_display_demand_refcounts_.find(stream_id);
-    if (ref_it == stream_display_demand_refcounts_.end() || ref_it->second == 0) {
-      stream_display_demand_leases_.erase(lease_it);
-      return false;
-    }
-    stream_display_demand_leases_.erase(lease_it);
-    if (ref_it->second <= 1u) {
-      stream_display_demand_refcounts_.erase(ref_it);
-      if (display_demand_trace_enabled()) {
-        std::printf(
-            "[CamBANG][DemandTrace] release stream_id=%llu token=%llu refcount=0\n",
-            static_cast<unsigned long long>(stream_id),
-            static_cast<unsigned long long>(token));
-      }
-      return true;
-    }
-    ref_it->second -= 1u;
-    if (display_demand_trace_enabled()) {
-      std::printf(
-          "[CamBANG][DemandTrace] release stream_id=%llu token=%llu refcount=%u\n",
-          static_cast<unsigned long long>(stream_id),
-          static_cast<unsigned long long>(token),
-          ref_it->second);
-    }
-    return true;
-  } catch (...) {
-    return false;
-  }
-}
-
-#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
-uint32_t CoreResultStore::stream_display_demand_refcount_for_smoke(
-    uint64_t stream_id) const noexcept {
-  try {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto it = stream_display_demand_refcounts_.find(stream_id);
-    return it == stream_display_demand_refcounts_.end() ? 0u : it->second;
-  } catch (...) {
-    return 0;
-  }
-}
-#endif
 
 bool CoreResultStore::is_stream_display_demand_active(uint64_t stream_id, uint64_t now_ns) const {
   return get_stream_display_demand_state(stream_id, now_ns).active;

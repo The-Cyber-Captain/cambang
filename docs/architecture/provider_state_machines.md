@@ -160,17 +160,16 @@ support entities are interpreted from ownership/context truth beneath
 
 ## 7. Event-class model
 
-Provider facts fall into five broad classes:
+Provider facts fall into four broad classes:
 
 | Event class | Example | Delivery policy |
 |---|---|---|
 | Lifecycle | device add/remove, acquisition-session create/destroy, stream start/stop | must never be dropped |
 | Native-object | provider/device/acquisition-session/stream/native-support create/destroy reports | must never be dropped |
 | Error | provider, device, or stream error reports | must never be dropped |
-| Capture | accepted still-capture frame, capture completion/failure | must never be silently dropped |
-| Repeating frame | repeating stream-frame delivery | may be dropped under pressure |
+| Frame | video frame delivery / capture frame delivery | may be coalesced or dropped under backpressure |
 
-Lifecycle, native-object, error, and accepted-capture facts must preserve authoritative ordering.
+Lifecycle, native-object, and error events must always preserve ordering.
 
 Topology change is not a separate event class. It is an effect reflected by
 lifecycle and native-object truth, and later by snapshot `topology_version`.
@@ -193,12 +192,10 @@ strand invokes core callback
 
 Rules:
 
-1. Only the provider strand may deliver normal provider facts.
-2. Lifecycle, native-object, error, and accepted-capture facts are **non-droppable**.
-3. Repeating stream frames may be dropped under pressure.
-4. Failure to admit a non-droppable provider fact is fatal to the active provider generation.
-5. Fatal strand failure is reported through the documented out-of-band transport-failure path rather than through the failed queue.
-6. Synthetic and stub providers must obey the same strand and truthfulness rules.
+1. Only the provider strand may deliver provider facts.
+2. Lifecycle, native-object, and error events are **non-droppable**.
+3. Frame events **may be dropped** under pressure.
+4. Synthetic and stub providers must obey the same strand and truthfulness rules.
 
 ------------------------------------------------------------------------
 

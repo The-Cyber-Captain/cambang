@@ -3,11 +3,9 @@
 // and deterministic timeline dispatch observations as PASS/FAIL evidence.
 #include <cstdio>
 #include <cstdint>
-#include <atomic>
 #include <array>
 #include <algorithm>
 #include <functional>
-#include <future>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -8340,13 +8338,7 @@ bool run_core_stream_partial_reporting_check() {
   }
   const SharedStreamResultData second_result =
       rt.get_latest_stream_result(kStreamId);
-  const auto display_demand_token =
-      rt.retain_stream_display_demand_lease(kStreamId);
-  if (display_demand_token == 0 ||
-      rt.stream_display_demand_refcount_for_smoke(kStreamId) != 1) {
-    return fail_with_cleanup(
-        "FAIL core stream partial reporting did not record exact display-demand lease ownership");
-  }
+  rt.retain_stream_display_demand(kStreamId);
   rt.report_stream_retained_display_view_observation(
       kStreamId,
       second_result->access_posture.posture_id,
@@ -8381,39 +8373,7 @@ bool run_core_stream_partial_reporting_check() {
     return fail_with_cleanup(
         "FAIL core stream partial reporting did not preserve viable-vs-measured truth for live display demand");
   }
-  auto release_gate = std::make_shared<std::promise<void>>();
-  std::shared_future<void> release_gate_done(release_gate->get_future());
-  std::atomic<bool> blocker_started{false};
-  if (rt.try_post_core_thread_unchecked(
-          [release_gate_done, &blocker_started]() mutable {
-            blocker_started.store(true, std::memory_order_release);
-            release_gate_done.wait();
-          }) != CoreThread::PostResult::Enqueued ||
-      !wait_until([&]() { return blocker_started.load(std::memory_order_acquire); })) {
-    release_gate->set_value();
-    return fail_with_cleanup(
-        "FAIL display-demand exact-release verifier could not block Core");
-  }
-  for (size_t i = 0; i < CoreThread::kMaxEssentialPendingTasks; ++i) {
-    if (rt.smoke_try_post_essential_task_unchecked([]() {}) !=
-        CoreThread::PostResult::Enqueued) {
-      release_gate->set_value();
-      return fail_with_cleanup(
-          "FAIL display-demand exact-release verifier could not saturate essential admission");
-    }
-  }
-  const bool released_while_essential_full =
-      rt.release_stream_display_demand_lease(display_demand_token);
-  const bool duplicate_release_rejected =
-      !rt.release_stream_display_demand_lease(display_demand_token);
-  const uint32_t refcount_after_release =
-      rt.stream_display_demand_refcount_for_smoke(kStreamId);
-  release_gate->set_value();
-  if (!released_while_essential_full || !duplicate_release_rejected ||
-      refcount_after_release != 0) {
-    return fail_with_cleanup(
-        "FAIL display-demand exact release was lost or duplicated while essential admission was full");
-  }
+  rt.release_stream_display_demand(kStreamId);
 
   (void)provider.shutdown();
   rt.stop();

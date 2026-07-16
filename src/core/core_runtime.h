@@ -233,6 +233,9 @@ enum class TryCloseDeviceStatus : uint8_t {
     uint64_t publish_requests_dropped_full = 0;
     uint64_t publish_requests_dropped_closed = 0;
     uint64_t publish_requests_dropped_allocfail = 0;
+    uint64_t display_demand_release_async_dropped_full = 0;
+    uint64_t display_demand_release_async_dropped_closed = 0;
+    uint64_t display_demand_release_async_dropped_allocfail = 0;
   };
 
   CoreRuntime();
@@ -311,10 +314,8 @@ enum class TryCloseDeviceStatus : uint8_t {
       const CaptureStillImageBundle& still_image_bundle) noexcept;
   TrySetWarmHoldStatus try_set_device_warm_hold_ms(uint64_t device_instance_id, uint32_t warm_hold_ms) noexcept;
 
-  // Server-facing synchronous wrappers. They execute inline on the core thread;
-  // otherwise they marshal onto the existing core lane and wait only up to an
-  // internal bounded timeout. Timeout/rejection returns the method's
-  // conservative fallback and does not cancel already admitted work.
+  // Server-facing synchronous wrappers. They marshal registry/provider access onto
+  // the core thread and only return success after the work was accepted/submitted.
   TryTriggerDeviceCaptureStatus try_trigger_device_capture_with_capture_id_for_server(
       uint64_t device_instance_id,
       uint64_t capture_id);
@@ -508,31 +509,6 @@ enum class TryCloseDeviceStatus : uint8_t {
   CoreThread::PostResult try_post_core_thread_unchecked(CoreThread::Task task) {
     return core_thread_.try_post(std::move(task));
   }
-
-  CoreThread::PostResult smoke_try_post_essential_task_unchecked(
-      CoreThread::Task task) {
-    return core_thread_.try_post_essential(std::move(task));
-  }
-
-  CoreThread::PostResult smoke_try_post_command_task_unchecked(
-      CoreThread::Task task) {
-    return core_thread_.try_post_command(std::move(task));
-  }
-
-  void smoke_enqueue_provider_fact_unchecked(ProviderToCoreCommand&& cmd) {
-    enqueue_provider_fact(std::move(cmd));
-  }
-
-  void smoke_enter_provider_transport_truth_loss_unchecked() noexcept {
-    enter_provider_transport_truth_loss_from_core_();
-  }
-
-  void smoke_set_synchronous_core_marshalling_timeout_ms(
-      uint32_t timeout_ms) noexcept {
-    smoke_synchronous_core_marshalling_timeout_ms_.store(
-        timeout_ms, std::memory_order_release);
-  }
-
 #endif
 
   void request_publish();
@@ -575,9 +551,6 @@ enum class TryCloseDeviceStatus : uint8_t {
   }
 
   [[nodiscard]] CoreDispatchStats dispatcher_stats() const noexcept { return dispatcher_.stats(); }
-  CoreRuntimeState smoke_state_for_test() const noexcept {
-    return state_.load(std::memory_order_acquire);
-  }
 
   const CoreStreamRegistry::StreamRecord* stream_record(uint64_t stream_id) const noexcept {
     return streams_.find(stream_id);
@@ -647,13 +620,11 @@ enum class TryCloseDeviceStatus : uint8_t {
         std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
     result_store_.mark_stream_display_demand(stream_id, now_ns);
   }
-  CoreResultStore::DisplayDemandLeaseToken retain_stream_display_demand_lease(
-      uint64_t stream_id) noexcept {
-    return result_store_.retain_stream_display_demand_lease(stream_id);
+  void retain_stream_display_demand(uint64_t stream_id) {
+    result_store_.retain_stream_display_demand(stream_id);
   }
-  bool release_stream_display_demand_lease(
-      CoreResultStore::DisplayDemandLeaseToken token) noexcept {
-    return result_store_.release_stream_display_demand_lease(token);
+  void release_stream_display_demand(uint64_t stream_id) {
+    result_store_.release_stream_display_demand(stream_id);
   }
   bool is_stream_display_demand_active(uint64_t stream_id) const {
     const auto now = std::chrono::steady_clock::now();
@@ -661,11 +632,7 @@ enum class TryCloseDeviceStatus : uint8_t {
         std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
     return result_store_.is_stream_display_demand_active(stream_id, now_ns);
   }
-#if defined(CAMBANG_INTERNAL_SMOKE)
-  uint32_t stream_display_demand_refcount_for_smoke(uint64_t stream_id) const noexcept {
-    return result_store_.stream_display_demand_refcount_for_smoke(stream_id);
-  }
-#endif
+  void release_stream_display_demand_async(uint64_t stream_id);
 
 
   void attach_provider(ICameraProvider* provider) noexcept {
@@ -729,38 +696,17 @@ enum class TryCloseDeviceStatus : uint8_t {
 private:
   void on_core_start() override;
   void on_core_timer_tick() override;
-  void on_core_transport_fatal(ProviderTransportFailure failure) override;
   void on_core_stop() override;
 
   void enqueue_provider_fact(ProviderToCoreCommand&& cmd);
   void enqueue_request(CoreThread::Task task);
   void request_publish_from_core_unchecked();
-  bool provider_transport_accepting_() const noexcept;
-  void signal_provider_transport_failure_(ProviderTransportFailure failure) noexcept;
-  void enter_provider_transport_truth_loss_from_core_() noexcept;
-  void discard_provider_fact_for_truth_loss_(ProviderToCoreCommand&& cmd) noexcept;
-  void discard_queued_provider_facts_for_truth_loss_() noexcept;
-  void discard_queued_requests_for_truth_loss_() noexcept;
-  std::chrono::milliseconds synchronous_core_marshalling_timeout_() const
-      noexcept;
   void begin_capture_stream_preemption_(uint64_t capture_id, uint64_t device_instance_id);
   void begin_capture_stream_preemption_for_bundle_(const RigAdmittedRequestBundle& bundle);
   void release_result_safe_capture_stream_preemptions_();
   bool is_stream_preempted_for_capture_(uint64_t stream_id) const;
   bool suppress_repeating_stream_frame_for_capture_(ProviderToCoreCommand&& cmd);
   size_t suppress_queued_repeating_stream_frames_for_capture_();
-  TryStartStreamStatus try_start_stream_on_core_thread_(uint64_t stream_id);
-  TryStopStreamStatus try_stop_stream_on_core_thread_(uint64_t stream_id);
-  TryDestroyStreamStatus try_destroy_stream_on_core_thread_(uint64_t stream_id);
-  TryOpenDeviceStatus try_open_device_on_core_thread_(
-      const std::string& hardware_id,
-      uint64_t device_instance_id,
-      uint64_t root_id,
-      const CaptureTemplate& capture_tmpl);
-  TryCloseDeviceStatus try_close_device_on_core_thread_(uint64_t device_instance_id);
-  TrySetWarmHoldStatus try_set_device_warm_hold_ms_on_core_thread_(
-      uint64_t device_instance_id,
-      uint32_t warm_hold_ms);
   // Core-thread-only helpers. These read/write core-owned registries directly.
   bool materialize_capture_request_(uint64_t device_instance_id, CaptureRequest& out) const;
   TryTriggerDeviceCaptureStatus trigger_device_capture_with_capture_id_(
@@ -903,6 +849,7 @@ private:
       uint64_t now_ns,
       bool& has_next_delay,
       uint64_t& next_delay_ns) const;
+  void account_display_demand_release_async_post_failure_(CoreThread::PostResult result) noexcept;
   std::vector<SharedCaptureResultData> curate_capture_result_set_accept_all_assembly_successful_(
       std::vector<SharedCaptureResultData> candidates) const;
 
@@ -934,9 +881,6 @@ private:
   bool has_topology_sig_ = false;
 
   std::atomic<CoreRuntimeState> state_{CoreRuntimeState::CREATED};
-  std::atomic<uint8_t> provider_transport_failure_{
-      static_cast<uint8_t>(ProviderTransportFailure::None)};
-  bool provider_transport_truth_lost_ = false;
 
   SnapshotBuilder snapshot_builder_;
   std::atomic<IStateSnapshotPublisher*> snapshot_publisher_{nullptr};
@@ -949,7 +893,6 @@ private:
 
 #if defined(CAMBANG_INTERNAL_SMOKE)
   std::atomic<bool> smoke_hold_provider_fact_timer_ticks_{false};
-  std::atomic<uint32_t> smoke_synchronous_core_marshalling_timeout_ms_{0};
 #endif
 
   std::deque<ProviderToCoreCommand> provider_facts_;
@@ -1208,6 +1151,9 @@ private:
   std::atomic<uint64_t> publish_requests_dropped_full_{0};
   std::atomic<uint64_t> publish_requests_dropped_closed_{0};
   std::atomic<uint64_t> publish_requests_dropped_allocfail_{0};
+  std::atomic<uint64_t> display_demand_release_async_dropped_full_{0};
+  std::atomic<uint64_t> display_demand_release_async_dropped_closed_{0};
+  std::atomic<uint64_t> display_demand_release_async_dropped_allocfail_{0};
   mutable std::mutex configured_imaging_spec_mutex_;
   uint64_t configured_camera_description_version_ = 0;
   uint64_t configured_imaging_spec_version_ = 0;

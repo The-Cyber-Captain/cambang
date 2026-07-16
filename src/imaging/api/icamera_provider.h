@@ -10,17 +10,6 @@
 
 namespace cambang {
 
-enum class ProviderTransportFailure : uint8_t {
-  None = 0,
-  AuthoritativeAdmissionClosed,
-  AuthoritativeQueueFull,
-  AuthoritativeAllocFail,
-  CallbackAllocFail,
-  CallbackException,
-  CoreEssentialQueueFull,
-  CoreEssentialAllocFail,
-};
-
 // Provider→core callback sink.
 // Provider MUST invoke these on a single serialized callback context.
 class IProviderCallbacks {
@@ -45,12 +34,6 @@ public:
   // Returns true when a recent display-view access lease is active for stream_id.
   // This call is synchronous and must be safe to invoke from any provider thread.
   virtual bool is_stream_display_demand_active(uint64_t stream_id) = 0;
-
-  // Narrow out-of-band notification for fatal provider/Core transport failure.
-  // This callback must not rely on the normal provider strand/Core work queues.
-  virtual void on_transport_failure(ProviderTransportFailure failure) {
-    (void)failure;
-  }
 
   // ---- Device lifecycle confirmations ----
   virtual void on_device_opened(uint64_t device_instance_id) = 0;

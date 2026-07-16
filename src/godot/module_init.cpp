@@ -19,8 +19,6 @@
 #include "godot/cambang_capture_result_set.h"
 #include "godot/cambang_stream_result.h"
 #include "godot/cambang_stream_result_internal.h"
-#include "godot/render_resource_release_service.h"
-#include "godot/render_resource_release_internal_smoke.h"
 #include "godot/synthetic_gpu_backing_bridge.h"
 #include "godot/synthetic_gpu_backing_bridge_internal.h"
 
@@ -40,12 +38,7 @@ static void cambang_gde_initialize(godot::ModuleInitializationLevel p_level) {
     godot::ClassDB::register_class<cambang::CamBANGCaptureResultSet>();
     // Scene-level class registration phase (RefCounted/Object classes).
     cambang::register_stream_result_internal_classes();
-    cambang::register_render_resource_release_internal_classes();
-#if defined(CAMBANG_INTERNAL_SMOKE)
-    godot::ClassDB::register_class<cambang::CamBANGRenderReleaseInternalSmoke>();
-#endif
     cambang::register_synthetic_gpu_backing_internal_classes();
-    cambang::install_render_resource_release_service();
     cambang::install_synthetic_gpu_backing_godot_bridge();
 
     // Create and register the Engine singleton.
@@ -53,7 +46,6 @@ static void cambang_gde_initialize(godot::ModuleInitializationLevel p_level) {
     // CamBANGServer connects to SceneTree's per-frame signal to perform main-thread
     // snapshot draining and tick-bounded signal emission.
     g_server = memnew(cambang::CamBANGServer);
-    cambang::install_display_demand_release_dispatcher(g_server);
     godot::Engine::get_singleton()->register_singleton("CamBANGServer", g_server);
 }
 
@@ -63,14 +55,12 @@ static void cambang_gde_uninitialize(godot::ModuleInitializationLevel p_level) {
     }
 
     if (g_server) {
-        cambang::uninstall_display_demand_release_dispatcher(g_server);
         g_server->stop();
         godot::Engine::get_singleton()->unregister_singleton("CamBANGServer");
         memdelete(g_server);
         g_server = nullptr;
     }
     cambang::uninstall_synthetic_gpu_backing_godot_bridge();
-    cambang::uninstall_render_resource_release_service();
 }
 
 extern "C" GDExtensionBool GDE_EXPORT cambang_gdextension_init(

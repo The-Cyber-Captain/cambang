@@ -38,7 +38,6 @@ GODOT_CPP_MODES = ["delegated", "external"]
 ALLOWED_VARIABLES = {
     "gde",
     "maintainer_tools",
-    "internal_smoke",
     "platform",
     "target",
     "arch",
@@ -348,11 +347,6 @@ vars.Add(BoolVariable(
     "Build deterministic host-native smoke/verification/benchmark tools.",
     True,
 ))
-vars.Add(BoolVariable(
-    "internal_smoke",
-    "Enable internal-only GDE smoke seams; never enable for production artifacts.",
-    False,
-))
 vars.Add(EnumVariable(
     "platform",
     "GDE target platform.",
@@ -526,7 +520,6 @@ print(f"  toolchain={'msvc' if is_msvc else 'gcc/clang'} CXX={env.get('CXX')}")
 if host_platform == "windows" or gde_platform == "windows":
     print(f"  use_mingw={env['use_mingw']} use_llvm={env['use_llvm']} windows_mingw_static_runtime={windows_mingw_static_runtime_mode} (effective={'yes' if windows_mingw_static_runtime else 'no'})")
 print(f"  gde={'yes' if build_gde else 'no'} maintainer_tools={'yes' if build_maintainer_tools else 'no'} platform_runtime_validate={'yes' if build_platform_runtime_validate else 'no'}")
-print(f"  internal_smoke={'yes' if env['internal_smoke'] else 'no'}")
 print(f"  godot_cpp={env['godot_cpp']}")
 print(f"  gde_provider={selected_provider['family']} ({selected_provider['location']})")
 if build_gde and not selected_provider["implemented"]:
@@ -652,8 +645,6 @@ maintainer_tools_clean_outputs = [
     _program_path("core_capture_assembly_registry_smoke"),
     _program_path("core_dispatcher_bracket_routing_smoke"),
     _program_path("godot_result_convert_smoke"),
-    _program_path("render_resource_release_queue_smoke"),
-    _program_path("display_demand_dispatcher_smoke"),
     _program_path("pattern_render_bench"),
     _program_path("synthetic_timeline_verify"),
     _program_path("phase3_snapshot_verify"),
@@ -729,14 +720,6 @@ if build_maintainer_tools:
             "src/smoke/godot_variant_runtime_minimal.cpp",
             "src/smoke/godot_result_convert_smoke.cpp",
         ],
-    )
-    render_resource_release_queue_smoke_prog = maintainer_tools_env.Program(
-        target=os.path.join(out_dir, "render_resource_release_queue_smoke"),
-        source=["src/smoke/render_resource_release_queue_smoke.cpp"],
-    )
-    display_demand_dispatcher_smoke_prog = maintainer_tools_env.Program(
-        target=os.path.join(out_dir, "display_demand_dispatcher_smoke"),
-        source=["src/smoke/display_demand_dispatcher_smoke.cpp"],
     )
 
     pattern_bench_sources = _unique_sources(_glob_cpp(maintainer_tools_obj_dir, "pixels", "pattern") + ["src/smoke/pattern_render_bench.cpp"])
@@ -826,8 +809,6 @@ if build_maintainer_tools:
             core_capture_assembly_registry_smoke_prog,
             core_dispatcher_bracket_routing_smoke_prog,
             godot_result_convert_smoke_prog,
-            render_resource_release_queue_smoke_prog,
-            display_demand_dispatcher_smoke_prog,
             pattern_bench_prog,
             synthetic_maintainer_tools_prog,
             phase3_maintainer_tools_prog,
@@ -859,8 +840,6 @@ if build_gde_graph:
         ("CAMBANG_GDE_PLATFORM_BACKED_COMPILED", "1" if selected_provider["implemented"] else "0"),
         ("CAMBANG_GDE_PLATFORM_PROVIDER_STATUS", _cpp_string_define_value(gde_platform_provider_status)),
     ])
-    if env["internal_smoke"]:
-        gde_env.Append(CPPDEFINES=["CAMBANG_INTERNAL_SMOKE=1"])
     gde_env.VariantDir(gde_obj_dir, "src", duplicate=0)
 
     gde_out_dir = os.path.join("tests", "cambang_gde", "bin")
@@ -926,8 +905,6 @@ if build_gde_graph:
         os.path.join(gde_obj_dir, "godot", "cambang_stream.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_stream_result.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_stream_result_internal.cpp"),
-        os.path.join(gde_obj_dir, "godot", "render_resource_release_service.cpp"),
-        os.path.join(gde_obj_dir, "godot", "render_resource_release_internal_smoke.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_capture_result.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_capture_result_set.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_result_convert.cpp"),

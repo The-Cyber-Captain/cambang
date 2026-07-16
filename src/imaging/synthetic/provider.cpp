@@ -555,10 +555,7 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
   callbacks_ = callbacks;
-  if (!strand_.start(callbacks_, "synthetic_provider")) {
-    callbacks_ = nullptr;
-    return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
-  }
+  strand_.start(callbacks_, "synthetic_provider");
   initialized_ = true;
   shutting_down_ = false;
   {

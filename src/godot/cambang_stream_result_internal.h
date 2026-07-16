@@ -9,42 +9,34 @@
 #include <godot_cpp/variant/color.hpp>
 #include <godot_cpp/variant/rect2.hpp>
 #include <godot_cpp/variant/rid.hpp>
-
-#include "godot/render_resource_release_service.h"
 #include <godot_cpp/variant/vector2.hpp>
 
 namespace cambang {
 
-class CamBANGServer;
-
 struct SharedLiveCpuTextureRidState final {
   mutable std::mutex mutex;
   godot::RID texture_rid;
-  RenderResourceReleaseReservation release_reservation;
 
   godot::RID snapshot_rid() const;
-  bool replace_rid(
-      const godot::RID& texture_rid_in,
-      RenderResourceReleaseReservation& reservation) noexcept;
+  void replace_rid(const godot::RID& texture_rid_in);
   void clear();
   ~SharedLiveCpuTextureRidState();
 };
 
-// Thread-neutral lifetime record for display demand. Unlike a Godot Object,
-// it is never a Godot Ref and may therefore reach final ownership off-thread.
-class DisplayDemandLease final {
+class DisplayDemandToken : public godot::RefCounted {
+  GDCLASS(DisplayDemandToken, godot::RefCounted);
+
 public:
-  explicit DisplayDemandLease(uint64_t lease_token) noexcept
-      : lease_token_(lease_token) {}
-  ~DisplayDemandLease() noexcept;
+  DisplayDemandToken() = default;
+  ~DisplayDemandToken() override;
+
+  void init(uint64_t stream_id, bool gpu_display_view);
 
 private:
-  uint64_t lease_token_ = 0;
+  static void _bind_methods() {}
+  uint64_t stream_id_ = 0;
+  bool gpu_display_view_ = false;
 };
-
-std::shared_ptr<DisplayDemandLease> retain_display_demand_lease(uint64_t stream_id);
-void install_display_demand_release_dispatcher(CamBANGServer* server) noexcept;
-void uninstall_display_demand_release_dispatcher(CamBANGServer* server) noexcept;
 
 class LiveCpuDisplayTexture2D : public godot::Texture2D {
   GDCLASS(LiveCpuDisplayTexture2D, godot::Texture2D);
@@ -90,7 +82,7 @@ private:
   void clear_runtime_references_();
 
   std::shared_ptr<SharedLiveCpuTextureRidState> state_;
-  std::shared_ptr<DisplayDemandLease> display_demand_lease_;
+  godot::Ref<DisplayDemandToken> display_demand_token_;
   uint64_t stream_id_ = 0;
   uint64_t borrow_id_ = 0;
   uint32_t width_ = 0;
@@ -102,11 +94,7 @@ void unregister_live_cpu_display_wrapper_borrow(uint64_t borrow_id);
 bool has_live_cpu_display_wrapper_borrow(uint64_t stream_id);
 void notify_live_cpu_display_wrapper_refresh(uint64_t stream_id, uint32_t width, uint32_t height);
 
-// Registers the live CPU display wrapper used by the internal adapter.
+// Internal-only helper class registration required for Ref<DisplayDemandToken>::instantiate().
 void register_stream_result_internal_classes();
-
-#if defined(CAMBANG_INTERNAL_SMOKE)
-bool exercise_live_cpu_post_transfer_failure_for_smoke() noexcept;
-#endif
 
 } // namespace cambang

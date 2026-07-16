@@ -10,8 +10,6 @@
 #include <mutex>
 #include <thread>
 
-#include "imaging/api/icamera_provider.h"
-
 namespace cambang {
 
 // CoreThread implements CamBANG's dedicated core thread and event loop (Model A).
@@ -42,7 +40,8 @@ namespace cambang {
 // - post() is best-effort and drops on overflow (accounted).
 // - try_post_command() uses the bounded command lane for Core-owned public/request
 //   work that must not sit behind frame/provider ordinary work.
-// - try_post_essential() uses a separate bounded queue for lifecycle/fact delivery.
+// - try_post_essential() uses a separate unbounded-by-kMaxPendingTasks queue for
+//   lifecycle/fact delivery that must not be lost merely because ordinary work is full.
 class CoreThread final {
 public:
   // NOTE: std::function may allocate; acceptable for scaffolding.
@@ -80,10 +79,6 @@ public:
 
     // Called once on the core thread just before exiting the thread main.
     virtual void on_core_stop() {}
-
-    // Called once on the core thread when fatal provider/Core transport failure
-    // is first observed by CoreThread.
-    virtual void on_core_transport_fatal(ProviderTransportFailure) {}
   };
 
   CoreThread() = default;
@@ -126,7 +121,6 @@ public:
 
   // Bounded mailbox capacity (number of pending tasks).
   static constexpr size_t kMaxPendingTasks = 1024;
-  static constexpr size_t kMaxEssentialPendingTasks = 256;
 
   // Post a unit of work to be executed on the core thread.
   // - thread-safe
@@ -160,7 +154,7 @@ public:
 
   // Essential post; returns a reason on failure.
   // - thread-safe
-  // - subject to its own hard capacity
+  // - not subject to kMaxPendingTasks ordinary queue-full rejection
   // - drained before ordinary tasks
   //
   // Use only for non-lossy core facts (for example provider lifecycle, native,
@@ -168,7 +162,6 @@ public:
   // Repeating stream frame delivery must stay on try_post() so pressure can drop
   // latest-state work and release provider payloads promptly.
   PostResult try_post_essential(Task task);
-  bool notify_provider_transport_fatal(ProviderTransportFailure reason) noexcept;
 
   // Accounting-only helper for external lifecycle gating layers.
   // Increments the Closed drop counter and returns PostResult::Closed.
@@ -242,7 +235,6 @@ private:
   void drain_tasks_locked(std::deque<Task>& essential_local,
                           std::deque<Task>& command_local,
                           std::deque<Task>& ordinary_local);
-  bool transport_fatal_latched_() const noexcept;
 
   // Synchronization
   mutable std::mutex mu_;
@@ -269,9 +261,6 @@ private:
   std::atomic<bool> running_{false};
   bool stop_requested_ = false;
   bool stop_when_idle_ = false;
-  std::atomic<uint8_t> fatal_transport_reason_{
-      static_cast<uint8_t>(ProviderTransportFailure::None)};
-  bool fatal_transport_hook_emitted_ = false;
 
   // Timer tick control (protected by mu_).
   bool timer_tick_requested_ = false;
