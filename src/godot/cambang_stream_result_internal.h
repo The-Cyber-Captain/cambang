@@ -29,6 +29,17 @@ struct SharedLiveCpuTextureRidState final {
   // SharedDisplayTextureRidState::mark_invalidated() in
   // synthetic_gpu_backing_bridge.cpp.
   void mark_invalidated();
+  // Marks this display view invalidated AND releases texture_rid now, rather
+  // than deferring release to whenever this object's own destructor happens
+  // to run (which depends on when the last shared_ptr/script reference to the
+  // owning wrapper is dropped -- not deterministic, and not tied to CamBANG's
+  // own lifecycle). RenderingServer persists across CamBANGServer stop()/
+  // start() cycles within one process, so it is safe and correct to reclaim
+  // texture_rid here rather than leaving it allocated indefinitely. Called
+  // from abandon_all_live_cpu_display_wrappers_before_stop(); unlike the GPU
+  // path's equivalent stop-time abandon (which only marks invalidated), this
+  // one also actively frees the RenderingServer resource.
+  void invalidate_and_release();
   bool draw_allowed() const;
   ~SharedLiveCpuTextureRidState();
 };

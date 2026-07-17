@@ -185,6 +185,23 @@ void SharedLiveCpuTextureRidState::mark_invalidated() {
   invalidated = true;
 }
 
+void SharedLiveCpuTextureRidState::invalidate_and_release() {
+  godot::RID prior;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    invalidated = true;
+    prior = texture_rid;
+    texture_rid = godot::RID();
+  }
+  if (!prior.is_valid()) {
+    return;
+  }
+  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
+  if (rs) {
+    rs->free_rid(prior);
+  }
+}
+
 bool SharedLiveCpuTextureRidState::draw_allowed() const {
   std::lock_guard<std::mutex> lock(mutex);
   return !invalidated && texture_rid.is_valid();
@@ -382,7 +399,7 @@ void LiveCpuDisplayTexture2D::update_dimensions(uint32_t width, uint32_t height)
 
 void LiveCpuDisplayTexture2D::invalidate() {
   if (state_) {
-    state_->mark_invalidated();
+    state_->invalidate_and_release();
   }
   emit_changed();
 }
