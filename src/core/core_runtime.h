@@ -615,10 +615,7 @@ enum class TryCloseDeviceStatus : uint8_t {
   SharedCaptureResultData get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
   std::vector<SharedCaptureResultData> get_capture_result_set(uint64_t capture_id) const;
   void mark_stream_display_demand(uint64_t stream_id) {
-    const auto now = std::chrono::steady_clock::now();
-    const uint64_t now_ns = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
-    result_store_.mark_stream_display_demand(stream_id, now_ns);
+    result_store_.mark_stream_display_demand(stream_id, ns_since_epoch_());
   }
   void retain_stream_display_demand(uint64_t stream_id) {
     result_store_.retain_stream_display_demand(stream_id);
@@ -627,10 +624,7 @@ enum class TryCloseDeviceStatus : uint8_t {
     result_store_.release_stream_display_demand(stream_id);
   }
   bool is_stream_display_demand_active(uint64_t stream_id) const {
-    const auto now = std::chrono::steady_clock::now();
-    const uint64_t now_ns = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
-    return result_store_.is_stream_display_demand_active(stream_id, now_ns);
+    return result_store_.is_stream_display_demand_active(stream_id, ns_since_epoch_());
   }
   void release_stream_display_demand_async(uint64_t stream_id);
 
@@ -886,7 +880,32 @@ private:
   std::atomic<IStateSnapshotPublisher*> snapshot_publisher_{nullptr};
 
   // Core-defined epoch for snapshot timestamp_ns (session-relative monotonic).
-  std::chrono::steady_clock::time_point epoch_;
+  // Stored as an atomic nanosecond count (steady_clock::time_since_epoch())
+  // rather than a plain time_point: on_core_start() writes this on the core
+  // thread on every start()/restart, while core_monotonic_now_ns_ns_since_epoch_()
+  // is called from provider threads (per IProviderCallbacks::core_monotonic_now_ns's
+  // documented "safe from any provider thread" contract) and from CamBANGServer via
+  // mark_stream_display_demand()/is_stream_display_demand_active() on the Godot
+  // thread. A plain time_point had no synchronization between that write and
+  // these cross-thread reads.
+  std::atomic<int64_t> epoch_steady_ns_{0};
+
+  // Nanoseconds elapsed since epoch_steady_ns_ at the given instant, safe to
+  // call from any thread. Overload for callers that already captured "now"
+  // once (e.g. a single core-timer-tick pump using one consistent timestamp
+  // across several calculations) and must not silently drift by re-sampling
+  // the clock at each call site.
+  uint64_t ns_since_epoch_(std::chrono::steady_clock::time_point now) const noexcept {
+    const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        now.time_since_epoch()).count();
+    const int64_t delta = now_ns - epoch_steady_ns_.load(std::memory_order_acquire);
+    return delta > 0 ? static_cast<uint64_t>(delta) : 0;
+  }
+
+  // Nanoseconds elapsed since epoch_steady_ns_, safe to call from any thread.
+  uint64_t ns_since_epoch_() const noexcept {
+    return ns_since_epoch_(std::chrono::steady_clock::now());
+  }
 
   CoreDispatcher dispatcher_;
   ProviderCallbackIngress ingress_;

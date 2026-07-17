@@ -1484,9 +1484,7 @@ CoreRuntime::CoreRuntime()
       topology_version_(0),
       last_topology_sig_(0),
       dispatcher_(&streams_, &acquisition_sessions_, &devices_, &native_objects_, &current_gen_, [this]() -> uint64_t {
-        const auto now = std::chrono::steady_clock::now();
-        return static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
+        return ns_since_epoch_();
       }, [this]() -> bool {
         return state_.load(std::memory_order_acquire) == CoreRuntimeState::LIVE;
       }),
@@ -1497,18 +1495,32 @@ CoreRuntime::CoreRuntime()
         assert(core_thread_.is_core_thread());
         enqueue_provider_fact(std::move(cmd));
       }, [this]() -> uint64_t {
-        // Core monotonic timebase: ns since core epoch_ (session-relative).
-        const auto now = std::chrono::steady_clock::now();
-        return static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
-      }, [this, demand_last = std::map<uint64_t, bool>{}](uint64_t stream_id) mutable -> bool {
-        const auto now = std::chrono::steady_clock::now();
-        const uint64_t now_ns = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
+        // Core monotonic timebase: ns since core epoch (session-relative).
+        // IProviderCallbacks::core_monotonic_now_ns is documented safe to call from
+        // any provider thread; ns_since_epoch_() honors that (epoch_steady_ns_ is atomic).
+        return ns_since_epoch_();
+      }, [this,
+          demand_last = std::make_shared<std::map<uint64_t, bool>>(),
+          demand_last_mu = std::make_shared<std::mutex>()](uint64_t stream_id) -> bool {
+        // IProviderCallbacks::is_stream_display_demand_active is documented safe to
+        // call from any provider thread. demand_last is trace-only bookkeeping (not
+        // the functional return value) but was previously captured as bare mutable
+        // lambda state with no synchronization, which is a real data race the moment
+        // more than one provider thread calls this concurrently. Protect it explicitly
+        // via a shared mutex rather than relying on single-caller-thread luck.
+        const uint64_t now_ns = ns_since_epoch_();
         const auto state = result_store_.get_stream_display_demand_state(stream_id, now_ns);
         if (display_demand_trace_enabled()) {
-          const bool prev = demand_last[stream_id];
-          if (prev != state.active) {
+          bool changed = false;
+          {
+            std::lock_guard<std::mutex> lock(*demand_last_mu);
+            bool& prev = (*demand_last)[stream_id];
+            changed = prev != state.active;
+            if (changed) {
+              prev = state.active;
+            }
+          }
+          if (changed) {
             const char* reason = "none";
             if (state.reason == CoreResultStore::DisplayDemandReason::PERSISTENT_REFCOUNT) {
               reason = "persistent_refcount";
@@ -1520,7 +1532,6 @@ CoreRuntime::CoreRuntime()
                         state.active ? 1 : 0,
                         reason,
                         state.refcount);
-            demand_last[stream_id] = state.active;
           }
         }
         return state.active;
@@ -2125,10 +2136,7 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
                     CaptureRetainedPlanParentKey::Kind::AcquisitionSession ||
                 key.id != parent.key.id);
       };
-  const uint64_t now_ns = static_cast<uint64_t>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now() - epoch_)
-          .count());
+  const uint64_t now_ns = ns_since_epoch_();
   const bool has_live_session_successor =
       acquisition_sessions_.resolve_live_session_id_for_device(
           device_instance_id) != 0;
@@ -2854,11 +2862,8 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
     state.device_instance_id = device_instance_id;
     state.acquisition_session_id = parent.acquisition_session_id;
     state.orphan_retire_after_ns = 0;
-    state.current_candidate_ready_after_ns = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now() - epoch_)
-            .count()) +
-        capture_backing_plan_evaluation_settle_delay_ns();
+    state.current_candidate_ready_after_ns =
+        ns_since_epoch_() + capture_backing_plan_evaluation_settle_delay_ns();
     state.primary_function =
         BackingPlanEvaluationPrimaryFunction::CaptureReadyAndMaterialize;
     state.completion_reason = BackingPlanEvaluationCompletionReason::None;
@@ -3070,9 +3075,7 @@ void CoreRuntime::handle_stream_retained_display_view_observation_(
       const bool crosses_display_backing_family =
           rec->requested_retained_plan.primary_cpu() != next_plan.primary_cpu();
       if (crosses_display_backing_family) {
-        const auto now = std::chrono::steady_clock::now();
-        const uint64_t now_ns = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
+        const uint64_t now_ns = ns_since_epoch_();
         if (result_store_.is_stream_display_demand_active(stream_id, now_ns)) {
           // Once a live display view is being held by public consumers, do not
           // flip the stream across CPU/GPU display families mid-evaluation.
@@ -3369,10 +3372,7 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
   const CoreDeviceRegistry::DeviceRecord* rec = devices_.find(device_instance_id);
   if (state_it == capture_retained_plan_evaluators_.end()) {
     if (deferred_retries_remaining != 0) {
-      const uint64_t now_ns = static_cast<uint64_t>(
-          std::chrono::duration_cast<std::chrono::nanoseconds>(
-              std::chrono::steady_clock::now() - epoch_)
-              .count());
+      const uint64_t now_ns = ns_since_epoch_();
       enqueue_pending_capture_observation_(
           device_instance_id,
           capture_id,
@@ -3441,10 +3441,7 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
         static_cast<unsigned>(state.candidate_count));
     return;
   }
-  const uint64_t now_ns = static_cast<uint64_t>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now() - epoch_)
-          .count());
+  const uint64_t now_ns = ns_since_epoch_();
   CoreRetainedProductionPlan effective_requested{};
   if (state.acquisition_session_id != 0) {
     if (const auto* session =
@@ -4426,12 +4423,14 @@ std::vector<SharedCaptureResultData> CoreRuntime::get_capture_result_set(uint64_
     cohort_results.reserve(cohort->expected_participants.size());
     for (const auto& participant : cohort->expected_participants) {
       const uint64_t device_instance_id = participant.device_instance_id;
+      // Skip, don't discard the whole cohort: a still-pending or failed
+      // sibling must not hide the genuinely-completed results of the rest.
       if (!capture_assembly_registry_.is_assembly_successful(capture_id, device_instance_id)) {
-        return {};
+        continue;
       }
       SharedCaptureResultData result = result_store_.get_capture_result(capture_id, device_instance_id);
       if (!result) {
-        return {};
+        continue;
       }
       cohort_results.push_back(std::move(result));
     }
@@ -4561,7 +4560,11 @@ void CoreRuntime::stop() {
 void CoreRuntime::on_core_start() {
   // Core thread has started; begin accepting new work.
   capture_latency_trace_diagnostics::reset_trace_group_seen();
-  epoch_ = std::chrono::steady_clock::now();
+  epoch_steady_ns_.store(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count(),
+      std::memory_order_release);
   // Do not carry retained result artifacts across generation boundaries.
   result_store_.clear();
   global_resource_aggregate_telemetry().clear();
@@ -4628,8 +4631,7 @@ void CoreRuntime::on_core_timer_tick() {
 #endif
 
   const auto now = std::chrono::steady_clock::now();
-  const uint64_t now_ns = static_cast<uint64_t>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
+  const uint64_t now_ns = ns_since_epoch_(now);
 
   // Banner 2: Core-loop provider attachment (effective runtime attachment).
   // Printed once per CoreRuntime session, the first time Core observes a non-null provider.
@@ -4982,8 +4984,7 @@ void CoreRuntime::on_core_timer_tick() {
     const uint64_t gen_out = current_gen_;
     const uint64_t ver_out = version_;
     const uint64_t topo_out = topology_version_;
-    const uint64_t timestamp_ns = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
+    const uint64_t timestamp_ns = ns_since_epoch_(now);
 
     CamBANGStateSnapshot snap = snapshot_builder_.build(in, gen_out, ver_out, topo_out, timestamp_ns);
     auto shared = std::make_shared<CamBANGStateSnapshot>(std::move(snap));
@@ -5823,10 +5824,7 @@ TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) 
       result_promise->set_value(TryCloseDeviceStatus::ProviderRejected);
       return;
     }
-    const uint64_t now_ns = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now() - epoch_)
-            .count());
+    const uint64_t now_ns = ns_since_epoch_();
     bool retain_capture_orphans = false;
     for (const auto& [key, state] : capture_retained_plan_evaluators_) {
       if (state.device_instance_id == device_instance_id ||
@@ -6537,9 +6535,15 @@ CoreRuntime::RigSubmissionResult CoreRuntime::submit_admitted_rig_bundle_(
     if (!is_valid_capture_still_image_bundle(
             participant.request.still_image_bundle,
             prov->supports_multi_image_still_sequence())) {
-      capture_assembly_registry_.mark_capture_failed(bundle.capture_id,
-                                                     participant.request.device_instance_id,
-                                                     static_cast<uint32_t>(ProviderError::ERR_INVALID_ARGUMENT));
+      // Reject the whole submission (policy unchanged), but record a terminal
+      // fact for every bundle participant, not just the one that failed
+      // validation: earlier siblings already validated in this loop must not
+      // be left with no recorded assembly state.
+      for (const auto& all_participants : bundle.participants) {
+        capture_assembly_registry_.mark_capture_failed(bundle.capture_id,
+                                                       all_participants.request.device_instance_id,
+                                                       static_cast<uint32_t>(ProviderError::ERR_INVALID_ARGUMENT));
+      }
       (void)capture_cohort_registry_.mark_failed(bundle.capture_id,
                                                  participant.request.device_instance_id,
                                                  static_cast<uint32_t>(ProviderError::ERR_INVALID_ARGUMENT),

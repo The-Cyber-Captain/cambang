@@ -11,6 +11,8 @@ const DEVICE_D := "DeviceD"
 const DEVICE_E := "DeviceE"
 const DEVICE_F := "DeviceF"
 
+const RIG_A_CAMERA_DESCRIPTION_JSON := "{\"schema_version\":2,\"cameras\":[{\"camera_id\":\"synthetic:0\"},{\"camera_id\":\"synthetic:4\"}],\"concurrent_camera_support\":{\"supported\":true,\"camera_id_combinations\":[[\"synthetic:0\",\"synthetic:4\"]]}}"
+
 @onready var _status_label: RichTextLabel = $RootMargin/VBoxContainer/MainColumn/StatusLabel
 
 var _step := 0
@@ -31,6 +33,15 @@ func _ready() -> void:
 	set_process(true)
 
 	CamBANGServer.stop()
+
+	# Rig A has 2 members (DeviceA=synthetic:0, DeviceE=synthetic:4); Core's rig
+	# admission gate requires an ingested camera-concurrency truth for any
+	# multi-device rig capture (fail-closed by design), so it must be declared
+	# here before start(). ingest_camera_description() only accepts while stopped.
+	var ingest_err := CamBANGServer.ingest_camera_description(RIG_A_CAMERA_DESCRIPTION_JSON)
+	_require(ingest_err == OK, "step %d FAIL: ingest_camera_description rejected (%d)" % [_step, ingest_err])
+	_step_ok("Rig A camera concurrency description ingested")
+
 	var start_err := CamBANGServer.start(
 		CamBANGServer.PROVIDER_KIND_SYNTHETIC,
 		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
@@ -69,10 +80,11 @@ func _process(_delta: float) -> void:
 				for member_id in _rig_a_members:
 					if by_id.has(member_id):
 						var d: Dictionary = by_id[member_id]
+						var still: Dictionary = d.get("capture_profile", {}).get("still", {})
 						diag_lines.append("id=%d hw=%s w=%d h=%d fmt=%d cpv=%d" % [
 							int(member_id), str(d.get("hardware_id", "")),
-							int(d.get("capture_width", 0)), int(d.get("capture_height", 0)),
-							int(d.get("capture_format", 0)), int(d.get("capture_profile_version", 0))
+							int(still.get("width", 0)), int(still.get("height", 0)),
+							int(still.get("format", 0)), int(still.get("version", 0))
 						])
 			_fail("step %d FAIL: capture readiness timeout for Rig A members: %s" % [_step, "; ".join(diag_lines)])
 			return
@@ -200,10 +212,11 @@ func _try_latch_rig_a_capture_readiness() -> void:
 		var d: Dictionary = by_id[member_id]
 		var phase := str(d.get("phase", ""))
 		if phase != "LIVE":
+			var still: Dictionary = d.get("capture_profile", {}).get("still", {})
 			pending.append("id=%d hw=%s phase=%s mode=%s w=%d h=%d fmt=%d cpv=%d" % [
 				int(member_id), str(d.get("hardware_id", "")), phase, str(d.get("mode", "")),
-				int(d.get("capture_width", 0)), int(d.get("capture_height", 0)),
-				int(d.get("capture_format", 0)), int(d.get("capture_profile_version", 0))
+				int(still.get("width", 0)), int(still.get("height", 0)),
+				int(still.get("format", 0)), int(still.get("version", 0))
 			])
 
 	if not pending.is_empty():
@@ -234,10 +247,11 @@ func _trigger_rig_a_capture() -> void:
 			for member_id in _rig_a_members:
 				if by_id.has(member_id):
 					var d: Dictionary = by_id[member_id]
+					var still: Dictionary = d.get("capture_profile", {}).get("still", {})
 					diag_lines.append("id=%d hw=%s w=%d h=%d fmt=%d cpv=%d" % [
 						int(member_id), str(d.get("hardware_id", "")),
-						int(d.get("capture_width", 0)), int(d.get("capture_height", 0)),
-						int(d.get("capture_format", 0)), int(d.get("capture_profile_version", 0))
+						int(still.get("width", 0)), int(still.get("height", 0)),
+						int(still.get("format", 0)), int(still.get("version", 0))
 					])
 				else:
 					diag_lines.append("id=%d missing-device-row" % int(member_id))
