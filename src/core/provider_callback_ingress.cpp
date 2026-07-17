@@ -1,6 +1,7 @@
 #include "core/provider_callback_ingress.h"
 
 #include <chrono>
+#include <cstdio>
 #include <utility>
 
 #include "imaging/api/timeline_teardown_trace.h"
@@ -57,11 +58,13 @@ void ProviderCallbackIngress::on_frame_ingress_dispatched_(uint64_t stream_id) {
 ProviderCallbackIngress::ProviderCallbackIngress(CoreThread* core_thread,
                                                  std::function<void(ProviderToCoreCommand&&)> sink,
                                                  std::function<uint64_t()> core_monotonic_now_ns,
-                                                 std::function<bool(uint64_t)> is_stream_display_demand_active)
+                                                 std::function<bool(uint64_t)> is_stream_display_demand_active,
+                                                 std::function<uint64_t()> applying_stream_retained_plan_for_stream_id)
     : core_thread_(core_thread),
       sink_(std::move(sink)),
       core_monotonic_now_ns_(std::move(core_monotonic_now_ns)),
-      is_stream_display_demand_active_(std::move(is_stream_display_demand_active)) {}
+      is_stream_display_demand_active_(std::move(is_stream_display_demand_active)),
+      applying_stream_retained_plan_for_stream_id_(std::move(applying_stream_retained_plan_for_stream_id)) {}
 
 uint64_t ProviderCallbackIngress::allocate_native_id(NativeObjectType /*type*/) {
   // Core-issued, globally unique for this process/session.
@@ -367,6 +370,23 @@ void ProviderCallbackIngress::on_capture_image_facts(
 }
 
 void ProviderCallbackIngress::on_frame(const FrameView& frame) {
+  // Contract tripwire: icamera_provider.h's update_stream_retained_production_plan()
+  // requires providers not emit a frame synchronously from that call. That call
+  // always executes on the core thread; a correctly-implemented provider only
+  // ever reaches on_frame() asynchronously via CBProviderStrand's own thread,
+  // never same-thread/same-callstack. If on_frame() is somehow reached from the
+  // core thread itself while that call is in flight for this stream, it can only
+  // be a synchronous, reentrant delivery -- a genuine contract violation.
+  if (core_thread_ && core_thread_->is_core_thread() &&
+      applying_stream_retained_plan_for_stream_id_ &&
+      applying_stream_retained_plan_for_stream_id_() == frame.stream_id &&
+      frame.stream_id != 0) {
+    std::fprintf(stderr,
+                 "[CamBANG][ContractViolation] provider delivered a frame synchronously "
+                 "from within update_stream_retained_production_plan() for stream_id=%llu; "
+                 "this violates the icamera_provider.h contract.\n",
+                 static_cast<unsigned long long>(frame.stream_id));
+  }
   // FrameView is a provider-owned view. Ownership is returned to the provider only when
   // core calls frame.release_now(). The core dispatcher MUST ensure release-on-drop.
   ProviderToCoreCommand cmd;

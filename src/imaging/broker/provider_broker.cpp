@@ -21,6 +21,7 @@
 #if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
   #include "imaging/synthetic/provider.h"
   #include "imaging/synthetic/config.h"
+  #include "imaging/synthetic/builtin_scenario_library.h"
 #endif
 
 namespace cambang {
@@ -175,6 +176,7 @@ const char* ProviderBroker::provider_name() const {
 }
 
 ProviderKind ProviderBroker::provider_kind() const noexcept {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   return mode_latched_ == RuntimeMode::synthetic ? ProviderKind::synthetic
                                                   : ProviderKind::platform_backed;
 }

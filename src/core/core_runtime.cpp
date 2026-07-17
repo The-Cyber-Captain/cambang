@@ -1535,6 +1535,8 @@ CoreRuntime::CoreRuntime()
           }
         }
         return state.active;
+      }, [this]() -> uint64_t {
+        return applying_stream_retained_plan_for_stream_id_.load(std::memory_order_acquire);
       }) {
   dispatcher_.set_result_store(&result_store_);
   dispatcher_.set_capture_assembly_registry(&capture_assembly_registry_);
@@ -1824,9 +1826,11 @@ bool CoreRuntime::refresh_stream_retained_plan_state_(
 
   if (apply_to_provider &&
       !same_retained_plan(previous_requested, decision.requested)) {
+    applying_stream_retained_plan_for_stream_id_.store(stream_id, std::memory_order_release);
     const bool ok = prov->update_stream_retained_production_plan(
                stream_id, decision.requested)
         .ok();
+    applying_stream_retained_plan_for_stream_id_.store(0, std::memory_order_release);
     (void)refresh_capture_retained_plan_state_(
         rec->device_instance_id,
         /*requested_bump_access_posture_epoch=*/false);
@@ -3053,7 +3057,9 @@ void CoreRuntime::handle_stream_retained_display_view_observation_(
         if (!same_retained_plan(rec->requested_retained_plan, chosen)) {
           (void)streams_.set_requested_retained_plan(stream_id, chosen, true);
           if (ICameraProvider* prov = provider_.load(std::memory_order_acquire)) {
+            applying_stream_retained_plan_for_stream_id_.store(stream_id, std::memory_order_release);
             (void)prov->update_stream_retained_production_plan(stream_id, chosen);
+            applying_stream_retained_plan_for_stream_id_.store(0, std::memory_order_release);
           }
         }
         (void)streams_.set_steady_retained_plan(stream_id, chosen);
@@ -3095,8 +3101,10 @@ void CoreRuntime::handle_stream_retained_display_view_observation_(
         (void)streams_.clear_steady_retained_plan(stream_id);
         if (ICameraProvider* prov =
                 provider_.load(std::memory_order_acquire)) {
+          applying_stream_retained_plan_for_stream_id_.store(stream_id, std::memory_order_release);
           (void)prov->update_stream_retained_production_plan(
               stream_id, next_plan);
+          applying_stream_retained_plan_for_stream_id_.store(0, std::memory_order_release);
         }
         (void)refresh_capture_retained_plan_state_(
             rec->device_instance_id,
@@ -4907,8 +4915,35 @@ void CoreRuntime::on_core_timer_tick() {
         &native_objects_);
     const size_t retired_telemetry_count =
         global_resource_aggregate_telemetry().retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
+
+    // Capture-admission watchdog (icamera_provider.h's
+    // capture_admission_watchdog_timeout_ns() contract). Scoped strictly
+    // per-device: a timed-out device is marked FAILED with ERR_TIMEOUT on its
+    // own assembly record only. It does not touch capture_cohort_registry_ or
+    // sibling devices, so a stuck device cannot hide siblings' genuine
+    // results from get_capture_result_set() (same principle as the
+    // trigger_capture_submission partial-failure handling above).
+    size_t timed_out_capture_count = 0;
+    uint64_t capture_admission_watchdog_timeout_ns = 0;
+    bool has_capture_admission_watchdog_timeout = false;
+    if (ICameraProvider* prov = provider_.load(std::memory_order_acquire)) {
+      capture_admission_watchdog_timeout_ns = prov->capture_admission_watchdog_timeout_ns();
+      has_capture_admission_watchdog_timeout = true;
+      const auto timed_out = capture_assembly_registry_.sweep_admission_timeouts(
+          now_ns, capture_admission_watchdog_timeout_ns);
+      timed_out_capture_count = timed_out.size();
+      for (const auto& t : timed_out) {
+        std::fprintf(stderr,
+                     "[CamBANG][CaptureAdmissionWatchdog] capture_id=%llu device_instance_id=%llu "
+                     "timed out after %llu ns with no terminal provider fact; marked FAILED(ERR_TIMEOUT).\n",
+                     static_cast<unsigned long long>(t.capture_id),
+                     static_cast<unsigned long long>(t.device_instance_id),
+                     static_cast<unsigned long long>(capture_admission_watchdog_timeout_ns));
+      }
+    }
+
     if (retired_count > 0 || retired_capture_orphan_count > 0 ||
-        retired_telemetry_count > 0) {
+        retired_telemetry_count > 0 || timed_out_capture_count > 0) {
       request_publish_from_core_unchecked();
     }
 
@@ -4940,6 +4975,17 @@ void CoreRuntime::on_core_timer_tick() {
     }
     next_capture_retained_plan_orphan_retirement_delay_(
         now_ns, has_next_deadline_delay, next_deadline_delay_ns);
+    if (has_capture_admission_watchdog_timeout) {
+      if (const auto next_admission_timeout_delay_ns =
+              capture_assembly_registry_.next_admission_timeout_delay_ns(
+                  now_ns, capture_admission_watchdog_timeout_ns);
+          next_admission_timeout_delay_ns.has_value()) {
+        if (!has_next_deadline_delay || *next_admission_timeout_delay_ns < next_deadline_delay_ns) {
+          has_next_deadline_delay = true;
+          next_deadline_delay_ns = *next_admission_timeout_delay_ns;
+        }
+      }
+    }
 
     if (has_next_deadline_delay) {
       core_thread_.set_timer_deadline_ns(next_deadline_delay_ns);
@@ -6234,7 +6280,8 @@ TryTriggerDeviceCaptureStatus CoreRuntime::trigger_device_capture_with_capture_i
     return TryTriggerDeviceCaptureStatus::ProviderRejected;
   }
   capture_assembly_registry_.record_admission_context(
-      capture_id, device_instance_id, req.admission_context, req.still_image_bundle);
+      capture_id, device_instance_id, req.admission_context, req.still_image_bundle,
+      ns_since_epoch_());
 
   begin_capture_stream_preemption_(capture_id, device_instance_id);
   (void)suppress_queued_repeating_stream_frames_for_capture_();
@@ -6459,10 +6506,12 @@ CoreRuntime::RigAdmittedRequestBundle CoreRuntime::admit_rig_cohort_from_preflig
     participants.push_back(std::move(ap));
   }
 
+  const uint64_t admitted_ns = ns_since_epoch_();
   for (const auto& participant : participants) {
     capture_assembly_registry_.record_admission_context(
         capture_id, participant.request.device_instance_id,
-        participant.request.admission_context, participant.request.still_image_bundle);
+        participant.request.admission_context, participant.request.still_image_bundle,
+        admitted_ns);
   }
 
   return make_rig_admitted_success(
@@ -6562,15 +6611,19 @@ CoreRuntime::RigSubmissionResult CoreRuntime::submit_admitted_rig_bundle_(
   if (!pr.ok()) {
     const uint64_t failed_device_instance_id =
         submission.device_requests.empty() ? 0 : submission.device_requests.front().device_instance_id;
-    for (const auto& participant : bundle.participants) {
-      capture_assembly_registry_.mark_capture_failed(bundle.capture_id,
-                                                     participant.request.device_instance_id,
-                                                     static_cast<uint32_t>(pr.code));
-    }
-    (void)capture_cohort_registry_.mark_failed(bundle.capture_id,
-                                               failed_device_instance_id,
-                                               static_cast<uint32_t>(pr.code),
-                                               CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION);
+    // Do NOT blanket-mark participants/cohort failed here: unlike the two
+    // failure branches above (provider absent; pre-flight validation reject),
+    // a trigger_capture_submission() failure does not guarantee nothing was
+    // admitted -- a non-atomic provider (anything relying on the default
+    // ICameraProvider::trigger_capture_submission()) may have already
+    // admitted a prefix of device_requests before the failure. Marking the
+    // cohort FAILED here would make get_capture_result_set() permanently
+    // discard any of those devices' genuine later results. Leave each
+    // participant's assembly record as still-pending; it resolves from that
+    // device's own real terminal fact if one ever arrives, or stays pending
+    // (see icamera_provider.h contract note: no capture-admission watchdog
+    // yet). The immediate caller is still told about the failure via the
+    // return value below.
     return make_rig_submission_trigger_failed(
         bundle.rig_id,
         bundle.capture_id,

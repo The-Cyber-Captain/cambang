@@ -238,6 +238,16 @@ using SharedStreamResultData = std::shared_ptr<const CoreStreamResultData>;
 using SharedCaptureResultData = std::shared_ptr<const CoreCaptureResultData>;
 using MutableCaptureResultData = std::shared_ptr<CoreCaptureResultData>;
 
+// Threading model note (applies also to CoreCaptureAssemblyRegistry and
+// CoreCaptureCohortRegistry): most CoreRuntime-owned registries are
+// core-thread-only with no internal lock, relying solely on CoreThread's
+// single-owner invariant; any cross-thread visibility goes through a
+// snapshot copy built while running on the core thread. This store is a
+// deliberate, narrow exception: CoreRuntime::get_capture_result[_set]() are
+// read directly and synchronously from the calling (e.g. Godot) thread with
+// no core-thread round trip, so this store must be safe for concurrent
+// core-thread writes and external-thread reads and provides its own
+// internal locking accordingly.
 class CoreResultStore final {
 public:
   enum class DisplayDemandReason : uint8_t {

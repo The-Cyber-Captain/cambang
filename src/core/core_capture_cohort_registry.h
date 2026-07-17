@@ -16,6 +16,11 @@ namespace cambang {
 // A "cohort" is an admitted rig-triggered capture group (one capture_id, one
 // rig_id, and fixed expected participant devices). This registry intentionally
 // stores admission metadata only (no payload ownership).
+//
+// Deliberately self-locking, unlike most CoreRuntime registries (see the
+// threading-model note on CoreResultStore): find() is read directly from
+// CoreRuntime::get_capture_result_set() on the calling (e.g. Godot) thread
+// without a core-thread round trip.
 class CoreCaptureCohortRegistry final {
 public:
   enum class CohortState : uint8_t {

@@ -10,6 +10,11 @@
 
 namespace cambang {
 
+// Default for ICameraProvider::capture_admission_watchdog_timeout_ns() (30s).
+// Deliberately generous; see that method's doc comment.
+inline constexpr uint64_t kDefaultCaptureAdmissionWatchdogTimeoutNs =
+    30ull * 1000ull * 1000ull * 1000ull;
+
 // Provider→core callback sink.
 // Provider MUST invoke these on a single serialized callback context.
 class IProviderCallbacks {
@@ -173,6 +178,19 @@ public:
     return 0;
   }
 
+  // Worst-case time Core should wait, after a trigger_capture()/
+  // trigger_capture_submission() admission, for that device's terminal
+  // capture fact (on_capture_completed/on_capture_failed) to arrive before
+  // Core's own capture-admission watchdog declares it timed out
+  // (ProviderError::ERR_TIMEOUT). The default is deliberately generous: Core
+  // cannot know a specific provider's real latency, and a timeout that is too
+  // short would produce a false-positive failure for hardware that is simply
+  // still working -- worse than staying silently pending. Only override this
+  // with a value backed by real measured worst-case latency, never a guess.
+  virtual uint64_t capture_admission_watchdog_timeout_ns() const noexcept {
+    return kDefaultCaptureAdmissionWatchdogTimeoutNs;
+  }
+
   // Core supplies callback sink. Provider retains only a raw pointer (no ownership).
   // Provider MUST call callbacks on a single serialized callback context.
   virtual ProviderResult initialize(IProviderCallbacks* callbacks) = 0;
@@ -250,6 +268,14 @@ public:
   // this retain legacy per-device submission behaviour; providers with
   // coordinated multi-device capture support should override it so all member
   // device work is accepted as one provider submission.
+  //
+  // This default is NOT atomic: it admits devices one at a time via
+  // trigger_capture(), each of which is itself an admission/ownership
+  // transfer. On a mid-loop failure it attempts a best-effort abort_capture()
+  // of the already-admitted prefix before returning, but since abort_capture()
+  // is itself best-effort/platform-dependent (may deterministically return
+  // ERR_NOT_SUPPORTED), that rollback is not guaranteed. Callers must not
+  // treat a failure return here as proof that no device was admitted.
   virtual ProviderResult trigger_capture_submission(const CaptureSubmission& submission) {
     if (submission.capture_id == 0 || submission.device_requests.empty()) {
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
@@ -257,6 +283,7 @@ public:
     for (const CaptureRequest& req : submission.device_requests) {
       const ProviderResult pr = trigger_capture(req);
       if (!pr.ok()) {
+        (void)abort_capture(submission.capture_id);
         return pr;
       }
     }

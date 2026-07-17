@@ -117,7 +117,9 @@ public:
   bool is_running() const { return running_.load(std::memory_order_acquire); }
 
   // Debug helper: returns true if called from the core thread.
-  bool is_core_thread() const noexcept { return std::this_thread::get_id() == core_tid_; }
+  bool is_core_thread() const noexcept {
+    return std::this_thread::get_id() == core_tid_.load(std::memory_order_acquire);
+  }
 
   // Bounded mailbox capacity (number of pending tasks).
   static constexpr size_t kMaxPendingTasks = 1024;
@@ -241,7 +243,9 @@ private:
   std::condition_variable cv_;
 
   std::thread thread_;
-  std::thread::id core_tid_{};
+  // is_core_thread() is called from any thread without holding mu_; this must
+  // stay an atomic so its cross-thread read/write pair is not a data race.
+  std::atomic<std::thread::id> core_tid_{};
   IHooks* hooks_ = nullptr; // non-owning; must outlive stop()
 
   // Work queues (protected by mu_).

@@ -51,6 +51,11 @@ enum class ProviderError : uint32_t {
   ERR_TRANSIENT_FAILURE,
   ERR_PROVIDER_FAILED,
   ERR_SHUTTING_DOWN,
+  // Deadline exceeded before a terminal capture fact arrived. Used by Core's
+  // own capture-admission watchdog (see icamera_provider.h's
+  // capture_admission_watchdog_timeout_ns()); also available for a provider
+  // to return directly for a genuine hardware-timeout failure.
+  ERR_TIMEOUT,
 };
 
 

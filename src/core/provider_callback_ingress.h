@@ -48,7 +48,8 @@ public:
   ProviderCallbackIngress(CoreThread* core_thread,
                           std::function<void(ProviderToCoreCommand&&)> sink,
                           std::function<uint64_t()> core_monotonic_now_ns,
-                          std::function<bool(uint64_t)> is_stream_display_demand_active);
+                          std::function<bool(uint64_t)> is_stream_display_demand_active,
+                          std::function<uint64_t()> applying_stream_retained_plan_for_stream_id = nullptr);
   ~ProviderCallbackIngress() override = default;
 
   ProviderCallbackIngress(const ProviderCallbackIngress&) = delete;
@@ -102,6 +103,7 @@ private:
   std::function<void(ProviderToCoreCommand&&)> sink_;
   std::function<uint64_t()> core_monotonic_now_ns_;
   std::function<bool(uint64_t)> is_stream_display_demand_active_;
+  std::function<uint64_t()> applying_stream_retained_plan_for_stream_id_;
 
   std::atomic<uint64_t> native_id_seq_{1};
 

@@ -30,7 +30,8 @@ void CoreCaptureAssemblyRegistry::record_admission_context(
     uint64_t capture_id,
     uint64_t device_instance_id,
     CaptureAdmissionContext context,
-    const CaptureStillImageBundle& still_image_bundle) {
+    const CaptureStillImageBundle& still_image_bundle,
+    uint64_t admitted_ns) {
   if (capture_id == 0 || device_instance_id == 0) {
     return;
   }
@@ -39,6 +40,7 @@ void CoreCaptureAssemblyRegistry::record_admission_context(
       get_or_create_assembly(assemblies_by_capture_id_, capture_id, device_instance_id);
   assembly.admission_context = std::move(context);
   assembly.has_admission_context = true;
+  assembly.admitted_ns = admitted_ns;
   assembly.expected_image_member_indices.clear();
   assembly.expected_image_member_indices.reserve(still_image_bundle.members.size());
   for (const CaptureStillImageMember& member : still_image_bundle.members) {
@@ -130,6 +132,53 @@ bool CoreCaptureAssemblyRegistry::is_result_safe(uint64_t capture_id,
   }
   return assembly.has_default_image_retained &&
          assembly.terminal_state == TerminalState::COMPLETED;
+}
+
+std::vector<CoreCaptureAssemblyRegistry::TimedOutAssembly>
+CoreCaptureAssemblyRegistry::sweep_admission_timeouts(uint64_t now_ns, uint64_t timeout_ns) {
+  std::vector<TimedOutAssembly> timed_out;
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (auto& [capture_id, by_device] : assemblies_by_capture_id_) {
+    for (auto& [device_instance_id, assembly] : by_device) {
+      if (!assembly.has_admission_context ||
+          assembly.terminal_state != TerminalState::NONE) {
+        continue;
+      }
+      if (now_ns < assembly.admitted_ns + timeout_ns) {
+        continue;
+      }
+      assembly.terminal_state = TerminalState::FAILED;
+      assembly.has_failure_error_code = true;
+      assembly.failure_error_code = static_cast<uint32_t>(ProviderError::ERR_TIMEOUT);
+      timed_out.push_back(TimedOutAssembly{capture_id, device_instance_id});
+    }
+  }
+  return timed_out;
+}
+
+std::optional<uint64_t> CoreCaptureAssemblyRegistry::next_admission_timeout_delay_ns(
+    uint64_t now_ns, uint64_t timeout_ns) const {
+  std::optional<uint64_t> min_delay;
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (const auto& [capture_id, by_device] : assemblies_by_capture_id_) {
+    (void)capture_id;
+    for (const auto& [device_instance_id, assembly] : by_device) {
+      (void)device_instance_id;
+      if (!assembly.has_admission_context ||
+          assembly.terminal_state != TerminalState::NONE) {
+        continue;
+      }
+      const uint64_t deadline_ns = assembly.admitted_ns + timeout_ns;
+      uint64_t delay = 0;
+      if (deadline_ns > now_ns) {
+        delay = deadline_ns - now_ns;
+      }
+      if (!min_delay.has_value() || delay < *min_delay) {
+        min_delay = delay;
+      }
+    }
+  }
+  return min_delay;
 }
 
 void CoreCaptureAssemblyRegistry::clear() {

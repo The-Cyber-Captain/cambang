@@ -859,6 +859,11 @@ private:
   CoreSpecState spec_state_;
   CoreStreamRegistry streams_;
   CoreNativeObjectRegistry native_objects_;
+  // result_store_, capture_assembly_registry_, and capture_cohort_registry_
+  // are the deliberate exceptions to the core-thread-only registry model used
+  // by the members above: get_capture_result[_set]() read them directly from
+  // the calling (e.g. Godot) thread, so each provides its own internal lock.
+  // See the threading-model note on CoreResultStore for the full rationale.
   CoreResultStore result_store_;
   CoreCaptureAssemblyRegistry capture_assembly_registry_;
   CoreCaptureCohortRegistry capture_cohort_registry_;
@@ -906,6 +911,17 @@ private:
   uint64_t ns_since_epoch_() const noexcept {
     return ns_since_epoch_(std::chrono::steady_clock::now());
   }
+
+  // Reentrancy tripwire for the icamera_provider.h contract on
+  // update_stream_retained_production_plan(): "providers must not emit a
+  // frame synchronously from this call". Set to the stream_id for the
+  // duration of that provider call (always made from the core thread);
+  // ProviderCallbackIngress::on_frame() checks this alongside
+  // core_thread_.is_core_thread() to detect a provider violating it by
+  // delivering a frame synchronously, same-thread, from within the call
+  // (never a false positive for a correctly-implemented provider posting a
+  // frame asynchronously through CBProviderStrand's own thread).
+  std::atomic<uint64_t> applying_stream_retained_plan_for_stream_id_{0};
 
   CoreDispatcher dispatcher_;
   ProviderCallbackIngress ingress_;

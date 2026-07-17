@@ -51,7 +51,6 @@ static bool gpu_trace_enabled() noexcept {
 struct SharedDisplayTextureRidState final {
   mutable std::mutex mutex;
   godot::RID rd_texture;
-  bool abandoned_after_runtime_stop = false;
   bool invalidated = false;
 
   explicit SharedDisplayTextureRidState(const godot::RID& rid) : rd_texture(rid) {}
@@ -65,11 +64,6 @@ struct SharedDisplayTextureRidState final {
     return rd_texture;
   }
 
-  void mark_abandoned_after_runtime_stop() {
-    std::lock_guard<std::mutex> lock(mutex);
-    abandoned_after_runtime_stop = true;
-  }
-
   void mark_invalidated() {
     std::lock_guard<std::mutex> lock(mutex);
     invalidated = true;
@@ -80,17 +74,20 @@ struct SharedDisplayTextureRidState final {
     return !invalidated && rd_texture.is_valid();
   }
 
+  // Godot's RenderingServer/RenderingDevice persist across CamBANG
+  // start()/stop() cycles within one process; only GDExtension unload
+  // (g_bridge_teardown_started, set once by clear_pending_releases_for_teardown())
+  // makes it unsafe to schedule a release. A CamBANG-level stop() alone must
+  // not skip this, or the RID leaks permanently once the wrapper is dropped.
   void release_now() {
     godot::RID rid;
-    bool abandon_release = false;
     {
       std::lock_guard<std::mutex> lock(mutex);
       rid = rd_texture;
       rd_texture = godot::RID();
-      abandon_release = abandoned_after_runtime_stop;
       invalidated = true;
     }
-    if (!rid.is_valid() || abandon_release) {
+    if (!rid.is_valid()) {
       return;
     }
     if (enqueue_pending_release(rid)) {
@@ -1017,7 +1014,6 @@ void synthetic_gpu_backing_warn_and_abandon_live_display_wrappers_before_stop() 
   for (const LiveDisplayWrapperBorrow& borrow : borrows) {
     if (borrow.rid_state) {
       borrow.rid_state->mark_invalidated();
-      borrow.rid_state->mark_abandoned_after_runtime_stop();
     }
     ++counts_by_stream_id[borrow.stream_id];
   }

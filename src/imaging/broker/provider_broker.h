@@ -18,10 +18,9 @@
 #include "imaging/api/provider_access_status.h"
 #include "imaging/broker/mode.h"
 #include "imaging/synthetic/config.h"
-#include "imaging/synthetic/builtin_scenario_library.h"
+#include "imaging/synthetic/host_snapshot_types.h"
 #include "imaging/synthetic/scenario_model.h"
 #include "imaging/synthetic/scenario.h"
-#include "imaging/synthetic/provider.h"
 
 namespace cambang {
 
@@ -139,10 +138,26 @@ public:
   bool get_synthetic_metrics_snapshot_for_host(SyntheticMetricsSnapshot& out) const;
   bool get_synthetic_staged_rig_topology_for_host(std::vector<SyntheticStagedRigTopology>& out) const;
 
-  RuntimeMode runtime_mode_latched() const noexcept { return mode_latched_; }
-  SyntheticRole synthetic_role_latched() const noexcept { return synthetic_role_latched_; }
-  TimingDriver synthetic_timing_driver_latched() const noexcept { return timing_driver_latched_; }
-  TimelineReconciliation synthetic_timeline_reconciliation_latched() const noexcept { return timeline_reconciliation_latched_; }
+  // These latched values are written under active_provider_mutex_ inside
+  // initialize(); readers on other threads must take the same lock rather
+  // than reading the field directly (matches CoreCaptureCohortRegistry's
+  // established noexcept-lock_guard accessor pattern elsewhere in the codebase).
+  RuntimeMode runtime_mode_latched() const noexcept {
+    std::lock_guard<std::mutex> lock(active_provider_mutex_);
+    return mode_latched_;
+  }
+  SyntheticRole synthetic_role_latched() const noexcept {
+    std::lock_guard<std::mutex> lock(active_provider_mutex_);
+    return synthetic_role_latched_;
+  }
+  TimingDriver synthetic_timing_driver_latched() const noexcept {
+    std::lock_guard<std::mutex> lock(active_provider_mutex_);
+    return timing_driver_latched_;
+  }
+  TimelineReconciliation synthetic_timeline_reconciliation_latched() const noexcept {
+    std::lock_guard<std::mutex> lock(active_provider_mutex_);
+    return timeline_reconciliation_latched_;
+  }
 
 #if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
   ProviderResult install_active_provider_for_smoke(
