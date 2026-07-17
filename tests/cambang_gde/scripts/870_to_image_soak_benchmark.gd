@@ -9,6 +9,12 @@ const DEV_A := "device_a"
 const DEV_B := "device_b"
 const BENCH_RIG_ID := 870001
 
+# Core's rig admission gate fail-closes any multi-device rig capture unless a
+# camera-concurrency truth naming the exact combination has been ingested
+# (see docs/architecture -- CoreRuntime::grouped_rig_imaging_spec_admission_
+# failure_()). Mirrors 73_rig_capture_result_set_verification.gd's pattern.
+const RIG_CAMERA_DESCRIPTION_JSON := "{\"schema_version\":2,\"cameras\":[{\"camera_id\":\"synthetic:0\"},{\"camera_id\":\"synthetic:1\"}],\"concurrent_camera_support\":{\"supported\":true,\"camera_id_combinations\":[[\"synthetic:0\",\"synthetic:1\"]]}}"
+
 const SETUP_TIMEOUT_MS := 10000
 const PROFILE_APPLY_TIMEOUT_MS := 5000
 const CAPTURE_TIMEOUT_US := 5000000
@@ -225,6 +231,13 @@ func _bootstrap() -> void:
 		return
 
 	CamBANGServer.stop()
+	# ingest_camera_description() only accepts while stopped; must run before
+	# start() or the rig's two-device capture will be rejected ERR_BUSY by the
+	# admission gate for the whole run (see RIG_CAMERA_DESCRIPTION_JSON above).
+	var ingest_err := int(CamBANGServer.ingest_camera_description(RIG_CAMERA_DESCRIPTION_JSON))
+	if ingest_err != OK:
+		_fail("bootstrap failed: ingest_camera_description returned %d" % ingest_err)
+		return
 	var start_err := int(CamBANGServer.start(
 		CamBANGServer.PROVIDER_KIND_SYNTHETIC,
 		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
@@ -1988,10 +2001,13 @@ func _poll_one_rig_job(job: Dictionary) -> bool:
 		return true
 	if _rig == null:
 		return false
-	var result_set = _rig.get_result()
-	if result_set == null or result_set.is_empty():
-		return false
-	var results: Array = result_set.get_results()
+	# CamBANGRig.get_result() returns a plain Array[CamBANGCaptureResult]
+	# (no dedicated CaptureResultSet wrapper class -- see
+	# docs/architecture/pixel_payload_and_result_contract.md 10.6.3). This
+	# script predates that removal (commit 3a082d8) and was missed by it;
+	# 73_rig_capture_result_set_verification.gd was migrated correctly at
+	# the same time and is the reference pattern this mirrors.
+	var results: Array = _rig.get_result()
 	if results.is_empty():
 		return false
 	var result_by_key := {}
@@ -2551,7 +2567,14 @@ func _phase_load_delivery_summary(record: Dictionary) -> Dictionary:
 		var sample: Dictionary = sample_v if typeof(sample_v) == TYPE_DICTIONARY else {}
 		var cat_scheduled := int(adm.get("scheduled", 0))
 		var cat_admitted := int(adm.get("admitted", adm.get("accepted", 0)))
-		var cat_completed := int(sample.get("count", 0))
+		# "count" is every recorded sample regardless of outcome (includes
+		# "timeout"/"trigger_rejected"/"no_image" -- see _record_sample call
+		# sites); a job that silently times out without ever completing must
+		# not read as "completed" here, or a regression that stalls delivery
+		# can hide behind a misleadingly healthy completion_ratio.
+		var status_counts_v: Variant = sample.get("status_counts", {})
+		var status_counts: Dictionary = status_counts_v if typeof(status_counts_v) == TYPE_DICTIONARY else {}
+		var cat_completed := int(status_counts.get("complete", 0))
 		var cat_blocked_by_inflight := int(adm.get("blocked_by_inflight", adm.get("skipped_inflight", 0)))
 		var cat_blocked_by_materialization_backlog := int(adm.get("blocked_by_materialization_backlog", 0))
 		var cat_blocked_by_texture_backlog := int(adm.get("blocked_by_texture_backlog", 0))
