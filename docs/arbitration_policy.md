@@ -235,7 +235,14 @@ default: return error code but do not increment failure counters.
 
 ## 9. Capture IDs and determinism
 
-Core issues `capture_id` as a monotonic `uint64`.
+`capture_id` is a monotonic `uint64`, unique for the runtime session.
+Implementation note: it is minted at the Godot boundary
+(`CamBANGServer::next_capture_id_`) rather than inside `CoreRuntime`, so
+that a synchronous `trigger_capture()`/`trigger_rig_capture()` call can
+return the assigned ID to its caller without waiting on a core-thread round
+trip; the same counter is shared across device-triggered and rig-triggered
+requests, so uniqueness/monotonicity guarantees hold regardless of which
+path issued it.
 
 Rules: - capture_id is assigned when a capture request is accepted (not
 when it completes). - rig-triggered capture assigns one capture_id for

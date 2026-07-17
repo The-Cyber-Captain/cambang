@@ -322,13 +322,27 @@ void CoreThread::drain_tasks_locked(std::deque<Task>& essential_local,
   }
 }
 
+void CoreThread::mark_task_start_() noexcept {
+  const uint64_t now_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+  current_task_started_ns_.store(now_ns, std::memory_order_release);
+}
+
+void CoreThread::mark_task_end_() noexcept {
+  current_task_started_ns_.store(0, std::memory_order_release);
+}
+
 void CoreThread::thread_main() {
   core_tid_.store(std::this_thread::get_id(), std::memory_order_release);
   // From this point onward, execution is exclusively on the core thread.
   // No other thread may mutate core state.
 
   if (hooks_) {
+    mark_task_start_();
     run_guarded("on_core_start", [this]() { hooks_->on_core_start(); });
+    mark_task_end_();
   }
 
   std::deque<Task> essential_local;
@@ -393,17 +407,23 @@ void CoreThread::thread_main() {
     // - Essential FIFO tasks execute before command FIFO tasks drained in the same pump.
     // - Command FIFO tasks execute before ordinary FIFO tasks drained in the same pump.
     for (size_t i = 0; i < essential_local.size(); ++i) {
+      mark_task_start_();
       run_guarded("essential_task", essential_local[i]);
+      mark_task_end_();
     }
     essential_local.clear();
 
     for (size_t i = 0; i < command_local.size(); ++i) {
+      mark_task_start_();
       run_guarded("command_task", command_local[i]);
+      mark_task_end_();
     }
     command_local.clear();
 
     for (size_t i = 0; i < ordinary_local.size(); ++i) {
+      mark_task_start_();
       run_guarded("ordinary_task", ordinary_local[i]);
+      mark_task_end_();
     }
     ordinary_local.clear();
 
@@ -422,8 +442,13 @@ void CoreThread::thread_main() {
       if (defer_timer_for_command) {
         timer_tick_deferred_for_command = true;
       } else {
-        // Timer tick runs strictly on the core thread.
+        // Timer tick runs strictly on the core thread. This is the path that
+        // reaches CoreRuntime's shutdown-phase pump, which calls
+        // prov->shutdown() -- exactly the kind of provider call the liveness
+        // primitive exists to catch if it never returns.
+        mark_task_start_();
         run_guarded("on_core_timer_tick", [this]() { hooks_->on_core_timer_tick(); });
+        mark_task_end_();
         timer_tick_deferred_for_command = false;
       }
     }
@@ -446,7 +471,9 @@ void CoreThread::thread_main() {
   }
 
   if (hooks_) {
+    mark_task_start_();
     run_guarded("on_core_stop", [this]() { hooks_->on_core_stop(); });
+    mark_task_end_();
   }
 }
 

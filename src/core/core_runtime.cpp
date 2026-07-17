@@ -4123,6 +4123,14 @@ std::vector<SharedCaptureResultData> CoreRuntime::curate_capture_result_set_acce
 }
 
 void CoreRuntime::stop() {
+  // Serialize the whole call: a second concurrent caller blocks here until
+  // the first caller's teardown (including core_thread_.join() below) has
+  // fully completed. It then observes state_ == STOPPED via its own
+  // exchange() below and returns via the idempotent early-return path,
+  // instead of racing the first caller into its own join() on the same
+  // std::thread. See stop_mutex_'s doc comment.
+  std::lock_guard<std::mutex> stop_lock(stop_mutex_);
+
   // Idempotent stop.
   const CoreRuntimeState st0 = state_.exchange(CoreRuntimeState::TEARING_DOWN, std::memory_order_acq_rel);
   if (st0 == CoreRuntimeState::STOPPED || st0 == CoreRuntimeState::CREATED) {
@@ -4147,6 +4155,64 @@ void CoreRuntime::stop() {
   state_.store(CoreRuntimeState::STOPPED, std::memory_order_release);
 }
 
+namespace {
+
+// 2.5x the existing 2s caller-facing future::wait_for() bound used by
+// CoreRuntime's synchronous command wrappers: comfortably above any
+// legitimately slow-but-compliant task, while still firing well before a
+// human debugging session would give up waiting.
+constexpr uint64_t kCoreThreadStaleTaskThresholdNs = 5'000'000'000ull;
+// While the same stale episode continues, re-log (and re-check the abort
+// gate) at this cadence rather than once at first detection and then never
+// again for the rest of the hang.
+constexpr uint64_t kCoreThreadStaleReReportIntervalNs = 5'000'000'000ull;
+
+uint64_t steady_now_ns() noexcept {
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+} // namespace
+
+void CoreRuntime::check_core_thread_liveness() {
+  const uint64_t started_ns = core_thread_.current_task_started_ns();
+  if (started_ns == 0) {
+    return; // idle: no task/hook currently in flight.
+  }
+  const uint64_t now_ns = steady_now_ns();
+  if (now_ns < started_ns || now_ns - started_ns < kCoreThreadStaleTaskThresholdNs) {
+    return;
+  }
+  const bool new_episode = started_ns != last_reported_stale_task_started_ns_;
+  const bool due_for_rereport = !new_episode &&
+      (now_ns - last_stale_report_steady_ns_ >= kCoreThreadStaleReReportIntervalNs);
+  if (!new_episode && !due_for_rereport) {
+    return;
+  }
+  last_reported_stale_task_started_ns_ = started_ns;
+  last_stale_report_steady_ns_ = now_ns;
+  core_thread_stale_detections_.fetch_add(1, std::memory_order_relaxed);
+
+  const double stuck_s = static_cast<double>(now_ns - started_ns) / 1e9;
+  std::fprintf(stderr,
+               "[CamBANG][CoreThread] stale task detected: the core thread has "
+               "been inside a single posted task or the timer-tick hook for "
+               "%.1fs (>= %.1fs threshold). This means a provider call did not "
+               "honor the documented prompt/bounded contract (see "
+               "provider_architecture.md Section 8.1 and "
+               "docs/dev/provider_compliance_checklist.md Section 2).\n",
+               stuck_s,
+               static_cast<double>(kCoreThreadStaleTaskThresholdNs) / 1e9);
+  std::fflush(stderr);
+
+#if defined(CAMBANG_INTERNAL_SMOKE)
+  // Maintainer/compliance-verify builds only -- never defined for a
+  // GDE/Godot plugin build (see SConstruct: CAMBANG_INTERNAL_SMOKE is only
+  // ever appended to maintainer_tools/validation environments), so this can
+  // never newly abort a shipped game or a developer's own editor session.
+  std::abort();
+#endif
+}
 
 void CoreRuntime::on_core_start() {
   // Core thread has started; begin accepting new work.

@@ -249,6 +249,34 @@ enum class TryCloseDeviceStatus : uint8_t {
 
   bool is_running() const { return core_thread_.is_running(); }
 
+  // Watchdog policy layer over CoreThread::current_task_started_ns(). Call
+  // periodically (e.g. once per Godot tick, or from a maintainer-tool
+  // polling loop) to detect a core thread wedged inside a single posted
+  // task or the timer-tick hook for longer than
+  // kCoreThreadStaleTaskThresholdNs. This exists because "provider calls
+  // must be prompt and bounded" (provider_architecture.md Section 8.1) is
+  // otherwise enforced only by a human following
+  // docs/dev/provider_compliance_checklist.md Section 2's manual review
+  // item -- see docs/dev/current_tranche.md's Step 2 entry.
+  //
+  // Always logs to stderr on a new stale episode (or every
+  // kCoreThreadStaleReReportIntervalNs while the same episode continues).
+  // Additionally hard-aborts when CAMBANG_INTERNAL_SMOKE is defined --
+  // i.e. only in maintainer_tools binaries, never in a GDE/Godot plugin
+  // build regardless of target=debug|release.
+  //
+  // Not thread-safe against concurrent callers: assumes a single calling
+  // thread's context per process (true today -- the Godot main-thread tick
+  // is the only GDE caller, and maintainer-tool binaries call it from their
+  // own single test thread; the two never coexist in one process).
+  void check_core_thread_liveness();
+
+  // Diagnostic-only: count of distinct stale-task episodes detected so far
+  // by check_core_thread_liveness(). Safe to read from any thread.
+  uint64_t core_thread_stale_detections() const noexcept {
+    return core_thread_stale_detections_.load(std::memory_order_relaxed);
+  }
+
   // Tick-bounded publication bridge support.
   //
   // Core may publish multiple snapshots between Godot ticks. Godot-facing code
@@ -879,7 +907,24 @@ private:
 
   std::atomic<CoreRuntimeState> state_{CoreRuntimeState::CREATED};
 
+  // Serializes stop() itself. state_'s exchange-based idempotency guard only
+  // rejects re-entry once already STOPPED/CREATED; without this lock, two
+  // callers racing while state_ is LIVE/TEARING_DOWN could both fall through
+  // and both call core_thread_.join() on the same std::thread concurrently
+  // (undefined behaviour per POSIX pthread_join semantics). See stop()'s doc
+  // comment.
+  std::mutex stop_mutex_;
+
+  // check_core_thread_liveness() bookkeeping. Not atomic: per that method's
+  // doc comment, only ever touched from one calling thread's context.
+  uint64_t last_reported_stale_task_started_ns_ = 0;
+  uint64_t last_stale_report_steady_ns_ = 0;
+  std::atomic<uint64_t> core_thread_stale_detections_{0};
+
   SnapshotBuilder snapshot_builder_;
+  // Non-owning. Set via set_snapshot_publisher(); caller (CamBANGServer or a
+  // maintainer-tool harness) owns the publisher and must outlive this
+  // CoreRuntime instance.
   std::atomic<IStateSnapshotPublisher*> snapshot_publisher_{nullptr};
 
   // Core-defined epoch for snapshot timestamp_ns (session-relative monotonic).

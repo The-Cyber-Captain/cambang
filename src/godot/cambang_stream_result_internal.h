@@ -23,16 +23,18 @@ struct SharedLiveCpuTextureRidState final {
   godot::RID snapshot_rid() const;
   void replace_rid(const godot::RID& texture_rid_in);
   void clear();
-  // Marks this display view invalidated AND releases texture_rid now, rather
-  // than deferring release to whenever this object's own destructor happens
-  // to run (which depends on when the last shared_ptr/script reference to the
-  // owning wrapper is dropped -- not deterministic, and not tied to CamBANG's
-  // own lifecycle). RenderingServer persists across CamBANGServer stop()/
-  // start() cycles within one process, so it is safe and correct to reclaim
-  // texture_rid here rather than leaving it allocated indefinitely. Called
-  // from abandon_all_live_cpu_display_wrappers_before_stop(). Mirrors
+  // Marks this display view invalidated AND enqueues texture_rid for
+  // render-thread release, rather than deferring release to whenever this
+  // object's own destructor happens to run (which depends on when the last
+  // shared_ptr/script reference to the owning wrapper is dropped -- not
+  // deterministic, and not tied to CamBANG's own lifecycle). RenderingServer
+  // persists across CamBANGServer stop()/start() cycles within one process,
+  // so it is safe and correct to reclaim texture_rid here rather than
+  // leaving it allocated indefinitely. Called from
+  // abandon_all_live_cpu_display_wrappers_before_stop(). Mirrors
   // SharedDisplayTextureRidState::release_now() in
-  // synthetic_gpu_backing_bridge.cpp.
+  // synthetic_gpu_backing_bridge.cpp, including that path's render-thread
+  // marshaling discipline for the actual free_rid() call.
   void invalidate_and_release();
   bool draw_allowed() const;
   ~SharedLiveCpuTextureRidState();
@@ -109,21 +111,30 @@ private:
 };
 
 // RefCounted target for RenderingServer::call_on_render_thread(), registered
-// only so ClassDB can resolve the bound method as a Callable target -- not a
-// user-facing CamBANG class. Mirrors RenderThreadDrainHelper in
-// synthetic_gpu_backing_bridge_internal.h, but for RenderingServer texture
-// creation rather than RenderingDevice release.
+// only so ClassDB can resolve the bound methods as Callable targets -- not a
+// user-facing CamBANG class. Handles both RenderingServer texture creation
+// and RenderingServer::free_rid() release for the CPU-backed live display
+// path (both must run on the render thread; see the doc comment above
+// enqueue_live_cpu_texture_create() and SharedLiveCpuTextureRidState's
+// release_live_cpu_texture_rid() usage in the .cpp for why release is
+// marshaled too). Mirrors RenderThreadDrainHelper in
+// synthetic_gpu_backing_bridge_internal.h, which does the equivalent for
+// RenderingDevice release on the GPU-backing path.
 class LiveCpuTextureCreateDrainHelper : public godot::RefCounted {
   GDCLASS(LiveCpuTextureCreateDrainHelper, godot::RefCounted);
 
 public:
   bool drain_pending_creates_on_render_thread();
+  bool drain_pending_releases_on_render_thread();
 
 private:
   static void _bind_methods() {
     godot::ClassDB::bind_method(
         godot::D_METHOD("drain_pending_creates_on_render_thread"),
         &LiveCpuTextureCreateDrainHelper::drain_pending_creates_on_render_thread);
+    godot::ClassDB::bind_method(
+        godot::D_METHOD("drain_pending_releases_on_render_thread"),
+        &LiveCpuTextureCreateDrainHelper::drain_pending_releases_on_render_thread);
   }
 };
 

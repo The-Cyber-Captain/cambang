@@ -17,6 +17,27 @@
 #include "imaging/api/icamera_provider.h"
 #include "imaging/api/provider_access_status.h"
 #include "imaging/broker/mode.h"
+
+// Waiver (cpp_code_quality_policy.md Waivers section): ProviderBroker does
+// NOT depend on the concrete SyntheticProvider class (that coupling was
+// removed in an earlier ledger item) -- host_snapshot_types.h exists
+// specifically to keep that class out of this header, see its own doc
+// comment. What remains is type-level: SyntheticRole/TimingDriver/
+// TimelineReconciliation/SyntheticProducerOutputFormMode (config.h) are
+// used as data-member types with in-class default initializers below (not
+// just function parameters), and stream_capability_downgrade_conditions_
+// requested_/_latched_ and their capture-side counterparts are
+// std::vector<SyntheticStreamCapabilityDowngradeCondition>/
+// std::vector<SyntheticCaptureCapabilityDowngradeCondition> data members.
+// The enums could be forward-declared (fixed underlying type), but the two
+// vector members require those struct types to stay complete wherever
+// ProviderBroker's implicit destructor is instantiated -- removing the
+// includes would mean restructuring which members live in this header at
+// all (e.g. moving their default-initialization into the out-of-line
+// constructor), not just adding forward declarations. That is a real
+// structural change to a header the whole GDE build depends on, not
+// justified by this coupling alone. Revisit only alongside a real reason to
+// touch this header's member layout, not as a standalone cleanup.
 #include "imaging/synthetic/config.h"
 #include "imaging/synthetic/host_snapshot_types.h"
 #include "imaging/synthetic/scenario_model.h"

@@ -653,6 +653,7 @@ maintainer_tools_clean_outputs = [
     _program_path("provider_compliance_verify"),
     _program_path("restart_boundary_verify"),
     _program_path("synthetic_only_provider_support_verify"),
+    _program_path("core_thread_liveness_watchdog_verify"),
 ]
 platform_runtime_validate_clean_outputs = _selected_platform_runtime_validate_clean_outputs(gde_platform)
 gde_clean_outputs = _planned_selected_gde_clean_outputs(gde_platform, godot_target, env["arch"], env["precision"])
@@ -715,6 +716,10 @@ if build_maintainer_tools:
     core_result_path_smoke_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "core_result_path_smoke"),
         source=maintainer_tools_core_runtime_sources + ["src/smoke/core_result_path_smoke.cpp"],
+    )
+    core_thread_liveness_watchdog_verify_prog = maintainer_tools_env.Program(
+        target=os.path.join(out_dir, "core_thread_liveness_watchdog_verify"),
+        source=runtime_maintainer_tools_sources + ["src/smoke/core_thread_liveness_watchdog_verify.cpp"],
     )
     core_result_byte_budget_stress_smoke_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "core_result_byte_budget_stress_smoke"),
@@ -834,6 +839,7 @@ if build_maintainer_tools:
         [
             core_smoke_prog,
             core_result_path_smoke_prog,
+            core_thread_liveness_watchdog_verify_prog,
             core_result_byte_budget_stress_smoke_prog,
             core_capture_assembly_registry_smoke_prog,
             core_dispatcher_bracket_routing_smoke_prog,

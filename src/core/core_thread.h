@@ -128,6 +128,17 @@ public:
     return std::this_thread::get_id() == core_tid_.load(std::memory_order_acquire);
   }
 
+  // Liveness primitive: nonzero (steady_clock ns since an arbitrary
+  // process-wide epoch) while a posted task or the timer-tick hook is
+  // currently executing inside thread_main(); zero when idle. Readable from
+  // any thread. This is mechanism only -- no threshold, logging, or abort
+  // policy lives here. See CoreRuntime::check_core_thread_liveness() for the
+  // policy layer that consumes it (docs/dev/current_tranche.md, Step 2:
+  // enforce the provider prompt/bounded contract).
+  uint64_t current_task_started_ns() const noexcept {
+    return current_task_started_ns_.load(std::memory_order_acquire);
+  }
+
   // Bounded mailbox capacity (number of pending tasks).
   static constexpr size_t kMaxPendingTasks = 1024;
 
@@ -209,6 +220,12 @@ private:
                           std::deque<Task>& command_local,
                           std::deque<Task>& ordinary_local);
 
+  // Mark/clear current_task_started_ns_ around each run_guarded(...) call in
+  // thread_main(). Called only from the core thread; current_task_started_ns_
+  // itself is atomic because it is read from other threads.
+  void mark_task_start_() noexcept;
+  void mark_task_end_() noexcept;
+
   // Synchronization
   mutable std::mutex mu_;
   std::condition_variable cv_;
@@ -231,6 +248,9 @@ private:
   std::atomic<uint64_t> tasks_dropped_full_{0};
   std::atomic<uint64_t> tasks_dropped_closed_{0};
   std::atomic<uint64_t> tasks_dropped_allocfail_{0};
+
+  // Liveness primitive backing current_task_started_ns(). 0 == idle.
+  std::atomic<uint64_t> current_task_started_ns_{0};
 
   // Stop / running flags
   std::atomic<bool> running_{false};

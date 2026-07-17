@@ -41,13 +41,24 @@ struct PendingLiveCpuTextureCreate final {
   godot::Ref<godot::Image> image;
 };
 
-std::mutex g_pending_live_cpu_texture_create_mutex;
+// Guards both the pending-create and pending-release queues below: both feed
+// render-thread work for the CPU-backed live display path, and both are
+// gated by the same teardown flag.
+std::mutex g_pending_live_cpu_texture_mutex;
 // Keyed by rid_state identity so a stream refreshing faster than the render
 // thread drains only ever creates from the latest queued image.
 std::map<const SharedLiveCpuTextureRidState*, PendingLiveCpuTextureCreate> g_pending_live_cpu_texture_creates;
 bool g_pending_live_cpu_texture_create_drain_scheduled = false;
 bool g_live_cpu_display_bridge_teardown_started = false;
 godot::Ref<LiveCpuTextureCreateDrainHelper> g_live_cpu_texture_create_drain_helper;
+
+// RIDs pending release on the render thread. Flat list, not keyed: each
+// entry here has already been fully superseded/invalidated and is only
+// waiting to be freed, so there is nothing to deduplicate against (contrast
+// g_pending_live_cpu_texture_creates, which is keyed by rid_state identity
+// so a fast-refreshing stream only ever creates from its latest image).
+std::vector<godot::RID> g_pending_live_cpu_texture_releases;
+bool g_pending_live_cpu_texture_release_drain_scheduled = false;
 
 void schedule_live_cpu_texture_create_drain(
     godot::RenderingServer* rs, LiveCpuTextureCreateDrainHelper* helper) {
@@ -92,7 +103,7 @@ void request_pending_live_cpu_texture_create_drain() {
   godot::Ref<LiveCpuTextureCreateDrainHelper> helper_ref;
   LiveCpuTextureCreateDrainHelper* helper = nullptr;
   {
-    std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_create_mutex);
+    std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
     if (g_live_cpu_display_bridge_teardown_started ||
         g_pending_live_cpu_texture_creates.empty() ||
         g_pending_live_cpu_texture_create_drain_scheduled) {
@@ -110,6 +121,68 @@ void request_pending_live_cpu_texture_create_drain() {
   }
   schedule_live_cpu_texture_create_drain(rs, helper);
 }
+
+void schedule_live_cpu_texture_release_drain(
+    godot::RenderingServer* rs, LiveCpuTextureCreateDrainHelper* helper) {
+  if (!rs || !helper) {
+    return;
+  }
+  // Same Callable(Object*, StringName)-does-not-hold-a-reference reliance as
+  // schedule_live_cpu_texture_create_drain() above; see that function's
+  // comment and docs/dev/upstream_discrepancies.md for the full writeup.
+  rs->call_on_render_thread(godot::Callable(
+      helper,
+      godot::StringName("drain_pending_releases_on_render_thread")));
+}
+
+void request_pending_live_cpu_texture_release_drain() {
+  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
+  if (!rs) {
+    return;
+  }
+  godot::Ref<LiveCpuTextureCreateDrainHelper> helper_ref;
+  LiveCpuTextureCreateDrainHelper* helper = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
+    if (g_live_cpu_display_bridge_teardown_started ||
+        g_pending_live_cpu_texture_releases.empty() ||
+        g_pending_live_cpu_texture_release_drain_scheduled) {
+      return;
+    }
+    if (g_live_cpu_texture_create_drain_helper.is_null()) {
+      g_live_cpu_texture_create_drain_helper.instantiate();
+    }
+    helper_ref = g_live_cpu_texture_create_drain_helper;
+    helper = helper_ref.ptr();
+    if (!helper) {
+      return;
+    }
+    g_pending_live_cpu_texture_release_drain_scheduled = true;
+  }
+  schedule_live_cpu_texture_release_drain(rs, helper);
+}
+
+// Godot's RenderingServer::free_rid() is documented queued/safe from any
+// thread (unlike texture_2d_create(), see schedule_live_cpu_texture_create_
+// drain()'s comment above) -- but cpp_code_quality_policy.md's Blocker
+// definition includes "wrong-thread release" verbatim with no carve-out for
+// an engine-side queuing guarantee, and the RenderingDevice-backed sibling
+// path (SharedDisplayTextureRidState::release_now() in
+// synthetic_gpu_backing_bridge.cpp) already marshals its release for exactly
+// that reason. Mirror that discipline here so both display paths are
+// consistent rather than resting on a policy-vs-guarantee distinction only
+// one of the two paths bothers to make.
+void release_live_cpu_texture_rid(const godot::RID& rid) {
+  {
+    std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
+    if (g_live_cpu_display_bridge_teardown_started || !rid.is_valid()) {
+      return;
+    }
+    g_pending_live_cpu_texture_releases.push_back(rid);
+  }
+  request_pending_live_cpu_texture_release_drain();
+}
+
 uint64_t g_next_live_cpu_display_wrapper_borrow_id = 1;
 }
 
@@ -120,7 +193,7 @@ void enqueue_live_cpu_texture_create(
     return;
   }
   {
-    std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_create_mutex);
+    std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
     if (g_live_cpu_display_bridge_teardown_started) {
       return;
     }
@@ -133,7 +206,7 @@ void enqueue_live_cpu_texture_create(
 bool LiveCpuTextureCreateDrainHelper::drain_pending_creates_on_render_thread() {
   std::map<const SharedLiveCpuTextureRidState*, PendingLiveCpuTextureCreate> pending;
   {
-    std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_create_mutex);
+    std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
     g_pending_live_cpu_texture_create_drain_scheduled = false;
     if (g_live_cpu_display_bridge_teardown_started) {
       g_pending_live_cpu_texture_creates.clear();
@@ -158,24 +231,58 @@ bool LiveCpuTextureCreateDrainHelper::drain_pending_creates_on_render_thread() {
   return true;
 }
 
+bool LiveCpuTextureCreateDrainHelper::drain_pending_releases_on_render_thread() {
+  std::vector<godot::RID> pending;
+  {
+    std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
+    g_pending_live_cpu_texture_release_drain_scheduled = false;
+    if (g_live_cpu_display_bridge_teardown_started) {
+      g_pending_live_cpu_texture_releases.clear();
+      return false;
+    }
+    pending.swap(g_pending_live_cpu_texture_releases);
+  }
+  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
+  if (rs) {
+    for (const godot::RID& rid : pending) {
+      if (rid.is_valid()) {
+        rs->free_rid(rid);
+      }
+    }
+  }
+  // More releases may have arrived while draining; schedule another pass
+  // rather than leaving them stranded (mirrors
+  // drain_pending_creates_on_render_thread() above).
+  request_pending_live_cpu_texture_release_drain();
+  return true;
+}
+
 void install_live_cpu_display_bridge() {
-  std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_create_mutex);
+  std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
   g_live_cpu_display_bridge_teardown_started = false;
   g_pending_live_cpu_texture_creates.clear();
   g_pending_live_cpu_texture_create_drain_scheduled = false;
+  g_pending_live_cpu_texture_releases.clear();
+  g_pending_live_cpu_texture_release_drain_scheduled = false;
   g_live_cpu_texture_create_drain_helper.unref();
 }
 
 void uninstall_live_cpu_display_bridge() {
-  std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_create_mutex);
+  std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
   // Mirrors clear_pending_releases_for_teardown() in
   // synthetic_gpu_backing_bridge.cpp (ledger #44): after this point, no new
   // render-thread callback may be scheduled, so a callback can never fire
-  // back into torn-down extension state. Pending creations are abandoned
-  // best-effort; their rid_state simply never gets a valid RID, which
-  // draw_allowed() already treats as "nothing to draw".
+  // back into torn-down extension state. Pending creations and releases are
+  // abandoned best-effort; a pending creation's rid_state simply never gets
+  // a valid RID (draw_allowed() already treats that as "nothing to draw"),
+  // and a pending release's RID leaks until process exit rather than risking
+  // a late callback into torn-down extension or RenderingServer state --
+  // the same tradeoff synthetic_gpu_backing_bridge.cpp already accepts for
+  // its own pending releases.
   g_live_cpu_display_bridge_teardown_started = true;
   g_pending_live_cpu_texture_creates.clear();
+  g_pending_live_cpu_texture_releases.clear();
+  g_pending_live_cpu_texture_release_drain_scheduled = false;
   g_pending_live_cpu_texture_create_drain_scheduled = false;
   g_live_cpu_texture_create_drain_helper.unref();
 }
@@ -195,10 +302,7 @@ void SharedLiveCpuTextureRidState::replace_rid(const godot::RID& texture_rid_in)
   if (!prior.is_valid() || prior == texture_rid_in) {
     return;
   }
-  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
-  if (rs) {
-    rs->free_rid(prior);
-  }
+  release_live_cpu_texture_rid(prior);
 }
 
 void SharedLiveCpuTextureRidState::clear() {
@@ -213,13 +317,7 @@ void SharedLiveCpuTextureRidState::invalidate_and_release() {
     prior = texture_rid;
     texture_rid = godot::RID();
   }
-  if (!prior.is_valid()) {
-    return;
-  }
-  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
-  if (rs) {
-    rs->free_rid(prior);
-  }
+  release_live_cpu_texture_rid(prior);
 }
 
 bool SharedLiveCpuTextureRidState::draw_allowed() const {

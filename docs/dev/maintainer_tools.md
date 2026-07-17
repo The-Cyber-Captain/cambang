@@ -262,6 +262,13 @@ Retained maintainer diagnostics:
 - `CAMBANG_DEV_SYNTH_GPU_TRACE`
 - `CAMBANG_STREAM_LOAD_FRAME_SPIKE_TRACE`
 - `CAMBANG_STREAM_LOAD_FRAME_SPIKE_TOP_N`
+- `CAMBANG_TIMELINE_TEARDOWN_TRACE` (`imaging/api/timeline_teardown_trace.h`)
+  - accepts `1`/`t`/`T`/`y`/`Y` as enabled
+  - gates a bounded (256-entry) in-memory trace queue of timeline
+    teardown-phase diagnostic lines; also toggleable at runtime via
+    `timeline_teardown_trace_set_enabled(bool)` independent of the env var
+  - not `CAMBANG_DEV_`-prefixed for historical reasons; functionally the
+    same class of maintainer-only diagnostic knob as the others in this list
 
 Harness selector:
 

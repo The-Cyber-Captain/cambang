@@ -2622,6 +2622,10 @@ void CamBANGServer::_on_godot_process_frame() {
   }
   last_tick_time_ns_ = now_ns;
 
+  // Cheap: one atomic load inside, early-returns when the core thread is
+  // idle. See CoreRuntime::check_core_thread_liveness()'s doc comment.
+  runtime_.check_core_thread_liveness();
+
   _on_godot_tick(delta_s);
   _drain_pending_stop_and_quit_();
 }
