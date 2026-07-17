@@ -4,6 +4,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "core/capture_admission_context.h"
@@ -107,6 +108,37 @@ public:
       uint64_t now_ns, uint64_t retention_window_ns);
   std::optional<uint64_t> next_terminal_retirement_delay_ns(
       uint64_t now_ns, uint64_t retention_window_ns) const;
+
+  // Single-entry counterpart to retire_terminal_older_than(), for the reverse
+  // propagation direction: CoreResultStore::evict_over_byte_budget() (ledger
+  // #53) decides which (capture_id, device_instance_id) entries to drop based
+  // on retained-result byte size, and CoreRuntime uses this to keep assembly
+  // bookkeeping consistent with that decision.
+  void remove_assembly(uint64_t capture_id, uint64_t device_instance_id);
+
+  // Queried by CoreRuntime to build the is_evictable predicate it passes to
+  // CoreResultStore::evict_over_byte_budget() (ledger #53): only entries
+  // already in a terminal state (COMPLETED or FAILED) may be evicted for
+  // size, for the same reason terminal state gates
+  // retire_terminal_older_than() -- a still-pending (NONE) assembly must
+  // never have its result data dropped out from under it (that data is still
+  // being actively appended to / finalized by the capture pipeline itself,
+  // not merely retained for later lookup).
+  //
+  // Returns a snapshot (not a live predicate) so CoreRuntime can take this
+  // registry's lock, copy out the answer, and release it BEFORE ever taking
+  // CoreResultStore::mutex_ for the eviction walk. Every other cross-registry
+  // access in this codebase (e.g. get_capture_result_set()'s assembly-then-
+  // result reads) locks the two registries sequentially, never nested; a
+  // live per-candidate predicate here would instead nest
+  // CoreCaptureAssemblyRegistry::mutex_ inside CoreResultStore::mutex_,
+  // the one cross-registry lock order this codebase does not otherwise use.
+  // The snapshot cannot go stale between being taken and the eviction walk
+  // that consults it: terminal_state only ever moves one way (NONE ->
+  // COMPLETED/FAILED), both this snapshot and the eviction it feeds run
+  // synchronously within the same core-thread timer tick with no
+  // interleaving work, and only the core thread ever mutates terminal_state.
+  std::vector<std::pair<uint64_t, uint64_t>> terminal_capture_device_pairs() const;
 
   void clear();
 

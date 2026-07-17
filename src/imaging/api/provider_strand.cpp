@@ -1,31 +1,9 @@
 #include "imaging/api/provider_strand.h"
 
 #include <cassert>
-#include <chrono>
 #include <cstdio>
 #include <exception>
 namespace cambang {
-
-namespace capture_latency_trace_diagnostics {
-inline uint32_t capture_inflight() noexcept { return 0u; }
-inline uint32_t active_capture_count() noexcept { return 0u; }
-inline void note_capture_admitted(uint32_t) noexcept {}
-inline void note_capture_finished() noexcept {}
-inline void reset_trace_group_seen() noexcept {}
-inline void print_trace_group_seen_summary() noexcept {}
-inline void print_line(const char*) noexcept {}
-} // namespace capture_latency_trace_diagnostics
-
-
-namespace {
-
-// BEGIN TEMPORARY CAPTURE LATENCY DIAGNOSTICS
-uint64_t capture_latency_trace_now_ns() {
-  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-      std::chrono::steady_clock::now().time_since_epoch()).count());
-}
-
-} // namespace
 
 CBProviderStrand::~CBProviderStrand() { stop(); }
 
@@ -281,15 +259,15 @@ void CBProviderStrand::post_stream_stopped(uint64_t stream_id, ProviderError err
 }
 
 void CBProviderStrand::post_capture_started(uint64_t capture_id, uint64_t device_instance_id) {
-  post(EvCaptureStarted{capture_id, device_instance_id, capture_latency_trace_now_ns()});
+  post(EvCaptureStarted{capture_id, device_instance_id});
 }
 void CBProviderStrand::post_capture_completed(uint64_t capture_id, uint64_t device_instance_id) {
-  post(EvCaptureCompleted{capture_id, device_instance_id, capture_latency_trace_now_ns()});
+  post(EvCaptureCompleted{capture_id, device_instance_id});
 }
 void CBProviderStrand::post_capture_failed(uint64_t capture_id,
                                            uint64_t device_instance_id,
                                            ProviderError error) {
-  post(EvCaptureFailed{capture_id, device_instance_id, error, capture_latency_trace_now_ns()});
+  post(EvCaptureFailed{capture_id, device_instance_id, error});
 }
 
 void CBProviderStrand::post_camera_static_facts(
@@ -306,7 +284,7 @@ void CBProviderStrand::post_capture_image_facts(
       capture_id, device_instance_id, image_member_index, std::move(facts)});
 }
 
-void CBProviderStrand::post_frame(const FrameView& frame) { post(EvFrame{frame, capture_latency_trace_now_ns()}); }
+void CBProviderStrand::post_frame(const FrameView& frame) { post(EvFrame{frame}); }
 
 void CBProviderStrand::post_device_error(uint64_t device_instance_id, ProviderError error) {
   post(EvDeviceError{device_instance_id, error});

@@ -1,7 +1,5 @@
 #include "core/core_result_store.h"
 
-#include <chrono>
-#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -11,32 +9,7 @@
 
 namespace cambang {
 
-namespace capture_latency_trace_diagnostics {
-inline uint32_t capture_inflight() noexcept { return 0u; }
-inline uint32_t active_capture_count() noexcept { return 0u; }
-inline void note_capture_admitted(uint32_t) noexcept {}
-inline void note_capture_finished() noexcept {}
-inline void reset_trace_group_seen() noexcept {}
-inline void print_trace_group_seen_summary() noexcept {}
-inline void print_line(const char*) noexcept {}
-} // namespace capture_latency_trace_diagnostics
-
 namespace {
-// BEGIN TEMPORARY CAPTURE LATENCY DIAGNOSTICS
-uint64_t capture_latency_trace_now_ns() {
-  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-      std::chrono::steady_clock::now().time_since_epoch()).count());
-}
-
-void capture_latency_trace_printf(const char* format, ...) {
-  char buffer[1024];
-  va_list args;
-  va_start(args, format);
-  std::vsnprintf(buffer, sizeof(buffer), format, args);
-  va_end(args);
-  capture_latency_trace_diagnostics::print_line(buffer);
-}
-// END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
 
 constexpr uint64_t kDisplayDemandLeaseNs = 250'000'000ull;
 bool display_demand_trace_enabled() {
@@ -298,6 +271,30 @@ RetainedGpuBackingDescriptor build_retained_gpu_backing_descriptor(
   return descriptor;
 }
 
+// Capture-result byte-budget accounting (ledger #53). Estimates a single
+// image member's resource footprint: literal bytes for a CPU_PACKED payload,
+// plus an estimated footprint for a GPU-backed member computed from
+// Core-visible, provider-agnostic descriptor metadata (width/height/stride)
+// -- never inspects the opaque retained_gpu_backing handle itself, which
+// would violate the Core/provider seam. A member may legitimately have both
+// (GPU-primary-with-CPU-sidecar posture), in which case both contribute.
+uint64_t effective_member_bytes(const CoreCaptureResultData::ImageMemberData& member) noexcept {
+  uint64_t bytes = member.payload.size_bytes();
+  if (member.retained_gpu_backing_descriptor.valid) {
+    bytes += static_cast<uint64_t>(member.retained_gpu_backing_descriptor.stride_bytes) *
+             static_cast<uint64_t>(member.retained_gpu_backing_descriptor.height);
+  }
+  return bytes;
+}
+
+uint64_t compute_capture_result_bytes(const CoreCaptureResultData& data) noexcept {
+  uint64_t bytes = effective_member_bytes(data.default_image);
+  for (const auto& member : data.additional_images) {
+    bytes += effective_member_bytes(member);
+  }
+  return bytes;
+}
+
 } // namespace
 
 ResultCapability resolve_result_access_classification(
@@ -400,8 +397,6 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
   if (frame.capture_id != 0 && !capture_requested_retained_plan.valid) {
     return false;
   }
-  const uint64_t retain_begin_ns = capture_latency_trace_now_ns();
-  uint64_t payload_copy_ns = 0;
   const bool has_cpu_payload = CoreResultStore::has_cpu_packed_payload(frame);
   const std::optional<CoreRetainedBackingPlan> stream_backing_plan =
       frame.stream_id != 0 ? std::make_optional(build_retained_backing_plan_from_requested(stream_requested_retained_plan, frame, has_cpu_payload)) : std::nullopt;
@@ -410,11 +405,9 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
   CoreResultPayloadCpuPacked payload{};
   CoreImageFactBundle facts{};
   if (has_cpu_payload) {
-    const uint64_t payload_copy_begin_ns = capture_latency_trace_now_ns();
     if (!CoreResultStore::try_copy_cpu_packed_payload(frame, payload)) {
       return false;
     }
-    payload_copy_ns = capture_latency_trace_now_ns() - payload_copy_begin_ns;
   }
 
   SharedStreamResultData replaced_stream_result;
@@ -476,7 +469,6 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     stream_result = std::move(mutable_stream_result);
   }
 
-  const bool payload_adopted = payload.uses_retained_bytes();
   if (frame.capture_id != 0) {
     const CoreRetainedBackingPlan& plan = *capture_backing_plan;
     if (!frame_matches_requested_retained_plan(frame, plan, capture_requested_retained_plan, has_cpu_payload)) {
@@ -572,22 +564,14 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
   }
   if (capture_result) {
     capture_result->default_image.retained_frame_id = retained_frame_id;
+    const uint64_t old_capture_bytes =
+        *capture_slot ? compute_capture_result_bytes(**capture_slot) : 0;
+    const uint64_t new_capture_bytes = compute_capture_result_bytes(*capture_result);
     *capture_slot = std::move(capture_result);
+    total_estimated_capture_bytes_ =
+        total_estimated_capture_bytes_ - old_capture_bytes + new_capture_bytes;
   }
   const bool retained = frame.stream_id != 0 || frame.capture_id != 0;
-  if (frame.capture_id != 0) {
-    capture_latency_trace_printf(
-        "result_store_retain_frame capture_id=%llu device_id=%llu acquisition_session_id=%llu member=%u payload_copy_us=%llu payload_adopted=%u total_us=%llu retained=%u bytes=%llu",
-        static_cast<unsigned long long>(frame.capture_id),
-        static_cast<unsigned long long>(frame.device_instance_id),
-        static_cast<unsigned long long>(frame.acquisition_session_id),
-        static_cast<unsigned>(frame.capture_image.image_member_index),
-        static_cast<unsigned long long>(payload_copy_ns / 1000ull),
-        payload_adopted ? 1u : 0u,
-        static_cast<unsigned long long>((capture_latency_trace_now_ns() - retain_begin_ns) / 1000ull),
-        retained ? 1u : 0u,
-        static_cast<unsigned long long>(frame.size_bytes));
-  }
   return retained;
 }
 
@@ -613,9 +597,6 @@ bool CoreResultStore::append_additional_capture_image(
   if (!capture_requested_retained_plan.valid) {
     return false;
   }
-  const uint64_t append_begin_ns = capture_latency_trace_now_ns();
-  const uint32_t image_member_index = image_member.image_member_index;
-  const size_t payload_bytes = image_member.payload.size_bytes();
   std::lock_guard<std::mutex> lock(mutex_);
   auto cap_it = capture_results_by_capture_id_.find(capture_id);
   if (cap_it == capture_results_by_capture_id_.end()) {
@@ -679,14 +660,9 @@ bool CoreResultStore::append_additional_capture_image(
   }
   result->additional_images.reserve(result->additional_images.size() + 1);
   if (!try_issue_retained_frame_id(image_member.retained_frame_id)) return false;
+  const uint64_t added_member_bytes = effective_member_bytes(image_member);
   result->additional_images.push_back(std::move(image_member));
-  capture_latency_trace_printf(
-      "result_store_append_additional capture_id=%llu device_id=%llu member=%u payload_bytes=%llu total_us=%llu",
-      static_cast<unsigned long long>(capture_id),
-      static_cast<unsigned long long>(device_instance_id),
-      static_cast<unsigned>(image_member_index),
-      static_cast<unsigned long long>(payload_bytes),
-      static_cast<unsigned long long>((capture_latency_trace_now_ns() - append_begin_ns) / 1000ull));
+  total_estimated_capture_bytes_ += added_member_bytes;
   return true;
 }
 
@@ -773,29 +749,13 @@ bool CoreResultStore::try_build_capture_image_member_data_from_frame(
 
 bool CoreResultStore::try_build_capture_image_member_data_from_frame(const FrameView& frame,
                                                                      CoreResultPayloadCpuPacked& out_payload) {
-  const uint64_t build_begin_ns = capture_latency_trace_now_ns();
   if (!has_cpu_packed_payload(frame)) {
     return false;
   }
-  const uint64_t copy_begin_ns = capture_latency_trace_now_ns();
   if (!try_copy_cpu_packed_payload(frame, out_payload)) {
     return false;
   }
-  const uint64_t copy_ns = capture_latency_trace_now_ns() - copy_begin_ns;
   const bool valid = has_valid_capture_image_member_payload(out_payload);
-  if (frame.capture_id != 0) {
-    capture_latency_trace_printf(
-        "result_store_build_member_payload capture_id=%llu device_id=%llu acquisition_session_id=%llu member=%u payload_copy_us=%llu payload_adopted=%u total_us=%llu valid=%u bytes=%llu",
-        static_cast<unsigned long long>(frame.capture_id),
-        static_cast<unsigned long long>(frame.device_instance_id),
-        static_cast<unsigned long long>(frame.acquisition_session_id),
-        static_cast<unsigned>(frame.capture_image.image_member_index),
-        static_cast<unsigned long long>(copy_ns / 1000ull),
-        out_payload.uses_retained_bytes() ? 1u : 0u,
-        static_cast<unsigned long long>((capture_latency_trace_now_ns() - build_begin_ns) / 1000ull),
-        valid ? 1u : 0u,
-        static_cast<unsigned long long>(frame.size_bytes));
-  }
   return valid;
 }
 
@@ -1037,6 +997,11 @@ void CoreResultStore::remove_capture_result(uint64_t capture_id, uint64_t device
       return;
     }
     removed = std::move(device_it->second);
+    if (removed) {
+      const uint64_t removed_bytes = compute_capture_result_bytes(*removed);
+      total_estimated_capture_bytes_ =
+          removed_bytes <= total_estimated_capture_bytes_ ? total_estimated_capture_bytes_ - removed_bytes : 0;
+    }
     capture_it->second.erase(device_it);
     if (capture_it->second.empty()) {
       capture_results_by_capture_id_.erase(capture_it);
@@ -1044,6 +1009,51 @@ void CoreResultStore::remove_capture_result(uint64_t capture_id, uint64_t device
   }
   // removed's destructor (releasing any retained CPU/GPU payload) runs here,
   // outside the lock.
+}
+
+std::vector<CoreResultStore::EvictedCaptureResult> CoreResultStore::evict_over_byte_budget(
+    uint64_t byte_budget,
+    const std::function<bool(uint64_t capture_id, uint64_t device_instance_id)>& is_evictable) {
+  std::vector<MutableCaptureResultData> released;
+  std::vector<EvictedCaptureResult> evicted;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto capture_it = capture_results_by_capture_id_.begin();
+    while (total_estimated_capture_bytes_ > byte_budget &&
+           capture_it != capture_results_by_capture_id_.end()) {
+      auto device_it = capture_it->second.begin();
+      while (total_estimated_capture_bytes_ > byte_budget &&
+             device_it != capture_it->second.end()) {
+        if (!is_evictable || !is_evictable(capture_it->first, device_it->first)) {
+          ++device_it;
+          continue;
+        }
+        MutableCaptureResultData& entry = device_it->second;
+        if (entry) {
+          const uint64_t entry_bytes = compute_capture_result_bytes(*entry);
+          total_estimated_capture_bytes_ =
+              entry_bytes <= total_estimated_capture_bytes_ ? total_estimated_capture_bytes_ - entry_bytes : 0;
+        }
+        evicted.push_back(EvictedCaptureResult{capture_it->first, device_it->first});
+        released.push_back(std::move(entry));
+        device_it = capture_it->second.erase(device_it);
+      }
+      if (capture_it->second.empty()) {
+        capture_it = capture_results_by_capture_id_.erase(capture_it);
+      } else {
+        ++capture_it;
+      }
+    }
+  }
+  // released's destructor (freeing every evicted entry's CPU/GPU payload)
+  // runs here, outside the lock, so a concurrent get_latest_stream_result()/
+  // get_capture_result() reader is never blocked behind deallocation work.
+  return evicted;
+}
+
+uint64_t CoreResultStore::total_estimated_capture_bytes() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return total_estimated_capture_bytes_;
 }
 
 
@@ -1054,6 +1064,7 @@ void CoreResultStore::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     old_stream_results.swap(latest_stream_results_);
     old_capture_results.swap(capture_results_by_capture_id_);
+    total_estimated_capture_bytes_ = 0;
     stream_display_demand_last_seen_ns_.clear();
     stream_display_demand_refcounts_.clear();
     stream_access_posture_ids_.clear();

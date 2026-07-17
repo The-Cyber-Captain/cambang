@@ -457,7 +457,24 @@ struct FrameView {
   // Optional per-row stride (0 if tightly packed/unknown)
   uint32_t stride_bytes = 0;
 
-  // Release hook
+  // Release hook.
+  //
+  // THREADING (load-bearing, not an implementation detail): release() has no
+  // fixed thread affinity relative to the thread that called on_frame() to
+  // deliver this frame, and the calling thread differs by outcome:
+  //   - Normal path: once Core has finished with the frame (consumed/retained
+  //     it, or is dropping it after successful ingress), release() is invoked
+  //     from Core's own dedicated core thread -- NOT the Provider thread that
+  //     delivered the frame.
+  //   - Ingress-failure path (Core could not accept the frame, e.g. queue
+  //     full or closing): release() is invoked synchronously, still inside
+  //     the Provider's own on_frame() call, on whatever thread the Provider
+  //     used to call on_frame().
+  // A Provider's release callback MUST therefore be safe to invoke from a
+  // thread other than the one that produced the frame, and must not assume
+  // any particular thread/context affinity (e.g. a GPU context or buffer-pool
+  // API that requires same-thread symmetry with acquisition is NOT safe to
+  // drive directly from this callback without its own internal marshalling).
   using ReleaseFn = void (*)(void* user, const FrameView* frame);
   ReleaseFn release = nullptr;
   void* release_user = nullptr;

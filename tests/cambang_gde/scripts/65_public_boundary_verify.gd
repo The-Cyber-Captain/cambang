@@ -402,9 +402,13 @@ func _assert_pre_baseline_public_boundary(context: String, accept_endpoint_start
 	if CamBANGServer.get_capture_result_by_id(1, 1) != null:
 		_fail("FAIL: " + context + " capture result lookup must return null before baseline")
 		return false
+	# get_capture_result_set_by_id() returns Array[CamBANGCaptureResult] (built-in
+	# TypedArray, not a CamBANGCaptureResultSet Ref), so "nothing available" is
+	# expressed as an empty array, never null -- an Array is always a valid
+	# Variant in GDScript. Check emptiness, not identity with null.
 	var result_set = CamBANGServer.get_capture_result_set_by_id(1)
-	if result_set != null:
-		_fail("FAIL: " + context + " capture result-set lookup must return null before baseline")
+	if not result_set.is_empty():
+		_fail("FAIL: " + context + " capture result-set lookup must return empty before baseline")
 		return false
 	_diag_mark("start_scenario_unstaged_begin", context)
 	var unstaged_start_err := CamBANGServer.start_scenario()

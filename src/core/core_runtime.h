@@ -755,9 +755,7 @@ private:
       const CaptureRequest& effective,
       const ProducerBackingCapabilities& runtime_backing_capabilities,
       const ProducerBackingCapabilities& parent_context_backing_capabilities);
-  void release_capture_parent_priming_(
-      uint64_t device_instance_id,
-      const char* reason = nullptr);
+  void release_capture_parent_priming_(uint64_t device_instance_id);
   bool device_has_any_stream_(uint64_t device_instance_id) const noexcept;
   bool device_has_active_capture_evaluator_(
       uint64_t device_instance_id) const noexcept;
@@ -1224,6 +1222,24 @@ private:
   // kCaptureCohortRetentionWindowNs.
   static constexpr uint64_t kCaptureResultRetentionWindowNs =
       300ull * 1000ull * 1000ull * 1000ull; // 5 minutes
+
+  // Total retained-capture-result byte budget (ledger #53), covering the sum
+  // of literal CPU-packed bytes plus an *estimated* GPU-backed footprint
+  // (stride_bytes * height from each member's Core-visible
+  // RetainedGpuBackingDescriptor) across every entry currently held in
+  // result_store_. This bounds worst-case retained-result memory for a
+  // long-running, multi-camera, repeated-capture session independently of
+  // kCaptureResultRetentionWindowNs's 5-minute window -- a session that
+  // stays busy enough to keep producing captures within that window could
+  // otherwise still grow result memory without bound. Deliberately a single,
+  // conservative-but-generous default (not tuned to any specific device's
+  // real capture sizes): eviction runs from the existing on_core_timer_tick()
+  // sweep (never inline on the capture/frame-delivery path), and only
+  // targets terminal (COMPLETED/FAILED) entries already eligible for
+  // time-based retirement's same safety reasoning, so a soft, infrequently-
+  // exceeded budget is fine here -- see CoreResultStore::evict_over_byte_budget().
+  static constexpr uint64_t kCaptureResultByteBudgetBytes =
+      500ull * 1024ull * 1024ull; // 500 MiB
 };
 
 } // namespace cambang

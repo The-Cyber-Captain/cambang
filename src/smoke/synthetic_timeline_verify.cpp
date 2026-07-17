@@ -37,6 +37,7 @@ Non-Goals
 
 #if defined(_WIN32)
 #include <io.h>
+#include <ext/stdio_filebuf.h>
 #endif
 
 #if !defined(CAMBANG_INTERNAL_SMOKE)
@@ -99,6 +100,19 @@ public:
       end();
       return false;
     }
+    // The _dup2() redirection above is necessary and sufficient for raw C
+    // stdio (printf/fprintf(stdout|stderr, ...)) but is NOT sufficient for
+    // std::cout/std::cerr on this toolchain: empirically, sync_with_stdio's
+    // association with fd 1/2 does not track a _dup2() swap performed after
+    // process start -- writes through std::cout/std::cerr during the capture
+    // window were silently lost (or, worse, misrouted into the other
+    // stream's captured file) rather than ending up in stdout_file_/
+    // stderr_file_. Redirect cout/cerr explicitly at the streambuf level
+    // instead, bypassing whatever sync_with_stdio is (or isn't) doing.
+    stdout_filebuf_ = std::make_unique<__gnu_cxx::stdio_filebuf<char>>(stdout_file_.get(), std::ios::out);
+    stderr_filebuf_ = std::make_unique<__gnu_cxx::stdio_filebuf<char>>(stderr_file_.get(), std::ios::out);
+    saved_cout_buf_ = std::cout.rdbuf(stdout_filebuf_.get());
+    saved_cerr_buf_ = std::cerr.rdbuf(stderr_filebuf_.get());
     active_ = true;
     return true;
 #endif
@@ -111,6 +125,23 @@ public:
       stderr_file_.reset();
       return;
     }
+#if defined(_WIN32)
+    // Flush and detach cout/cerr from the tmpfile-backed streambufs BEFORE
+    // touching the fds those buffers wrap, so no buffered C++-stream content
+    // is lost when the fds get redirected back to the real console below.
+    std::cout.flush();
+    std::cerr.flush();
+    if (saved_cout_buf_) {
+      std::cout.rdbuf(saved_cout_buf_);
+      saved_cout_buf_ = nullptr;
+    }
+    if (saved_cerr_buf_) {
+      std::cerr.rdbuf(saved_cerr_buf_);
+      saved_cerr_buf_ = nullptr;
+    }
+    stdout_filebuf_.reset();
+    stderr_filebuf_.reset();
+#endif
     std::fflush(stdout);
     std::fflush(stderr);
 #if defined(_WIN32)
@@ -179,6 +210,12 @@ private:
   int saved_stderr_fd_ = -1;
   std::unique_ptr<FILE, FileCloser> stdout_file_{};
   std::unique_ptr<FILE, FileCloser> stderr_file_{};
+#if defined(_WIN32)
+  std::unique_ptr<__gnu_cxx::stdio_filebuf<char>> stdout_filebuf_{};
+  std::unique_ptr<__gnu_cxx::stdio_filebuf<char>> stderr_filebuf_{};
+  std::streambuf* saved_cout_buf_ = nullptr;
+  std::streambuf* saved_cerr_buf_ = nullptr;
+#endif
 };
 
 static void usage(const char* argv0) {

@@ -20,6 +20,13 @@ namespace cambang {
 // - All external threads (providers, Godot, etc.) must marshal work into the core
 //   via post()/try_post()/try_post_essential() (and never touch core state directly).
 // - All tasks are executed serially (no concurrent core execution).
+// - FIFO ordering is guaranteed only relative to a single POSTING thread.
+//   Concurrent post()/try_post()/try_post_essential() calls from two different
+//   threads race for the internal queue lock; their relative arrival order in
+//   the queue (and therefore processing order) is undefined. This is why
+//   icamera_provider.h requires a Provider to invoke IProviderCallbacks from a
+//   single serialized callback context -- CoreThread cannot recover a
+//   Provider's real event order once two threads have posted concurrently.
 //
 // Determinism invariants:
 // - Essential tasks are drained before command tasks, which are drained before
@@ -175,42 +182,6 @@ public:
 
   Stats stats_copy() const noexcept;
 
-  // BEGIN TEMPORARY CAPTURE LATENCY DIAGNOSTICS
-  // Stage A.5 scheduler-phase context. Remove after Scene 70/999 logs are collected.
-  enum class DiagnosticPhase : uint8_t {
-    Unknown = 0,
-    IdleWaiting,
-    EssentialLane,
-    CommandLane,
-    OrdinaryLane,
-    TimerHook,
-    RuntimeProviderFactIntegration,
-    RuntimeRequestDrain,
-    RuntimeRetentionTimerWork,
-    RuntimeSnapshotPublication,
-    RuntimeShutdownChoreography,
-    ShutdownStopChoreography,
-  };
-
-  struct DiagnosticSnapshot {
-    DiagnosticPhase phase = DiagnosticPhase::Unknown;
-    uint64_t phase_start_ns = 0;
-    uint64_t phase_age_us = 0;
-    DiagnosticPhase previous_phase = DiagnosticPhase::Unknown;
-    uint64_t previous_phase_end_ns = 0;
-    uint64_t previous_phase_ended_before_us = 0;
-    size_t essential_queue_depth = 0;
-    size_t command_queue_depth = 0;
-    size_t ordinary_queue_depth = 0;
-    bool timer_requested = false;
-    bool timer_running = false;
-  };
-
-  static const char* diagnostic_phase_name(DiagnosticPhase phase) noexcept;
-  DiagnosticSnapshot diagnostic_snapshot() const noexcept;
-  void diagnostic_set_phase_from_core(DiagnosticPhase phase) noexcept;
-  // END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
-
   // Thread-safe scheduler visibility for CoreRuntime timer-hook fairness.
   // Returns true when command-lane work is queued but not yet drained into the
   // current CoreThread pump.
@@ -270,21 +241,6 @@ private:
   bool timer_tick_requested_ = false;
   bool has_deadline_ = false;
   uint64_t deadline_ns_ = 0;
-
-  // BEGIN TEMPORARY CAPTURE LATENCY DIAGNOSTICS
-  static uint64_t diagnostic_now_ns_() noexcept;
-  void diagnostic_update_depths_(size_t essential_depth, size_t command_depth, size_t ordinary_depth) noexcept;
-
-  std::atomic<uint8_t> diagnostic_phase_{static_cast<uint8_t>(DiagnosticPhase::Unknown)};
-  std::atomic<uint64_t> diagnostic_phase_start_ns_{0};
-  std::atomic<uint8_t> diagnostic_previous_phase_{static_cast<uint8_t>(DiagnosticPhase::Unknown)};
-  std::atomic<uint64_t> diagnostic_previous_phase_end_ns_{0};
-  std::atomic<size_t> diagnostic_essential_queue_depth_{0};
-  std::atomic<size_t> diagnostic_command_queue_depth_{0};
-  std::atomic<size_t> diagnostic_ordinary_queue_depth_{0};
-  std::atomic<bool> diagnostic_timer_requested_{false};
-  std::atomic<bool> diagnostic_timer_running_{false};
-  // END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
 };
 
 } // namespace cambang

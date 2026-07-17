@@ -87,9 +87,9 @@ private:
   struct EvStreamStarted { uint64_t id; };
   struct EvStreamStopped { uint64_t id; ProviderError err; };
 
-  struct EvCaptureStarted { uint64_t id; uint64_t device_instance_id; uint64_t queued_ns; };
-  struct EvCaptureCompleted { uint64_t id; uint64_t device_instance_id; uint64_t queued_ns; };
-  struct EvCaptureFailed { uint64_t id; uint64_t device_instance_id; ProviderError err; uint64_t queued_ns; };
+  struct EvCaptureStarted { uint64_t id; uint64_t device_instance_id; };
+  struct EvCaptureCompleted { uint64_t id; uint64_t device_instance_id; };
+  struct EvCaptureFailed { uint64_t id; uint64_t device_instance_id; ProviderError err; };
   struct EvCameraStaticFacts { uint64_t device_instance_id; ProviderCameraFacts facts; };
   struct EvCaptureImageFacts {
     uint64_t capture_id;
@@ -98,7 +98,7 @@ private:
     ProviderCaptureImageFacts facts;
   };
 
-  struct EvFrame { FrameView frame; uint64_t queued_ns; };
+  struct EvFrame { FrameView frame; };
 
   struct EvDeviceError { uint64_t id; ProviderError err; };
   struct EvStreamError { uint64_t id; ProviderError err; };

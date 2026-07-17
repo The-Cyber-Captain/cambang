@@ -364,8 +364,7 @@ private:
   void destroy_stream_storage_(std::map<uint64_t, StreamState>::iterator it,
                                ProviderError stop_error,
                                bool emit_stop_event);
-  void close_device_storage_(std::map<uint64_t, DeviceState>::iterator it,
-                             const char* source);
+  void close_device_storage_(std::map<uint64_t, DeviceState>::iterator it);
 
   enum class CaptureTerminalKind : uint8_t {
     Completed,
@@ -463,7 +462,6 @@ private:
   uint64_t capture_generation_ = 0;
   std::map<InFlightCaptureKey, InFlightCaptureDevice> in_flight_captures_;
   std::vector<std::thread> capture_threads_;
-  std::atomic<bool> capture_latency_trace_first_capture_after_start_{true};
 
   std::map<uint64_t, DeviceState> devices_;
   std::map<uint64_t, StreamState> streams_;

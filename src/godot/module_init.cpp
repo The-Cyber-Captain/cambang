@@ -38,6 +38,7 @@ static void cambang_gde_initialize(godot::ModuleInitializationLevel p_level) {
     cambang::register_stream_result_internal_classes();
     cambang::register_synthetic_gpu_backing_internal_classes();
     cambang::install_synthetic_gpu_backing_godot_bridge();
+    cambang::install_live_cpu_display_bridge();
 
     // Create and register the Engine singleton.
     // Note: Engine singletons are not part of the scene tree; they do not receive _process.
@@ -59,6 +60,7 @@ static void cambang_gde_uninitialize(godot::ModuleInitializationLevel p_level) {
         g_server = nullptr;
     }
     cambang::uninstall_synthetic_gpu_backing_godot_bridge();
+    cambang::uninstall_live_cpu_display_bridge();
 }
 
 extern "C" GDExtensionBool GDE_EXPORT cambang_gdextension_init(

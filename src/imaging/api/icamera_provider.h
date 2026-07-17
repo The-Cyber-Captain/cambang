@@ -15,8 +15,50 @@ namespace cambang {
 inline constexpr uint64_t kDefaultCaptureAdmissionWatchdogTimeoutNs =
     30ull * 1000ull * 1000ull * 1000ull;
 
-// Provider→core callback sink.
-// Provider MUST invoke these on a single serialized callback context.
+// Provider->core callback sink.
+//
+// ============================================================================
+// CONTRACT (non-negotiable): Provider MUST invoke every method on this
+// interface from a single serialized callback context -- i.e. never call two
+// IProviderCallbacks methods concurrently from two different threads, and
+// always preserve the Provider's own real event order for calls whose
+// relative order matters (e.g. on_capture_started() before the matching
+// on_capture_completed()/on_capture_failed(), or on_device_opened() before
+// any on_frame()/on_capture_*() for that device).
+//
+// WHY THIS IS LOAD-BEARING, NOT A SUGGESTION:
+// Every method below is individually thread-safe at the transport layer
+// (ProviderCallbackIngress marshals each call into a self-contained posted
+// command; nothing here will crash or corrupt if called from multiple
+// threads). But CoreThread's posted-task queues are FIFO only relative to a
+// single POSTING thread -- concurrent posts from two different provider
+// threads race for CoreThread's internal queue lock, and the relative order
+// they land in the queue (and therefore the order Core processes them) is
+// UNDEFINED. Core has no mechanism to detect or repair a misordering after
+// the fact.
+//
+// CONCRETE FAILURE THIS CAUSES: suppose a real hardware SDK delivers
+// completion notifications on one internal thread and streamed frames on a
+// separate capture thread (extremely common: Camera2, V4L2, DirectShow, and
+// most vendor SDKs all do this). If the Provider wires both straight through
+// to IProviderCallbacks without first funneling them through its own single
+// serialized dispatch queue, on_capture_completed() can race ahead of the
+// on_capture_started() (or the frame delivery) it depends on. Core will then
+// process a terminal capture fact for a capture it never saw admitted --
+// this will not crash, will not log an error, and will not be caught by the
+// existing synthetic-only test suite (SyntheticProvider disciplines itself
+// through its own single-threaded CBProviderStrand delivery and therefore
+// never exercises this path). It will only surface as silent, hard-to-
+// reproduce state corruption under real hardware timing.
+//
+// WHAT PROVIDERS MUST DO: if your underlying SDK/driver delivers callbacks
+// from more than one thread, you must serialize them yourself (e.g. through
+// your own single-consumer strand/dispatch queue, the same pattern
+// CBProviderStrand implements for the synthetic provider) BEFORE calling into
+// any IProviderCallbacks method. "Serialized" means logically serialized
+// (one call fully completes before the next begins, in your own real event
+// order) -- it does not have to be the same OS thread ID for every call.
+// ============================================================================
 class IProviderCallbacks {
 public:
   virtual ~IProviderCallbacks() = default;

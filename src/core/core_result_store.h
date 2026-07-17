@@ -303,6 +303,45 @@ public:
   // Called once per entry CoreRuntime retires via
   // CoreCaptureAssemblyRegistry::retire_terminal_older_than().
   void remove_capture_result(uint64_t capture_id, uint64_t device_instance_id);
+
+  struct EvictedCaptureResult {
+    uint64_t capture_id = 0;
+    uint64_t device_instance_id = 0;
+  };
+  // Byte-budget retention (ledger #53), complementary to the time-based
+  // retire_terminal_older_than() sweep above: bounds total retained capture
+  // bytes (literal CPU-packed bytes plus an *estimated* GPU-backed footprint
+  // derived only from the Core-visible RetainedGpuBackingDescriptor, never
+  // the opaque retained_gpu_backing handle itself) so a long-running,
+  // multi-camera repeated-capture session cannot grow result memory without
+  // bound even while individual captures remain within the time window.
+  // Walks capture_results_by_capture_id_ in ascending capture_id order
+  // (already oldest-first), skipping any (capture_id, device_instance_id)
+  // for which is_evictable returns false, evicting the rest until
+  // at-or-under byte_budget or no evictable candidates remain. The caller
+  // (CoreRuntime) must supply is_evictable backed by
+  // CoreCaptureAssemblyRegistry::terminal_capture_device_pairs() so a
+  // still-in-flight capture (its result data actively being appended to /
+  // finalized by the capture pipeline) is never evicted merely for being
+  // byte-heavy or old -- only already-terminal (COMPLETED/FAILED) entries
+  // are eligible, mirroring retire_terminal_older_than()'s own restriction.
+  //
+  // is_evictable MUST NOT itself acquire any other registry's lock: it runs
+  // while mutex_ is held, and CoreCaptureAssemblyRegistry::mutex_ (or any
+  // other registry lock) must never be nested inside mutex_ here -- every
+  // cross-registry access elsewhere in this codebase locks registries
+  // sequentially, never nested, and this predicate must keep that invariant
+  // (build it from a snapshot taken before calling in, e.g.
+  // terminal_capture_device_pairs(), not a live cross-registry query).
+  // Evicted entries are moved into the returned vector while mutex_ is
+  // held, and the lock is released before that vector (and the payloads/
+  // GPU backing shared_ptrs it holds) is destroyed, so freeing memory never
+  // blocks a concurrent get_latest_stream_result()/get_capture_result() read.
+  std::vector<EvictedCaptureResult> evict_over_byte_budget(
+      uint64_t byte_budget,
+      const std::function<bool(uint64_t capture_id, uint64_t device_instance_id)>& is_evictable);
+  uint64_t total_estimated_capture_bytes() const;
+
   void mark_stream_display_demand(uint64_t stream_id, uint64_t now_ns);
   void retain_stream_display_demand(uint64_t stream_id);
   void release_stream_display_demand(uint64_t stream_id);
@@ -327,6 +366,12 @@ private:
   mutable std::mutex mutex_;
   std::map<uint64_t, SharedStreamResultData> latest_stream_results_;
   std::map<uint64_t, std::map<uint64_t, MutableCaptureResultData>> capture_results_by_capture_id_;
+  // Running total of compute_capture_result_bytes() across every entry
+  // currently in capture_results_by_capture_id_; kept incrementally in sync
+  // under mutex_ by retain_frame()/append_additional_capture_image()
+  // (add)/remove_capture_result()/evict_over_byte_budget() (subtract) so
+  // evict_over_byte_budget() never has to re-walk+recompute the whole store.
+  uint64_t total_estimated_capture_bytes_ = 0;
   uint64_t next_retained_frame_id_ = 1;
   struct StreamAccessPostureDomainKey {
     uint64_t stream_id = 0;

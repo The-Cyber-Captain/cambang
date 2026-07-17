@@ -10,11 +10,11 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstdio>
-#include <cstdarg>
 #include <limits>
 #include <memory>
 #include <map>
 #include <future>
+#include <set>
 #include <vector>
 
 #include <utility>
@@ -24,16 +24,6 @@
 #include "imaging/api/timeline_teardown_trace.h"
 
 namespace cambang {
-
-namespace capture_latency_trace_diagnostics {
-inline uint32_t capture_inflight() noexcept { return 0u; }
-inline uint32_t active_capture_count() noexcept { return 0u; }
-inline void note_capture_admitted(uint32_t) noexcept {}
-inline void note_capture_finished() noexcept {}
-inline void reset_trace_group_seen() noexcept {}
-inline void print_trace_group_seen_summary() noexcept {}
-inline void print_line(const char*) noexcept {}
-} // namespace capture_latency_trace_diagnostics
 
 namespace {
 
@@ -740,18 +730,6 @@ RetainedPlanResetDecision build_retained_plan_reset_decision(
   return decision;
 }
 
-const char* backing_plan_primary_function_name(
-    BackingPlanEvaluationPrimaryFunction primary_function) noexcept {
-  switch (primary_function) {
-    case BackingPlanEvaluationPrimaryFunction::StreamDisplayView:
-      return "stream_display_view";
-    case BackingPlanEvaluationPrimaryFunction::CaptureReadyAndMaterialize:
-      return "capture_ready_and_materialize";
-  }
-  return "unknown";
-}
-
-
 // Stage A command-fairness bounds: provider facts remain FIFO and non-dropping,
 // but Core yields to pending request work after deterministic slices so sustained
 // stream/provider-event production cannot starve public commands. When requests
@@ -760,78 +738,17 @@ const char* backing_plan_primary_function_name(
 constexpr size_t kMaxProviderFactsPerCoreTurn = 64;
 constexpr size_t kMaxProviderFactsBeforeRequestWhenRequestsPending = 1;
 
-// BEGIN TEMPORARY CAPTURE LATENCY DIAGNOSTICS
-uint64_t capture_latency_trace_now_ns() {
+// Monotonic timestamp for CoreStreamRegistry::on_frame_received()'s
+// integrated_ts_ns, which frame-cadence accounting depends on. Not a
+// diagnostic value.
+uint64_t frame_integration_now_ns() {
   return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
-#define capture_latency_trace_printf(...) ((void)0)
-// END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
-
-
-class CoreRuntimeDiagnosticPhaseScope final {
-public:
-  CoreRuntimeDiagnosticPhaseScope(CoreThread& core_thread, CoreThread::DiagnosticPhase phase)
-      : core_thread_(core_thread) {
-    core_thread_.diagnostic_set_phase_from_core(phase);
-  }
-  ~CoreRuntimeDiagnosticPhaseScope() = default;
-
-  CoreRuntimeDiagnosticPhaseScope(const CoreRuntimeDiagnosticPhaseScope&) = delete;
-  CoreRuntimeDiagnosticPhaseScope& operator=(const CoreRuntimeDiagnosticPhaseScope&) = delete;
-
-private:
-  CoreThread& core_thread_;
-};
-
-void capture_latency_trace_emit_core_command_wait_context(
-    const char* kind,
-    uint64_t capture_id,
-    uint64_t target_id,
-    const char* target_label,
-    uint64_t wait_us,
-    const CoreThread::DiagnosticSnapshot& post_snapshot,
-    const CoreThread::DiagnosticSnapshot& start_snapshot,
-    size_t runtime_requests_depth_at_start,
-    size_t runtime_provider_facts_depth_at_start) {
-  capture_latency_trace_printf(
-      "core_command_wait_context kind=%s capture_id=%llu %s=%llu wait_us=%llu "
-      "phase_at_post=%s phase_age_at_post_us=%llu previous_phase_at_post=%s previous_phase_ended_before_post_us=%llu "
-      "essential_depth_at_post=%llu command_depth_at_post=%llu ordinary_depth_at_post=%llu timer_requested_at_post=%u timer_running_at_post=%u "
-      "phase_at_start=%s phase_age_at_start_us=%llu previous_phase_at_start=%s previous_phase_ended_before_start_us=%llu "
-      "essential_depth_at_start=%llu command_depth_at_start=%llu ordinary_depth_at_start=%llu timer_requested_at_start=%u timer_running_at_start=%u "
-      "runtime_request_depth_at_start=%llu runtime_provider_fact_depth_at_start=%llu",
-      kind,
-      static_cast<unsigned long long>(capture_id),
-      target_label,
-      static_cast<unsigned long long>(target_id),
-      static_cast<unsigned long long>(wait_us),
-      CoreThread::diagnostic_phase_name(post_snapshot.phase),
-      static_cast<unsigned long long>(post_snapshot.phase_age_us),
-      CoreThread::diagnostic_phase_name(post_snapshot.previous_phase),
-      static_cast<unsigned long long>(post_snapshot.previous_phase_ended_before_us),
-      static_cast<unsigned long long>(post_snapshot.essential_queue_depth),
-      static_cast<unsigned long long>(post_snapshot.command_queue_depth),
-      static_cast<unsigned long long>(post_snapshot.ordinary_queue_depth),
-      post_snapshot.timer_requested ? 1u : 0u,
-      post_snapshot.timer_running ? 1u : 0u,
-      CoreThread::diagnostic_phase_name(start_snapshot.phase),
-      static_cast<unsigned long long>(start_snapshot.phase_age_us),
-      CoreThread::diagnostic_phase_name(start_snapshot.previous_phase),
-      static_cast<unsigned long long>(start_snapshot.previous_phase_ended_before_us),
-      static_cast<unsigned long long>(start_snapshot.essential_queue_depth),
-      static_cast<unsigned long long>(start_snapshot.command_queue_depth),
-      static_cast<unsigned long long>(start_snapshot.ordinary_queue_depth),
-      start_snapshot.timer_requested ? 1u : 0u,
-      start_snapshot.timer_running ? 1u : 0u,
-      static_cast<unsigned long long>(runtime_requests_depth_at_start),
-      static_cast<unsigned long long>(runtime_provider_facts_depth_at_start));
-}
-
-// Stage B.1 provider-fact classification. Temporary diagnostics above remain
-// in place; this helper implements the existing capture-over-stream policy at
-// the provider-fact integration seam without changing public/provider APIs.
+// Stage B.1 provider-fact classification. This helper implements the
+// existing capture-over-stream policy at the provider-fact integration seam
+// without changing public/provider APIs.
 enum class ProviderFactClass : uint8_t {
   CriticalNonLossy = 0,
   RigCaptureCritical,
@@ -851,18 +768,6 @@ struct ProviderFactSummary {
   uint64_t acquisition_session_id = 0;
   uint32_t image_member_index = 0;
 };
-
-const char* provider_fact_class_name(ProviderFactClass fact_class) noexcept {
-  switch (fact_class) {
-    case ProviderFactClass::CriticalNonLossy: return "critical_non_lossy";
-    case ProviderFactClass::RigCaptureCritical: return "rig_capture_critical";
-    case ProviderFactClass::DeviceCaptureCritical: return "device_capture_critical";
-    case ProviderFactClass::RepeatingStreamFrame: return "repeating_stream_frame";
-    case ProviderFactClass::OtherStream: return "other_stream";
-    case ProviderFactClass::UnknownNonLossy: return "unknown_non_lossy";
-  }
-  return "unknown_non_lossy";
-}
 
 bool provider_fact_is_capture_critical(ProviderFactClass fact_class) noexcept {
   return fact_class == ProviderFactClass::RigCaptureCritical ||
@@ -1052,16 +957,6 @@ bool promote_capture_fact_over_repeating_stream_prefix(
       ProviderToCoreCommand promoted = std::move(*it);
       provider_facts.erase(it);
       provider_facts.push_front(std::move(promoted));
-      capture_latency_trace_printf(
-          "capture_fact_promoted_over_stream class=%s capture_id=%llu rig_id=%llu device_id=%llu stream_frames_skipped=%llu provider_fact_depth=%llu type=%u member=%u",
-          provider_fact_class_name(summary.fact_class),
-          static_cast<unsigned long long>(summary.capture_id),
-          static_cast<unsigned long long>(summary.rig_id),
-          static_cast<unsigned long long>(summary.device_instance_id),
-          static_cast<unsigned long long>(skipped_stream_frames),
-          static_cast<unsigned long long>(provider_facts.size()),
-          static_cast<unsigned>(summary.type),
-          static_cast<unsigned>(summary.image_member_index));
       return true;
     }
 
@@ -1118,7 +1013,7 @@ StreamFrameCoalesceResult coalesce_front_repeating_stream_frame_if_superseded(
   ProviderToCoreCommand cmd = std::move(provider_facts.front());
   provider_facts.pop_front();
   auto& frame = std::get<CmdProviderFrame>(cmd.payload).frame;
-  const uint64_t integrated_ts_ns = capture_latency_trace_now_ns();
+  const uint64_t integrated_ts_ns = frame_integration_now_ns();
   const bool received_counted = streams.on_frame_received(frame.stream_id, integrated_ts_ns);
   const bool dropped_counted = streams.on_frame_dropped(frame.stream_id);
   frame.release_now();
@@ -1130,36 +1025,7 @@ StreamFrameCoalesceResult coalesce_front_repeating_stream_frame_if_superseded(
 
   out.coalesced = true;
   out.stream_counters_changed = received_counted || dropped_counted;
-  capture_latency_trace_printf(
-      "stream_frame_coalesced stream_id=%llu acquisition_session_id=%llu provider_fact_depth_after=%llu received_counted=%u dropped_counted=%u delivered=0 publication_requested=1",
-      static_cast<unsigned long long>(front_summary.stream_id),
-      static_cast<unsigned long long>(front_summary.acquisition_session_id),
-      static_cast<unsigned long long>(provider_facts.size()),
-      received_counted ? 1u : 0u,
-      dropped_counted ? 1u : 0u);
   return out;
-}
-
-constexpr uint64_t kProviderFactDispatchSlowThresholdUs = 5000;
-
-void emit_provider_fact_dispatch_slow_if_needed(const ProviderFactSummary& summary,
-                                                uint64_t dispatch_us,
-                                                size_t provider_fact_depth_after_dispatch) {
-  if (dispatch_us < kProviderFactDispatchSlowThresholdUs) {
-    return;
-  }
-  capture_latency_trace_printf(
-      "provider_fact_dispatch_slow class=%s type=%u capture_id=%llu rig_id=%llu device_id=%llu stream_id=%llu acquisition_session_id=%llu member=%u dispatch_us=%llu provider_fact_depth_after=%llu",
-      provider_fact_class_name(summary.fact_class),
-      static_cast<unsigned>(summary.type),
-      static_cast<unsigned long long>(summary.capture_id),
-      static_cast<unsigned long long>(summary.rig_id),
-      static_cast<unsigned long long>(summary.device_instance_id),
-      static_cast<unsigned long long>(summary.stream_id),
-      static_cast<unsigned long long>(summary.acquisition_session_id),
-      static_cast<unsigned>(summary.image_member_index),
-      static_cast<unsigned long long>(dispatch_us),
-      static_cast<unsigned long long>(provider_fact_depth_after_dispatch));
 }
 
 uint64_t warm_delay_ns(uint32_t warm_hold_ms) {
@@ -1354,9 +1220,7 @@ void CoreRuntime::remember_capture_priming_seed_(
       CapturePrimingSeed{signature, selected};
 }
 
-void CoreRuntime::release_capture_parent_priming_(
-    uint64_t device_instance_id,
-    const char* reason) {
+void CoreRuntime::release_capture_parent_priming_(uint64_t device_instance_id) {
   if (device_instance_id == 0) {
     return;
   }
@@ -1459,9 +1323,7 @@ bool CoreRuntime::sync_capture_parent_priming_(
       return true;
     }
     if (state.provider_hold_active) {
-      release_capture_parent_priming_(
-          device_instance_id,
-          "refresh.non_evaluated_priming_terminal");
+      release_capture_parent_priming_(device_instance_id);
     } else {
       capture_parent_priming_states_.erase(device_instance_id);
     }
@@ -1908,15 +1770,6 @@ CoreRuntime::resolve_capture_retained_plan_parent_(
   }
   uint64_t preserved_session_id = 0;
   bool preserved_session_ambiguous = false;
-  uint32_t preserved_session_evaluator_count = 0;
-  uint32_t preserved_session_decision_count = 0;
-  uint32_t created_stream_count = 0;
-  for (const auto& [stream_id, rec] : streams_.all()) {
-    (void)stream_id;
-    if (rec.device_instance_id == device_instance_id && rec.created) {
-      ++created_stream_count;
-    }
-  }
   auto consider_preserved_session =
       [&](uint64_t acquisition_session_id) noexcept {
         if (acquisition_session_id == 0 || preserved_session_ambiguous) {
@@ -1941,7 +1794,6 @@ CoreRuntime::resolve_capture_retained_plan_parent_(
     if (!session_live && state.orphan_retire_after_ns == 0) {
       continue;
     }
-    ++preserved_session_evaluator_count;
     consider_preserved_session(key.id);
   }
   for (const auto& [key, decision] : capture_retained_plan_decisions_) {
@@ -1955,7 +1807,6 @@ CoreRuntime::resolve_capture_retained_plan_parent_(
     if (!session_live && decision.orphan_retire_after_ns == 0) {
       continue;
     }
-    ++preserved_session_decision_count;
     consider_preserved_session(key.id);
   }
   const bool has_live_session_successor = live_session_count != 0;
@@ -1974,31 +1825,7 @@ CoreRuntime::resolve_capture_retained_plan_parent_(
   }
 
   if (!device_has_any_stream_(device_instance_id)) {
-    if (preserved_session_ambiguous) {
-      capture_latency_trace_printf(
-          "capture_parent_resolve_priming_with_session_state device_id=%llu created_stream_count=%u priming_hold_active=%u preserved_session_id=%llu preserved_session_ambiguous=%u evaluator_count=%u decision_count=%u",
-          static_cast<unsigned long long>(device_instance_id),
-          static_cast<unsigned>(created_stream_count),
-          priming_hold_active ? 1u : 0u,
-          static_cast<unsigned long long>(preserved_session_id),
-          preserved_session_ambiguous ? 1u : 0u,
-          static_cast<unsigned>(preserved_session_evaluator_count),
-          static_cast<unsigned>(preserved_session_decision_count));
-    }
     return resolved;
-  }
-  if (resolved.key.kind == CaptureRetainedPlanParentKey::Kind::CapturePriming &&
-      (preserved_session_evaluator_count != 0 ||
-       preserved_session_decision_count != 0)) {
-    capture_latency_trace_printf(
-        "capture_parent_resolve_priming_with_session_state device_id=%llu created_stream_count=%u priming_hold_active=%u preserved_session_id=%llu preserved_session_ambiguous=%u evaluator_count=%u decision_count=%u",
-        static_cast<unsigned long long>(device_instance_id),
-        static_cast<unsigned>(created_stream_count),
-        priming_hold_active ? 1u : 0u,
-        static_cast<unsigned long long>(preserved_session_id),
-        preserved_session_ambiguous ? 1u : 0u,
-        static_cast<unsigned>(preserved_session_evaluator_count),
-        static_cast<unsigned>(preserved_session_decision_count));
   }
   return resolved;
 }
@@ -2196,15 +2023,6 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
       RetainedPlanEvaluatorState moved = it->second;
       moved.acquisition_session_id = parent.acquisition_session_id;
       moved.orphan_retire_after_ns = 0;
-      capture_latency_trace_printf(
-          "capture_plan_state_rehome device_id=%llu dst_parent_kind=%u dst_parent_id=%llu src_parent_kind=%u src_parent_id=%llu src_candidate_index=%u src_candidate_count=%u",
-          static_cast<unsigned long long>(device_instance_id),
-          static_cast<unsigned>(parent.key.kind),
-          static_cast<unsigned long long>(parent.key.id),
-          static_cast<unsigned>(it->first.kind),
-          static_cast<unsigned long long>(it->first.id),
-          static_cast<unsigned>(moved.current_candidate_index),
-          static_cast<unsigned>(moved.candidate_count));
       capture_retained_plan_evaluators_.erase(it);
       current_eval_it =
           capture_retained_plan_evaluators_
@@ -2241,13 +2059,6 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
     if (retired_real_session_parent(it->first) && it->second.active) {
       restart_from_seed = true;
     }
-    capture_latency_trace_printf(
-        "capture_plan_state_rehome_drop device_id=%llu dst_parent_kind=%u dst_parent_id=%llu src_parent_kind=%u src_parent_id=%llu action=discard_without_merge",
-        static_cast<unsigned long long>(device_instance_id),
-        static_cast<unsigned>(parent.key.kind),
-        static_cast<unsigned long long>(parent.key.id),
-        static_cast<unsigned>(it->first.kind),
-        static_cast<unsigned long long>(it->first.id));
     it = capture_retained_plan_evaluators_.erase(it);
     changed = true;
   }
@@ -2278,7 +2089,6 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
           it->second.valid &&
           it->second.selected.valid) {
         RetainedPlanDecisionProvenance moved = it->second;
-        const CaptureRetainedPlanParentKey source_key = it->first;
         capture_retained_plan_decisions_.erase(it);
         moved.acquisition_session_id = 0;
         moved.orphan_retire_after_ns = 0;
@@ -2286,14 +2096,6 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
             capture_retained_plan_decisions_
                 .insert_or_assign(parent.key, moved)
                 .first;
-        capture_latency_trace_printf(
-            "capture_plan_state_rehome device_id=%llu dst_parent_kind=%u dst_parent_id=%llu src_parent_kind=%u src_parent_id=%llu source=direct_decision selected_posture=%d",
-            static_cast<unsigned long long>(device_instance_id),
-            static_cast<unsigned>(parent.key.kind),
-            static_cast<unsigned long long>(parent.key.id),
-            static_cast<unsigned>(source_key.kind),
-            static_cast<unsigned long long>(source_key.id),
-            static_cast<int>(moved.selected.posture));
         changed = true;
         break;
       }
@@ -2343,9 +2145,7 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
       current_decision_it != capture_retained_plan_decisions_.end() &&
       parent.acquisition_session_id != 0) {
     if (current_decision_it->second.from_evaluation) {
-      release_capture_parent_priming_(
-          device_instance_id,
-          "sync_capture_parent_priming.provider_sync_failed");
+      release_capture_parent_priming_(device_instance_id);
     }
   }
 
@@ -2421,9 +2221,7 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
   if (!build_effective_capture_request_without_retained_plan_(
           device_instance_id, effective)) {
     erase_capture_retained_plan_state_for_device_(device_instance_id, nullptr);
-    release_capture_parent_priming_(
-        device_instance_id,
-        "refresh.build_effective_failed");
+    release_capture_parent_priming_(device_instance_id);
     return false;
   }
   ProducerBackingCapabilities runtime_caps{};
@@ -2434,9 +2232,7 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
           runtime_caps,
           parent_context_caps)) {
     erase_capture_retained_plan_state_for_device_(device_instance_id, nullptr);
-    release_capture_parent_priming_(
-        device_instance_id,
-        "refresh.resolve_backing_caps_failed");
+    release_capture_parent_priming_(device_instance_id);
     return false;
   }
   auto evaluator_matches_device =
@@ -2722,23 +2518,6 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
   erase_capture_retained_plan_state_for_device_(
       device_instance_id, &parent.key);
   if (!decision.requested.valid) {
-    const char* const parent_kind_name =
-        parent.acquisition_session_id != 0
-            ? "acquisition_session"
-            : "capture_priming";
-    capture_latency_trace_printf(
-        "capture_plan_state_refresh_rejected device_id=%llu parent_kind=%s parent_id=%llu reason=no_viable_parent_context_postures primary_function=%s runtime_caps_cpu=%u runtime_caps_gpu=%u runtime_caps_gpu_cpu_sidecar=%u parent_context_caps_cpu=%u parent_context_caps_gpu=%u parent_context_caps_gpu_cpu_sidecar=%u",
-        static_cast<unsigned long long>(device_instance_id),
-        parent_kind_name,
-        static_cast<unsigned long long>(parent.key.id),
-        backing_plan_primary_function_name(
-            BackingPlanEvaluationPrimaryFunction::CaptureReadyAndMaterialize),
-        runtime_caps.cpu_backed_available ? 1u : 0u,
-        runtime_caps.gpu_backed_available ? 1u : 0u,
-        runtime_caps.gpu_with_cpu_sidecar_available ? 1u : 0u,
-        parent_context_caps.cpu_backed_available ? 1u : 0u,
-        parent_context_caps.gpu_backed_available ? 1u : 0u,
-        parent_context_caps.gpu_with_cpu_sidecar_available ? 1u : 0u);
     (void)devices_.set_requested_retained_plan(
         device_instance_id,
         CoreRetainedProductionPlan{},
@@ -2754,9 +2533,7 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
     }
     capture_retained_plan_evaluators_.erase(parent.key);
     capture_retained_plan_decisions_.erase(parent.key);
-    release_capture_parent_priming_(
-        device_instance_id,
-        "refresh.no_viable_requested_plan");
+    release_capture_parent_priming_(device_instance_id);
     return false;
   }
 
@@ -2784,15 +2561,6 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
       (void)acquisition_sessions_.clear_steady_retained_plan(
           parent.acquisition_session_id);
     }
-    capture_latency_trace_printf(
-        "capture_plan_state_refresh_preserve device_id=%llu parent_kind=%u parent_id=%llu source=evaluator source_parent_kind=%u source_parent_id=%llu current_candidate_index=%u requested_posture=%d",
-        static_cast<unsigned long long>(device_instance_id),
-        static_cast<unsigned>(parent.key.kind),
-        static_cast<unsigned long long>(parent.key.id),
-        static_cast<unsigned>(preserved_evaluator_key.kind),
-        static_cast<unsigned long long>(preserved_evaluator_key.id),
-        static_cast<unsigned>(state.current_candidate_index),
-        static_cast<int>(requested.posture));
     capture_retained_plan_evaluators_[parent.key] = state;
     capture_retained_plan_decisions_.erase(parent.key);
     return true;
@@ -2818,21 +2586,10 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
       (void)acquisition_sessions_.set_steady_retained_plan(
           parent.acquisition_session_id, provenance.selected);
     }
-    capture_latency_trace_printf(
-        "capture_plan_state_refresh_preserve device_id=%llu parent_kind=%u parent_id=%llu source=decision source_parent_kind=%u source_parent_id=%llu selected_posture=%d from_evaluation=%u",
-        static_cast<unsigned long long>(device_instance_id),
-        static_cast<unsigned>(parent.key.kind),
-        static_cast<unsigned long long>(parent.key.id),
-        static_cast<unsigned>(preserved_decision_key.kind),
-        static_cast<unsigned long long>(preserved_decision_key.id),
-        static_cast<int>(provenance.selected.posture),
-        provenance.from_evaluation ? 1u : 0u);
     capture_retained_plan_evaluators_.erase(parent.key);
     capture_retained_plan_decisions_[parent.key] = provenance;
     if (provenance.from_evaluation) {
-      release_capture_parent_priming_(
-          device_instance_id,
-          "rehome.evaluated_decision_on_real_parent");
+      release_capture_parent_priming_(device_instance_id);
     }
     return true;
   }
@@ -2879,16 +2636,6 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
       state.candidate_sequence[i] = make_retained_plan(
           decision.candidate_sequence[i]);
     }
-    capture_latency_trace_printf(
-        "capture_plan_state_refresh device_id=%llu parent_kind=%u parent_id=%llu requested_posture=%d steady_valid=%u candidate_count=%u preferred_requested_valid=%u preferred_requested_posture=%d",
-        static_cast<unsigned long long>(device_instance_id),
-        static_cast<unsigned>(parent.key.kind),
-        static_cast<unsigned long long>(parent.key.id),
-        static_cast<int>(decision.requested.posture),
-        decision.steady.valid ? 1u : 0u,
-        static_cast<unsigned>(decision.candidate_count),
-        preferred_requested.valid ? 1u : 0u,
-        static_cast<int>(preferred_requested.posture));
     capture_retained_plan_evaluators_[parent.key] = state;
     capture_retained_plan_decisions_.erase(parent.key);
   } else {
@@ -2916,9 +2663,7 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
         !same_non_evaluated_decision_already_installed) {
       (void)sync_capture_parent_priming_(
           device_instance_id, effective, runtime_caps, parent_context_caps);
-      release_capture_parent_priming_(
-          device_instance_id,
-          "refresh.preserve_evaluated_decision");
+      release_capture_parent_priming_(device_instance_id);
     }
     return true;
   }
@@ -3394,59 +3139,13 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
           image_member_index,
           static_cast<uint8_t>(deferred_retries_remaining - 1u),
           now_ns + kCaptureObservationRetryDelayNs);
-      capture_latency_trace_printf(
-          "capture_plan_observation_deferred capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu image_member_index=%u retries_remaining=%u delay_ns=%llu",
-          static_cast<unsigned long long>(capture_id),
-          static_cast<unsigned long long>(device_instance_id),
-          static_cast<unsigned long long>(posture_id),
-          static_cast<unsigned long long>(observed_session_id),
-          static_cast<unsigned>(image_member_index),
-          static_cast<unsigned>(deferred_retries_remaining),
-          static_cast<unsigned long long>(kCaptureObservationRetryDelayNs));
       return;
     }
-    size_t matching_state_count = 0;
-    CaptureRetainedPlanParentKey first_matching_key{};
-    for (const auto& [key, state] : capture_retained_plan_evaluators_) {
-      if (state.device_instance_id != device_instance_id) {
-        continue;
-      }
-      if (matching_state_count == 0) {
-        first_matching_key = key;
-      }
-      ++matching_state_count;
-    }
-    const ResolvedCaptureRetainedPlanParent resolved_parent =
-        resolve_capture_retained_plan_parent_(device_instance_id);
-    capture_latency_trace_printf(
-        "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu image_member_index=%u reason=no_state_or_requested_plan device_exists=%u resolved_parent_kind=%u resolved_parent_id=%llu matching_state_count=%llu first_matching_parent_kind=%u first_matching_parent_id=%llu",
-        static_cast<unsigned long long>(capture_id),
-        static_cast<unsigned long long>(device_instance_id),
-        static_cast<unsigned long long>(posture_id),
-        static_cast<unsigned long long>(observed_session_id),
-        static_cast<unsigned>(image_member_index),
-        rec != nullptr ? 1u : 0u,
-        static_cast<unsigned>(resolved_parent.key.kind),
-        static_cast<unsigned long long>(resolved_parent.key.id),
-        static_cast<unsigned long long>(matching_state_count),
-        static_cast<unsigned>(first_matching_key.kind),
-        static_cast<unsigned long long>(first_matching_key.id));
     return;
   }
 
   RetainedPlanEvaluatorState& state = state_it->second;
   if (!state.active || state.current_candidate_index >= state.candidate_count) {
-    capture_latency_trace_printf(
-        "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu image_member_index=%u parent_kind=%u parent_id=%llu reason=inactive_or_oob current_candidate_index=%u candidate_count=%u",
-        static_cast<unsigned long long>(capture_id),
-        static_cast<unsigned long long>(device_instance_id),
-        static_cast<unsigned long long>(posture_id),
-        static_cast<unsigned long long>(observed_session_id),
-        static_cast<unsigned>(image_member_index),
-        static_cast<unsigned>(state_it->first.kind),
-        static_cast<unsigned long long>(state_it->first.id),
-        static_cast<unsigned>(state.current_candidate_index),
-        static_cast<unsigned>(state.candidate_count));
     return;
   }
   const uint64_t now_ns = ns_since_epoch_();
@@ -3469,31 +3168,9 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
     effective_requested = expected_plan;
   }
   if (!effective_requested.valid) {
-    capture_latency_trace_printf(
-        "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu image_member_index=%u parent_kind=%u parent_id=%llu reason=no_requested_plan current_candidate_index=%u",
-        static_cast<unsigned long long>(capture_id),
-        static_cast<unsigned long long>(device_instance_id),
-        static_cast<unsigned long long>(posture_id),
-        static_cast<unsigned long long>(observed_session_id),
-        static_cast<unsigned>(image_member_index),
-        static_cast<unsigned>(state_it->first.kind),
-        static_cast<unsigned long long>(state_it->first.id),
-        static_cast<unsigned>(state.current_candidate_index));
     return;
   }
   if (!same_retained_plan(effective_requested, expected_plan)) {
-    capture_latency_trace_printf(
-        "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu image_member_index=%u parent_kind=%u parent_id=%llu reason=requested_mismatch current_candidate_index=%u expected_posture=%d requested_posture=%d",
-        static_cast<unsigned long long>(capture_id),
-        static_cast<unsigned long long>(device_instance_id),
-        static_cast<unsigned long long>(posture_id),
-        static_cast<unsigned long long>(observed_session_id),
-        static_cast<unsigned>(image_member_index),
-        static_cast<unsigned>(state_it->first.kind),
-        static_cast<unsigned long long>(state_it->first.id),
-        static_cast<unsigned>(state.current_candidate_index),
-        static_cast<int>(expected_plan.posture),
-        static_cast<int>(effective_requested.posture));
     return;
   }
   if (state.current_candidate_ready_after_ns != 0 &&
@@ -3535,17 +3212,6 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
       observed_member->access_posture.posture_id != posture_id ||
       !infer_capture_member_posture_shape_(*observed_member, observed_posture) ||
       observed_posture != expected_plan.posture) {
-    capture_latency_trace_printf(
-        "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu image_member_index=%u parent_kind=%u parent_id=%llu reason=attribution_mismatch current_candidate_index=%u expected_posture=%d",
-        static_cast<unsigned long long>(capture_id),
-        static_cast<unsigned long long>(device_instance_id),
-        static_cast<unsigned long long>(posture_id),
-        static_cast<unsigned long long>(observed_session_id),
-        static_cast<unsigned>(image_member_index),
-        static_cast<unsigned>(state_it->first.kind),
-        static_cast<unsigned long long>(state_it->first.id),
-        static_cast<unsigned>(state.current_candidate_index),
-        static_cast<int>(expected_plan.posture));
     return;
   }
 
@@ -3558,17 +3224,6 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
     fill_capture_observation_identity_(
         current_observation, observed_result, *observed_member, observed_posture);
     if (!same_capture_observation_family_(evidence, current_observation)) {
-      capture_latency_trace_printf(
-          "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu image_member_index=%u parent_kind=%u parent_id=%llu reason=family_mismatch current_candidate_index=%u expected_posture=%d",
-          static_cast<unsigned long long>(capture_id),
-          static_cast<unsigned long long>(device_instance_id),
-          static_cast<unsigned long long>(posture_id),
-          static_cast<unsigned long long>(observed_session_id),
-          static_cast<unsigned>(image_member_index),
-          static_cast<unsigned>(state_it->first.kind),
-          static_cast<unsigned long long>(state_it->first.id),
-          static_cast<unsigned>(state.current_candidate_index),
-          static_cast<int>(expected_plan.posture));
       return;
     }
   }
@@ -3615,17 +3270,6 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
         same_capture_observation_family_(other, evidence)) {
       evidence.capture_evidence_accepted = false;
       evidence.capture_evidence_complete = false;
-      capture_latency_trace_printf(
-          "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu image_member_index=%u parent_kind=%u parent_id=%llu reason=duplicate_observation current_candidate_index=%u expected_posture=%d",
-          static_cast<unsigned long long>(capture_id),
-          static_cast<unsigned long long>(device_instance_id),
-          static_cast<unsigned long long>(posture_id),
-          static_cast<unsigned long long>(observed_session_id),
-          static_cast<unsigned>(image_member_index),
-          static_cast<unsigned>(state_it->first.kind),
-          static_cast<unsigned long long>(state_it->first.id),
-          static_cast<unsigned>(state.current_candidate_index),
-          static_cast<int>(expected_plan.posture));
       return;
     }
   }
@@ -3646,30 +3290,6 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
         static_cast<uint8_t>(deferred_retries_remaining - 1u),
         now_ns + kCaptureObservationRetryDelayNs);
   }
-  capture_latency_trace_printf(
-      "capture_plan_observation_applied capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu image_member_index=%u parent_kind=%u parent_id=%llu current_candidate_index=%u requested_posture=%d provisional_to_image=%d has_materialization=%u materialization_elapsed_ns=%llu has_normalized=%u normalized_cost_units=%llu has_capture_ready=%u capture_ready_elapsed_ns=%llu",
-      static_cast<unsigned long long>(capture_id),
-      static_cast<unsigned long long>(device_instance_id),
-      static_cast<unsigned long long>(posture_id),
-      static_cast<unsigned long long>(observed_session_id),
-      static_cast<unsigned>(evidence.observed_image_member_index),
-      static_cast<unsigned>(state_it->first.kind),
-      static_cast<unsigned long long>(state_it->first.id),
-      static_cast<unsigned>(state.current_candidate_index),
-      static_cast<int>(effective_requested.posture),
-      static_cast<int>(provisional_to_image),
-      evidence.has_materialization_elapsed_ns ? 1u : 0u,
-      static_cast<unsigned long long>(evidence.has_materialization_elapsed_ns
-                                          ? evidence.materialization_elapsed_ns
-                                          : 0),
-      evidence.has_normalized_cost_units ? 1u : 0u,
-      static_cast<unsigned long long>(evidence.has_normalized_cost_units
-                                          ? evidence.normalized_cost_units
-                                          : 0),
-      evidence.has_capture_ready_elapsed_ns ? 1u : 0u,
-      static_cast<unsigned long long>(evidence.has_capture_ready_elapsed_ns
-                                          ? evidence.capture_ready_elapsed_ns
-                                          : 0));
 
   if (state.current_candidate_index + 1u < state.candidate_count) {
     if (provisional_to_image == ResultCapability::UNSUPPORTED ||
@@ -3679,14 +3299,6 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
           state.candidate_sequence[state.current_candidate_index];
       state.current_candidate_ready_after_ns =
           now_ns + capture_backing_plan_evaluation_settle_delay_ns();
-      capture_latency_trace_printf(
-          "capture_plan_observation_advance capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu next_candidate_index=%u next_posture=%d",
-          static_cast<unsigned long long>(capture_id),
-          static_cast<unsigned long long>(device_instance_id),
-          static_cast<unsigned long long>(posture_id),
-          static_cast<unsigned long long>(observed_session_id),
-          static_cast<unsigned>(state.current_candidate_index),
-          static_cast<int>(next_plan.posture));
       if (rec != nullptr) {
         (void)devices_.set_requested_retained_plan(device_instance_id, next_plan, true);
         (void)devices_.clear_steady_retained_plan(device_instance_id);
@@ -3723,13 +3335,6 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
   }
   state.completion_reason =
       BackingPlanEvaluationCompletionReason::AllViableCandidatesEvaluated;
-  capture_latency_trace_printf(
-      "capture_plan_observation_finalize capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu chosen_posture=%d decision_from_evaluation=1",
-      static_cast<unsigned long long>(capture_id),
-      static_cast<unsigned long long>(device_instance_id),
-      static_cast<unsigned long long>(posture_id),
-      static_cast<unsigned long long>(observed_session_id),
-      static_cast<int>(chosen.posture));
 
   if (rec != nullptr && !same_retained_plan(effective_requested, chosen)) {
     (void)devices_.set_requested_retained_plan(device_instance_id, chosen, true);
@@ -3764,9 +3369,7 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
   const CaptureRetainedPlanParentKey decision_key = state_it->first;
   capture_retained_plan_decisions_[decision_key] = provenance;
   capture_retained_plan_evaluators_.erase(state_it);
-  release_capture_parent_priming_(
-      device_instance_id,
-      "capture_observation.finalize");
+  release_capture_parent_priming_(device_instance_id);
 }
 
 
@@ -4310,15 +3913,7 @@ void CoreRuntime::begin_capture_stream_preemption_(uint64_t capture_id, uint64_t
   }
 
   auto& by_capture = capture_stream_preemptions_by_device_[device_instance_id];
-  const bool was_empty = by_capture.empty();
   by_capture[capture_id] = CaptureStreamPreemptionRecord{capture_id, device_instance_id};
-  if (was_empty) {
-    capture_latency_trace_printf(
-        "stream_preempted_for_capture capture_id=%llu device_id=%llu active_captures_for_device=%llu",
-        static_cast<unsigned long long>(capture_id),
-        static_cast<unsigned long long>(device_instance_id),
-        static_cast<unsigned long long>(by_capture.size()));
-  }
 }
 
 void CoreRuntime::begin_capture_stream_preemption_for_bundle_(const RigAdmittedRequestBundle& bundle) {
@@ -4343,10 +3938,6 @@ void CoreRuntime::release_result_safe_capture_stream_preemptions_() {
         ++capture_it;
         continue;
       }
-      capture_latency_trace_printf(
-          "stream_preemption_released capture_id=%llu device_id=%llu",
-          static_cast<unsigned long long>(capture_id),
-          static_cast<unsigned long long>(device_instance_id));
       capture_it = by_capture.erase(capture_it);
     }
     if (by_capture.empty()) {
@@ -4379,7 +3970,7 @@ bool CoreRuntime::suppress_repeating_stream_frame_for_capture_(ProviderToCoreCom
   }
 
   auto& frame = std::get<CmdProviderFrame>(cmd.payload).frame;
-  const uint64_t integrated_ts_ns = capture_latency_trace_now_ns();
+  const uint64_t integrated_ts_ns = frame_integration_now_ns();
   const bool received_counted = streams_.on_frame_received(frame.stream_id, integrated_ts_ns);
   const bool dropped_counted = streams_.on_frame_dropped(frame.stream_id);
   frame.release_now();
@@ -4392,14 +3983,6 @@ bool CoreRuntime::suppress_repeating_stream_frame_for_capture_(ProviderToCoreCom
   if (received_counted || dropped_counted) {
     request_publish_from_core_unchecked();
   }
-  capture_latency_trace_printf(
-      "stream_frame_suppressed_for_capture stream_id=%llu acquisition_session_id=%llu device_id=%llu received_counted=%u dropped_counted=%u delivered=0 publication_requested=%u",
-      static_cast<unsigned long long>(summary.stream_id),
-      static_cast<unsigned long long>(summary.acquisition_session_id),
-      static_cast<unsigned long long>(summary.device_instance_id),
-      received_counted ? 1u : 0u,
-      dropped_counted ? 1u : 0u,
-      (received_counted || dropped_counted) ? 1u : 0u);
   return true;
 }
 
@@ -4567,7 +4150,6 @@ void CoreRuntime::stop() {
 
 void CoreRuntime::on_core_start() {
   // Core thread has started; begin accepting new work.
-  capture_latency_trace_diagnostics::reset_trace_group_seen();
   epoch_steady_ns_.store(
       std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now().time_since_epoch())
@@ -4689,8 +4271,6 @@ void CoreRuntime::on_core_timer_tick() {
   const bool requests_pending_before_provider_drain = !requests_.empty();
   bool command_or_request_waiting_for_stream_frame = false;
   {
-    CoreRuntimeDiagnosticPhaseScope diagnostic_phase_scope(
-        core_thread_, CoreThread::DiagnosticPhase::RuntimeProviderFactIntegration);
     const size_t provider_fact_drain_bound = requests_pending_before_provider_drain
         ? kMaxProviderFactsBeforeRequestWhenRequestsPending
         : kMaxProviderFactsPerCoreTurn;
@@ -4728,14 +4308,6 @@ void CoreRuntime::on_core_timer_tick() {
       }
       if (command_or_request_pending && summary.fact_class == ProviderFactClass::RepeatingStreamFrame) {
         command_or_request_waiting_for_stream_frame = true;
-        capture_latency_trace_printf(
-            "provider_fact_deferred_for_command class=%s stream_id=%llu acquisition_session_id=%llu provider_fact_depth=%llu requests_pending=%u command_lane_pending=%u",
-            provider_fact_class_name(summary.fact_class),
-            static_cast<unsigned long long>(summary.stream_id),
-            static_cast<unsigned long long>(summary.acquisition_session_id),
-            static_cast<unsigned long long>(provider_facts_.size()),
-            requests_pending_before_provider_drain ? 1u : 0u,
-            core_thread_.has_pending_command_tasks() ? 1u : 0u);
         break;
       }
 
@@ -4768,10 +4340,7 @@ void CoreRuntime::on_core_timer_tick() {
                      ProviderToCoreCommandType::PROVIDER_CAPTURE_FAILED) {
         capture_parent_device_instance_id = summary.device_instance_id;
       }
-      const uint64_t dispatch_begin_ns = capture_latency_trace_now_ns();
       dispatcher_.dispatch(std::move(cmd));
-      const uint64_t dispatch_us = (capture_latency_trace_now_ns() - dispatch_begin_ns) / 1000ull;
-      emit_provider_fact_dispatch_slow_if_needed(summary, dispatch_us, provider_facts_.size());
       if (capture_parent_device_instance_id != 0 &&
           rehome_capture_retained_plan_parent_state_(
               capture_parent_device_instance_id,
@@ -4808,8 +4377,6 @@ void CoreRuntime::on_core_timer_tick() {
 
   // 2) Drain queued requests ("what should we do").
   {
-    CoreRuntimeDiagnosticPhaseScope diagnostic_phase_scope(
-        core_thread_, CoreThread::DiagnosticPhase::RuntimeRequestDrain);
     while (!requests_.empty()) {
       auto task = std::move(requests_.front());
       requests_.pop_front();
@@ -4833,9 +4400,6 @@ void CoreRuntime::on_core_timer_tick() {
   // 3) Retention / timers.
   ICameraProvider* prov = provider_.load(std::memory_order_acquire);
   {
-    CoreRuntimeDiagnosticPhaseScope diagnostic_phase_scope(
-        core_thread_, CoreThread::DiagnosticPhase::RuntimeRetentionTimerWork);
-
     uint64_t next_warm_delay_ns = 0;
     bool has_next_warm_delay = false;
     for (const auto& [device_id, rec] : devices_.all()) {
@@ -4881,13 +4445,6 @@ void CoreRuntime::on_core_timer_tick() {
 
       if (rec.warm_deadline_active && now_ns >= rec.warm_deadline_ns) {
         if (!rec.warm_expired_close_requested && prov) {
-          capture_latency_trace_printf(
-              "core_close_device_request source=warm_expiry device_id=%llu warm_hold_ms=%u warm_deadline_ns=%llu now_ns=%llu has_flowing_stream=%u",
-              static_cast<unsigned long long>(rec.device_instance_id),
-              static_cast<unsigned>(rec.warm_hold_ms),
-              static_cast<unsigned long long>(rec.warm_deadline_ns),
-              static_cast<unsigned long long>(now_ns),
-              streams_.has_flowing_stream_for_device(rec.device_instance_id) ? 1u : 0u);
           (void)devices_.mark_warm_expired_close_requested(rec.device_instance_id, true);
           (void)prov->close_device(rec.device_instance_id);
           request_publish_from_core_unchecked();
@@ -4958,9 +4515,42 @@ void CoreRuntime::on_core_timer_tick() {
     }
     const size_t retired_assembly_count = retired_assemblies.size();
 
+    // Capture-result byte-budget retention (ledger #53): complementary to the
+    // flat time-based retention immediately above. Bounds total retained
+    // CPU-packed + estimated-GPU-backed capture bytes so a long-running,
+    // multi-camera, repeated-capture session cannot grow result memory
+    // without bound even while individual captures stay within
+    // kCaptureResultRetentionWindowNs. Runs on this same decoupled
+    // timer-tick sweep, never on the capture/frame-delivery hot path.
+    // Only evicts entries CoreCaptureAssemblyRegistry confirms are terminal,
+    // via a snapshot taken here, BEFORE result_store_'s lock is ever
+    // acquired (see CoreResultStore::evict_over_byte_budget()'s doc
+    // comment): this keeps the two registries' locking strictly sequential,
+    // never nested -- the same pattern every other cross-registry access in
+    // this file already uses -- and still means an in-flight capture's
+    // result data is never pulled out from under the pipeline still
+    // assembling it. The snapshot is only built when actually over budget,
+    // so the common (under-budget) case costs a single cheap counter read.
+    size_t byte_budget_evicted_count = 0;
+    if (result_store_.total_estimated_capture_bytes() > kCaptureResultByteBudgetBytes) {
+      const auto terminal_pairs = capture_assembly_registry_.terminal_capture_device_pairs();
+      const std::set<std::pair<uint64_t, uint64_t>> terminal_set(
+          terminal_pairs.begin(), terminal_pairs.end());
+      const auto byte_budget_evicted = result_store_.evict_over_byte_budget(
+          kCaptureResultByteBudgetBytes,
+          [&terminal_set](uint64_t capture_id, uint64_t device_instance_id) {
+            return terminal_set.count(std::make_pair(capture_id, device_instance_id)) != 0;
+          });
+      for (const auto& evicted : byte_budget_evicted) {
+        capture_assembly_registry_.remove_assembly(evicted.capture_id, evicted.device_instance_id);
+      }
+      byte_budget_evicted_count = byte_budget_evicted.size();
+    }
+
     if (retired_count > 0 || retired_capture_orphan_count > 0 ||
         retired_telemetry_count > 0 || timed_out_capture_count > 0 ||
-        retired_cohort_count > 0 || retired_assembly_count > 0) {
+        retired_cohort_count > 0 || retired_assembly_count > 0 ||
+        byte_budget_evicted_count > 0) {
       request_publish_from_core_unchecked();
     }
 
@@ -5032,7 +4622,6 @@ void CoreRuntime::on_core_timer_tick() {
 
   // 4) Snapshot publish (coalesced).
   if (publish_pending_.load(std::memory_order_acquire)) {
-    CoreRuntimeDiagnosticPhaseScope diagnostic_phase_scope(core_thread_, CoreThread::DiagnosticPhase::RuntimeSnapshotPublication);
     // Clear pending first so a new request can enqueue even if publish work is heavy.
     publish_pending_.store(false, std::memory_order_release);
 
@@ -5088,7 +4677,6 @@ void CoreRuntime::on_core_timer_tick() {
 
   // 5) Shutdown choreography (§10).
   if (shutdown_requested_) {
-    CoreRuntimeDiagnosticPhaseScope diagnostic_phase_scope(core_thread_, CoreThread::DiagnosticPhase::RuntimeShutdownChoreography);
     auto set_phase = [this](ShutdownPhase p) {
       if (shutdown_phase_ != p) {
         shutdown_phase_ = p;
@@ -5213,11 +4801,6 @@ void CoreRuntime::on_core_timer_tick() {
           for (const auto& kv : devices_.all()) {
             const auto& rec = kv.second;
             if (rec.open) {
-              capture_latency_trace_printf(
-                  "core_close_device_request source=shutdown_close_devices device_id=%llu warm_hold_ms=%u has_flowing_stream=%u",
-                  static_cast<unsigned long long>(rec.device_instance_id),
-                  static_cast<unsigned>(rec.warm_hold_ms),
-                  streams_.has_flowing_stream_for_device(rec.device_instance_id) ? 1u : 0u);
               (void)prov->close_device(rec.device_instance_id);
             }
           }
@@ -5308,7 +4891,6 @@ void CoreRuntime::on_core_timer_tick() {
 }
 
 void CoreRuntime::on_core_stop() {
-  capture_latency_trace_diagnostics::print_trace_group_seen_summary();
   // Runtime is no longer live; clear retained results so stop/start boundaries
   // cannot expose stale prior-generation result truth.
   result_store_.clear();
@@ -5888,15 +5470,6 @@ TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) 
       result_promise->set_value(TryCloseDeviceStatus::Busy);
       return;
     }
-    const CoreDeviceRegistry::DeviceRecord* rec = devices_.find(device_instance_id);
-    capture_latency_trace_printf(
-        "core_close_device_request source=try_close_device device_id=%llu device_open=%u warm_hold_ms=%u warm_deadline_active=%u warm_deadline_ns=%llu has_flowing_stream=%u",
-        static_cast<unsigned long long>(device_instance_id),
-        (rec && rec->open) ? 1u : 0u,
-        rec ? static_cast<unsigned>(rec->warm_hold_ms) : 0u,
-        (rec && rec->warm_deadline_active) ? 1u : 0u,
-        rec ? static_cast<unsigned long long>(rec->warm_deadline_ns) : 0ull,
-        streams_.has_flowing_stream_for_device(device_instance_id) ? 1u : 0u);
     const ProviderResult cr = p->close_device(device_instance_id);
     if (!cr.ok()) {
       timeline_teardown_trace_emit("fail CloseDevice device_instance_id=%llu reason=provider_rc_%u",
@@ -6274,18 +5847,6 @@ TryTriggerDeviceCaptureStatus CoreRuntime::trigger_device_capture_with_capture_i
               parent_context_caps,
               viable_postures,
               3u) == 0u) {
-        capture_latency_trace_printf(
-            "capture_admission_unavailable capture_id=%llu device_id=%llu reason=no_viable_parent_context_postures primary_function=%s runtime_caps_cpu=%u runtime_caps_gpu=%u runtime_caps_gpu_cpu_sidecar=%u parent_context_caps_cpu=%u parent_context_caps_gpu=%u parent_context_caps_gpu_cpu_sidecar=%u",
-            static_cast<unsigned long long>(capture_id),
-            static_cast<unsigned long long>(device_instance_id),
-            backing_plan_primary_function_name(
-                BackingPlanEvaluationPrimaryFunction::CaptureReadyAndMaterialize),
-            runtime_caps.cpu_backed_available ? 1u : 0u,
-            runtime_caps.gpu_backed_available ? 1u : 0u,
-            runtime_caps.gpu_with_cpu_sidecar_available ? 1u : 0u,
-            parent_context_caps.cpu_backed_available ? 1u : 0u,
-            parent_context_caps.gpu_backed_available ? 1u : 0u,
-            parent_context_caps.gpu_with_cpu_sidecar_available ? 1u : 0u);
         return TryTriggerDeviceCaptureStatus::Unavailable;
       }
     }
@@ -6293,10 +5854,6 @@ TryTriggerDeviceCaptureStatus CoreRuntime::trigger_device_capture_with_capture_i
   }
   req.capture_id = capture_id;
   if (!req.requested_retained_plan.valid) {
-    capture_latency_trace_printf(
-        "capture_admission_unavailable capture_id=%llu device_id=%llu reason=no_requested_backing_plan_after_refresh",
-        static_cast<unsigned long long>(capture_id),
-        static_cast<unsigned long long>(device_instance_id));
     return TryTriggerDeviceCaptureStatus::Unavailable;
   }
   (void)devices_.set_requested_retained_plan(
@@ -6331,87 +5888,27 @@ TryTriggerDeviceCaptureStatus CoreRuntime::try_trigger_device_capture_with_captu
   }
 
   if (core_thread_.is_core_thread()) {
-    const uint64_t direct_begin_ns = capture_latency_trace_now_ns();
-    const TryTriggerDeviceCaptureStatus status =
-        trigger_device_capture_with_capture_id_(device_instance_id, capture_id);
-    const uint64_t direct_end_ns = capture_latency_trace_now_ns();
-    capture_latency_trace_printf(
-        "core_device_admission capture_id=%llu device_id=%llu post_to_core_us=0 core_queue_wait_us=0 core_execution_us=%llu status=%u path=direct",
-        static_cast<unsigned long long>(capture_id),
-        static_cast<unsigned long long>(device_instance_id),
-        static_cast<unsigned long long>((direct_end_ns - direct_begin_ns) / 1000ull),
-        static_cast<unsigned>(status));
-    capture_latency_trace_printf(
-        "core_device_future capture_id=%llu device_id=%llu post_to_core_us=0 future_wait_us=0 total_us=%llu status=%u path=direct",
-        static_cast<unsigned long long>(capture_id),
-        static_cast<unsigned long long>(device_instance_id),
-        static_cast<unsigned long long>((direct_end_ns - direct_begin_ns) / 1000ull),
-        static_cast<unsigned>(status));
-    return status;
+    return trigger_device_capture_with_capture_id_(device_instance_id, capture_id);
   }
 
   auto completion = std::make_shared<std::promise<TryTriggerDeviceCaptureStatus>>();
   std::future<TryTriggerDeviceCaptureStatus> completed = completion->get_future();
-  const uint64_t post_begin_ns = capture_latency_trace_now_ns();
-  const CoreThread::DiagnosticSnapshot post_snapshot = core_thread_.diagnostic_snapshot();
   const CoreThread::PostResult pr = try_post([this,
                                               device_instance_id,
                                               capture_id,
-                                              completion,
-                                              post_begin_ns,
-                                              post_snapshot]() {
-    const uint64_t core_start_ns = capture_latency_trace_now_ns();
-    const CoreThread::DiagnosticSnapshot start_snapshot = core_thread_.diagnostic_snapshot();
-    const size_t runtime_request_depth_at_start = requests_.size();
-    const size_t runtime_provider_fact_depth_at_start = provider_facts_.size();
+                                              completion]() {
     const TryTriggerDeviceCaptureStatus status =
         trigger_device_capture_with_capture_id_(device_instance_id, capture_id);
-    const uint64_t core_end_ns = capture_latency_trace_now_ns();
-    const uint64_t core_queue_wait_us = (core_start_ns - post_begin_ns) / 1000ull;
-    capture_latency_trace_emit_core_command_wait_context(
-        "device_capture",
-        capture_id,
-        device_instance_id,
-        "device_id",
-        core_queue_wait_us,
-        post_snapshot,
-        start_snapshot,
-        runtime_request_depth_at_start,
-        runtime_provider_fact_depth_at_start);
-    capture_latency_trace_printf(
-        "core_device_admission capture_id=%llu device_id=%llu post_to_core_us=0 core_queue_wait_us=%llu core_execution_us=%llu status=%u path=queued",
-        static_cast<unsigned long long>(capture_id),
-        static_cast<unsigned long long>(device_instance_id),
-        static_cast<unsigned long long>(core_queue_wait_us),
-        static_cast<unsigned long long>((core_end_ns - core_start_ns) / 1000ull),
-        static_cast<unsigned>(status));
     completion->set_value(status);
   });
-  const uint64_t post_end_ns = capture_latency_trace_now_ns();
   if (pr != CoreThread::PostResult::Enqueued) {
-    capture_latency_trace_printf(
-        "core_device_admission_post_failed capture_id=%llu device_id=%llu post_us=%llu post_result=%u",
-        static_cast<unsigned long long>(capture_id),
-        static_cast<unsigned long long>(device_instance_id),
-        static_cast<unsigned long long>((post_end_ns - post_begin_ns) / 1000ull),
-        static_cast<unsigned>(pr));
     return TryTriggerDeviceCaptureStatus::Busy;
   }
 
   if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
     return TryTriggerDeviceCaptureStatus::Busy;
   }
-  const TryTriggerDeviceCaptureStatus status = completed.get();
-  const uint64_t wait_end_ns = capture_latency_trace_now_ns();
-  capture_latency_trace_printf(
-      "core_device_future capture_id=%llu device_id=%llu post_to_core_us=%llu future_wait_us=%llu total_us=%llu status=%u path=queued",
-      static_cast<unsigned long long>(capture_id),
-      static_cast<unsigned long long>(device_instance_id),
-      static_cast<unsigned long long>((post_end_ns - post_begin_ns) / 1000ull),
-      static_cast<unsigned long long>((wait_end_ns - post_end_ns) / 1000ull),
-      static_cast<unsigned long long>((wait_end_ns - post_begin_ns) / 1000ull),
-      static_cast<unsigned>(status));
-  return status;
+  return completed.get();
 }
 
 CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_materialize_(uint64_t rig_id) const {
@@ -6852,66 +6349,16 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_
     uint64_t rig_id,
     uint64_t capture_id) {
   if (core_thread_.is_core_thread()) {
-    const uint64_t direct_begin_ns = capture_latency_trace_now_ns();
-    RigTriggerOrchestrationResult result = orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
-    const uint64_t direct_end_ns = capture_latency_trace_now_ns();
-    capture_latency_trace_printf(
-        "core_rig_admission capture_id=%llu rig_id=%llu post_to_core_us=0 core_queue_wait_us=0 core_execution_us=%llu ok=%u submitted=%llu path=direct",
-        static_cast<unsigned long long>(capture_id),
-        static_cast<unsigned long long>(rig_id),
-        static_cast<unsigned long long>((direct_end_ns - direct_begin_ns) / 1000ull),
-        result.ok ? 1u : 0u,
-        static_cast<unsigned long long>(result.submitted_count));
-    capture_latency_trace_printf(
-        "core_rig_future capture_id=%llu rig_id=%llu post_to_core_us=0 future_wait_us=0 total_us=%llu ok=%u submitted=%llu path=direct",
-        static_cast<unsigned long long>(capture_id),
-        static_cast<unsigned long long>(rig_id),
-        static_cast<unsigned long long>((direct_end_ns - direct_begin_ns) / 1000ull),
-        result.ok ? 1u : 0u,
-        static_cast<unsigned long long>(result.submitted_count));
-    return result;
+    return orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
   }
 
   auto completion = std::make_shared<std::promise<RigTriggerOrchestrationResult>>();
   std::future<RigTriggerOrchestrationResult> completed = completion->get_future();
-  const uint64_t post_begin_ns = capture_latency_trace_now_ns();
-  const CoreThread::DiagnosticSnapshot post_snapshot = core_thread_.diagnostic_snapshot();
-  const CoreThread::PostResult pr = try_post([this, rig_id, capture_id, completion, post_begin_ns, post_snapshot]() {
-    const uint64_t core_start_ns = capture_latency_trace_now_ns();
-    const CoreThread::DiagnosticSnapshot start_snapshot = core_thread_.diagnostic_snapshot();
-    const size_t runtime_request_depth_at_start = requests_.size();
-    const size_t runtime_provider_fact_depth_at_start = provider_facts_.size();
+  const CoreThread::PostResult pr = try_post([this, rig_id, capture_id, completion]() {
     RigTriggerOrchestrationResult result = orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
-    const uint64_t core_end_ns = capture_latency_trace_now_ns();
-    const uint64_t core_queue_wait_us = (core_start_ns - post_begin_ns) / 1000ull;
-    capture_latency_trace_emit_core_command_wait_context(
-        "rig_capture",
-        capture_id,
-        rig_id,
-        "rig_id",
-        core_queue_wait_us,
-        post_snapshot,
-        start_snapshot,
-        runtime_request_depth_at_start,
-        runtime_provider_fact_depth_at_start);
-    capture_latency_trace_printf(
-        "core_rig_admission capture_id=%llu rig_id=%llu post_to_core_us=0 core_queue_wait_us=%llu core_execution_us=%llu ok=%u submitted=%llu path=queued",
-        static_cast<unsigned long long>(capture_id),
-        static_cast<unsigned long long>(rig_id),
-        static_cast<unsigned long long>(core_queue_wait_us),
-        static_cast<unsigned long long>((core_end_ns - core_start_ns) / 1000ull),
-        result.ok ? 1u : 0u,
-        static_cast<unsigned long long>(result.submitted_count));
     completion->set_value(std::move(result));
   });
-  const uint64_t post_end_ns = capture_latency_trace_now_ns();
   if (pr != CoreThread::PostResult::Enqueued) {
-    capture_latency_trace_printf(
-        "core_rig_admission_post_failed capture_id=%llu rig_id=%llu post_us=%llu post_result=%u",
-        static_cast<unsigned long long>(capture_id),
-        static_cast<unsigned long long>(rig_id),
-        static_cast<unsigned long long>((post_end_ns - post_begin_ns) / 1000ull),
-        static_cast<unsigned>(pr));
     return make_rig_orchestration_submission_failure(
         make_rig_submission_provider_unavailable(
             rig_id,
@@ -6926,18 +6373,7 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_
             capture_id,
             static_cast<uint32_t>(ProviderError::ERR_BAD_STATE)));
   }
-  RigTriggerOrchestrationResult result = completed.get();
-  const uint64_t wait_end_ns = capture_latency_trace_now_ns();
-  capture_latency_trace_printf(
-      "core_rig_future capture_id=%llu rig_id=%llu post_to_core_us=%llu future_wait_us=%llu total_us=%llu ok=%u submitted=%llu path=queued",
-      static_cast<unsigned long long>(capture_id),
-      static_cast<unsigned long long>(rig_id),
-      static_cast<unsigned long long>((post_end_ns - post_begin_ns) / 1000ull),
-      static_cast<unsigned long long>((wait_end_ns - post_end_ns) / 1000ull),
-      static_cast<unsigned long long>((wait_end_ns - post_begin_ns) / 1000ull),
-      result.ok ? 1u : 0u,
-      static_cast<unsigned long long>(result.submitted_count));
-  return result;
+  return completed.get();
 }
 
 bool CoreRuntime::retain_rig_member_hardware_ids(

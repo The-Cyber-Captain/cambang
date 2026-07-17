@@ -7,16 +7,6 @@
 
 namespace cambang {
 
-namespace capture_latency_trace_diagnostics {
-inline uint32_t capture_inflight() noexcept { return 0u; }
-inline uint32_t active_capture_count() noexcept { return 0u; }
-inline void note_capture_admitted(uint32_t) noexcept {}
-inline void note_capture_finished() noexcept {}
-inline void reset_trace_group_seen() noexcept {}
-inline void print_trace_group_seen_summary() noexcept {}
-inline void print_line(const char*) noexcept {}
-} // namespace capture_latency_trace_diagnostics
-
 namespace {
 
 const char* stop_status_cstr(TryStopStreamStatus s) {
@@ -58,12 +48,6 @@ void dispatch_timeline_request_to_core(const SyntheticScheduledEvent& ev, CoreRu
       break;
     }
     case SyntheticEventType::CloseDevice: {
-      char buffer[128];
-      std::snprintf(buffer,
-                    sizeof(buffer),
-                    "timeline_close_device_submit device_instance_id=%llu",
-                    static_cast<unsigned long long>(ev.device_instance_id));
-      capture_latency_trace_diagnostics::print_line(buffer);
       const TryCloseDeviceStatus rc = runtime.try_close_device(ev.device_instance_id);
       if (rc != TryCloseDeviceStatus::OK) {
         timeline_teardown_trace_emit("fail CloseDevice device_instance_id=%llu reason=submit_%s",

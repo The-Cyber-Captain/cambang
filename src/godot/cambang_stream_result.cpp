@@ -386,11 +386,17 @@ bool refresh_live_cpu_display_view_entry(
       prior_height != height;
   const auto refresh_begin = std::chrono::steady_clock::now();
   if (need_recreate) {
-    const godot::RID texture_rid = rs->texture_2d_create(working_entry.image);
-    if (!texture_rid.is_valid()) {
-      return false;
-    }
-    rid_state->replace_rid(texture_rid);
+    // RenderingServer::texture_2d_create() bypasses the normal async command
+    // queue and executes directly on whatever thread calls it, unlike
+    // free_rid()/texture_2d_update() -- see enqueue_live_cpu_texture_create()'s
+    // doc comment (cambang_stream_result_internal.h). get_display_view() is
+    // reachable from any GDScript thread, so creation must be deferred to the
+    // render thread rather than called here. entry's bookkeeping below still
+    // updates immediately: rid_state is shared with the wrapper already
+    // returned to the caller, and LiveCpuDisplayTexture2D::draw_allowed()
+    // already treats a not-yet-valid RID as "nothing to draw yet" rather than
+    // an error, so this is a safe, self-correcting eventual-consistency gap.
+    enqueue_live_cpu_texture_create(rid_state, working_entry.image);
   } else {
     const godot::RID texture_rid = rid_state->snapshot_rid();
     if (!texture_rid.is_valid()) {

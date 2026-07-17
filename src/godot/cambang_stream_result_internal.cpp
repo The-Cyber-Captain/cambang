@@ -4,12 +4,15 @@
 #include <cstdlib>
 #include <map>
 #include <mutex>
+#include <utility>
 #include <vector>
 #include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/object.hpp>
+#include <godot_cpp/variant/callable.hpp>
 #include <godot_cpp/variant/color.hpp>
 #include <godot_cpp/variant/rect2.hpp>
+#include <godot_cpp/variant/string_name.hpp>
 #include <godot_cpp/variant/vector2.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
@@ -32,7 +35,124 @@ struct CpuDisplayWrapperBorrow final {
 std::mutex g_live_cpu_display_wrapper_borrow_mutex;
 std::map<uint64_t, CpuDisplayWrapperBorrow> g_live_cpu_display_wrapper_borrows;
 std::map<uint64_t, uint32_t> g_live_cpu_display_wrapper_borrow_counts;
+
+struct PendingLiveCpuTextureCreate final {
+  std::shared_ptr<SharedLiveCpuTextureRidState> rid_state;
+  godot::Ref<godot::Image> image;
+};
+
+std::mutex g_pending_live_cpu_texture_create_mutex;
+// Keyed by rid_state identity so a stream refreshing faster than the render
+// thread drains only ever creates from the latest queued image.
+std::map<const SharedLiveCpuTextureRidState*, PendingLiveCpuTextureCreate> g_pending_live_cpu_texture_creates;
+bool g_pending_live_cpu_texture_create_drain_scheduled = false;
+bool g_live_cpu_display_bridge_teardown_started = false;
+godot::Ref<LiveCpuTextureCreateDrainHelper> g_live_cpu_texture_create_drain_helper;
+
+void schedule_live_cpu_texture_create_drain(
+    godot::RenderingServer* rs, LiveCpuTextureCreateDrainHelper* helper) {
+  if (!rs || !helper) {
+    return;
+  }
+  rs->call_on_render_thread(godot::Callable(
+      helper,
+      godot::StringName("drain_pending_creates_on_render_thread")));
+}
+
+void request_pending_live_cpu_texture_create_drain() {
+  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
+  if (!rs) {
+    return;
+  }
+  godot::Ref<LiveCpuTextureCreateDrainHelper> helper_ref;
+  LiveCpuTextureCreateDrainHelper* helper = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_create_mutex);
+    if (g_live_cpu_display_bridge_teardown_started ||
+        g_pending_live_cpu_texture_creates.empty() ||
+        g_pending_live_cpu_texture_create_drain_scheduled) {
+      return;
+    }
+    if (g_live_cpu_texture_create_drain_helper.is_null()) {
+      g_live_cpu_texture_create_drain_helper.instantiate();
+    }
+    helper_ref = g_live_cpu_texture_create_drain_helper;
+    helper = helper_ref.ptr();
+    if (!helper) {
+      return;
+    }
+    g_pending_live_cpu_texture_create_drain_scheduled = true;
+  }
+  schedule_live_cpu_texture_create_drain(rs, helper);
+}
 uint64_t g_next_live_cpu_display_wrapper_borrow_id = 1;
+}
+
+void enqueue_live_cpu_texture_create(
+    std::shared_ptr<SharedLiveCpuTextureRidState> rid_state,
+    godot::Ref<godot::Image> image) {
+  if (!rid_state || image.is_null()) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_create_mutex);
+    if (g_live_cpu_display_bridge_teardown_started) {
+      return;
+    }
+    g_pending_live_cpu_texture_creates[rid_state.get()] =
+        PendingLiveCpuTextureCreate{rid_state, std::move(image)};
+  }
+  request_pending_live_cpu_texture_create_drain();
+}
+
+bool LiveCpuTextureCreateDrainHelper::drain_pending_creates_on_render_thread() {
+  std::map<const SharedLiveCpuTextureRidState*, PendingLiveCpuTextureCreate> pending;
+  {
+    std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_create_mutex);
+    g_pending_live_cpu_texture_create_drain_scheduled = false;
+    if (g_live_cpu_display_bridge_teardown_started) {
+      g_pending_live_cpu_texture_creates.clear();
+      return false;
+    }
+    pending.swap(g_pending_live_cpu_texture_creates);
+  }
+  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
+  if (rs) {
+    for (auto& [key, entry] : pending) {
+      (void)key;
+      const godot::RID texture_rid = rs->texture_2d_create(entry.image);
+      if (texture_rid.is_valid()) {
+        entry.rid_state->replace_rid(texture_rid);
+      }
+    }
+  }
+  // More creation requests may have arrived while draining (e.g. a stream
+  // refreshing from another thread mid-drain); schedule another pass rather
+  // than leaving them stranded until an unrelated future refresh re-enqueues.
+  request_pending_live_cpu_texture_create_drain();
+  return true;
+}
+
+void install_live_cpu_display_bridge() {
+  std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_create_mutex);
+  g_live_cpu_display_bridge_teardown_started = false;
+  g_pending_live_cpu_texture_creates.clear();
+  g_pending_live_cpu_texture_create_drain_scheduled = false;
+  g_live_cpu_texture_create_drain_helper.unref();
+}
+
+void uninstall_live_cpu_display_bridge() {
+  std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_create_mutex);
+  // Mirrors clear_pending_releases_for_teardown() in
+  // synthetic_gpu_backing_bridge.cpp (ledger #44): after this point, no new
+  // render-thread callback may be scheduled, so a callback can never fire
+  // back into torn-down extension state. Pending creations are abandoned
+  // best-effort; their rid_state simply never gets a valid RID, which
+  // draw_allowed() already treats as "nothing to draw".
+  g_live_cpu_display_bridge_teardown_started = true;
+  g_pending_live_cpu_texture_creates.clear();
+  g_pending_live_cpu_texture_create_drain_scheduled = false;
+  g_live_cpu_texture_create_drain_helper.unref();
 }
 
 godot::RID SharedLiveCpuTextureRidState::snapshot_rid() const {
@@ -379,6 +499,7 @@ void LiveCpuDisplayTexture2D::clear_runtime_references_() {
 void register_stream_result_internal_classes() {
   godot::ClassDB::register_class<DisplayDemandToken>();
   godot::ClassDB::register_class<LiveCpuDisplayTexture2D>();
+  godot::ClassDB::register_class<LiveCpuTextureCreateDrainHelper>();
 }
 
 } // namespace cambang

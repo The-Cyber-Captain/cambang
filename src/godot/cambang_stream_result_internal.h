@@ -4,8 +4,10 @@
 #include <memory>
 #include <mutex>
 
+#include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
+#include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/color.hpp>
 #include <godot_cpp/variant/rect2.hpp>
 #include <godot_cpp/variant/rid.hpp>
@@ -100,6 +102,51 @@ private:
   uint32_t width_ = 0;
   uint32_t height_ = 0;
 };
+
+// RefCounted target for RenderingServer::call_on_render_thread(), registered
+// only so ClassDB can resolve the bound method as a Callable target -- not a
+// user-facing CamBANG class. Mirrors RenderThreadDrainHelper in
+// synthetic_gpu_backing_bridge_internal.h, but for RenderingServer texture
+// creation rather than RenderingDevice release.
+class LiveCpuTextureCreateDrainHelper : public godot::RefCounted {
+  GDCLASS(LiveCpuTextureCreateDrainHelper, godot::RefCounted);
+
+public:
+  bool drain_pending_creates_on_render_thread();
+
+private:
+  static void _bind_methods() {
+    godot::ClassDB::bind_method(
+        godot::D_METHOD("drain_pending_creates_on_render_thread"),
+        &LiveCpuTextureCreateDrainHelper::drain_pending_creates_on_render_thread);
+  }
+};
+
+// Godot's RenderingServer::texture_2d_create() bypasses the normal async
+// command queue and executes directly on whatever thread calls it -- unlike
+// free_rid()/texture_2d_update(), which are queued and safe to call from any
+// thread (see https://docs.godotengine.org/en/stable/tutorials/performance/thread_safe_apis.html).
+// get_display_view() is reachable from any GDScript thread (including a
+// script's own background Thread), so texture creation for the CPU-backed
+// live display path must be deferred to the render thread via
+// RenderingServer::call_on_render_thread(), mirroring the drain pattern
+// synthetic_gpu_backing_bridge.cpp already uses for RenderingDevice release
+// -- here for RenderingServer creation instead.
+//
+// Enqueuing is keyed by rid_state's identity: a stream refreshing faster
+// than the render thread drains only ever creates from the latest queued
+// image, never a stale intermediate one, matching this system's general
+// latest-state-wins convention rather than piling up wasted RID churn.
+void enqueue_live_cpu_texture_create(
+    std::shared_ptr<SharedLiveCpuTextureRidState> rid_state,
+    godot::Ref<godot::Image> image);
+
+// Lifecycle hooks: call from the same GDExtension init/deinit points as
+// install_synthetic_gpu_backing_godot_bridge()/uninstall_...(). Mirrors that
+// bridge's teardown-abandon guard (ledger #44) so a render-thread callback
+// scheduled here can never fire back into torn-down extension state.
+void install_live_cpu_display_bridge();
+void uninstall_live_cpu_display_bridge();
 
 uint64_t register_live_cpu_display_wrapper_borrow(uint64_t stream_id);
 void unregister_live_cpu_display_wrapper_borrow(uint64_t borrow_id);

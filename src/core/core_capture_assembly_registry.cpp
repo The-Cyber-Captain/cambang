@@ -233,6 +233,32 @@ std::optional<uint64_t> CoreCaptureAssemblyRegistry::next_terminal_retirement_de
 }
 
 
+std::vector<std::pair<uint64_t, uint64_t>>
+CoreCaptureAssemblyRegistry::terminal_capture_device_pairs() const {
+  std::vector<std::pair<uint64_t, uint64_t>> pairs;
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (const auto& [capture_id, by_device] : assemblies_by_capture_id_) {
+    for (const auto& [device_instance_id, assembly] : by_device) {
+      if (assembly.terminal_state != TerminalState::NONE) {
+        pairs.emplace_back(capture_id, device_instance_id);
+      }
+    }
+  }
+  return pairs;
+}
+
+void CoreCaptureAssemblyRegistry::remove_assembly(uint64_t capture_id, uint64_t device_instance_id) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto capture_it = assemblies_by_capture_id_.find(capture_id);
+  if (capture_it == assemblies_by_capture_id_.end()) {
+    return;
+  }
+  capture_it->second.erase(device_instance_id);
+  if (capture_it->second.empty()) {
+    assemblies_by_capture_id_.erase(capture_it);
+  }
+}
+
 void CoreCaptureAssemblyRegistry::clear() {
   std::lock_guard<std::mutex> lock(mutex_);
   assemblies_by_capture_id_.clear();

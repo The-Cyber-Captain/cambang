@@ -642,6 +642,7 @@ maintainer_tools_clean_outputs = [
     maintainer_tools_obj_dir,
     _program_path("core_spine_smoke"),
     _program_path("core_result_path_smoke"),
+    _program_path("core_result_byte_budget_stress_smoke"),
     _program_path("core_capture_assembly_registry_smoke"),
     _program_path("core_dispatcher_bracket_routing_smoke"),
     _program_path("godot_result_convert_smoke"),
@@ -678,6 +679,24 @@ if build_maintainer_tools:
 
     if host_platform == "windows" and not is_msvc:
         maintainer_tools_env.Append(LINKFLAGS=["-mconsole"])
+        # Statically link the MinGW runtime for maintainer_tools binaries.
+        # Without this, each .exe dynamically resolves libstdc++-6.dll/
+        # libgcc_s_seh-1.dll/libwinpthread-1.dll via PATH at process start.
+        # A dev machine's PATH commonly has more than one MinGW toolchain on
+        # it (e.g. Git for Windows' own bundled mingw64\bin ahead of this
+        # project's configured mingw_prefix); if the DLL that actually
+        # resolves first doesn't match the toolchain these binaries were
+        # compiled with, any symbol/ABI difference between the two builds of
+        # libstdc++ causes the process to fail to start at all -- silently,
+        # with no output and a generic shell-reported exit code, which is
+        # exactly what surfaced here (synthetic_timeline_verify.exe was the
+        # first maintainer_tools binary to need a libstdc++ symbol that
+        # exposed the mismatch; unrelated existing binaries never hit it
+        # only because they happened not to need that particular symbol).
+        # Static linking removes the runtime DLL dependency entirely, matching
+        # the same fix already applied to the GDE build via
+        # windows_mingw_static_runtime.
+        maintainer_tools_env.Append(LINKFLAGS=["-static", "-static-libgcc", "-static-libstdc++"])
 
     maintainer_tools_env.VariantDir(maintainer_tools_obj_dir, "src", duplicate=0)
 
@@ -696,6 +715,10 @@ if build_maintainer_tools:
     core_result_path_smoke_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "core_result_path_smoke"),
         source=maintainer_tools_core_runtime_sources + ["src/smoke/core_result_path_smoke.cpp"],
+    )
+    core_result_byte_budget_stress_smoke_prog = maintainer_tools_env.Program(
+        target=os.path.join(out_dir, "core_result_byte_budget_stress_smoke"),
+        source=maintainer_tools_core_runtime_sources + ["src/smoke/core_result_byte_budget_stress_smoke.cpp"],
     )
     core_capture_assembly_registry_smoke_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "core_capture_assembly_registry_smoke"),
@@ -784,6 +807,11 @@ if build_maintainer_tools:
     ])
     if host_platform == "windows" and not is_msvc:
         synthetic_only_provider_support_env.Append(LINKFLAGS=["-mconsole"])
+        # See the matching comment on maintainer_tools_env above: static-link
+        # the MinGW runtime so this binary's correctness never depends on
+        # which libstdc++-6.dll/libgcc_s_seh-1.dll happens to resolve first
+        # via PATH at process start.
+        synthetic_only_provider_support_env.Append(LINKFLAGS=["-static", "-static-libgcc", "-static-libstdc++"])
     synthetic_only_provider_support_env.VariantDir(synthetic_only_provider_support_obj_dir, "src", duplicate=0)
     synthetic_only_provider_support_broker_sources = _glob_cpp(synthetic_only_provider_support_obj_dir, "imaging", "broker")
     synthetic_only_provider_support_broker_sources = [
@@ -806,6 +834,7 @@ if build_maintainer_tools:
         [
             core_smoke_prog,
             core_result_path_smoke_prog,
+            core_result_byte_budget_stress_smoke_prog,
             core_capture_assembly_registry_smoke_prog,
             core_dispatcher_bracket_routing_smoke_prog,
             godot_result_convert_smoke_prog,

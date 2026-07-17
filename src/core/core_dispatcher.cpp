@@ -7,20 +7,12 @@
 
 namespace cambang {
 
-namespace capture_latency_trace_diagnostics {
-inline uint32_t capture_inflight() noexcept { return 0u; }
-inline uint32_t active_capture_count() noexcept { return 0u; }
-inline void note_capture_admitted(uint32_t) noexcept {}
-inline void note_capture_finished() noexcept {}
-inline void reset_trace_group_seen() noexcept {}
-inline void print_trace_group_seen_summary() noexcept {}
-inline void print_line(const char*) noexcept {}
-} // namespace capture_latency_trace_diagnostics
-
 namespace {
 
-// BEGIN TEMPORARY CAPTURE LATENCY DIAGNOSTICS
-uint64_t capture_latency_trace_now_ns() {
+// Fallback monotonic timestamp source when no now_ns_ override is injected.
+// Feeds ingest_steady_ns (CoreCaptureLifecycleIngressEvent) and
+// CoreStreamRegistry::on_frame_received()'s integrated_ts_ns; not diagnostic.
+uint64_t dispatcher_monotonic_now_ns() {
   return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count());
 }
@@ -211,7 +203,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
 }
 
   case ProviderToCoreCommandType::PROVIDER_CAPTURE_STARTED: {
-    const uint64_t dispatch_begin_ns = capture_latency_trace_now_ns();
+    const uint64_t dispatch_begin_ns = dispatcher_monotonic_now_ns();
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderCaptureStarted>(cmd.payload);
     bool state_changed = false;
@@ -257,7 +249,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
   }
 
   case ProviderToCoreCommandType::PROVIDER_CAPTURE_COMPLETED: {
-    const uint64_t dispatch_begin_ns = capture_latency_trace_now_ns();
+    const uint64_t dispatch_begin_ns = dispatcher_monotonic_now_ns();
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderCaptureCompleted>(cmd.payload);
     bool state_changed = false;
@@ -288,7 +280,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
   }
 
   case ProviderToCoreCommandType::PROVIDER_CAPTURE_FAILED: {
-    const uint64_t dispatch_begin_ns = capture_latency_trace_now_ns();
+    const uint64_t dispatch_begin_ns = dispatcher_monotonic_now_ns();
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderCaptureFailed>(cmd.payload);
     bool state_changed = false;
@@ -347,9 +339,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
   }
 
   case ProviderToCoreCommandType::PROVIDER_FRAME: {
-    uint64_t result_retention_ns = 0;
     auto& p = std::get<CmdProviderFrame>(cmd.payload);
-    const uint64_t trace_capture_id = p.frame.capture_id;
 
     stats_.commands_handled++;
     stats_.frames_received++;
@@ -365,7 +355,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
     CoreRetainedProductionPlan stream_requested_retained_plan{};
     CoreRetainedProductionPlan capture_requested_retained_plan{};
     if (streams_) {
-      integrated_ts_ns = now_ns_ ? now_ns_() : capture_latency_trace_now_ns();
+      integrated_ts_ns = now_ns_ ? now_ns_() : dispatcher_monotonic_now_ns();
       if (!streams_->on_frame_received(sid, integrated_ts_ns)) {
         stats_.frames_unknown_stream++;
       }
@@ -376,7 +366,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
         has_stream_record = true;
       }
     } else {
-      integrated_ts_ns = now_ns_ ? now_ns_() : capture_latency_trace_now_ns();
+      integrated_ts_ns = now_ns_ ? now_ns_() : dispatcher_monotonic_now_ns();
     }
     uint64_t resolved_capture_session_id = 0;
     if (acquisition_sessions_ && p.frame.device_instance_id != 0 &&
@@ -442,7 +432,6 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
           image_member.applied_exposure_compensation_milli_ev = frame_member_applied_ev;
           image_member.has_realized_exposure_compensation_milli_ev = frame_member_has_realized_ev;
           image_member.realized_exposure_compensation_milli_ev = frame_member_realized_ev;
-          const uint64_t retention_begin_ns = capture_latency_trace_now_ns();
           if (CoreResultStore::try_build_capture_image_member_data_from_frame(
                   p.frame, image_member, capture_requested_retained_plan)) {
             retained_for_result = result_store_->append_additional_capture_image(
@@ -452,10 +441,8 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
                 capture_access_posture_epoch,
                 capture_requested_retained_plan);
           }
-          result_retention_ns += capture_latency_trace_now_ns() - retention_begin_ns;
           }
         } else {
-          const uint64_t retention_begin_ns = capture_latency_trace_now_ns();
           retained_for_result = result_store_->retain_frame(
               p.frame,
               stream_intent,
@@ -463,7 +450,6 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
               capture_access_posture_epoch,
               stream_requested_retained_plan,
               capture_requested_retained_plan);
-          result_retention_ns += capture_latency_trace_now_ns() - retention_begin_ns;
         }
       }
     }
@@ -504,9 +490,6 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
           streams_->on_frame_dropped(sid);
         }
       }
-    }
-    if (trace_capture_id != 0) {
-      (void)result_retention_ns;
     }
     break;
   }
