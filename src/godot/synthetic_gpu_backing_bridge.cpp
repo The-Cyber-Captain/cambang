@@ -64,11 +64,6 @@ struct SharedDisplayTextureRidState final {
     return rd_texture;
   }
 
-  void mark_invalidated() {
-    std::lock_guard<std::mutex> lock(mutex);
-    invalidated = true;
-  }
-
   bool draw_allowed() const {
     std::lock_guard<std::mutex> lock(mutex);
     return !invalidated && rd_texture.is_valid();
@@ -259,6 +254,11 @@ static void schedule_render_thread_drain(godot::RenderingServer* rs, RenderThrea
   if (!rs || !helper) {
     return;
   }
+  // Same Callable(Object*, StringName)-does-not-hold-a-reference reliance as
+  // schedule_live_cpu_texture_create_drain() in
+  // cambang_stream_result_internal.cpp -- see that function's comment and
+  // docs/dev/upstream_discrepancies.md for the full writeup and the
+  // empirical stress test covering this pattern.
   rs->call_on_render_thread(godot::Callable(
       helper,
       godot::StringName("drain_pending_releases_on_render_thread")));
@@ -1013,7 +1013,12 @@ void synthetic_gpu_backing_warn_and_abandon_live_display_wrappers_before_stop() 
   std::map<uint64_t, uint64_t> counts_by_stream_id;
   for (const LiveDisplayWrapperBorrow& borrow : borrows) {
     if (borrow.rid_state) {
-      borrow.rid_state->mark_invalidated();
+      // Release now rather than merely marking invalidated: RenderingDevice
+      // persists across CamBANGServer stop()/start() cycles within one
+      // process, so it is safe and correct to reclaim the RD-backed texture
+      // here rather than leaving it allocated until whatever Texture2DRD
+      // wrapper reference the caller still holds eventually gets dropped.
+      borrow.rid_state->release_now();
     }
     ++counts_by_stream_id[borrow.stream_id];
   }
@@ -1036,22 +1041,29 @@ void synthetic_gpu_backing_invalidate_live_display_wrappers_for_stream(uint64_t 
   if (stream_id == 0) {
     return;
   }
+  // Called only when stream_id has dropped out of the latest snapshot
+  // entirely (see CamBANGServer's snapshot-diff caller) -- i.e. permanent
+  // stream retirement, not a reversible pause -- so releasing now is correct
+  // for the same reason as the stop()-time abandon above.
   const std::vector<LiveDisplayWrapperBorrow> borrows = snapshot_live_display_wrapper_borrows();
   for (const LiveDisplayWrapperBorrow& borrow : borrows) {
     if (borrow.stream_id != stream_id || !borrow.rid_state) {
       continue;
     }
-    borrow.rid_state->mark_invalidated();
+    borrow.rid_state->release_now();
   }
 }
 
 void synthetic_gpu_backing_invalidate_all_live_display_wrappers() {
+  // Called only from uninstall_synthetic_gpu_backing_godot_bridge(), before
+  // clear_pending_releases_for_teardown() sets the teardown-abandon flag, so
+  // release_now()'s enqueue still succeeds here rather than being dropped.
   const std::vector<LiveDisplayWrapperBorrow> borrows = snapshot_live_display_wrapper_borrows();
   for (const LiveDisplayWrapperBorrow& borrow : borrows) {
     if (!borrow.rid_state) {
       continue;
     }
-    borrow.rid_state->mark_invalidated();
+    borrow.rid_state->release_now();
   }
 }
 

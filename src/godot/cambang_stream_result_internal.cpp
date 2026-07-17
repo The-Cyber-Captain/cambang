@@ -54,6 +54,31 @@ void schedule_live_cpu_texture_create_drain(
   if (!rs || !helper) {
     return;
   }
+  // Reliance note (verified against thirdparty/godot-cpp/gen/src/variant/callable.cpp):
+  // godot::Callable(Object*, StringName) forwards a raw object handle to the
+  // engine's builtin constructor -- it does NOT take out a strong reference
+  // on `helper`. The godot::Ref held by the caller (request_pending_live_
+  // cpu_texture_create_drain()'s local `helper_ref`, and the module-global
+  // g_live_cpu_texture_create_drain_helper) is what keeps `helper` alive up
+  // to and including this call; nothing here extends that lifetime through
+  // to whenever the render thread actually executes the callback. If every
+  // godot::Ref to `helper` were dropped (e.g. uninstall_live_cpu_display_
+  // bridge()'s g_live_cpu_texture_create_drain_helper.unref()) in the
+  // interval between this call returning and the render thread running
+  // drain_pending_creates_on_render_thread(), the callback's target would
+  // already be gone.
+  //
+  // CamBANG accepts this as-is rather than working around it: it depends on
+  // Godot's own engine-side Callable dispatch resolving the target by
+  // ObjectID and safely no-op'ing when that ID no longer resolves, rather
+  // than invoking a method on freed memory. That engine-side behavior lives
+  // in Godot's core (not vendored in this repo, only the godot-cpp bindings
+  // are), so CamBANG cannot verify it by reading source here. It has been
+  // empirically stress-tested instead: tests/cambang_gde/scripts/
+  // cpu_display_teardown_race_stress.gd deliberately races this exact
+  // window against engine shutdown (75/75 runs clean, no crash -- see
+  // docs/dev/upstream_discrepancies.md for the full writeup). Re-run that
+  // script if this scheduling pattern changes.
   rs->call_on_render_thread(godot::Callable(
       helper,
       godot::StringName("drain_pending_creates_on_render_thread")));
@@ -178,11 +203,6 @@ void SharedLiveCpuTextureRidState::replace_rid(const godot::RID& texture_rid_in)
 
 void SharedLiveCpuTextureRidState::clear() {
   replace_rid(godot::RID());
-}
-
-void SharedLiveCpuTextureRidState::mark_invalidated() {
-  std::lock_guard<std::mutex> lock(mutex);
-  invalidated = true;
 }
 
 void SharedLiveCpuTextureRidState::invalidate_and_release() {

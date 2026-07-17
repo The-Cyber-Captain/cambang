@@ -143,3 +143,61 @@ Long-term note:
 - No concrete removal criterion is recorded for this entry.
 - The current upstream/editor/deploy argument-handling behaviour does not match CamBANG’s maintainer-testing needs.
 - Revisit this entry only if Godot later provides a documented, deploy-compatible, cross-platform user-argument surface that satisfies those needs well enough to replace the project-backed maintainer config approach.
+
+
+## godot::Callable(Object*, StringName) does not retain a strong reference to a RefCounted target
+
+Upstream: `thirdparty/godot-cpp/gen/src/variant/callable.cpp` (`Callable::Callable(Object *p_object, const StringName &p_method)`).
+
+Observation:
+- CamBANG schedules render-thread work (texture creation for the CPU-backed
+  live display path, and GPU-backing RID release) via
+  `RenderingServer::call_on_render_thread(godot::Callable(helper, method_name))`,
+  where `helper` is a `RefCounted` (`LiveCpuTextureCreateDrainHelper` /
+  `RenderThreadDrainHelper`).
+- The godot-cpp constructor used for this Callable shape forwards a raw
+  object handle to the engine's builtin constructor; it does not take out a
+  `godot::Ref` on the target. Only whatever `godot::Ref`s CamBANG itself
+  holds (a local `helper_ref` during scheduling, plus a module-global Ref for
+  as long as the relevant bridge is installed) keep the helper alive -- and
+  only for as long as those Refs exist, not necessarily through to whenever
+  the render thread actually executes the deferred callback.
+- Consequence: if every CamBANG-held `godot::Ref` to a scheduled helper were
+  dropped (e.g. during GDExtension uninitialize) in the window between
+  `call_on_render_thread()` returning and the render thread running the
+  callback, the callback's target could already be gone by the time it fires.
+
+CamBANG handling:
+- This is accepted as a characteristic of the API shape, not something
+  CamBANG works around by holding an extra reference indefinitely (that would
+  keep helpers alive across teardown for no benefit).
+- Safety depends on Godot's own engine-side Callable dispatch resolving the
+  target by `ObjectID` and no-op'ing when that ID no longer resolves, rather
+  than invoking a method on freed memory. That dispatch logic lives in
+  Godot's engine core, not in the vendored `godot-cpp` bindings, so CamBANG
+  cannot verify it by reading source in this repository.
+- Empirically stress-tested instead:
+  `tests/cambang_gde/scripts/cpu_display_teardown_race_stress.gd` +
+  `tests/cambang_gde/run_cpu_display_teardown_race_stress.ps1` deliberately
+  race a background thread's first render-thread-scheduling call against
+  immediate engine shutdown, many independent process launches in a row (75
+  clean runs observed at time of writing: no crash, no crash-signature, no
+  abnormal exit code -- only a consistently and safely caught script-level
+  error from an unrelated engine call made microseconds later on the same
+  background thread).
+- Code-level pointers: `schedule_live_cpu_texture_create_drain()` in
+  `src/godot/cambang_stream_result_internal.cpp` and
+  `schedule_render_thread_drain()` in
+  `src/godot/synthetic_gpu_backing_bridge.cpp` both carry this note inline.
+
+Long-term note:
+- No concrete removal criterion is recorded for this entry: this is not a
+  bug upstream is expected to fix, it is a permanent characteristic of the
+  `Callable(Object*, StringName)` constructor shape.
+- Revisit only if (a) Godot adds an explicit Ref-retaining Callable
+  constructor variant CamBANG could use instead, or (b) CamBANG needs
+  stronger-than-empirical certainty and inspects actual Godot engine source
+  (not just the vendored godot-cpp bindings) to confirm the stale-ObjectID
+  dispatch behavior directly, or (c) re-running the stress test after an
+  engine/godot-cpp upgrade produces a different result than the 75/75-clean
+  baseline recorded here.

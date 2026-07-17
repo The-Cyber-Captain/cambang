@@ -23,12 +23,6 @@ struct SharedLiveCpuTextureRidState final {
   godot::RID snapshot_rid() const;
   void replace_rid(const godot::RID& texture_rid_in);
   void clear();
-  // Marks this display view as torn-down truth (e.g. server stop) without
-  // releasing texture_rid itself; draw_allowed() reflects this immediately
-  // for any Godot object still holding this shared state. Mirrors
-  // SharedDisplayTextureRidState::mark_invalidated() in
-  // synthetic_gpu_backing_bridge.cpp.
-  void mark_invalidated();
   // Marks this display view invalidated AND releases texture_rid now, rather
   // than deferring release to whenever this object's own destructor happens
   // to run (which depends on when the last shared_ptr/script reference to the
@@ -36,9 +30,9 @@ struct SharedLiveCpuTextureRidState final {
   // own lifecycle). RenderingServer persists across CamBANGServer stop()/
   // start() cycles within one process, so it is safe and correct to reclaim
   // texture_rid here rather than leaving it allocated indefinitely. Called
-  // from abandon_all_live_cpu_display_wrappers_before_stop(); unlike the GPU
-  // path's equivalent stop-time abandon (which only marks invalidated), this
-  // one also actively frees the RenderingServer resource.
+  // from abandon_all_live_cpu_display_wrappers_before_stop(). Mirrors
+  // SharedDisplayTextureRidState::release_now() in
+  // synthetic_gpu_backing_bridge.cpp.
   void invalidate_and_release();
   bool draw_allowed() const;
   ~SharedLiveCpuTextureRidState();
