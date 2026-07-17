@@ -1,6 +1,7 @@
 // src/core/core_capture_cohort_registry.h
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <mutex>
@@ -50,6 +51,10 @@ public:
     uint64_t failed_device_instance_id = 0;
     uint32_t failure_error_code = 0;
     bool has_failure_error_code = false;
+    // Core-monotonic creation timestamp (CoreRuntime::ns_since_epoch_()),
+    // set by the caller before insert(); drives retire_expired_cohorts()
+    // (ledger #52). Not reset by insert().
+    uint64_t created_ns = 0;
   };
 
   void clear() noexcept;
@@ -62,6 +67,18 @@ public:
                    CohortFailurePhase phase) noexcept;
   bool contains(uint64_t capture_id) const noexcept;
   std::optional<CohortRecord> find(uint64_t capture_id) const noexcept;
+
+  // Retention (ledger #52): this registry holds no payload/image data (see
+  // class doc comment), so unlike CoreCaptureAssemblyRegistry/CoreResultStore
+  // it doesn't need supersession/close-driven retirement -- a flat, generous
+  // time-since-creation window is sufficient and simpler. Safe even for a
+  // cohort whose participants are still resolving: get_capture_result_set()'s
+  // non-cohort fallback path independently recovers any already-completed
+  // participant's result directly from CoreResultStore/CoreCaptureAssemblyRegistry
+  // once the cohort record itself is gone.
+  size_t retire_expired_cohorts(uint64_t now_ns, uint64_t retention_window_ns);
+  std::optional<uint64_t> next_cohort_expiry_delay_ns(
+      uint64_t now_ns, uint64_t retention_window_ns) const;
 
 private:
   mutable std::mutex mutex_;

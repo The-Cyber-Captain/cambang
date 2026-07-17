@@ -1206,6 +1206,24 @@ private:
   mutable std::atomic<uint64_t> capture_admission_clock_sample_count_{0};
 
   static constexpr uint64_t kDestroyedNativeObjectRetentionWindowNs = 5ull * 1000ull * 1000ull * 1000ull;
+
+  // Retention window for capture_cohort_registry_ entries (ledger #52).
+  // Deliberately generous and comfortably longer than the default capture-
+  // admission watchdog timeout (30s) so a cohort is never retired while a
+  // participant could still legitimately be resolving.
+  static constexpr uint64_t kCaptureCohortRetentionWindowNs =
+      300ull * 1000ull * 1000ull * 1000ull; // 5 minutes
+
+  // Retention window for capture_assembly_registry_/result_store_ terminal
+  // capture entries (ledger #52). Time-based, not supersession-based: see
+  // CoreCaptureAssemblyRegistry::retire_terminal_older_than()'s doc comment
+  // for why "a newer capture exists for this device" is not a safe signal
+  // that an older one is unused (Core's own result-access-cost calibration
+  // feedback loop can legitimately reference an old capture well after a
+  // newer one on the same device). Deliberately the same generous window as
+  // kCaptureCohortRetentionWindowNs.
+  static constexpr uint64_t kCaptureResultRetentionWindowNs =
+      300ull * 1000ull * 1000ull * 1000ull; // 5 minutes
 };
 
 } // namespace cambang

@@ -15,6 +15,7 @@
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/string.hpp>
+#include <godot_cpp/variant/typed_array.hpp>
 #include <godot_cpp/variant/variant.hpp>
 
 #include "core/core_runtime.h"
@@ -39,7 +40,6 @@ namespace cambang {
 class CamBANGStreamResult;
 class CamBANGStream;
 class CamBANGCaptureResult;
-class CamBANGCaptureResultSet;
 class CamBANGDevice;
 class CamBANGRig;
 
@@ -124,7 +124,7 @@ public:
   godot::Ref<CamBANGStreamResult> get_stream_result_by_stream_id(uint64_t stream_id) const;
   godot::Ref<CamBANGCaptureResult> get_capture_result_by_id(uint64_t capture_id, uint64_t device_instance_id) const;
   uint64_t get_latest_capture_id_for_device(uint64_t device_instance_id) const;
-  godot::Ref<CamBANGCaptureResultSet> get_capture_result_set_by_id(uint64_t capture_id) const;
+  godot::TypedArray<CamBANGCaptureResult> get_capture_result_set_by_id(uint64_t capture_id) const;
   void report_capture_result_member_observation(
       const SharedCaptureResultData& data,
       uint32_t image_member_index) const;

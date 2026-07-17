@@ -243,7 +243,6 @@ src/godot/
 |-- cambang_rig.h/.cpp
 |-- cambang_device.h/.cpp
 |-- cambang_capture_result.h/.cpp
-|-- cambang_capture_result_set.h/.cpp
 |-- cambang_stream_result.h/.cpp
 |-- cambang_stream_result_internal.h/.cpp
 |-- cambang_result_convert.h/.cpp

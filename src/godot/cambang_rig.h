@@ -6,11 +6,12 @@
 #include <godot_cpp/classes/ref.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/error_macros.hpp>
+#include <godot_cpp/variant/typed_array.hpp>
 
 namespace cambang {
 
 class CamBANGServer;
-class CamBANGCaptureResultSet;
+class CamBANGCaptureResult;
 
 class CamBANGRig final : public godot::RefCounted {
   GDCLASS(CamBANGRig, godot::RefCounted)
@@ -26,7 +27,7 @@ public:
 
   uint64_t get_id() const { return rig_id_; }
   godot::Error trigger_capture();
-  godot::Ref<CamBANGCaptureResultSet> get_result() const;
+  godot::TypedArray<CamBANGCaptureResult> get_result() const;
 
 protected:
   static void _bind_methods();

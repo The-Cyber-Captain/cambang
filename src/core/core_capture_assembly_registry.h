@@ -73,6 +73,41 @@ public:
   // deadline scheduling (mirrors CoreNativeObjectRegistry::next_retirement_delay_ns).
   std::optional<uint64_t> next_admission_timeout_delay_ns(uint64_t now_ns, uint64_t timeout_ns) const;
 
+  // Retention (unbounded-growth fix, ledger #52). Deliberately time-based
+  // only, not tied to any other system event. Two earlier attempts at this
+  // were each falsified by real, deliberate provider_compliance_verify
+  // checks: (1) retiring a device's assembly the moment that same device was
+  // admitted into a newer capture broke a check that reports a retained-
+  // to-image observation for an older, already-superseded capture on the
+  // same device; (2) retiring on device close broke a check that reports
+  // such an observation for a capture on an *already-closed* device (Core's
+  // own capture_retained_plan_evaluators_ orphan-retention mechanism already
+  // keeps evaluator state alive across close for exactly this reason -- see
+  // try_close_device()'s retain_capture_orphans handling). Core's
+  // result-access-cost calibration feedback loop
+  // (CoreRuntime::handle_capture_retained_to_image_observation_) can
+  // legitimately reference an old capture regardless of newer captures or
+  // device close, so neither event is a safe retirement signal -- only
+  // elapsed time is. This does not affect any already-issued Godot wrapper
+  // (CamBANGCaptureResult holds its own independent SharedCaptureResultData
+  // reference) -- only future lookups of the retired capture_id are
+  // affected.
+  struct RetiredAssembly {
+    uint64_t capture_id = 0;
+    uint64_t device_instance_id = 0;
+  };
+
+  // Retires every assembly that has already reached a terminal state
+  // (COMPLETED or FAILED -- never a still-pending NONE entry; those are
+  // solely the capture-admission watchdog's concern) and is older than
+  // admitted_ns + retention_window_ns. Returns the retired (capture_id,
+  // device_instance_id) pairs so the caller can also retire the
+  // corresponding CoreResultStore entries.
+  std::vector<RetiredAssembly> retire_terminal_older_than(
+      uint64_t now_ns, uint64_t retention_window_ns);
+  std::optional<uint64_t> next_terminal_retirement_delay_ns(
+      uint64_t now_ns, uint64_t retention_window_ns) const;
+
   void clear();
 
 #if defined(CAMBANG_INTERNAL_SMOKE)

@@ -68,4 +68,37 @@ std::optional<CoreCaptureCohortRegistry::CohortRecord> CoreCaptureCohortRegistry
   return it->second;
 }
 
+size_t CoreCaptureCohortRegistry::retire_expired_cohorts(
+    uint64_t now_ns, uint64_t retention_window_ns) {
+  size_t retired = 0;
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (auto it = cohorts_.begin(); it != cohorts_.end();) {
+    if (now_ns < it->second.created_ns + retention_window_ns) {
+      ++it;
+      continue;
+    }
+    it = cohorts_.erase(it);
+    ++retired;
+  }
+  return retired;
+}
+
+std::optional<uint64_t> CoreCaptureCohortRegistry::next_cohort_expiry_delay_ns(
+    uint64_t now_ns, uint64_t retention_window_ns) const {
+  std::optional<uint64_t> min_delay;
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (const auto& [capture_id, record] : cohorts_) {
+    (void)capture_id;
+    const uint64_t expiry_ns = record.created_ns + retention_window_ns;
+    uint64_t delay = 0;
+    if (expiry_ns > now_ns) {
+      delay = expiry_ns - now_ns;
+    }
+    if (!min_delay.has_value() || delay < *min_delay) {
+      min_delay = delay;
+    }
+  }
+  return min_delay;
+}
+
 } // namespace cambang

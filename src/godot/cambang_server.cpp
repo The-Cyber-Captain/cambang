@@ -1,6 +1,5 @@
 #include "godot/cambang_server.h"
 #include "godot/cambang_capture_result.h"
-#include "godot/cambang_capture_result_set.h"
 #include "godot/cambang_device.h"
 #include "godot/cambang_stream.h"
 #include "godot/cambang_stream_result.h"
@@ -2224,16 +2223,31 @@ godot::Ref<CamBANGCaptureResult> CamBANGServer::get_capture_result_by_id(uint64_
   return out;
 }
 
-godot::Ref<CamBANGCaptureResultSet> CamBANGServer::get_capture_result_set_by_id(uint64_t capture_id) const {
+godot::TypedArray<CamBANGCaptureResult> CamBANGServer::get_capture_result_set_by_id(uint64_t capture_id) const {
+  godot::TypedArray<CamBANGCaptureResult> out;
   if (!is_public_boundary_ready_()) {
-    return godot::Ref<CamBANGCaptureResultSet>();
+    return out;
   }
   std::vector<SharedCaptureResultData> results = runtime_.get_capture_result_set(capture_id);
-  godot::Ref<CamBANGCaptureResultSet> out;
-  out.instantiate();
-  out->set_capture_id(capture_id);
-  out->set_server(const_cast<CamBANGServer*>(this));
-  out->set_results(std::move(results));
+  // Sorted by device_instance_id for deterministic ordering (matches the
+  // former CamBANGCaptureResultSet, which kept results in a std::map keyed
+  // the same way).
+  std::sort(results.begin(), results.end(),
+            [](const SharedCaptureResultData& a, const SharedCaptureResultData& b) {
+              const uint64_t a_id = a ? a->device_instance_id : 0;
+              const uint64_t b_id = b ? b->device_instance_id : 0;
+              return a_id < b_id;
+            });
+  for (const SharedCaptureResultData& data : results) {
+    if (!data) {
+      continue;
+    }
+    godot::Ref<CamBANGCaptureResult> r;
+    r.instantiate();
+    r->set_data(data);
+    r->set_server(const_cast<CamBANGServer*>(this));
+    out.push_back(r);
+  }
   return out;
 }
 

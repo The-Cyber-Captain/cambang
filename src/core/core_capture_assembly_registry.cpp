@@ -181,6 +181,58 @@ std::optional<uint64_t> CoreCaptureAssemblyRegistry::next_admission_timeout_dela
   return min_delay;
 }
 
+std::vector<CoreCaptureAssemblyRegistry::RetiredAssembly>
+CoreCaptureAssemblyRegistry::retire_terminal_older_than(
+    uint64_t now_ns, uint64_t retention_window_ns) {
+  std::vector<RetiredAssembly> retired;
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (auto capture_it = assemblies_by_capture_id_.begin();
+       capture_it != assemblies_by_capture_id_.end();) {
+    for (auto device_it = capture_it->second.begin();
+         device_it != capture_it->second.end();) {
+      const DeviceCaptureAssembly& assembly = device_it->second;
+      if (assembly.terminal_state == TerminalState::NONE ||
+          now_ns < assembly.admitted_ns + retention_window_ns) {
+        ++device_it;
+        continue;
+      }
+      retired.push_back(RetiredAssembly{capture_it->first, device_it->first});
+      device_it = capture_it->second.erase(device_it);
+    }
+    if (capture_it->second.empty()) {
+      capture_it = assemblies_by_capture_id_.erase(capture_it);
+    } else {
+      ++capture_it;
+    }
+  }
+  return retired;
+}
+
+std::optional<uint64_t> CoreCaptureAssemblyRegistry::next_terminal_retirement_delay_ns(
+    uint64_t now_ns, uint64_t retention_window_ns) const {
+  std::optional<uint64_t> min_delay;
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (const auto& [capture_id, by_device] : assemblies_by_capture_id_) {
+    (void)capture_id;
+    for (const auto& [device_instance_id, assembly] : by_device) {
+      (void)device_instance_id;
+      if (assembly.terminal_state == TerminalState::NONE) {
+        continue;
+      }
+      const uint64_t deadline_ns = assembly.admitted_ns + retention_window_ns;
+      uint64_t delay = 0;
+      if (deadline_ns > now_ns) {
+        delay = deadline_ns - now_ns;
+      }
+      if (!min_delay.has_value() || delay < *min_delay) {
+        min_delay = delay;
+      }
+    }
+  }
+  return min_delay;
+}
+
+
 void CoreCaptureAssemblyRegistry::clear() {
   std::lock_guard<std::mutex> lock(mutex_);
   assemblies_by_capture_id_.clear();

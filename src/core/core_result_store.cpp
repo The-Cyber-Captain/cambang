@@ -1021,6 +1021,32 @@ void CoreResultStore::remove_stream_result(uint64_t stream_id) {
   }
 }
 
+void CoreResultStore::remove_capture_result(uint64_t capture_id, uint64_t device_instance_id) {
+  if (capture_id == 0 || device_instance_id == 0) {
+    return;
+  }
+  MutableCaptureResultData removed;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto capture_it = capture_results_by_capture_id_.find(capture_id);
+    if (capture_it == capture_results_by_capture_id_.end()) {
+      return;
+    }
+    auto device_it = capture_it->second.find(device_instance_id);
+    if (device_it == capture_it->second.end()) {
+      return;
+    }
+    removed = std::move(device_it->second);
+    capture_it->second.erase(device_it);
+    if (capture_it->second.empty()) {
+      capture_results_by_capture_id_.erase(capture_it);
+    }
+  }
+  // removed's destructor (releasing any retained CPU/GPU payload) runs here,
+  // outside the lock.
+}
+
+
 void CoreResultStore::clear() {
   std::map<uint64_t, SharedStreamResultData> old_stream_results;
   std::map<uint64_t, std::map<uint64_t, MutableCaptureResultData>> old_capture_results;

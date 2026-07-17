@@ -292,6 +292,17 @@ public:
   SharedCaptureResultData get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
   std::vector<SharedCaptureResultData> get_capture_result_set(uint64_t capture_id) const;
   void remove_stream_result(uint64_t stream_id);
+
+  // Retention (unbounded-growth fix, ledger #52); mirrors
+  // CoreCaptureAssemblyRegistry::retire_terminal_older_than() -- see that
+  // header's doc comment for why retirement is time-based only (not tied to
+  // supersession by a newer capture or to device close; both were tried and
+  // each broke a real, deliberate provider_compliance_verify check), and the
+  // note that already-issued CamBANGCaptureResult wrappers are unaffected
+  // (they hold their own independent SharedCaptureResultData reference).
+  // Called once per entry CoreRuntime retires via
+  // CoreCaptureAssemblyRegistry::retire_terminal_older_than().
+  void remove_capture_result(uint64_t capture_id, uint64_t device_instance_id);
   void mark_stream_display_demand(uint64_t stream_id, uint64_t now_ns);
   void retain_stream_display_demand(uint64_t stream_id);
   void release_stream_display_demand(uint64_t stream_id);

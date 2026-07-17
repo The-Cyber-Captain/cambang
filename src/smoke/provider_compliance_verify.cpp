@@ -4696,7 +4696,7 @@ bool run_core_capture_result_fact_resolution_check() {
       }) ||
       !bracket_member_0->resolved_image_facts.camera.nature ||
       bracket_member_0->resolved_image_facts.camera.nature->value != CameraNature::VIRTUAL ||
-      !rt.get_capture_result(kBracketCapture, kDeviceA)->capture_image_facts_finalized) {
+      !bracket_result->capture_image_facts_finalized) {
     return fail_with_cleanup("FAIL core result fact resolution completed result was mutable");
   }
 

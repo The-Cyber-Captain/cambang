@@ -709,19 +709,22 @@ FourCC-style format value alone.
 ### 10.6.3 Capture Result Set initial surface
 
 Public Godot rig capture uses `CamBANGRig.trigger_capture() -> Error` and polls
-`CamBANGRig.get_result()` for the current completed `CaptureResultSet`.
-Explicit `capture_id` result-set lookup remains advanced/dev/scenario tooling via
-`CamBANGServer.get_capture_result_set_by_id(capture_id)`.
+`CamBANGRig.get_result()` for the current completed capture group, returned as
+a plain `Array[CamBANGCaptureResult]` (no dedicated grouping/wrapper class).
+Explicit `capture_id` result-set lookup remains advanced/dev/scenario tooling
+via `CamBANGServer.get_capture_result_set_by_id(capture_id) -> Array[CamBANGCaptureResult]`.
 
-- `capture_id`
-- `size()`
-- `is_empty()`
-- `get_results()`
-- `get_result_for_device(device_instance_id)`
-
-`CaptureResultSet` is a grouping/container surface, not itself an image-bearing
-result object. `CaptureResultSet` is not the bracket-member container for a
-single-device `CaptureResult`.
+An earlier revision of this surface introduced a dedicated `CaptureResultSet`
+RefCounted wrapper class (`capture_id`, `size()`, `is_empty()`, `get_results()`,
+`get_result_for_device(device_instance_id)`). It was removed: every one of
+those is either a native `Array` method already (`size()`, `is_empty()`), a
+per-element property already exposed by `CamBANGCaptureResult` itself
+(`capture_id`), or a trivial client-side iteration
+(`get_result_for_device`, which had no callers). Godot/GDScript-facing class
+surface is treated as a cost, not a convenience, in this project -- prefer a
+built-in `Array`/`Dictionary` over a bespoke wrapper class unless the wrapper
+earns its keep with real behavior beyond what the built-in type already
+provides.
 
 ## 11. Capability and cost-aware materialization
 

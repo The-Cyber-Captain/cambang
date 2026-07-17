@@ -4942,8 +4942,25 @@ void CoreRuntime::on_core_timer_tick() {
       }
     }
 
+    // Cohort metadata retention (ledger #52): see
+    // CoreCaptureCohortRegistry::retire_expired_cohorts()'s doc comment for
+    // why a flat time-since-creation window is sufficient here.
+    const size_t retired_cohort_count =
+        capture_cohort_registry_.retire_expired_cohorts(now_ns, kCaptureCohortRetentionWindowNs);
+
+    // Capture assembly/result retention (ledger #52): time-based, not
+    // supersession-based -- see CoreCaptureAssemblyRegistry::
+    // retire_terminal_older_than()'s doc comment.
+    const auto retired_assemblies = capture_assembly_registry_.retire_terminal_older_than(
+        now_ns, kCaptureResultRetentionWindowNs);
+    for (const auto& retired : retired_assemblies) {
+      result_store_.remove_capture_result(retired.capture_id, retired.device_instance_id);
+    }
+    const size_t retired_assembly_count = retired_assemblies.size();
+
     if (retired_count > 0 || retired_capture_orphan_count > 0 ||
-        retired_telemetry_count > 0 || timed_out_capture_count > 0) {
+        retired_telemetry_count > 0 || timed_out_capture_count > 0 ||
+        retired_cohort_count > 0 || retired_assembly_count > 0) {
       request_publish_from_core_unchecked();
     }
 
@@ -4984,6 +5001,24 @@ void CoreRuntime::on_core_timer_tick() {
           has_next_deadline_delay = true;
           next_deadline_delay_ns = *next_admission_timeout_delay_ns;
         }
+      }
+    }
+    if (const auto next_cohort_expiry_delay_ns =
+            capture_cohort_registry_.next_cohort_expiry_delay_ns(
+                now_ns, kCaptureCohortRetentionWindowNs);
+        next_cohort_expiry_delay_ns.has_value()) {
+      if (!has_next_deadline_delay || *next_cohort_expiry_delay_ns < next_deadline_delay_ns) {
+        has_next_deadline_delay = true;
+        next_deadline_delay_ns = *next_cohort_expiry_delay_ns;
+      }
+    }
+    if (const auto next_assembly_retirement_delay_ns =
+            capture_assembly_registry_.next_terminal_retirement_delay_ns(
+                now_ns, kCaptureResultRetentionWindowNs);
+        next_assembly_retirement_delay_ns.has_value()) {
+      if (!has_next_deadline_delay || *next_assembly_retirement_delay_ns < next_deadline_delay_ns) {
+        has_next_deadline_delay = true;
+        next_deadline_delay_ns = *next_assembly_retirement_delay_ns;
       }
     }
 
@@ -6473,6 +6508,7 @@ CoreRuntime::RigAdmittedRequestBundle CoreRuntime::admit_rig_cohort_from_preflig
   CoreCaptureCohortRegistry::CohortRecord cohort{};
   cohort.capture_id = capture_id;
   cohort.rig_id = rig_id;
+  cohort.created_ns = ns_since_epoch_();
   cohort.expected_participants.reserve(preflight.participants.size());
   for (const auto& p : preflight.participants) {
     if (p.device_instance_id == 0) {

@@ -60,6 +60,14 @@ void CoreDispatcher::dispatch(ProviderToCoreCommand&& cmd) {
     if (provider_camera_fact_state_) {
       provider_camera_fact_state_->erase_device(p.device_instance_id);
     }
+    // Retention (ledger #52) deliberately does NOT hook device close: a
+    // caller may legitimately report a retained-to-image access observation
+    // for a capture on an already-closed device (Core's own
+    // capture_retained_plan_evaluators_ orphan-retention mechanism already
+    // keeps evaluator state alive across close for exactly this reason -- see
+    // try_close_device()'s retain_capture_orphans handling). Capture
+    // assembly/result retirement is time-based only; see
+    // CoreCaptureAssemblyRegistry::retire_terminal_older_than()'s doc comment.
     relevant_state_changed_ = true;
     break;
   }

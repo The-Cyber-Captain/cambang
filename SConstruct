@@ -906,7 +906,6 @@ if build_gde_graph:
         os.path.join(gde_obj_dir, "godot", "cambang_stream_result.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_stream_result_internal.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_capture_result.cpp"),
-        os.path.join(gde_obj_dir, "godot", "cambang_capture_result_set.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_result_convert.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_result_convert_timing.cpp"),
         os.path.join(gde_obj_dir, "godot", "state_snapshot_export.cpp"),

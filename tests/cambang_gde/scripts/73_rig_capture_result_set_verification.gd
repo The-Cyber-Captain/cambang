@@ -266,16 +266,18 @@ func _trigger_rig_a_capture() -> void:
 func _try_verify_capture_result_set() -> void:
 	if _rig_a == null:
 		return
-	var result_set = _rig_a.get_result()
-	if result_set == null or result_set.is_empty():
+	# CamBANGRig.get_result() returns a plain Array[CamBANGCaptureResult]
+	# (no dedicated CaptureResultSet wrapper class -- see
+	# docs/architecture/pixel_payload_and_result_contract.md 10.6.3).
+	var results: Array = _rig_a.get_result()
+	if results.is_empty():
 		return
 
-	_require(result_set.get_class() == "CamBANGCaptureResultSet", "step %d FAIL: result set must be CamBANGCaptureResultSet" % _step)
-	_require(int(result_set.size()) == _rig_a_members.size(), "step %d FAIL: result set size mismatch" % _step)
+	_require(int(results.size()) == _rig_a_members.size(), "step %d FAIL: result set size mismatch" % _step)
 	_step_ok("capture result set materialized for selected rig")
 
 	var actual_ids: Array[int] = []
-	for result in result_set.get_results():
+	for result in results:
 		_require(result != null, "step %d FAIL: null capture result in result set" % _step)
 		actual_ids.append(int(result.get_device_instance_id()))
 
