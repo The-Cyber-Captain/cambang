@@ -56,8 +56,9 @@ callers are synchronously blocked. Confirm that:
   made Godot-visible
 - `stop_*`, `destroy_*`, `close_*`, and `shutdown()` are not long backend drains
   on the calling thread
-- provider methods called under `ProviderBroker` serialization do not re-enter
-  the broker
+- provider methods called under `ProviderBroker` serialization do not
+  recursively invoke provider-forwarding or broker lifecycle methods; benign
+  latched-state queries do not require the provider-call serialization lease
 - provider callbacks are posted through the strand and do not synchronously wait
   on core-thread, Godot-thread, or render-thread work
 - capability and template queries do not perform backend I/O
@@ -109,6 +110,8 @@ to be lost.
 ### Shutdown
 
 - Provider shutdown follows ordered teardown.
+- Broker shutdown closes call admission and drains admitted calls before
+  provider shutdown/destruction; post-close calls do not reach the provider.
 - Shutdown cleanup is truthful and corresponds to actual release.
 - Shutdown does not fabricate destruction events for resources never
   acquired or actually released.

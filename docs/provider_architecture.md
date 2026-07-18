@@ -349,12 +349,26 @@ Future platform-backed providers must not:
   callbacks from inside provider API calls
 - synchronously invoke callbacks that can re-enter `CoreRuntime`,
   `ProviderBroker`, Godot, or wait on public / core completion
-- re-enter `ProviderBroker` while `active_provider_mutex_` may be held
+- recursively invoke provider-forwarding `ProviderBroker` methods or broker
+  lifecycle methods from inside a provider API call
 - treat one provider's stop / shutdown shape as a contract template
 
 Backend-specific long work belongs on provider-owned worker / looper threads.
 Completion, errors, and lifecycle truth must be reported back through provider
 facts / callbacks according to the provider strand model.
+
+`ProviderBroker` separates provider lifetime/admission protection from provider
+call serialization. It does not hold its lifecycle mutex while provider code
+runs. Benign broker state queries, such as latched runtime configuration, may
+therefore complete while a provider call is active. Provider calls themselves
+remain serialized. Recursive provider-forwarding calls are rejected as busy,
+and provider-triggered broker shutdown is rejected rather than waiting on the
+calling provider operation's own in-flight lease.
+
+Broker shutdown first closes provider-call admission, then waits for already
+admitted prompt/bounded calls to drain. It invokes provider `shutdown()` and
+destroys the provider outside broker locks. Calls racing after admission closes
+fail with `ERR_SHUTTING_DOWN` without reaching the provider.
 
 ---
 

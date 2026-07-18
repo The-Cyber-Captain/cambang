@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <array>
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
 #include <functional>
 #include <iostream>
 #include <limits>
@@ -1179,8 +1181,33 @@ private:
   std::map<uint64_t, StreamState> streams_;
 };
 
+struct BrokerConcurrencyProbeState {
+  // Non-owning. Each check keeps the broker alive until the provider and all
+  // probe threads have drained.
+  ProviderBroker *broker = nullptr;
+  std::atomic<bool> probe_concurrent_query{false};
+  std::atomic<bool> concurrent_query_done{false};
+  std::atomic<bool> concurrent_query_completed_inside_call{false};
+  std::atomic<bool> probe_direct_reentry{false};
+  std::atomic<bool> direct_reentry_completed{false};
+  std::atomic<bool> probe_reentrant_shutdown{false};
+  std::atomic<bool> reentrant_shutdown_completed{false};
+  std::atomic<ProviderError> reentrant_shutdown_result{ProviderError::OK};
+  std::atomic<int> provider_create_calls{0};
+  std::atomic<int> provider_destroy_calls{0};
+  std::atomic<int> provider_initialize_calls{0};
+  std::atomic<int> provider_shutdown_calls{0};
+  std::atomic<bool> shutdown_query_completed{false};
+  bool fail_initialize = false;
+  std::mutex blocking_call_mutex{};
+  std::condition_variable blocking_call_cv{};
+  bool block_create_call = false;
+  bool create_call_entered = false;
+  bool release_create_call = false;
+};
+
 class BrokerPrimingForwardingRecordingProvider final : public ICameraProvider {
- public:
+public:
   struct CallRecord {
     std::string name;
     CaptureRequest sync_req{};
@@ -1192,7 +1219,21 @@ class BrokerPrimingForwardingRecordingProvider final : public ICameraProvider {
   static constexpr ProviderError kReleaseReturnCode =
       ProviderError::ERR_TRANSIENT_FAILURE;
 
-  const char* provider_name() const override {
+  explicit BrokerPrimingForwardingRecordingProvider(
+      std::shared_ptr<BrokerConcurrencyProbeState> concurrency_probe = {})
+      : concurrency_probe_(std::move(concurrency_probe)) {}
+
+  ~BrokerPrimingForwardingRecordingProvider() override {
+    join_concurrent_query_probe();
+  }
+
+  void join_concurrent_query_probe() {
+    if (concurrent_query_thread_.joinable()) {
+      concurrent_query_thread_.join();
+    }
+  }
+
+  const char *provider_name() const override {
     return "BrokerPrimingForwardingRecordingProvider";
   }
   ProviderKind provider_kind() const noexcept override {
@@ -1210,96 +1251,162 @@ class BrokerPrimingForwardingRecordingProvider final : public ICameraProvider {
     return t;
   }
 
-  bool supports_stream_picture_updates() const noexcept override { return true; }
-  bool supports_capture_picture_updates() const noexcept override { return true; }
-  bool supports_multi_image_still_sequence() const noexcept override { return false; }
+  bool supports_stream_picture_updates() const noexcept override {
+    return true;
+  }
+  bool supports_capture_picture_updates() const noexcept override {
+    return true;
+  }
+  bool supports_multi_image_still_sequence() const noexcept override {
+    return false;
+  }
 
-  ProducerBackingCapabilities stream_backing_capabilities(
-      const CaptureProfile&,
-      const PictureConfig&) const noexcept override {
+  ProducerBackingCapabilities
+  stream_backing_capabilities(const CaptureProfile &,
+                              const PictureConfig &) const noexcept override {
     return ProducerBackingCapabilities{true, false};
   }
-  ProducerBackingCapabilities capture_backing_capabilities(
-      const CaptureRequest&) const noexcept override {
+  ProducerBackingCapabilities
+  capture_backing_capabilities(const CaptureRequest &) const noexcept override {
     return ProducerBackingCapabilities{true, false};
   }
   ProducerBackingCapabilities stream_parent_context_backing_capabilities(
-      uint64_t,
-      uint64_t,
-      StreamIntent,
-      const CaptureProfile&,
-      const PictureConfig&) noexcept override {
+      uint64_t, uint64_t, StreamIntent, const CaptureProfile &,
+      const PictureConfig &) noexcept override {
     return ProducerBackingCapabilities{true, false};
   }
   ProducerBackingCapabilities capture_parent_context_backing_capabilities(
-      uint64_t,
-      const CaptureRequest&) noexcept override {
+      uint64_t, const CaptureRequest &) noexcept override {
     return ProducerBackingCapabilities{true, false};
   }
-  uint64_t stream_backing_plan_evaluation_settle_delay_ns() const noexcept override {
+  uint64_t
+  stream_backing_plan_evaluation_settle_delay_ns() const noexcept override {
     return 0;
   }
-  uint64_t capture_backing_plan_evaluation_settle_delay_ns() const noexcept override {
+  uint64_t
+  capture_backing_plan_evaluation_settle_delay_ns() const noexcept override {
     return 0;
+  }
+  uint64_t capture_admission_watchdog_timeout_ns() const noexcept override {
+    return 1'234'567;
   }
 
-  ProviderResult initialize(IProviderCallbacks*) override {
+  ProviderResult initialize(IProviderCallbacks *) override {
     ++initialize_calls;
+    if (concurrency_probe_) {
+      concurrency_probe_->provider_initialize_calls.fetch_add(
+          1, std::memory_order_relaxed);
+      if (concurrency_probe_->fail_initialize) {
+        return ProviderResult::failure(ProviderError::ERR_TRANSIENT_FAILURE);
+      }
+    }
     return ProviderResult::success();
   }
-  ProviderResult enumerate_endpoints(std::vector<CameraEndpoint>&) override {
+  ProviderResult enumerate_endpoints(std::vector<CameraEndpoint> &) override {
     return ProviderResult::success();
   }
-  ProviderResult open_device(const std::string&, uint64_t, uint64_t) override {
+  ProviderResult open_device(const std::string &, uint64_t, uint64_t) override {
     return ProviderResult::success();
   }
   ProviderResult close_device(uint64_t) override {
     return ProviderResult::success();
   }
-  ProviderResult create_stream(const StreamRequest&) override {
+  ProviderResult create_stream(const StreamRequest &) override {
+    if (concurrency_probe_) {
+      concurrency_probe_->provider_create_calls.fetch_add(
+          1, std::memory_order_relaxed);
+    }
+    if (concurrency_probe_ && concurrency_probe_->probe_concurrent_query.load(
+                                  std::memory_order_acquire)) {
+      concurrent_query_thread_ = std::thread([probe = concurrency_probe_]() {
+        (void)probe->broker->runtime_mode_latched();
+        probe->concurrent_query_done.store(true, std::memory_order_release);
+      });
+      bool completed_inside_call = false;
+      for (int i = 0; i < 500; ++i) {
+        if (concurrency_probe_->concurrent_query_done.load(
+                std::memory_order_acquire)) {
+          completed_inside_call = true;
+          break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      concurrency_probe_->concurrent_query_completed_inside_call.store(
+          completed_inside_call, std::memory_order_release);
+    }
+    if (concurrency_probe_) {
+      std::unique_lock<std::mutex> lock(
+          concurrency_probe_->blocking_call_mutex);
+      if (concurrency_probe_->block_create_call) {
+        concurrency_probe_->create_call_entered = true;
+        concurrency_probe_->blocking_call_cv.notify_all();
+        concurrency_probe_->blocking_call_cv.wait(
+            lock, [probe = concurrency_probe_] {
+              return probe->release_create_call;
+            });
+      }
+    }
     return ProviderResult::success();
   }
   ProviderResult destroy_stream(uint64_t) override {
+    if (concurrency_probe_) {
+      concurrency_probe_->provider_destroy_calls.fetch_add(
+          1, std::memory_order_relaxed);
+    }
+    if (concurrency_probe_ && concurrency_probe_->probe_direct_reentry.load(
+                                  std::memory_order_acquire)) {
+      (void)concurrency_probe_->broker->runtime_mode_latched();
+      concurrency_probe_->direct_reentry_completed.store(
+          true, std::memory_order_release);
+    }
+    if (concurrency_probe_ && concurrency_probe_->probe_reentrant_shutdown.load(
+                                  std::memory_order_acquire)) {
+      const ProviderResult result = concurrency_probe_->broker->shutdown();
+      concurrency_probe_->reentrant_shutdown_result.store(
+          result.code, std::memory_order_release);
+      concurrency_probe_->reentrant_shutdown_completed.store(
+          true, std::memory_order_release);
+    }
     return ProviderResult::success();
   }
-  ProviderResult start_stream(
-      uint64_t,
-      const CaptureProfile&,
-      const PictureConfig&) override {
+  ProviderResult start_stream(uint64_t, const CaptureProfile &,
+                              const PictureConfig &) override {
     return ProviderResult::success();
   }
   ProviderResult stop_stream(uint64_t) override {
     return ProviderResult::success();
   }
-  ProviderResult update_stream_retained_production_plan(
-      uint64_t,
-      CoreRetainedProductionPlan) override {
+  ProviderResult
+  update_stream_retained_production_plan(uint64_t,
+                                         CoreRetainedProductionPlan) override {
     return ProviderResult::success();
   }
-  ProviderResult set_stream_picture_config(
-      uint64_t,
-      const PictureConfig&) override {
+  ProviderResult set_stream_picture_config(uint64_t,
+                                           const PictureConfig &) override {
     return ProviderResult::success();
   }
-  ProviderResult set_capture_picture_config(
-      uint64_t,
-      const PictureConfig&) override {
+  ProviderResult set_capture_picture_config(uint64_t,
+                                            const PictureConfig &) override {
     return ProviderResult::success();
   }
-  ProviderResult sync_capture_parent_priming(const CaptureRequest& req) override {
+  ProviderResult
+  sync_capture_parent_priming(const CaptureRequest &req) override {
     ++sync_calls;
     calls.push_back(CallRecord{"sync", req, 0});
     return ProviderResult::failure(kSyncReturnCode);
   }
-  ProviderResult release_capture_parent_priming(uint64_t device_instance_id) override {
+  ProviderResult
+  release_capture_parent_priming(uint64_t device_instance_id) override {
     ++release_calls;
-    calls.push_back(CallRecord{"release", CaptureRequest{}, device_instance_id});
+    calls.push_back(
+        CallRecord{"release", CaptureRequest{}, device_instance_id});
     return ProviderResult::failure(kReleaseReturnCode);
   }
-  ProviderResult trigger_capture(const CaptureRequest&) override {
+  ProviderResult trigger_capture(const CaptureRequest &) override {
     return ProviderResult::success();
   }
-  ProviderResult trigger_capture_submission(const CaptureSubmission&) override {
+  ProviderResult
+  trigger_capture_submission(const CaptureSubmission &) override {
     return ProviderResult::success();
   }
   ProviderResult abort_capture(uint64_t) override {
@@ -1317,17 +1424,27 @@ class BrokerPrimingForwardingRecordingProvider final : public ICameraProvider {
     return ProviderResult::success();
   }
   ProviderResult shutdown() override {
-    ++shutdown_calls;
+    if (concurrency_probe_) {
+      concurrency_probe_->provider_shutdown_calls.fetch_add(
+          1, std::memory_order_relaxed);
+      if (concurrency_probe_->broker) {
+        (void)concurrency_probe_->broker->runtime_mode_latched();
+        concurrency_probe_->shutdown_query_completed.store(
+            true, std::memory_order_release);
+      }
+    }
     return ProviderResult::success();
   }
 
   int initialize_calls = 0;
-  int shutdown_calls = 0;
   int sync_calls = 0;
   int release_calls = 0;
   std::vector<CallRecord> calls{};
-};
 
+ private:
+  std::shared_ptr<BrokerConcurrencyProbeState> concurrency_probe_{};
+  std::thread concurrent_query_thread_{};
+};
 
 bool wait_for_core_runtime_live(CoreRuntime& rt) {
   for (int i = 0; i < kMaxIters; ++i) {
@@ -1427,21 +1544,6 @@ int find_event_index(const std::vector<EventRec>& events, const char* tag, uint6
 int find_native_create_id(const std::vector<EventRec>& events, uint32_t type, uint64_t owner_stream_id) {
   for (const auto& e : events) {
     if (e.tag == "native_created" && e.type == type && e.owner_stream_id == owner_stream_id) {
-      return static_cast<int>(e.id);
-    }
-  }
-  return -1;
-}
-
-int find_native_create_id_with_owners(const std::vector<EventRec>& events,
-                                      uint32_t type,
-                                      uint64_t owner_acquisition_session_id,
-                                      uint64_t owner_stream_id) {
-  for (const auto& e : events) {
-    if (e.tag == "native_created" &&
-        e.type == type &&
-        e.owner_acquisition_session_id == owner_acquisition_session_id &&
-        e.owner_stream_id == owner_stream_id) {
       return static_cast<int>(e.id);
     }
   }
@@ -3903,7 +4005,7 @@ bool run_provider_camera_fact_ingress_check() {
     CoreRuntime::RigPreflightResult preflight{};
     preflight.ok = true;
     preflight.rig_id = rig_id;
-    for (const auto [hardware_id, device_id] :
+    for (const auto& [hardware_id, device_id] :
          {std::pair{"synthetic:0", kDeviceA}, std::pair{"synthetic:1", kDeviceB}}) {
       CaptureRequest request{};
       request.device_instance_id = device_id;
@@ -4380,7 +4482,7 @@ bool run_synthetic_provider_reference_camera_facts_check() {
   }
 
   const auto ordered_events = callback_probe.snapshot();
-  for (const auto [capture_id, device_id, member_index] :
+  for (const auto& [capture_id, device_id, member_index] :
        std::array<std::tuple<uint64_t, uint64_t, uint32_t>, 7>{
            std::tuple{kSingleCapture, kDeviceA, 0u},
            std::tuple{kBracketCapture, kDeviceA, 0u},
@@ -7157,27 +7259,30 @@ bool run_core_capture_in_place_plan_flip_result_retrieval_check() {
 
 bool run_broker_capture_parent_priming_forwarding_check() {
 #if !(defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE)
-  std::cout
-      << "SKIP broker capture parent priming forwarding: internal smoke hooks not built\n";
+  std::cout << "SKIP broker capture parent priming forwarding: internal smoke "
+               "hooks not built\n";
   return true;
 #else
   ProviderBroker broker;
   RecorderCallbacks cb;
-  auto fail_with_cleanup = [&](const char* message) {
+  auto fail_with_cleanup = [&](const char *message) {
     std::cerr << message << "\n";
     (void)broker.shutdown();
     return false;
   };
 
-  auto recording = std::make_unique<BrokerPrimingForwardingRecordingProvider>();
-  auto* recording_ptr = recording.get();
-  if (!broker.install_active_provider_for_smoke(std::move(recording), &cb).ok()) {
-    return fail_with_cleanup(
-        "FAIL broker capture parent priming forwarding broker smoke install failed");
+  auto probe = std::make_shared<BrokerConcurrencyProbeState>();
+  auto recording =
+      std::make_unique<BrokerPrimingForwardingRecordingProvider>(probe);
+  auto *recording_ptr = recording.get();
+  if (!broker.install_active_provider_for_smoke(std::move(recording), &cb)
+           .ok()) {
+    return fail_with_cleanup("FAIL broker capture parent priming forwarding "
+                             "broker smoke install failed");
   }
   if (recording_ptr->initialize_calls != 1) {
-    return fail_with_cleanup(
-        "FAIL broker capture parent priming forwarding backend initialize count mismatch");
+    return fail_with_cleanup("FAIL broker capture parent priming forwarding "
+                             "backend initialize count mismatch");
   }
 
   CaptureRequest req{};
@@ -7199,14 +7304,10 @@ bool run_broker_capture_parent_priming_forwarding_check() {
   req.picture.solid_a = 4;
   req.picture.checker_size_px = 19;
   req.still_image_bundle.members = {
+      CaptureStillImageMember{0u, CaptureStillImageMemberRole::DEFAULT_METERED,
+                              0},
       CaptureStillImageMember{
-          0u,
-          CaptureStillImageMemberRole::DEFAULT_METERED,
-          0},
-      CaptureStillImageMember{
-          1u,
-          CaptureStillImageMemberRole::ADDITIONAL_BRACKET,
-          125},
+          1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, 125},
   };
   req.profile_version = 99;
   req.requested_retained_plan.valid = true;
@@ -7219,22 +7320,22 @@ bool run_broker_capture_parent_priming_forwarding_check() {
 
   if (sync_result.code !=
       BrokerPrimingForwardingRecordingProvider::kSyncReturnCode) {
-    return fail_with_cleanup(
-        "FAIL broker capture parent priming forwarding sync result was not propagated");
+    return fail_with_cleanup("FAIL broker capture parent priming forwarding "
+                             "sync result was not propagated");
   }
   if (release_result.code !=
       BrokerPrimingForwardingRecordingProvider::kReleaseReturnCode) {
-    return fail_with_cleanup(
-        "FAIL broker capture parent priming forwarding release result was not propagated");
+    return fail_with_cleanup("FAIL broker capture parent priming forwarding "
+                             "release result was not propagated");
   }
   if (sync_result.code == ProviderError::ERR_NOT_SUPPORTED ||
       release_result.code == ProviderError::ERR_NOT_SUPPORTED) {
-    return fail_with_cleanup(
-        "FAIL broker capture parent priming forwarding observed base ERR_NOT_SUPPORTED");
+    return fail_with_cleanup("FAIL broker capture parent priming forwarding "
+                             "observed base ERR_NOT_SUPPORTED");
   }
   if (recording_ptr->sync_calls != 1 || recording_ptr->release_calls != 1) {
-    return fail_with_cleanup(
-        "FAIL broker capture parent priming forwarding backend call counts mismatch");
+    return fail_with_cleanup("FAIL broker capture parent priming forwarding "
+                             "backend call counts mismatch");
   }
   if (recording_ptr->calls.size() != 2 ||
       recording_ptr->calls[0].name != "sync" ||
@@ -7243,11 +7344,10 @@ bool run_broker_capture_parent_priming_forwarding_check() {
         "FAIL broker capture parent priming forwarding call order mismatch");
   }
 
-  const auto& sync_call = recording_ptr->calls[0].sync_req;
+  const auto &sync_call = recording_ptr->calls[0].sync_req;
   if (sync_call.capture_id != req.capture_id ||
       sync_call.device_instance_id != req.device_instance_id ||
-      sync_call.rig_id != req.rig_id ||
-      sync_call.width != req.width ||
+      sync_call.rig_id != req.rig_id || sync_call.width != req.width ||
       sync_call.height != req.height ||
       sync_call.format_fourcc != req.format_fourcc ||
       sync_call.picture.preset != req.picture.preset ||
@@ -7272,18 +7372,18 @@ bool run_broker_capture_parent_priming_forwarding_check() {
   }
   if (sync_call.still_image_bundle.members.size() !=
       req.still_image_bundle.members.size()) {
-    return fail_with_cleanup(
-        "FAIL broker capture parent priming forwarding still-image bundle size mismatch");
+    return fail_with_cleanup("FAIL broker capture parent priming forwarding "
+                             "still-image bundle size mismatch");
   }
   for (size_t i = 0; i < req.still_image_bundle.members.size(); ++i) {
-    const auto& got = sync_call.still_image_bundle.members[i];
-    const auto& want = req.still_image_bundle.members[i];
+    const auto &got = sync_call.still_image_bundle.members[i];
+    const auto &want = req.still_image_bundle.members[i];
     if (got.image_member_index != want.image_member_index ||
         got.role != want.role ||
         got.intended_exposure_compensation_milli_ev !=
             want.intended_exposure_compensation_milli_ev) {
-      return fail_with_cleanup(
-          "FAIL broker capture parent priming forwarding still-image bundle member mismatch");
+      return fail_with_cleanup("FAIL broker capture parent priming forwarding "
+                               "still-image bundle member mismatch");
     }
   }
   if (recording_ptr->calls[1].release_device_instance_id !=
@@ -7295,9 +7395,207 @@ bool run_broker_capture_parent_priming_forwarding_check() {
   if (!broker.shutdown().ok()) {
     return false;
   }
-  if (recording_ptr->shutdown_calls != 1 || recording_ptr->release_calls != 1) {
+  if (probe->provider_shutdown_calls.load(std::memory_order_acquire) != 1) {
+    std::cerr << "FAIL broker capture parent priming forwarding cleanup "
+                 "created unexpected backend calls\n";
+    return false;
+  }
+  return true;
+#endif
+}
+
+bool run_broker_provider_call_lock_isolation_check() {
+#if !(defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE)
+  std::cout << "SKIP broker provider call lock isolation: internal smoke hooks "
+               "not built\n";
+  return true;
+#else
+  ProviderBroker broker;
+  RecorderCallbacks cb;
+  auto probe = std::make_shared<BrokerConcurrencyProbeState>();
+  probe->broker = &broker;
+
+  auto recording =
+      std::make_unique<BrokerPrimingForwardingRecordingProvider>(probe);
+  auto *recording_ptr = recording.get();
+  if (!broker.install_active_provider_for_smoke(std::move(recording), &cb)
+           .ok()) {
     std::cerr
-        << "FAIL broker capture parent priming forwarding cleanup created unexpected backend calls\n";
+        << "FAIL broker provider call lock isolation smoke install failed\n";
+    return false;
+  }
+
+  if (broker.capture_admission_watchdog_timeout_ns() != 1'234'567) {
+    std::cerr << "FAIL broker provider call did not forward the provider "
+                 "watchdog timeout\n";
+    (void)broker.shutdown();
+    return false;
+  }
+
+  probe->probe_concurrent_query.store(true, std::memory_order_release);
+  const ProviderResult create_result = broker.create_stream(StreamRequest{});
+  recording_ptr->join_concurrent_query_probe();
+  if (!create_result.ok() ||
+      !probe->concurrent_query_completed_inside_call.load(
+          std::memory_order_acquire)) {
+    std::cerr << "FAIL broker provider call held the lifecycle mutex across a "
+                 "provider virtual call\n";
+    (void)broker.shutdown();
+    return false;
+  }
+
+  probe->probe_concurrent_query.store(false, std::memory_order_release);
+  probe->probe_direct_reentry.store(true, std::memory_order_release);
+  probe->probe_reentrant_shutdown.store(true, std::memory_order_release);
+  const ProviderResult destroy_result = broker.destroy_stream(1);
+  if (!destroy_result.ok() ||
+      !probe->direct_reentry_completed.load(std::memory_order_acquire) ||
+      !probe->reentrant_shutdown_completed.load(std::memory_order_acquire) ||
+      probe->reentrant_shutdown_result.load(std::memory_order_acquire) !=
+          ProviderError::ERR_BUSY) {
+    std::cerr << "FAIL broker provider-call re-entry policy was not bounded "
+                 "and deterministic\n";
+    (void)broker.shutdown();
+    return false;
+  }
+
+  return broker.shutdown().ok();
+#endif
+}
+
+bool run_broker_shutdown_call_drain_check() {
+#if !(defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE)
+  std::cout
+      << "SKIP broker shutdown call drain: internal smoke hooks not built\n";
+  return true;
+#else
+  ProviderBroker broker;
+  RecorderCallbacks cb;
+  auto probe = std::make_shared<BrokerConcurrencyProbeState>();
+  probe->broker = &broker;
+  probe->block_create_call = true;
+
+  auto recording =
+      std::make_unique<BrokerPrimingForwardingRecordingProvider>(probe);
+  if (!broker.install_active_provider_for_smoke(std::move(recording), &cb)
+           .ok()) {
+    std::cerr << "FAIL broker shutdown call drain smoke install failed\n";
+    return false;
+  }
+
+  ProviderResult create_result =
+      ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
+  ProviderResult shutdown_result =
+      ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
+  std::atomic<bool> shutdown_done{false};
+
+  std::thread create_thread(
+      [&] { create_result = broker.create_stream(StreamRequest{}); });
+
+  bool create_entered = false;
+  {
+    std::unique_lock<std::mutex> lock(probe->blocking_call_mutex);
+    create_entered =
+        probe->blocking_call_cv.wait_for(lock, std::chrono::seconds(2), [&] {
+          return probe->create_call_entered;
+        });
+  }
+
+  std::thread shutdown_thread;
+  bool admission_closed = false;
+  ProviderResult post_close_result =
+      ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
+  if (create_entered) {
+    shutdown_thread = std::thread([&] {
+      shutdown_result = broker.shutdown();
+      shutdown_done.store(true, std::memory_order_release);
+    });
+    for (int i = 0; i < 2000; ++i) {
+      if (broker.provider_call_admission_closed_for_smoke()) {
+        admission_closed = true;
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (admission_closed) {
+      post_close_result = broker.destroy_stream(99);
+    }
+  }
+
+  const bool shutdown_waited_for_admitted_call =
+      admission_closed && !shutdown_done.load(std::memory_order_acquire) &&
+      probe->provider_shutdown_calls.load(std::memory_order_acquire) == 0;
+  const bool post_close_call_failed_without_provider_entry =
+      post_close_result.code == ProviderError::ERR_SHUTTING_DOWN &&
+      probe->provider_destroy_calls.load(std::memory_order_acquire) == 0;
+
+  {
+    std::lock_guard<std::mutex> lock(probe->blocking_call_mutex);
+    probe->release_create_call = true;
+  }
+  probe->blocking_call_cv.notify_all();
+  create_thread.join();
+  if (shutdown_thread.joinable()) {
+    shutdown_thread.join();
+  } else {
+    shutdown_result = broker.shutdown();
+  }
+
+  if (!create_entered || !admission_closed ||
+      !shutdown_waited_for_admitted_call ||
+      !post_close_call_failed_without_provider_entry || !create_result.ok() ||
+      !shutdown_result.ok() ||
+      probe->provider_create_calls.load(std::memory_order_acquire) != 1 ||
+      probe->provider_shutdown_calls.load(std::memory_order_acquire) != 1 ||
+      !probe->shutdown_query_completed.load(std::memory_order_acquire)) {
+    std::cerr << "FAIL broker shutdown did not close admission, drain, and "
+                 "shut down exactly once\n";
+    return false;
+  }
+  return true;
+#endif
+}
+
+bool run_broker_failed_initialization_is_not_published_check() {
+#if !(defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE)
+  std::cout << "SKIP broker failed initialization publication: internal smoke "
+               "hooks not built\n";
+  return true;
+#else
+  ProviderBroker broker;
+  RecorderCallbacks cb;
+  auto failed_probe = std::make_shared<BrokerConcurrencyProbeState>();
+  failed_probe->fail_initialize = true;
+  auto failing_provider =
+      std::make_unique<BrokerPrimingForwardingRecordingProvider>(failed_probe);
+
+  const ProviderResult initialize_result =
+      broker.install_active_provider_for_smoke(std::move(failing_provider),
+                                               &cb);
+  if (initialize_result.code != ProviderError::ERR_TRANSIENT_FAILURE ||
+      failed_probe->provider_initialize_calls.load(std::memory_order_acquire) !=
+          1 ||
+      broker.create_stream(StreamRequest{}).code !=
+          ProviderError::ERR_BAD_STATE) {
+    std::cerr << "FAIL broker published or misreported a provider that failed "
+                 "initialization\n";
+    return false;
+  }
+
+  auto recovery_probe = std::make_shared<BrokerConcurrencyProbeState>();
+  auto recovery_provider =
+      std::make_unique<BrokerPrimingForwardingRecordingProvider>(
+          recovery_probe);
+  if (!broker
+           .install_active_provider_for_smoke(std::move(recovery_provider), &cb)
+           .ok() ||
+      !broker.create_stream(StreamRequest{}).ok() || !broker.shutdown().ok() ||
+      recovery_probe->provider_initialize_calls.load(
+          std::memory_order_acquire) != 1 ||
+      recovery_probe->provider_shutdown_calls.load(std::memory_order_acquire) !=
+          1) {
+    std::cerr << "FAIL broker did not recover cleanly after provider "
+                 "initialization failure\n";
     return false;
   }
   return true;
@@ -7309,11 +7607,11 @@ bool run_core_synthetic_capture_plan_flip_with_live_stream_regression_check() {
                         CoreProductionPostureShape posture) {
     return plan.valid && plan.posture == posture;
   };
-  auto find_capture_report = [](const CoreRuntime& rt,
+  auto find_capture_report = [](const CoreRuntime &rt,
                                 uint64_t device_instance_id,
-                                CoreBackingPlanEvaluationReport& out) {
+                                CoreBackingPlanEvaluationReport &out) {
     const auto reports = rt.backing_plan_evaluation_reports();
-    for (const auto& report : reports) {
+    for (const auto &report : reports) {
       if (report.target_kind !=
               CoreBackingPlanEvaluationReport::TargetKind::Capture ||
           report.target_id != device_instance_id) {
@@ -8603,6 +8901,9 @@ int main(int argc, char** argv) {
       {"run_core_capture_in_place_plan_flip_result_retrieval_check", [] { return run_core_capture_in_place_plan_flip_result_retrieval_check(); }},
       {"run_core_synthetic_capture_plan_flip_with_live_stream_regression_check", [] { return run_core_synthetic_capture_plan_flip_with_live_stream_regression_check(); }},
       {"run_broker_capture_parent_priming_forwarding_check", [] { return run_broker_capture_parent_priming_forwarding_check(); }},
+      {"run_broker_provider_call_lock_isolation_check", [] { return run_broker_provider_call_lock_isolation_check(); }},
+      {"run_broker_shutdown_call_drain_check", [] { return run_broker_shutdown_call_drain_check(); }},
+      {"run_broker_failed_initialization_is_not_published_check", [] { return run_broker_failed_initialization_is_not_published_check(); }},
       {"run_core_capture_parent_replacement_regression_check", [] { return run_core_capture_parent_replacement_regression_check(); }},
       {"run_core_stream_partial_reporting_check", [] { return run_core_stream_partial_reporting_check(); }},
       {"run_core_capture_observation_after_device_close_check", [] { return run_core_capture_observation_after_device_close_check(); }},

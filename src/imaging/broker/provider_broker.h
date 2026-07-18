@@ -7,7 +7,9 @@
 // - Switching provider_mode requires teardown/restart (selection is latched at initialize()).
 // - No public Godot API changes: broker implements the internal provider interface.
 
+#include <cstddef>
 #include <cstdint>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -98,6 +100,7 @@ public:
       const CaptureRequest& req) noexcept override;
   uint64_t stream_backing_plan_evaluation_settle_delay_ns() const noexcept override;
   uint64_t capture_backing_plan_evaluation_settle_delay_ns() const noexcept override;
+  uint64_t capture_admission_watchdog_timeout_ns() const noexcept override;
 
   ProviderResult initialize(IProviderCallbacks* callbacks) override;
   ProviderResult enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) override;
@@ -184,25 +187,65 @@ public:
   ProviderResult install_active_provider_for_smoke(
       std::unique_ptr<ICameraProvider> provider,
       IProviderCallbacks* callbacks);
+  bool provider_call_admission_closed_for_smoke() const noexcept;
 #endif
 
 private:
   ProviderBroker(const ProviderBroker&) = delete;
   ProviderBroker& operator=(const ProviderBroker&) = delete;
 
-  ProviderResult ensure_initialized_or_err_() const;
-  ProviderResult ensure_active_or_err_() const;
-  void install_synthetic_timeline_request_dispatch_hook_locked_();
+  enum class ProviderLifecycleState : uint8_t {
+    Uninitialized = 0,
+    Initializing,
+    Active,
+    ShuttingDown,
+  };
+
+  class ActiveProviderCall final {
+  public:
+    ActiveProviderCall() = default;
+    ~ActiveProviderCall();
+
+    ActiveProviderCall(const ActiveProviderCall&) = delete;
+    ActiveProviderCall& operator=(const ActiveProviderCall&) = delete;
+    ActiveProviderCall(ActiveProviderCall&&) = delete;
+    ActiveProviderCall& operator=(ActiveProviderCall&&) = delete;
+
+    ICameraProvider* provider() const noexcept { return provider_; }
+
+  private:
+    friend class ProviderBroker;
+
+    const ProviderBroker* broker_ = nullptr;
+    const ProviderBroker* previous_provider_call_broker_ = nullptr;
+    ICameraProvider* provider_ = nullptr;
+    std::unique_lock<std::mutex> provider_call_lock_{};
+  };
+
+  ProviderResult acquire_active_provider_call_(ActiveProviderCall& call) const;
+  void release_active_provider_call_(ActiveProviderCall& call) const noexcept;
+  ProviderResult close_and_drain_active_provider_(
+      std::unique_ptr<ICameraProvider>& provider_to_shutdown);
+  void install_synthetic_timeline_request_dispatch_hook_(ICameraProvider* provider);
   void dispatch_synthetic_timeline_request_(const SyntheticScheduledEvent& ev);
 
+  // Lifecycle state, provider ownership, and in-flight accounting. This mutex
+  // is never held while invoking provider code.
   mutable std::mutex active_provider_mutex_;
+  mutable std::condition_variable active_provider_calls_drained_;
+  // Provider API calls remain serialized as required by the provider seam.
+  // The provider contract requires these calls to be prompt and bounded.
+  mutable std::mutex provider_call_mutex_;
+  mutable size_t active_provider_call_count_ = 0;
+  ProviderLifecycleState provider_lifecycle_state_ =
+      ProviderLifecycleState::Uninitialized;
+  bool provider_call_admission_closed_ = true;
   mutable std::mutex synthetic_timeline_dispatch_mutex_;
   std::vector<SyntheticScheduledEvent> deferred_synthetic_timeline_dispatches_;
   bool deferring_synthetic_timeline_dispatches_ = false;
 
   std::unique_ptr<ICameraProvider> active_;
   IProviderCallbacks* callbacks_ = nullptr; // non-owning
-  bool initialized_ = false;
 
   RuntimeMode mode_requested_ = RuntimeMode::platform_backed;
   RuntimeMode mode_latched_ = RuntimeMode::platform_backed;
