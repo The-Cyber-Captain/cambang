@@ -63,6 +63,86 @@ constexpr uint64_t kClusteredStreamId = 122;
 
 bool g_verbose = false;
 
+struct SyntheticGpuBackingTruthProbeState final {
+  std::atomic<uint64_t> create_calls{0};
+  std::atomic<uint64_t> update_calls{0};
+  std::atomic<uint64_t> release_calls{0};
+};
+
+SyntheticGpuBackingTruthProbeState g_synthetic_gpu_backing_truth_probe;
+
+bool synthetic_gpu_truth_probe_available() noexcept { return true; }
+
+std::shared_ptr<void> synthetic_gpu_truth_probe_retain(
+    const uint8_t*, uint32_t, uint32_t, uint32_t) noexcept {
+  return std::static_pointer_cast<void>(std::make_shared<uint64_t>(1));
+}
+
+std::shared_ptr<void> synthetic_gpu_truth_probe_create(
+    uint64_t, uint32_t, uint32_t, uint32_t) noexcept {
+  const uint64_t generation =
+      g_synthetic_gpu_backing_truth_probe.create_calls.fetch_add(
+          1, std::memory_order_relaxed) + 1;
+  return std::static_pointer_cast<void>(std::make_shared<uint64_t>(generation));
+}
+
+bool synthetic_gpu_truth_probe_update(
+    const std::shared_ptr<void>& backing,
+    const uint8_t* src,
+    uint32_t width,
+    uint32_t height,
+    uint32_t stride_bytes) noexcept {
+  const uint64_t call =
+      g_synthetic_gpu_backing_truth_probe.update_calls.fetch_add(
+          1, std::memory_order_relaxed) + 1;
+  return backing && src && width != 0 && height != 0 &&
+         stride_bytes == width * 4u && call > 2;
+}
+
+void synthetic_gpu_truth_probe_release(std::shared_ptr<void>& backing) noexcept {
+  if (backing) {
+    g_synthetic_gpu_backing_truth_probe.release_calls.fetch_add(
+        1, std::memory_order_relaxed);
+  }
+  backing.reset();
+}
+
+bool synthetic_gpu_truth_probe_can_materialize(
+    const std::shared_ptr<void>& backing) noexcept {
+  return static_cast<bool>(backing);
+}
+
+const SyntheticGpuBackingRuntimeOps kSyntheticGpuBackingTruthProbeOps{
+    &synthetic_gpu_truth_probe_available,
+    nullptr,
+    &synthetic_gpu_truth_probe_retain,
+    &synthetic_gpu_truth_probe_create,
+    &synthetic_gpu_truth_probe_update,
+    &synthetic_gpu_truth_probe_release,
+    &synthetic_gpu_truth_probe_can_materialize,
+    nullptr,
+    nullptr,
+};
+
+class SyntheticGpuBackingTruthProbeScope final {
+public:
+  SyntheticGpuBackingTruthProbeScope() {
+    g_synthetic_gpu_backing_truth_probe.create_calls.store(0, std::memory_order_relaxed);
+    g_synthetic_gpu_backing_truth_probe.update_calls.store(0, std::memory_order_relaxed);
+    g_synthetic_gpu_backing_truth_probe.release_calls.store(0, std::memory_order_relaxed);
+    set_synthetic_gpu_backing_runtime_ops(&kSyntheticGpuBackingTruthProbeOps);
+  }
+
+  ~SyntheticGpuBackingTruthProbeScope() {
+    clear_synthetic_gpu_backing_runtime_ops();
+  }
+
+  SyntheticGpuBackingTruthProbeScope(
+      const SyntheticGpuBackingTruthProbeScope&) = delete;
+  SyntheticGpuBackingTruthProbeScope& operator=(
+      const SyntheticGpuBackingTruthProbeScope&) = delete;
+};
+
 bool starts_with(const std::string& s, const std::string& prefix) {
   return s.rfind(prefix, 0) == 0;
 }
@@ -310,6 +390,7 @@ struct EventRec {
   ProducerBackingKind primary_backing_kind = ProducerBackingKind::CPU;
   bool has_primary_backing_artifact = false;
   bool retain_cpu_sidecar = true;
+  RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
 };
 
 struct ProviderFactOrderEvent {
@@ -432,6 +513,7 @@ struct RecorderCallbacks final : IProviderCallbacks {
   std::vector<EventRec> events;
   std::unordered_map<uint64_t, uint32_t> native_type_by_id;
   std::unordered_map<uint64_t, uint64_t> native_owner_stream_by_id;
+  std::atomic<bool> display_demand_active{false};
   mutable std::mutex mu;
 
   std::vector<EventRec> snapshot_events() const {
@@ -441,7 +523,9 @@ struct RecorderCallbacks final : IProviderCallbacks {
 
   uint64_t allocate_native_id(NativeObjectType) override { return next_native_id++; }
   uint64_t core_monotonic_now_ns() override { return 0; }
-  bool is_stream_display_demand_active(uint64_t) override { return false; }
+  bool is_stream_display_demand_active(uint64_t) override {
+    return display_demand_active.load(std::memory_order_acquire);
+  }
 
   void on_device_opened(uint64_t id) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"device_opened", id}); }
   void on_device_closed(uint64_t id) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"device_closed", id}); }
@@ -497,6 +581,7 @@ struct RecorderCallbacks final : IProviderCallbacks {
     ev.primary_backing_kind = frame.primary_backing_kind;
     ev.has_primary_backing_artifact = static_cast<bool>(frame.primary_backing_artifact);
     ev.retain_cpu_sidecar = frame.retain_cpu_sidecar;
+    ev.retained_gpu_backing_descriptor = frame.retained_gpu_backing_descriptor;
     ev.capture_image_routing = frame.capture_image.routing;
     ev.capture_image_member_index = frame.capture_image.image_member_index;
     ev.capture_image_applied_exposure_compensation_milli_ev =
@@ -2986,6 +3071,165 @@ bool run_synthetic_producer_output_form_mode_production_check() {
   if (!verify_gpu_frame_mode(SyntheticProducerOutputFormMode::Auto, "auto_gpu_default", 8108, true)) return false;
   if (!verify_gpu_capture_mode(SyntheticProducerOutputFormMode::Auto, "auto_gpu_default", 8118, true)) return false;
   return true;
+}
+
+bool run_synthetic_live_gpu_backing_truth_check() {
+  SyntheticGpuBackingTruthProbeScope runtime_scope;
+  RecorderCallbacks cb;
+  cb.display_demand_active.store(true, std::memory_order_release);
+
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 16;
+  cfg.nominal.height = 16;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  cfg.nominal.fps_num = 30;
+  cfg.nominal.fps_den = 1;
+  cfg.nominal.start_stream_warmup_ns = 0;
+  cfg.producer_output_form_mode = SyntheticProducerOutputFormMode::CpuAndGpu;
+
+  constexpr uint64_t kDeviceId = 8201;
+  constexpr uint64_t kRootId = 8202;
+  constexpr uint64_t kStreamId = 8203;
+  const CoreRetainedProductionPlan gpu_with_cpu{
+      CoreProductionPostureShape::GpuPrimaryWithCpuSidecar, true};
+  const CoreRetainedProductionPlan cpu_only{
+      CoreProductionPostureShape::CpuPrimary, true};
+
+  StreamRequest req{};
+  req.stream_id = kStreamId;
+  req.device_instance_id = kDeviceId;
+  req.intent = StreamIntent::PREVIEW;
+  req.profile.width = cfg.nominal.width;
+  req.profile.height = cfg.nominal.height;
+  req.profile.format_fourcc = cfg.nominal.format_fourcc;
+  req.profile.target_fps_min = cfg.nominal.fps_num;
+  req.profile.target_fps_max = cfg.nominal.fps_num;
+  req.requested_retained_plan = gpu_with_cpu;
+
+  SyntheticProvider provider(cfg);
+  if (!provider.initialize(&cb).ok() ||
+      !provider.open_device("synthetic:0", kDeviceId, kRootId).ok() ||
+      !provider.create_stream(req).ok() ||
+      !provider.start_stream(kStreamId, req.profile, req.picture).ok()) {
+    std::cerr << "FAIL synthetic live gpu backing truth setup failed\n";
+    (void)provider.shutdown();
+    return false;
+  }
+
+  auto stream_frames = [&cb]() {
+    std::vector<EventRec> frames;
+    for (const auto& event : cb.snapshot_events()) {
+      if (event.tag == "frame" && event.id == kStreamId && event.capture_id == 0) {
+        frames.push_back(event);
+      }
+    }
+    return frames;
+  };
+
+  // The first upload and its single retry both fail. The provider must not
+  // publish the newly allocated-but-never-current backing as this frame.
+  provider.advance(0);
+  if (!stream_frames().empty() ||
+      g_synthetic_gpu_backing_truth_probe.create_calls.load(std::memory_order_relaxed) != 2 ||
+      g_synthetic_gpu_backing_truth_probe.update_calls.load(std::memory_order_relaxed) != 2 ||
+      g_synthetic_gpu_backing_truth_probe.release_calls.load(std::memory_order_relaxed) != 1) {
+    std::cerr << "FAIL synthetic live gpu backing truth published or mis-accounted failed update/retry\n";
+    (void)provider.shutdown();
+    return false;
+  }
+
+  constexpr uint64_t kFramePeriodNs = 33'333'334ull;
+  provider.advance(kFramePeriodNs);
+  auto frames = stream_frames();
+  if (frames.size() != 1) {
+    std::cerr << "FAIL synthetic live gpu backing truth missing post-retry-success frame\n";
+    (void)provider.shutdown();
+    return false;
+  }
+  const EventRec& first_gpu = frames.back();
+  const RetainedGpuBackingDescriptor first_descriptor =
+      first_gpu.retained_gpu_backing_descriptor;
+  if (first_gpu.primary_backing_kind != ProducerBackingKind::GPU ||
+      !first_gpu.has_primary_backing_artifact ||
+      !first_gpu.retain_cpu_sidecar ||
+      first_gpu.payload_size_bytes == 0 ||
+      !first_descriptor.valid || first_descriptor.stream_id != kStreamId ||
+      first_descriptor.backing_id == 0 || !first_descriptor.display_available ||
+      !first_descriptor.materialization_available) {
+    std::cerr << "FAIL synthetic live gpu backing truth successful frame descriptor/artifact mismatch\n";
+    (void)provider.shutdown();
+    return false;
+  }
+
+  if (!provider.update_stream_retained_production_plan(kStreamId, cpu_only).ok()) {
+    std::cerr << "FAIL synthetic live gpu backing truth gpu-to-cpu downgrade failed\n";
+    (void)provider.shutdown();
+    return false;
+  }
+  provider.advance(kFramePeriodNs);
+  frames = stream_frames();
+  if (frames.size() != 2 ||
+      frames.back().primary_backing_kind != ProducerBackingKind::CPU ||
+      frames.back().has_primary_backing_artifact ||
+      !frames.back().retain_cpu_sidecar ||
+      frames.back().payload_size_bytes == 0 ||
+      frames.back().retained_gpu_backing_descriptor.valid) {
+    std::cerr << "FAIL synthetic live gpu backing truth downgrade frame mismatch\n";
+    (void)provider.shutdown();
+    return false;
+  }
+
+  if (!provider.update_stream_retained_production_plan(kStreamId, gpu_with_cpu).ok()) {
+    std::cerr << "FAIL synthetic live gpu backing truth cpu-to-gpu restoration failed\n";
+    (void)provider.shutdown();
+    return false;
+  }
+  provider.advance(kFramePeriodNs);
+  frames = stream_frames();
+  if (frames.size() != 3 ||
+      frames.back().primary_backing_kind != ProducerBackingKind::GPU ||
+      !frames.back().has_primary_backing_artifact ||
+      !frames.back().retained_gpu_backing_descriptor.valid ||
+      frames.back().retained_gpu_backing_descriptor.backing_id == 0 ||
+      frames.back().retained_gpu_backing_descriptor.backing_id ==
+          first_descriptor.backing_id) {
+    std::cerr << "FAIL synthetic live gpu backing truth restored generation mismatch\n";
+    (void)provider.shutdown();
+    return false;
+  }
+
+  if (!provider.stop_stream(kStreamId).ok() ||
+      !provider.destroy_stream(kStreamId).ok() ||
+      !provider.close_device(kDeviceId).ok() ||
+      !provider.shutdown().ok()) {
+    std::cerr << "FAIL synthetic live gpu backing truth teardown failed\n";
+    return false;
+  }
+
+  std::vector<uint64_t> created_ids;
+  std::vector<uint64_t> destroyed_ids;
+  for (const auto& event : cb.snapshot_events()) {
+    if (event.type != static_cast<uint32_t>(NativeObjectType::GpuBacking) ||
+        event.owner_stream_id != kStreamId) {
+      continue;
+    }
+    if (event.tag == "native_created") {
+      created_ids.push_back(event.id);
+    } else if (event.tag == "native_destroyed") {
+      destroyed_ids.push_back(event.id);
+    }
+  }
+  if (created_ids.size() != 3 || destroyed_ids != created_ids ||
+      g_synthetic_gpu_backing_truth_probe.create_calls.load(std::memory_order_relaxed) != 3 ||
+      g_synthetic_gpu_backing_truth_probe.update_calls.load(std::memory_order_relaxed) != 4 ||
+      g_synthetic_gpu_backing_truth_probe.release_calls.load(std::memory_order_relaxed) != 3) {
+    std::cerr << "FAIL synthetic live gpu backing truth native/runtime lifecycle imbalance\n";
+    return false;
+  }
+
+  return assert_native_balance(
+      cb.snapshot_events(), "synthetic_live_gpu_backing_truth");
 }
 
 // ===== Family E: Synthetic frame/picture integration compliance =====
@@ -9217,6 +9461,7 @@ int main(int argc, char** argv) {
       {"run_synthetic_backing_capability_truth_check", [] { return run_synthetic_backing_capability_truth_check(); }},
       {"run_synthetic_parent_context_capability_downgrade_matrix_check", [] { return run_synthetic_parent_context_capability_downgrade_matrix_check(); }},
       {"run_synthetic_producer_output_form_mode_production_check", [] { return run_synthetic_producer_output_form_mode_production_check(); }},
+      {"run_synthetic_live_gpu_backing_truth_check", [] { return run_synthetic_live_gpu_backing_truth_check(); }},
       {"run_synthetic_timeline_picture_appearance_check", [] { return run_synthetic_timeline_picture_appearance_check(); }},
       {"run_stub_provider_sanity_check", [] { return run_stub_provider_sanity_check(); }},
       {"run_synthetic_provider_direct_sanity_check", [] { return run_synthetic_provider_direct_sanity_check(); }},

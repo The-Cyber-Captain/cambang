@@ -38,33 +38,32 @@ void ResourceAggregateTelemetry::decrement_if_positive(std::atomic<uint64_t>& cu
   }
 }
 
-ResourceAggregateTelemetry::Bucket& ResourceAggregateTelemetry::get_or_create_bucket(const Key& key) noexcept {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return buckets_[key];
-}
-
 void ResourceAggregateTelemetry::lease_created(const ScopedResourceTelemetryKey& key) noexcept {
-  Bucket& bucket = get_or_create_bucket(make_key(key));
+  std::lock_guard<std::mutex> lock(mutex_);
+  Bucket& bucket = buckets_[make_key(key)];
   const uint64_t current = bucket.framebuffer_lease_current.fetch_add(1, std::memory_order_relaxed) + 1;
   bucket.framebuffer_lease_total_created.fetch_add(1, std::memory_order_relaxed);
   update_peak(bucket.framebuffer_lease_peak_current, current);
 }
 
 void ResourceAggregateTelemetry::lease_released(const ScopedResourceTelemetryKey& key) noexcept {
-  Bucket& bucket = get_or_create_bucket(make_key(key));
+  std::lock_guard<std::mutex> lock(mutex_);
+  Bucket& bucket = buckets_[make_key(key)];
   decrement_if_positive(bucket.framebuffer_lease_current);
   bucket.framebuffer_lease_total_released.fetch_add(1, std::memory_order_relaxed);
 }
 
 void ResourceAggregateTelemetry::retained_gpu_backing_created(const ScopedResourceTelemetryKey& key) noexcept {
-  Bucket& bucket = get_or_create_bucket(make_key(key));
+  std::lock_guard<std::mutex> lock(mutex_);
+  Bucket& bucket = buckets_[make_key(key)];
   const uint64_t current = bucket.retained_gpu_backing_current.fetch_add(1, std::memory_order_relaxed) + 1;
   bucket.retained_gpu_backing_total_created.fetch_add(1, std::memory_order_relaxed);
   update_peak(bucket.retained_gpu_backing_peak_current, current);
 }
 
 void ResourceAggregateTelemetry::retained_gpu_backing_released(const ScopedResourceTelemetryKey& key) noexcept {
-  Bucket& bucket = get_or_create_bucket(make_key(key));
+  std::lock_guard<std::mutex> lock(mutex_);
+  Bucket& bucket = buckets_[make_key(key)];
   decrement_if_positive(bucket.retained_gpu_backing_current);
   bucket.retained_gpu_backing_total_released.fetch_add(1, std::memory_order_relaxed);
 }
@@ -197,7 +196,29 @@ std::optional<uint64_t> ResourceAggregateTelemetry::next_retirement_delay_ns(uin
 
 void ResourceAggregateTelemetry::clear() noexcept {
   std::lock_guard<std::mutex> lock(mutex_);
-  buckets_.clear();
+  for (auto it = buckets_.begin(); it != buckets_.end();) {
+    const Bucket& bucket = it->second;
+    const uint64_t framebuffer_current =
+        bucket.framebuffer_lease_current.load(std::memory_order_relaxed);
+    const uint64_t framebuffer_created =
+        bucket.framebuffer_lease_total_created.load(std::memory_order_relaxed);
+    const uint64_t framebuffer_released =
+        bucket.framebuffer_lease_total_released.load(std::memory_order_relaxed);
+    const uint64_t gpu_current =
+        bucket.retained_gpu_backing_current.load(std::memory_order_relaxed);
+    const uint64_t gpu_created =
+        bucket.retained_gpu_backing_total_created.load(std::memory_order_relaxed);
+    const uint64_t gpu_released =
+        bucket.retained_gpu_backing_total_released.load(std::memory_order_relaxed);
+    const bool balanced = framebuffer_current == 0 && gpu_current == 0 &&
+                          framebuffer_created == framebuffer_released &&
+                          gpu_created == gpu_released;
+    if (balanced) {
+      it = buckets_.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 ScopedResourceTelemetryKey make_stream_scoped_resource_telemetry(uint64_t stream_id) noexcept {

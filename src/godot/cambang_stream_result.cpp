@@ -364,7 +364,10 @@ bool refresh_live_cpu_display_view_entry(
     rid_state = entry.rid_state;
   }
   if (!rid_state) {
-    rid_state = std::make_shared<SharedLiveCpuTextureRidState>();
+    rid_state = make_live_cpu_texture_rid_state();
+    if (!rid_state) {
+      return false;
+    }
   }
 
   LiveCpuDisplayViewEntry working_entry;

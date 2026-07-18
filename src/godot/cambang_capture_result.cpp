@@ -413,12 +413,13 @@ godot::Ref<godot::Image> perform_capture_to_image_member_access(const SharedCapt
       CoreResultAccessOperation::TO_IMAGE);
   const uint64_t begin_ns = result_access_now_ns();
   godot::Ref<godot::Image> image;
-  if (member->payload_kind == ResultPayloadKind::GPU_SURFACE && member->retained_gpu_backing) {
+  if (capture_member_has_cpu_payload(*member)) {
+    image = payload_to_image(member->payload);
+  } else if (member->payload_kind == ResultPayloadKind::GPU_SURFACE &&
+             member->retained_gpu_backing) {
     image = godot_gpu_display_materialize_to_image(
         member->retained_gpu_backing_descriptor,
         member->retained_gpu_backing);
-  } else {
-    image = payload_to_image(member->payload);
   }
   result_access_cost_evidence::record_capture_member_access(
       evidence_route,

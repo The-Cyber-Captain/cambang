@@ -8,6 +8,7 @@
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/core/object.hpp>
 #include <godot_cpp/variant/color.hpp>
 #include <godot_cpp/variant/rect2.hpp>
 #include <godot_cpp/variant/rid.hpp>
@@ -19,6 +20,7 @@ struct SharedLiveCpuTextureRidState final {
   mutable std::mutex mutex;
   godot::RID texture_rid;
   bool invalidated = false;
+  uint64_t registration_id = 0;
 
   godot::RID snapshot_rid() const;
   void replace_rid(const godot::RID& texture_rid_in);
@@ -110,9 +112,9 @@ private:
   uint32_t height_ = 0;
 };
 
-// RefCounted target for RenderingServer::call_on_render_thread(), registered
-// only so ClassDB can resolve the bound methods as Callable targets -- not a
-// user-facing CamBANG class. Handles both RenderingServer texture creation
+// Bridge-owned Object target for RenderingServer::call_on_render_thread(),
+// registered only so ClassDB can resolve the bound methods as Callable
+// targets -- not a user-facing CamBANG class. Handles RenderingServer creation
 // and RenderingServer::free_rid() release for the CPU-backed live display
 // path (both must run on the render thread; see the doc comment above
 // enqueue_live_cpu_texture_create() and SharedLiveCpuTextureRidState's
@@ -120,8 +122,8 @@ private:
 // marshaled too). Mirrors RenderThreadDrainHelper in
 // synthetic_gpu_backing_bridge_internal.h, which does the equivalent for
 // RenderingDevice release on the GPU-backing path.
-class LiveCpuTextureCreateDrainHelper : public godot::RefCounted {
-  GDCLASS(LiveCpuTextureCreateDrainHelper, godot::RefCounted);
+class LiveCpuTextureCreateDrainHelper : public godot::Object {
+  GDCLASS(LiveCpuTextureCreateDrainHelper, godot::Object);
 
 public:
   bool drain_pending_creates_on_render_thread();
@@ -157,10 +159,14 @@ void enqueue_live_cpu_texture_create(
     std::shared_ptr<SharedLiveCpuTextureRidState> rid_state,
     godot::Ref<godot::Image> image);
 
-// Lifecycle hooks: call from the same GDExtension init/deinit points as
-// install_synthetic_gpu_backing_godot_bridge()/uninstall_...(). Mirrors that
-// bridge's teardown-abandon guard (ledger #44) so a render-thread callback
-// scheduled here can never fire back into torn-down extension state.
+// Constructs and registers every CPU display RID state so extension teardown
+// can invalidate states that have no currently live display wrapper.
+std::shared_ptr<SharedLiveCpuTextureRidState> make_live_cpu_texture_rid_state();
+
+// Lifecycle hooks: call from the same GDExtension init/deinit points as the GPU
+// bridge. Uninstall closes create admission, invalidates all registered states,
+// and waits for every accepted create/release callback before dropping the
+// callback helper.
 void install_live_cpu_display_bridge();
 void uninstall_live_cpu_display_bridge();
 
@@ -175,6 +181,7 @@ void notify_live_cpu_display_wrapper_refresh(uint64_t stream_id, uint32_t width,
 // synthetic_gpu_backing_warn_and_abandon_live_display_wrappers_before_stop()
 // in synthetic_gpu_backing_bridge.cpp; call from the same stop sequence.
 void abandon_all_live_cpu_display_wrappers_before_stop();
+void drain_live_cpu_display_bridge_before_stop();
 
 // Internal-only helper class registration required for Ref<DisplayDemandToken>::instantiate().
 void register_stream_result_internal_classes();

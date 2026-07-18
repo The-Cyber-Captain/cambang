@@ -31,18 +31,17 @@ publication, and provider-specific capture watchdog truth.
 
 ### Tranche 3 — Synthetic capture worker correctness
 
-Status: implementation and required validation complete; awaiting maintainer
-review/acceptance and snapshot commit.
+Status: complete and committed as `93e60c1`.
 
 Scope: bounded SyntheticProvider capture execution, transactional worker
 admission, exact terminal/retain-release truth on every failure path, immutable
 worker inputs, exception containment, and deterministic shutdown/restart.
 
-Authority: `docs/dev/current_tranche.md`.
-
 ### Tranche 4 — Render and GPU backing seams
 
-Status: required and queued after Tranche 3; implementation not started.
+Status: complete; validated on 2026-07-18, not yet committed.
+
+Authority: `docs/dev/current_tranche.md`.
 
 This is the originally planned Render and GPU backing seams tranche. It follows
 Tranche 3 because capture workers create or retain CPU/GPU payload ownership

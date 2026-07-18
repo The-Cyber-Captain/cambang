@@ -354,6 +354,11 @@ No resource may be reported as released before it is actually released.
 
 Original payload truth and derived-retention truth must remain auditable through Core/runtime accounting.
 
+Resource-aggregate telemetry must preserve an outstanding create across an
+observation/reset boundary until its matching release is observed. Clearing
+telemetry may retire only balanced buckets; it must not erase evidence needed
+to account for a later release.
+
 ### 7.6 Adapter-layer ownership transfer
 
 Display wrappers/adapters (for example Godot-side `Texture2DRD`) are
@@ -391,6 +396,19 @@ For repeating-stream retained GPU display state, release timing must remain
 deterministic at stream-lifetime boundaries (for example stop/destroy/provider
 teardown/reconfiguration invalidation), with adapter-layer deferral limited to
 narrow fallback cases where immediate release is not possible.
+
+Synthetic provider-native `GpuBacking` lifecycle facts describe the
+provider-owned live stream backing handle: create on realization/recreation and
+destroy on downgrade/replacement/release. Godot RIDs, `Texture2DRD` wrappers,
+and retained-result artifacts are adapter/retention-layer resources and are
+accounted separately; their existence must not fabricate an additional
+provider-native `GpuBacking` lifecycle.
+
+At `CamBANGServer.stop()`, live GPU display wrappers are detached while still
+addressable and both CPU/GPU render-work queues are fenced and drained before
+stop returns. A wrapper retained by user code after stop is inert and owns no
+thread-affine `Texture2DRD` delegate. Extension uninstall closes admission only
+after accepted producers and callbacks are quiescent.
 
 ---
 
@@ -842,6 +860,10 @@ providers/paths.
   publishes those no-demand frames as CPU-primary with current CPU bytes.
 - When display demand is active and GPU update succeeds, frames may publish as
   GPU-primary (`GPU_SURFACE`).
+- When the effective plan requires GPU primary and both the current update and
+  its permitted recreate/retry fail, that frame is not published. CamBANG must
+  not relabel stale live GPU content as the current frame and must not silently
+  publish CPU primary contrary to the effective plan.
 - Payload kind may therefore vary across successive stream frames under
   display-demanded policy, while remaining truthful per retained frame.
 - `get_display_view()` is the demand-establishing access path for stream
@@ -894,6 +916,11 @@ Still-capture public result semantics remain distinct from repeating-stream
 display-view semantics.
 
 A Capture Result is the device-level still-capture result at the public result seam. Its still-capture backing and materialization behaviour must remain explicit and capture-result-specific; the stream-side live GPU-backed display model must not be generalized into a public model of retained or exposed per-capture GPU artifacts.
+
+For a capture member that retains both a current CPU sidecar and a GPU primary
+artifact, `to_image_member()` prefers the current CPU bytes. The GPU
+materializer is used only when no current CPU sidecar is available. Capability
+and access-cost evidence must describe the route actually selected.
 
 ## 11.7 Access-cost evidence guardrail
 

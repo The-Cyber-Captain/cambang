@@ -56,6 +56,9 @@ public:
                            const CoreNativeObjectRegistry* native_objects) noexcept;
   size_t retire_destroyed_older_than(uint64_t now_ns, uint64_t retention_window_ns) noexcept;
   std::optional<uint64_t> next_retirement_delay_ns(uint64_t now_ns, uint64_t retention_window_ns) const noexcept;
+  // Retire only fully balanced buckets. Outstanding or imbalanced resource
+  // evidence must survive runtime generation boundaries until its matching
+  // release arrives or remains visible as a teardown defect.
   void clear() noexcept;
 
 private:
@@ -88,7 +91,6 @@ private:
   static Key make_key(const ScopedResourceTelemetryKey& key) noexcept;
   static void update_peak(std::atomic<uint64_t>& peak, uint64_t current) noexcept;
   static void decrement_if_positive(std::atomic<uint64_t>& current) noexcept;
-  Bucket& get_or_create_bucket(const Key& key) noexcept;
 
   mutable std::mutex mutex_;
   std::map<Key, Bucket> buckets_;

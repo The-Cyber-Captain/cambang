@@ -5,6 +5,8 @@
 #include "core/resource_aggregate_telemetry.h"
 
 #include <cstring>
+#include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
 #include <cstdint>
 #include <map>
@@ -37,6 +39,52 @@ void register_synthetic_gpu_backing_internal_classes();
 static bool enqueue_pending_release(const godot::RID& rid);
 static void request_pending_release_drain();
 static void schedule_render_thread_drain(godot::RenderingServer* rs, RenderThreadDrainHelper* helper);
+static void unregister_display_texture_rid_state(uint64_t registration_id);
+
+enum class RenderReleasePhase {
+  Closed,
+  Active,
+  Draining,
+};
+
+static std::mutex g_pending_release_mutex;
+static std::condition_variable g_pending_release_changed;
+// RIDs that must be released from the render thread.
+static std::vector<godot::RID> g_pending_releases;
+static std::size_t g_release_producers = 0;
+static bool g_pending_release_drain_scheduled = false;
+static bool g_pending_release_drain_running = false;
+static RenderReleasePhase g_render_release_phase = RenderReleasePhase::Closed;
+static RenderThreadDrainHelper* g_render_thread_drain_helper = nullptr;
+
+class RenderReleaseProducerLease final {
+public:
+  RenderReleaseProducerLease() {
+    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+    if (g_render_release_phase == RenderReleasePhase::Closed) {
+      return;
+    }
+    ++g_release_producers;
+    admitted_ = true;
+  }
+
+  RenderReleaseProducerLease(const RenderReleaseProducerLease&) = delete;
+  RenderReleaseProducerLease& operator=(const RenderReleaseProducerLease&) = delete;
+
+  ~RenderReleaseProducerLease() {
+    if (!admitted_) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+    --g_release_producers;
+    g_pending_release_changed.notify_all();
+  }
+
+  explicit operator bool() const noexcept { return admitted_; }
+
+private:
+  bool admitted_ = false;
+};
 
 struct SharedDisplayTextureRidState;
 static bool enqueue_pending_texture_wrapper_release(
@@ -52,11 +100,13 @@ struct SharedDisplayTextureRidState final {
   mutable std::mutex mutex;
   godot::RID rd_texture;
   bool invalidated = false;
+  uint64_t registration_id = 0;
 
   explicit SharedDisplayTextureRidState(const godot::RID& rid) : rd_texture(rid) {}
 
   ~SharedDisplayTextureRidState() {
     release_now();
+    unregister_display_texture_rid_state(registration_id);
   }
 
   godot::RID snapshot_rid() {
@@ -70,11 +120,13 @@ struct SharedDisplayTextureRidState final {
   }
 
   // Godot's RenderingServer/RenderingDevice persist across CamBANG
-  // start()/stop() cycles within one process; only GDExtension unload
-  // (g_bridge_teardown_started, set once by clear_pending_releases_for_teardown())
-  // makes it unsafe to schedule a release. A CamBANG-level stop() alone must
-  // not skip this, or the RID leaks permanently once the wrapper is dropped.
+  // start()/stop() cycles within one process. GDExtension unload first enters
+  // Draining, where releases remain admissible, and closes admission only
+  // after every registered state and wrapper has joined the final drain. A
+  // CamBANG-level stop() alone must not skip release, or the RID leaks once the
+  // final retained owner is dropped.
   void release_now() {
+    RenderReleaseProducerLease release_admission;
     godot::RID rid;
     {
       std::lock_guard<std::mutex> lock(mutex);
@@ -85,9 +137,14 @@ struct SharedDisplayTextureRidState final {
     if (!rid.is_valid()) {
       return;
     }
-    if (enqueue_pending_release(rid)) {
+    if (release_admission && enqueue_pending_release(rid)) {
       request_pending_release_drain();
+      return;
     }
+    std::fprintf(stderr,
+                 "[CamBANG][SyntheticGpu] release rejected after render bridge closure rid=%llu\n",
+                 static_cast<unsigned long long>(rid.get_id()));
+    std::fflush(stderr);
   }
 };
 
@@ -139,6 +196,7 @@ public:
       uint32_t width,
       uint32_t height);
   void update_dimensions(uint32_t width, uint32_t height);
+  void prepare_for_bridge_teardown();
 
   int32_t _get_width() const override;
   int32_t _get_height() const override;
@@ -166,6 +224,7 @@ public:
 
 private:
   void clear_runtime_references_();
+  void defer_texture_wrapper_release_();
 
   godot::Ref<godot::Texture2DRD> texture_;
   std::shared_ptr<SharedDisplayTextureRidState> state_;
@@ -193,16 +252,13 @@ private:
 };
 
 void register_synthetic_gpu_backing_internal_classes() {
-  // Internal-only helpers: registered only so Ref<...>::instantiate() can
-  // resolve through ClassDB. These are not user-facing CamBANG API classes.
+  // Internal-only helpers: registered only so bound callback targets can be
+  // created through the GDExtension class machinery. These are not
+  // user-facing CamBANG API classes.
   godot::ClassDB::register_class<RenderThreadDrainHelper>();
   godot::ClassDB::register_class<DeferredDisplayTexture2DRD>();
   godot::ClassDB::register_class<DisplayTextureRidOwner>();
 }
-
-static std::mutex g_pending_release_mutex;
-// RIDs that must be released from the render thread.
-static std::vector<godot::RID> g_pending_releases;
 
 struct PendingTextureWrapperRelease final {
   // Keep backing state alive until after Texture2DRD has freed its internal
@@ -215,16 +271,13 @@ struct PendingTextureWrapperRelease final {
 // Texture2DRD wrappers that must be unreferenced on the render thread because
 // their destructor frees Godot's internal RenderingServer texture wrapper.
 static std::vector<PendingTextureWrapperRelease> g_pending_texture_wrapper_releases;
-static bool g_pending_release_drain_scheduled = false;
-static bool g_bridge_teardown_started = false;
-static godot::Ref<RenderThreadDrainHelper> g_render_thread_drain_helper;
 
 static bool enqueue_pending_release(const godot::RID& rid) {
   if (!rid.is_valid()) {
     return false;
   }
   std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-  if (g_bridge_teardown_started) {
+  if (g_render_release_phase == RenderReleasePhase::Closed) {
     return false;
   }
   g_pending_releases.push_back(rid);
@@ -238,7 +291,7 @@ static bool enqueue_pending_texture_wrapper_release(
     return false;
   }
   std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-  if (g_bridge_teardown_started) {
+  if (g_render_release_phase == RenderReleasePhase::Closed) {
     return false;
   }
   g_pending_texture_wrapper_releases.push_back(PendingTextureWrapperRelease{std::move(state), std::move(texture)});
@@ -247,42 +300,19 @@ static bool enqueue_pending_texture_wrapper_release(
 
 static bool bridge_teardown_started() {
   std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-  return g_bridge_teardown_started;
+  return g_render_release_phase != RenderReleasePhase::Active;
 }
 
 static void schedule_render_thread_drain(godot::RenderingServer* rs, RenderThreadDrainHelper* helper) {
   if (!rs || !helper) {
     return;
   }
-  // Same Callable(Object*, StringName)-does-not-hold-a-reference reliance as
-  // schedule_live_cpu_texture_create_drain() in
-  // cambang_stream_result_internal.cpp -- see that function's comment and
-  // docs/dev/upstream_discrepancies.md for the full writeup and the
-  // empirical stress test covering this pattern.
+  // Callable(Object*, StringName) may retain RefCounted targets in engine
+  // queue storage, so this helper is deliberately a plain Object. The bridge
+  // owns it until every scheduled/running callback has completed.
   rs->call_on_render_thread(godot::Callable(
       helper,
       godot::StringName("drain_pending_releases_on_render_thread")));
-}
-
-static void clear_pending_releases_for_teardown() {
-  std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-  g_bridge_teardown_started = true;
-  // After teardown starts, do not schedule render-thread callbacks back into this
-  // GDExtension. Pending RIDs are abandoned best-effort rather than risking a
-  // late callback into torn-down extension or RenderingServer state.
-  g_pending_releases.clear();
-  g_pending_texture_wrapper_releases.clear();
-  g_pending_release_drain_scheduled = false;
-  g_render_thread_drain_helper.unref();
-}
-
-static void reset_bridge_teardown_state_for_install() {
-  std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-  g_bridge_teardown_started = false;
-  g_pending_releases.clear();
-  g_pending_texture_wrapper_releases.clear();
-  g_pending_release_drain_scheduled = false;
-  g_render_thread_drain_helper.unref();
 }
 
 namespace {
@@ -302,19 +332,51 @@ struct PendingLiveDisplayWrapperRefresh final {
 std::mutex g_live_display_wrapper_borrow_mutex;
 std::map<uint64_t, LiveDisplayWrapperBorrow> g_live_display_wrapper_borrows;
 uint64_t g_next_live_display_wrapper_borrow_id = 1;
+std::mutex g_display_texture_rid_state_registry_mutex;
+std::map<uint64_t, std::weak_ptr<SharedDisplayTextureRidState>>
+    g_display_texture_rid_state_registry;
+uint64_t g_next_display_texture_rid_state_registration_id = 1;
 std::mutex g_pending_live_display_wrapper_refresh_mutex;
 std::map<uint64_t, PendingLiveDisplayWrapperRefresh> g_pending_live_display_wrapper_refreshes;
 
 uint64_t register_live_display_wrapper_borrow(
     uint64_t stream_id,
     const std::shared_ptr<SharedDisplayTextureRidState>& state) {
-  if (stream_id == 0 || !state) {
+  if (!state) {
     return 0;
   }
   std::lock_guard<std::mutex> lock(g_live_display_wrapper_borrow_mutex);
   const uint64_t borrow_id = g_next_live_display_wrapper_borrow_id++;
   g_live_display_wrapper_borrows.emplace(borrow_id, LiveDisplayWrapperBorrow{stream_id, 0, state});
   return borrow_id;
+}
+
+std::shared_ptr<SharedDisplayTextureRidState> make_display_texture_rid_state(
+    const godot::RID& rid) {
+  auto state = std::make_shared<SharedDisplayTextureRidState>(rid);
+  std::lock_guard<std::mutex> lock(g_display_texture_rid_state_registry_mutex);
+  const uint64_t registration_id = g_next_display_texture_rid_state_registration_id++;
+  state->registration_id = registration_id;
+  g_display_texture_rid_state_registry.emplace(registration_id, state);
+  return state;
+}
+
+std::vector<std::shared_ptr<SharedDisplayTextureRidState>>
+snapshot_all_display_texture_rid_states() {
+  std::lock_guard<std::mutex> lock(g_display_texture_rid_state_registry_mutex);
+  std::vector<std::shared_ptr<SharedDisplayTextureRidState>> states;
+  states.reserve(g_display_texture_rid_state_registry.size());
+  for (auto it = g_display_texture_rid_state_registry.begin();
+       it != g_display_texture_rid_state_registry.end();) {
+    std::shared_ptr<SharedDisplayTextureRidState> state = it->second.lock();
+    if (!state) {
+      it = g_display_texture_rid_state_registry.erase(it);
+      continue;
+    }
+    states.push_back(std::move(state));
+    ++it;
+  }
+  return states;
 }
 
 void set_live_display_wrapper_instance_id(uint64_t borrow_id, uint64_t wrapper_instance_id) {
@@ -370,6 +432,14 @@ std::vector<LiveDisplayWrapperBorrow> snapshot_live_display_wrapper_borrows() {
 
 } // namespace
 
+static void unregister_display_texture_rid_state(uint64_t registration_id) {
+  if (registration_id == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_display_texture_rid_state_registry_mutex);
+  g_display_texture_rid_state_registry.erase(registration_id);
+}
+
 void DeferredDisplayTexture2DRD::init(
     godot::Ref<godot::Texture2DRD> texture,
     std::shared_ptr<SharedDisplayTextureRidState> state,
@@ -394,14 +464,28 @@ void DeferredDisplayTexture2DRD::init(
 
 DeferredDisplayTexture2DRD::~DeferredDisplayTexture2DRD() {
   clear_runtime_references_();
+  defer_texture_wrapper_release_();
+}
+
+void DeferredDisplayTexture2DRD::prepare_for_bridge_teardown() {
+  clear_runtime_references_();
+  defer_texture_wrapper_release_();
+}
+
+void DeferredDisplayTexture2DRD::defer_texture_wrapper_release_() {
+  RenderReleaseProducerLease release_admission;
   godot::Ref<godot::Texture2DRD> texture = std::move(texture_);
   std::shared_ptr<SharedDisplayTextureRidState> state = std::move(state_);
   if (texture.is_valid()) {
-    const bool enqueued = enqueue_pending_texture_wrapper_release(std::move(texture), std::move(state));
+    const bool enqueued = release_admission &&
+        enqueue_pending_texture_wrapper_release(std::move(texture), std::move(state));
     if (enqueued) {
       request_pending_release_drain();
       return;
     }
+    std::fprintf(stderr,
+                 "[CamBANG][SyntheticGpu] Texture2DRD release rejected after render bridge closure\n");
+    std::fflush(stderr);
   }
 }
 
@@ -490,21 +574,17 @@ static void request_pending_release_drain() {
     return;
   }
 
-  godot::Ref<RenderThreadDrainHelper> helper_ref;
   RenderThreadDrainHelper* helper = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-    if (g_bridge_teardown_started ||
+    if (g_render_release_phase == RenderReleasePhase::Closed ||
         (g_pending_releases.empty() && g_pending_texture_wrapper_releases.empty()) ||
-        g_pending_release_drain_scheduled) {
+        g_pending_release_drain_scheduled ||
+        g_pending_release_drain_running) {
       return;
     }
 
-    if (g_render_thread_drain_helper.is_null()) {
-      g_render_thread_drain_helper.instantiate();
-    }
-    helper_ref = g_render_thread_drain_helper;
-    helper = helper_ref.ptr();
+    helper = g_render_thread_drain_helper;
     if (!helper) {
       return;
     }
@@ -520,12 +600,12 @@ bool RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
   std::vector<PendingTextureWrapperRelease> pending_texture_wrappers;
   {
     std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-    if (g_bridge_teardown_started) {
-      g_pending_releases.clear();
-      g_pending_texture_wrapper_releases.clear();
+    if (g_render_release_phase == RenderReleasePhase::Closed) {
       g_pending_release_drain_scheduled = false;
+      g_pending_release_changed.notify_all();
       return false;
     }
+    g_pending_release_drain_running = true;
     pending.swap(g_pending_releases);
     pending_texture_wrappers.swap(g_pending_texture_wrapper_releases);
     g_pending_release_drain_scheduled = false;
@@ -533,53 +613,18 @@ bool RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
 
   pending_texture_wrappers.clear();
 
-  auto schedule_again_if_needed = [](godot::RenderingServer* rs) {
-    if (!rs) {
-      return;
-    }
-
-    godot::Ref<RenderThreadDrainHelper> helper_ref;
-    RenderThreadDrainHelper* helper = nullptr;
-    {
-      std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-      if (g_bridge_teardown_started ||
-          (g_pending_releases.empty() && g_pending_texture_wrapper_releases.empty()) ||
-          g_pending_release_drain_scheduled) {
-        return;
-      }
-
-      helper_ref = g_render_thread_drain_helper;
-      helper = helper_ref.ptr();
-      if (!helper) {
-        return;
-      }
-
-      g_pending_release_drain_scheduled = true;
-    }
-
-    schedule_render_thread_drain(rs, helper);
-  };
-
-  if (pending.empty()) {
-    schedule_again_if_needed(godot::RenderingServer::get_singleton());
-    return true;
-  }
-
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
   godot::RenderingDevice* rd = rs ? rs->get_rendering_device() : nullptr;
-  if (!rd) {
+  if (!pending.empty() && !rd) {
     {
       std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-      if (g_bridge_teardown_started) {
-        g_pending_release_drain_scheduled = false;
-        return false;
-      }
       for (godot::RID &rid : pending) {
         g_pending_releases.push_back(std::move(rid));
       }
+      g_pending_release_drain_running = false;
+      g_pending_release_changed.notify_all();
     }
-
-    schedule_again_if_needed(rs);
+    request_pending_release_drain();
     return true;
   }
 
@@ -594,14 +639,11 @@ bool RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
 
   {
     std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-    if (g_bridge_teardown_started) {
-      g_pending_releases.clear();
-      g_pending_release_drain_scheduled = false;
-      return false;
-    }
+    g_pending_release_drain_running = false;
+    g_pending_release_changed.notify_all();
   }
 
-  schedule_again_if_needed(rs);
+  request_pending_release_drain();
   return true;
 }
 
@@ -725,7 +767,7 @@ std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
   auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
   retained_backing->telemetry_key = make_unknown_scoped_resource_telemetry();
   global_resource_aggregate_telemetry().retained_gpu_backing_created(retained_backing->telemetry_key);
-  retained_backing->rid_state = std::make_shared<SharedDisplayTextureRidState>(texture);
+  retained_backing->rid_state = make_display_texture_rid_state(texture);
   retained_backing->width = width;
   retained_backing->height = height;
   retained_backing->stride_bytes = stride_bytes;
@@ -787,7 +829,7 @@ std::shared_ptr<void> create_stream_live_gpu_backing_rgba8(
   retained_backing->stream_id = stream_id;
   retained_backing->telemetry_key = make_stream_scoped_resource_telemetry(stream_id);
   global_resource_aggregate_telemetry().retained_gpu_backing_created(retained_backing->telemetry_key);
-  retained_backing->rid_state = std::make_shared<SharedDisplayTextureRidState>(texture);
+  retained_backing->rid_state = make_display_texture_rid_state(texture);
   retained_backing->width = width;
   retained_backing->height = height;
   retained_backing->stride_bytes = stride_bytes;
@@ -989,18 +1031,89 @@ const SyntheticGpuBackingRuntimeOps kOps{
     &peek_update_timing_stats,
 };
 
+bool activate_render_release_bridge() {
+  RenderThreadDrainHelper* helper = memnew(RenderThreadDrainHelper);
+  if (!helper) {
+    return false;
+  }
+
+  bool rejected = false;
+  {
+    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+    rejected = g_render_release_phase != RenderReleasePhase::Closed ||
+        !g_pending_releases.empty() ||
+        !g_pending_texture_wrapper_releases.empty() ||
+        g_release_producers != 0 ||
+        g_pending_release_drain_scheduled ||
+        g_pending_release_drain_running ||
+        g_render_thread_drain_helper != nullptr;
+    if (!rejected) {
+      g_render_thread_drain_helper = helper;
+      g_render_release_phase = RenderReleasePhase::Active;
+    }
+  }
+  if (rejected) {
+    memdelete(helper);
+    return false;
+  }
+  return true;
+}
+
+void begin_render_release_bridge_drain() {
+  std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+  if (g_render_release_phase == RenderReleasePhase::Active) {
+    g_render_release_phase = RenderReleasePhase::Draining;
+    g_pending_release_changed.notify_all();
+  }
+}
+
+void wait_for_render_release_bridge_quiescence_and_close() {
+  request_pending_release_drain();
+
+  RenderThreadDrainHelper* helper_to_delete = nullptr;
+  {
+    std::unique_lock<std::mutex> lock(g_pending_release_mutex);
+    g_pending_release_changed.wait(lock, [] {
+      return g_render_release_phase != RenderReleasePhase::Draining ||
+          (g_pending_releases.empty() &&
+           g_pending_texture_wrapper_releases.empty() &&
+           g_release_producers == 0 &&
+           !g_pending_release_drain_scheduled &&
+           !g_pending_release_drain_running);
+    });
+    if (g_render_release_phase != RenderReleasePhase::Draining) {
+      return;
+    }
+    g_render_release_phase = RenderReleasePhase::Closed;
+    helper_to_delete = g_render_thread_drain_helper;
+    g_render_thread_drain_helper = nullptr;
+    g_pending_release_changed.notify_all();
+  }
+
+  // The bridge is the helper's sole owner. Scheduled/running callback counts
+  // are zero, so deleting it cannot leave a callable that may still invoke it.
+  if (helper_to_delete) {
+    memdelete(helper_to_delete);
+  }
+}
+
 } // namespace
 
 void install_synthetic_gpu_backing_godot_bridge() {
-  reset_bridge_teardown_state_for_install();
+  if (!activate_render_release_bridge()) {
+    godot::UtilityFunctions::push_error(
+        "[CamBANG][SyntheticGpu] bridge install rejected: render release protocol was not closed and empty");
+    return;
+  }
   set_synthetic_gpu_backing_runtime_ops(&kOps);
   trace_gpu("bridge_install runtime_ops_registered=true");
 }
 
 void uninstall_synthetic_gpu_backing_godot_bridge() {
   clear_synthetic_gpu_backing_runtime_ops();
+  begin_render_release_bridge_drain();
   godot_gpu_display_invalidate_all();
-  clear_pending_releases_for_teardown();
+  wait_for_render_release_bridge_quiescence_and_close();
   trace_gpu("bridge_uninstall runtime_ops_registered=false");
 }
 
@@ -1012,6 +1125,18 @@ void synthetic_gpu_backing_warn_and_abandon_live_display_wrappers_before_stop() 
 
   std::map<uint64_t, uint64_t> counts_by_stream_id;
   for (const LiveDisplayWrapperBorrow& borrow : borrows) {
+    if (borrow.wrapper_instance_id != 0) {
+      godot::Object* object = godot::ObjectDB::get_instance(borrow.wrapper_instance_id);
+      DeferredDisplayTexture2DRD* wrapper =
+          godot::Object::cast_to<DeferredDisplayTexture2DRD>(object);
+      if (wrapper) {
+        // Move the Texture2DRD delegate into the owned render-release queue
+        // while the public wrapper is still addressable. A wrapper retained
+        // past stop is then inert and its later destruction owns no
+        // thread-affine Godot delegate.
+        wrapper->prepare_for_bridge_teardown();
+      }
+    }
     if (borrow.rid_state) {
       // Release now rather than merely marking invalidated: RenderingDevice
       // persists across CamBANGServer stop()/start() cycles within one
@@ -1055,15 +1180,58 @@ void synthetic_gpu_backing_invalidate_live_display_wrappers_for_stream(uint64_t 
 }
 
 void synthetic_gpu_backing_invalidate_all_live_display_wrappers() {
-  // Called only from uninstall_synthetic_gpu_backing_godot_bridge(), before
-  // clear_pending_releases_for_teardown() sets the teardown-abandon flag, so
-  // release_now()'s enqueue still succeeds here rather than being dropped.
+  // Called only from uninstall_synthetic_gpu_backing_godot_bridge() after the
+  // runtime-ops seam is drained and render-release state has entered Draining.
+  // Detach every Texture2DRD delegate while its wrapper is still addressable;
+  // later wrapper destruction then owns no thread-affine Godot delegate.
   const std::vector<LiveDisplayWrapperBorrow> borrows = snapshot_live_display_wrapper_borrows();
   for (const LiveDisplayWrapperBorrow& borrow : borrows) {
-    if (!borrow.rid_state) {
+    if (borrow.wrapper_instance_id == 0) {
       continue;
     }
-    borrow.rid_state->release_now();
+    godot::Object* object = godot::ObjectDB::get_instance(borrow.wrapper_instance_id);
+    DeferredDisplayTexture2DRD* wrapper =
+        godot::Object::cast_to<DeferredDisplayTexture2DRD>(object);
+    if (wrapper) {
+      wrapper->prepare_for_bridge_teardown();
+    }
+  }
+
+  // Wrapper borrows are not a complete RID-state registry: retained capture
+  // or stream backings may never have produced a display view. Invalidate the
+  // complete weak registry so every live RD texture is admitted to this final
+  // render-thread drain before release admission closes.
+  const std::vector<std::shared_ptr<SharedDisplayTextureRidState>> states =
+      snapshot_all_display_texture_rid_states();
+  for (const std::shared_ptr<SharedDisplayTextureRidState>& state : states) {
+    state->release_now();
+  }
+}
+
+void synthetic_gpu_backing_drain_render_releases_before_stop() {
+  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
+  for (;;) {
+    request_pending_release_drain();
+    {
+      std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+      if (g_render_release_phase != RenderReleasePhase::Active ||
+          (g_pending_releases.empty() &&
+           g_pending_texture_wrapper_releases.empty() &&
+           g_release_producers == 0 &&
+           !g_pending_release_drain_scheduled &&
+           !g_pending_release_drain_running)) {
+        return;
+      }
+    }
+    if (!rs) {
+      godot::UtilityFunctions::push_error(
+          "[CamBANG][SyntheticGpu] cannot drain accepted render releases: RenderingServer unavailable");
+      return;
+    }
+    // Godot's RenderingServerDefault::sync() puts a synchronous command
+    // behind prior render commands (or flushes all commands in single-thread
+    // mode). No CamBANG lock is held while that engine fence runs.
+    rs->force_sync();
   }
 }
 

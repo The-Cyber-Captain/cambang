@@ -1577,6 +1577,8 @@ void CamBANGServer::stop() {
   runtime_.attach_provider(nullptr);
   provider_.reset();
   CamBANGStreamResult::clear_live_stream_cpu_display_views();
+  synthetic_gpu_backing_drain_render_releases_before_stop();
+  drain_live_cpu_display_bridge_before_stop();
   result_access_cost_evidence::clear();
   _clear_live_retained_result_access_calibration_state_();
 

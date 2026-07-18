@@ -1,6 +1,8 @@
 #include "godot/cambang_stream_result_internal.h"
 
 #include <cstdint>
+#include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
 #include <map>
 #include <mutex>
@@ -45,12 +47,13 @@ struct PendingLiveCpuTextureCreate final {
 // render-thread work for the CPU-backed live display path, and both are
 // gated by the same teardown flag.
 std::mutex g_pending_live_cpu_texture_mutex;
+std::condition_variable g_pending_live_cpu_texture_changed;
 // Keyed by rid_state identity so a stream refreshing faster than the render
 // thread drains only ever creates from the latest queued image.
 std::map<const SharedLiveCpuTextureRidState*, PendingLiveCpuTextureCreate> g_pending_live_cpu_texture_creates;
 bool g_pending_live_cpu_texture_create_drain_scheduled = false;
-bool g_live_cpu_display_bridge_teardown_started = false;
-godot::Ref<LiveCpuTextureCreateDrainHelper> g_live_cpu_texture_create_drain_helper;
+bool g_pending_live_cpu_texture_create_drain_running = false;
+LiveCpuTextureCreateDrainHelper* g_live_cpu_texture_create_drain_helper = nullptr;
 
 // RIDs pending release on the render thread. Flat list, not keyed: each
 // entry here has already been fully superseded/invalidated and is only
@@ -59,37 +62,89 @@ godot::Ref<LiveCpuTextureCreateDrainHelper> g_live_cpu_texture_create_drain_help
 // so a fast-refreshing stream only ever creates from its latest image).
 std::vector<godot::RID> g_pending_live_cpu_texture_releases;
 bool g_pending_live_cpu_texture_release_drain_scheduled = false;
+bool g_pending_live_cpu_texture_release_drain_running = false;
+std::size_t g_live_cpu_release_producers = 0;
+std::size_t g_live_cpu_state_producers = 0;
+
+enum class LiveCpuDisplayBridgePhase {
+  Closed,
+  Active,
+  Draining,
+};
+
+LiveCpuDisplayBridgePhase g_live_cpu_display_bridge_phase =
+    LiveCpuDisplayBridgePhase::Closed;
+
+std::mutex g_live_cpu_texture_rid_state_registry_mutex;
+std::map<uint64_t, std::weak_ptr<SharedLiveCpuTextureRidState>>
+    g_live_cpu_texture_rid_state_registry;
+uint64_t g_next_live_cpu_texture_rid_state_registration_id = 1;
+
+class LiveCpuReleaseProducerLease final {
+public:
+  LiveCpuReleaseProducerLease() {
+    std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
+    if (g_live_cpu_display_bridge_phase == LiveCpuDisplayBridgePhase::Closed) {
+      return;
+    }
+    ++g_live_cpu_release_producers;
+    admitted_ = true;
+  }
+
+  LiveCpuReleaseProducerLease(const LiveCpuReleaseProducerLease&) = delete;
+  LiveCpuReleaseProducerLease& operator=(const LiveCpuReleaseProducerLease&) = delete;
+
+  ~LiveCpuReleaseProducerLease() {
+    if (!admitted_) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
+    --g_live_cpu_release_producers;
+    g_pending_live_cpu_texture_changed.notify_all();
+  }
+
+  explicit operator bool() const noexcept { return admitted_; }
+
+private:
+  bool admitted_ = false;
+};
+
+class LiveCpuStateProducerLease final {
+public:
+  LiveCpuStateProducerLease() {
+    std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
+    if (g_live_cpu_display_bridge_phase != LiveCpuDisplayBridgePhase::Active) {
+      return;
+    }
+    ++g_live_cpu_state_producers;
+    admitted_ = true;
+  }
+
+  LiveCpuStateProducerLease(const LiveCpuStateProducerLease&) = delete;
+  LiveCpuStateProducerLease& operator=(const LiveCpuStateProducerLease&) = delete;
+
+  ~LiveCpuStateProducerLease() {
+    if (!admitted_) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
+    --g_live_cpu_state_producers;
+    g_pending_live_cpu_texture_changed.notify_all();
+  }
+
+  explicit operator bool() const noexcept { return admitted_; }
+
+private:
+  bool admitted_ = false;
+};
 
 void schedule_live_cpu_texture_create_drain(
     godot::RenderingServer* rs, LiveCpuTextureCreateDrainHelper* helper) {
   if (!rs || !helper) {
     return;
   }
-  // Reliance note (verified against thirdparty/godot-cpp/gen/src/variant/callable.cpp):
-  // godot::Callable(Object*, StringName) forwards a raw object handle to the
-  // engine's builtin constructor -- it does NOT take out a strong reference
-  // on `helper`. The godot::Ref held by the caller (request_pending_live_
-  // cpu_texture_create_drain()'s local `helper_ref`, and the module-global
-  // g_live_cpu_texture_create_drain_helper) is what keeps `helper` alive up
-  // to and including this call; nothing here extends that lifetime through
-  // to whenever the render thread actually executes the callback. If every
-  // godot::Ref to `helper` were dropped (e.g. uninstall_live_cpu_display_
-  // bridge()'s g_live_cpu_texture_create_drain_helper.unref()) in the
-  // interval between this call returning and the render thread running
-  // drain_pending_creates_on_render_thread(), the callback's target would
-  // already be gone.
-  //
-  // CamBANG accepts this as-is rather than working around it: it depends on
-  // Godot's own engine-side Callable dispatch resolving the target by
-  // ObjectID and safely no-op'ing when that ID no longer resolves, rather
-  // than invoking a method on freed memory. That engine-side behavior lives
-  // in Godot's core (not vendored in this repo, only the godot-cpp bindings
-  // are), so CamBANG cannot verify it by reading source here. It has been
-  // empirically stress-tested instead: tests/cambang_gde/scripts/
-  // cpu_display_teardown_race_stress.gd deliberately races this exact
-  // window against engine shutdown (75/75 runs clean, no crash -- see
-  // docs/dev/upstream_discrepancies.md for the full writeup). Re-run that
-  // script if this scheduling pattern changes.
+  // The helper is a bridge-owned plain Object, so engine command-buffer
+  // retention cannot extend its lifetime as it can for RefCounted targets.
   rs->call_on_render_thread(godot::Callable(
       helper,
       godot::StringName("drain_pending_creates_on_render_thread")));
@@ -100,20 +155,16 @@ void request_pending_live_cpu_texture_create_drain() {
   if (!rs) {
     return;
   }
-  godot::Ref<LiveCpuTextureCreateDrainHelper> helper_ref;
   LiveCpuTextureCreateDrainHelper* helper = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
-    if (g_live_cpu_display_bridge_teardown_started ||
+    if (g_live_cpu_display_bridge_phase == LiveCpuDisplayBridgePhase::Closed ||
         g_pending_live_cpu_texture_creates.empty() ||
-        g_pending_live_cpu_texture_create_drain_scheduled) {
+        g_pending_live_cpu_texture_create_drain_scheduled ||
+        g_pending_live_cpu_texture_create_drain_running) {
       return;
     }
-    if (g_live_cpu_texture_create_drain_helper.is_null()) {
-      g_live_cpu_texture_create_drain_helper.instantiate();
-    }
-    helper_ref = g_live_cpu_texture_create_drain_helper;
-    helper = helper_ref.ptr();
+    helper = g_live_cpu_texture_create_drain_helper;
     if (!helper) {
       return;
     }
@@ -127,9 +178,7 @@ void schedule_live_cpu_texture_release_drain(
   if (!rs || !helper) {
     return;
   }
-  // Same Callable(Object*, StringName)-does-not-hold-a-reference reliance as
-  // schedule_live_cpu_texture_create_drain() above; see that function's
-  // comment and docs/dev/upstream_discrepancies.md for the full writeup.
+  // The bridge-owned helper remains live through callback quiescence.
   rs->call_on_render_thread(godot::Callable(
       helper,
       godot::StringName("drain_pending_releases_on_render_thread")));
@@ -140,20 +189,16 @@ void request_pending_live_cpu_texture_release_drain() {
   if (!rs) {
     return;
   }
-  godot::Ref<LiveCpuTextureCreateDrainHelper> helper_ref;
   LiveCpuTextureCreateDrainHelper* helper = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
-    if (g_live_cpu_display_bridge_teardown_started ||
+    if (g_live_cpu_display_bridge_phase == LiveCpuDisplayBridgePhase::Closed ||
         g_pending_live_cpu_texture_releases.empty() ||
-        g_pending_live_cpu_texture_release_drain_scheduled) {
+        g_pending_live_cpu_texture_release_drain_scheduled ||
+        g_pending_live_cpu_texture_release_drain_running) {
       return;
     }
-    if (g_live_cpu_texture_create_drain_helper.is_null()) {
-      g_live_cpu_texture_create_drain_helper.instantiate();
-    }
-    helper_ref = g_live_cpu_texture_create_drain_helper;
-    helper = helper_ref.ptr();
+    helper = g_live_cpu_texture_create_drain_helper;
     if (!helper) {
       return;
     }
@@ -173,17 +218,64 @@ void request_pending_live_cpu_texture_release_drain() {
 // consistent rather than resting on a policy-vs-guarantee distinction only
 // one of the two paths bothers to make.
 void release_live_cpu_texture_rid(const godot::RID& rid) {
+  if (!rid.is_valid()) {
+    return;
+  }
+  LiveCpuReleaseProducerLease release_admission;
+  if (!release_admission) {
+    std::fprintf(stderr,
+                 "[CamBANG][CpuDisplay] RID release rejected after bridge closure rid=%llu\n",
+                 static_cast<unsigned long long>(rid.get_id()));
+    std::fflush(stderr);
+    return;
+  }
   {
     std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
-    if (g_live_cpu_display_bridge_teardown_started || !rid.is_valid()) {
-      return;
-    }
     g_pending_live_cpu_texture_releases.push_back(rid);
   }
   request_pending_live_cpu_texture_release_drain();
 }
 
 uint64_t g_next_live_cpu_display_wrapper_borrow_id = 1;
+
+void unregister_live_cpu_texture_rid_state(uint64_t registration_id) {
+  if (registration_id == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_live_cpu_texture_rid_state_registry_mutex);
+  g_live_cpu_texture_rid_state_registry.erase(registration_id);
+}
+
+std::vector<std::shared_ptr<SharedLiveCpuTextureRidState>>
+snapshot_all_live_cpu_texture_rid_states() {
+  std::lock_guard<std::mutex> lock(g_live_cpu_texture_rid_state_registry_mutex);
+  std::vector<std::shared_ptr<SharedLiveCpuTextureRidState>> states;
+  states.reserve(g_live_cpu_texture_rid_state_registry.size());
+  for (auto it = g_live_cpu_texture_rid_state_registry.begin();
+       it != g_live_cpu_texture_rid_state_registry.end();) {
+    std::shared_ptr<SharedLiveCpuTextureRidState> state = it->second.lock();
+    if (!state) {
+      it = g_live_cpu_texture_rid_state_registry.erase(it);
+      continue;
+    }
+    states.push_back(std::move(state));
+    ++it;
+  }
+  return states;
+}
+}
+
+std::shared_ptr<SharedLiveCpuTextureRidState> make_live_cpu_texture_rid_state() {
+  LiveCpuStateProducerLease state_admission;
+  if (!state_admission) {
+    return {};
+  }
+  auto state = std::make_shared<SharedLiveCpuTextureRidState>();
+  std::lock_guard<std::mutex> lock(g_live_cpu_texture_rid_state_registry_mutex);
+  const uint64_t registration_id = g_next_live_cpu_texture_rid_state_registration_id++;
+  state->registration_id = registration_id;
+  g_live_cpu_texture_rid_state_registry.emplace(registration_id, state);
+  return state;
 }
 
 void enqueue_live_cpu_texture_create(
@@ -192,14 +284,24 @@ void enqueue_live_cpu_texture_create(
   if (!rid_state || image.is_null()) {
     return;
   }
+  PendingLiveCpuTextureCreate superseded;
   {
     std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
-    if (g_live_cpu_display_bridge_teardown_started) {
+    if (g_live_cpu_display_bridge_phase != LiveCpuDisplayBridgePhase::Active) {
       return;
     }
-    g_pending_live_cpu_texture_creates[rid_state.get()] =
-        PendingLiveCpuTextureCreate{rid_state, std::move(image)};
+    const auto it = g_pending_live_cpu_texture_creates.find(rid_state.get());
+    if (it == g_pending_live_cpu_texture_creates.end()) {
+      g_pending_live_cpu_texture_creates.emplace(
+          rid_state.get(), PendingLiveCpuTextureCreate{rid_state, std::move(image)});
+    } else {
+      superseded = std::move(it->second);
+      it->second = PendingLiveCpuTextureCreate{rid_state, std::move(image)};
+    }
   }
+  // Ref/shared ownership from the superseded request is released after the
+  // queue mutex; its state destructor may enqueue RID release work.
+  superseded = {};
   request_pending_live_cpu_texture_create_drain();
 }
 
@@ -208,21 +310,42 @@ bool LiveCpuTextureCreateDrainHelper::drain_pending_creates_on_render_thread() {
   {
     std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
     g_pending_live_cpu_texture_create_drain_scheduled = false;
-    if (g_live_cpu_display_bridge_teardown_started) {
-      g_pending_live_cpu_texture_creates.clear();
+    if (g_live_cpu_display_bridge_phase == LiveCpuDisplayBridgePhase::Closed) {
+      g_pending_live_cpu_texture_changed.notify_all();
       return false;
     }
+    g_pending_live_cpu_texture_create_drain_running = true;
     pending.swap(g_pending_live_cpu_texture_creates);
   }
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
-  if (rs) {
-    for (auto& [key, entry] : pending) {
-      (void)key;
-      const godot::RID texture_rid = rs->texture_2d_create(entry.image);
-      if (texture_rid.is_valid()) {
-        entry.rid_state->replace_rid(texture_rid);
+  if (!rs) {
+    {
+      std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
+      if (g_live_cpu_display_bridge_phase == LiveCpuDisplayBridgePhase::Active) {
+        for (auto& [key, entry] : pending) {
+          if (g_pending_live_cpu_texture_creates.find(key) ==
+              g_pending_live_cpu_texture_creates.end()) {
+            g_pending_live_cpu_texture_creates.emplace(key, std::move(entry));
+          }
+        }
       }
+      g_pending_live_cpu_texture_create_drain_running = false;
+      g_pending_live_cpu_texture_changed.notify_all();
     }
+    request_pending_live_cpu_texture_create_drain();
+    return true;
+  }
+  for (auto& [key, entry] : pending) {
+    (void)key;
+    const godot::RID texture_rid = rs->texture_2d_create(entry.image);
+    if (texture_rid.is_valid()) {
+      entry.rid_state->replace_rid(texture_rid);
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
+    g_pending_live_cpu_texture_create_drain_running = false;
+    g_pending_live_cpu_texture_changed.notify_all();
   }
   // More creation requests may have arrived while draining (e.g. a stream
   // refreshing from another thread mid-drain); schedule another pass rather
@@ -236,19 +359,35 @@ bool LiveCpuTextureCreateDrainHelper::drain_pending_releases_on_render_thread() 
   {
     std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
     g_pending_live_cpu_texture_release_drain_scheduled = false;
-    if (g_live_cpu_display_bridge_teardown_started) {
-      g_pending_live_cpu_texture_releases.clear();
+    if (g_live_cpu_display_bridge_phase == LiveCpuDisplayBridgePhase::Closed) {
+      g_pending_live_cpu_texture_changed.notify_all();
       return false;
     }
+    g_pending_live_cpu_texture_release_drain_running = true;
     pending.swap(g_pending_live_cpu_texture_releases);
   }
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
-  if (rs) {
-    for (const godot::RID& rid : pending) {
-      if (rid.is_valid()) {
-        rs->free_rid(rid);
+  if (!rs) {
+    {
+      std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
+      for (godot::RID& rid : pending) {
+        g_pending_live_cpu_texture_releases.push_back(std::move(rid));
       }
+      g_pending_live_cpu_texture_release_drain_running = false;
+      g_pending_live_cpu_texture_changed.notify_all();
     }
+    request_pending_live_cpu_texture_release_drain();
+    return true;
+  }
+  for (const godot::RID& rid : pending) {
+    if (rid.is_valid()) {
+      rs->free_rid(rid);
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
+    g_pending_live_cpu_texture_release_drain_running = false;
+    g_pending_live_cpu_texture_changed.notify_all();
   }
   // More releases may have arrived while draining; schedule another pass
   // rather than leaving them stranded (mirrors
@@ -258,33 +397,87 @@ bool LiveCpuTextureCreateDrainHelper::drain_pending_releases_on_render_thread() 
 }
 
 void install_live_cpu_display_bridge() {
-  std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
-  g_live_cpu_display_bridge_teardown_started = false;
-  g_pending_live_cpu_texture_creates.clear();
-  g_pending_live_cpu_texture_create_drain_scheduled = false;
-  g_pending_live_cpu_texture_releases.clear();
-  g_pending_live_cpu_texture_release_drain_scheduled = false;
-  g_live_cpu_texture_create_drain_helper.unref();
+  LiveCpuTextureCreateDrainHelper* helper = memnew(LiveCpuTextureCreateDrainHelper);
+  if (!helper) {
+    godot::UtilityFunctions::push_error(
+        "[CamBANG][CpuDisplay] bridge install rejected: helper instantiation failed");
+    return;
+  }
+  bool rejected = false;
+  {
+    std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
+    rejected =
+        g_live_cpu_display_bridge_phase != LiveCpuDisplayBridgePhase::Closed ||
+        !g_pending_live_cpu_texture_creates.empty() ||
+        !g_pending_live_cpu_texture_releases.empty() ||
+        g_pending_live_cpu_texture_create_drain_scheduled ||
+        g_pending_live_cpu_texture_create_drain_running ||
+        g_pending_live_cpu_texture_release_drain_scheduled ||
+        g_pending_live_cpu_texture_release_drain_running ||
+        g_live_cpu_release_producers != 0 ||
+        g_live_cpu_state_producers != 0 ||
+        g_live_cpu_texture_create_drain_helper != nullptr;
+    if (!rejected) {
+      g_live_cpu_texture_create_drain_helper = helper;
+      g_live_cpu_display_bridge_phase = LiveCpuDisplayBridgePhase::Active;
+    }
+  }
+  if (rejected) {
+    memdelete(helper);
+    godot::UtilityFunctions::push_error(
+        "[CamBANG][CpuDisplay] bridge install rejected: protocol was not closed and empty");
+    return;
+  }
 }
 
 void uninstall_live_cpu_display_bridge() {
-  std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
-  // Mirrors clear_pending_releases_for_teardown() in
-  // synthetic_gpu_backing_bridge.cpp (ledger #44): after this point, no new
-  // render-thread callback may be scheduled, so a callback can never fire
-  // back into torn-down extension state. Pending creations and releases are
-  // abandoned best-effort; a pending creation's rid_state simply never gets
-  // a valid RID (draw_allowed() already treats that as "nothing to draw"),
-  // and a pending release's RID leaks until process exit rather than risking
-  // a late callback into torn-down extension or RenderingServer state --
-  // the same tradeoff synthetic_gpu_backing_bridge.cpp already accepts for
-  // its own pending releases.
-  g_live_cpu_display_bridge_teardown_started = true;
-  g_pending_live_cpu_texture_creates.clear();
-  g_pending_live_cpu_texture_releases.clear();
-  g_pending_live_cpu_texture_release_drain_scheduled = false;
-  g_pending_live_cpu_texture_create_drain_scheduled = false;
-  g_live_cpu_texture_create_drain_helper.unref();
+  std::map<const SharedLiveCpuTextureRidState*, PendingLiveCpuTextureCreate>
+      cancelled_creates;
+  {
+    std::unique_lock<std::mutex> lock(g_pending_live_cpu_texture_mutex);
+    if (g_live_cpu_display_bridge_phase == LiveCpuDisplayBridgePhase::Closed) {
+      return;
+    }
+    g_live_cpu_display_bridge_phase = LiveCpuDisplayBridgePhase::Draining;
+    g_pending_live_cpu_texture_changed.wait(
+        lock, [] { return g_live_cpu_state_producers == 0; });
+    cancelled_creates.swap(g_pending_live_cpu_texture_creates);
+    g_pending_live_cpu_texture_changed.notify_all();
+  }
+  cancelled_creates.clear();
+
+  const std::vector<std::shared_ptr<SharedLiveCpuTextureRidState>> states =
+      snapshot_all_live_cpu_texture_rid_states();
+  for (const std::shared_ptr<SharedLiveCpuTextureRidState>& state : states) {
+    state->invalidate_and_release();
+  }
+  request_pending_live_cpu_texture_release_drain();
+
+  LiveCpuTextureCreateDrainHelper* helper_to_delete = nullptr;
+  {
+    std::unique_lock<std::mutex> lock(g_pending_live_cpu_texture_mutex);
+    g_pending_live_cpu_texture_changed.wait(lock, [] {
+      return g_live_cpu_display_bridge_phase != LiveCpuDisplayBridgePhase::Draining ||
+          (g_pending_live_cpu_texture_creates.empty() &&
+           g_pending_live_cpu_texture_releases.empty() &&
+           !g_pending_live_cpu_texture_create_drain_scheduled &&
+           !g_pending_live_cpu_texture_create_drain_running &&
+           !g_pending_live_cpu_texture_release_drain_scheduled &&
+           !g_pending_live_cpu_texture_release_drain_running &&
+           g_live_cpu_release_producers == 0 &&
+           g_live_cpu_state_producers == 0);
+    });
+    if (g_live_cpu_display_bridge_phase != LiveCpuDisplayBridgePhase::Draining) {
+      return;
+    }
+    g_live_cpu_display_bridge_phase = LiveCpuDisplayBridgePhase::Closed;
+    helper_to_delete = g_live_cpu_texture_create_drain_helper;
+    g_live_cpu_texture_create_drain_helper = nullptr;
+    g_pending_live_cpu_texture_changed.notify_all();
+  }
+  if (helper_to_delete) {
+    memdelete(helper_to_delete);
+  }
 }
 
 godot::RID SharedLiveCpuTextureRidState::snapshot_rid() const {
@@ -293,16 +486,24 @@ godot::RID SharedLiveCpuTextureRidState::snapshot_rid() const {
 }
 
 void SharedLiveCpuTextureRidState::replace_rid(const godot::RID& texture_rid_in) {
+  LiveCpuReleaseProducerLease release_admission;
   godot::RID prior;
+  godot::RID rejected_incoming;
   {
     std::lock_guard<std::mutex> lock(mutex);
-    prior = texture_rid;
-    texture_rid = texture_rid_in;
+    if (invalidated && texture_rid_in.is_valid()) {
+      rejected_incoming = texture_rid_in;
+    } else {
+      prior = texture_rid;
+      texture_rid = texture_rid_in;
+    }
   }
-  if (!prior.is_valid() || prior == texture_rid_in) {
-    return;
+  if (prior.is_valid() && prior != texture_rid_in) {
+    release_live_cpu_texture_rid(prior);
   }
-  release_live_cpu_texture_rid(prior);
+  if (rejected_incoming.is_valid()) {
+    release_live_cpu_texture_rid(rejected_incoming);
+  }
 }
 
 void SharedLiveCpuTextureRidState::clear() {
@@ -310,6 +511,7 @@ void SharedLiveCpuTextureRidState::clear() {
 }
 
 void SharedLiveCpuTextureRidState::invalidate_and_release() {
+  LiveCpuReleaseProducerLease release_admission;
   godot::RID prior;
   {
     std::lock_guard<std::mutex> lock(mutex);
@@ -327,18 +529,18 @@ bool SharedLiveCpuTextureRidState::draw_allowed() const {
 
 SharedLiveCpuTextureRidState::~SharedLiveCpuTextureRidState() {
   clear();
+  unregister_live_cpu_texture_rid_state(registration_id);
 }
 
 uint64_t register_live_cpu_display_wrapper_borrow(uint64_t stream_id) {
-  if (stream_id == 0) {
-    return 0;
-  }
   std::lock_guard<std::mutex> lock(g_live_cpu_display_wrapper_borrow_mutex);
   const uint64_t borrow_id = g_next_live_cpu_display_wrapper_borrow_id++;
   g_live_cpu_display_wrapper_borrows.emplace(borrow_id, CpuDisplayWrapperBorrow{stream_id});
-  uint32_t& count = g_live_cpu_display_wrapper_borrow_counts[stream_id];
-  if (count != UINT32_MAX) {
-    count += 1u;
+  if (stream_id != 0) {
+    uint32_t& count = g_live_cpu_display_wrapper_borrow_counts[stream_id];
+    if (count != UINT32_MAX) {
+      count += 1u;
+    }
   }
   return borrow_id;
 }
@@ -366,6 +568,9 @@ void unregister_live_cpu_display_wrapper_borrow(uint64_t borrow_id) {
   }
   const uint64_t stream_id = it->second.stream_id;
   g_live_cpu_display_wrapper_borrows.erase(it);
+  if (stream_id == 0) {
+    return;
+  }
   auto count_it = g_live_cpu_display_wrapper_borrow_counts.find(stream_id);
   if (count_it == g_live_cpu_display_wrapper_borrow_counts.end()) {
     return;
@@ -433,6 +638,36 @@ void abandon_all_live_cpu_display_wrappers_before_stop() {
       continue;
     }
     wrapper->invalidate();
+  }
+}
+
+void drain_live_cpu_display_bridge_before_stop() {
+  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
+  for (;;) {
+    request_pending_live_cpu_texture_create_drain();
+    request_pending_live_cpu_texture_release_drain();
+    {
+      std::lock_guard<std::mutex> lock(g_pending_live_cpu_texture_mutex);
+      if (g_live_cpu_display_bridge_phase != LiveCpuDisplayBridgePhase::Active ||
+          (g_pending_live_cpu_texture_creates.empty() &&
+           g_pending_live_cpu_texture_releases.empty() &&
+           !g_pending_live_cpu_texture_create_drain_scheduled &&
+           !g_pending_live_cpu_texture_create_drain_running &&
+           !g_pending_live_cpu_texture_release_drain_scheduled &&
+           !g_pending_live_cpu_texture_release_drain_running &&
+           g_live_cpu_release_producers == 0 &&
+           g_live_cpu_state_producers == 0)) {
+        return;
+      }
+    }
+    if (!rs) {
+      godot::UtilityFunctions::push_error(
+          "[CamBANG][CpuDisplay] cannot drain accepted render work: RenderingServer unavailable");
+      return;
+    }
+    // Fence prior callbacks without holding the bridge queue mutex. The loop
+    // covers work admitted by a callback while the preceding fence ran.
+    rs->force_sync();
   }
 }
 

@@ -865,40 +865,72 @@ function Invoke-CapturedProcess {
     $stdoutTemp = [System.IO.Path]::GetTempFileName()
     $stderrTemp = [System.IO.Path]::GetTempFileName()
     try {
-        Push-Location $workingDirResolved
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $FilePath
+        $psi.Arguments = Convert-ToProcessArgumentString -Arguments $Arguments
+        $psi.WorkingDirectory = $workingDirResolved
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+
+        $proc = New-Object System.Diagnostics.Process
+        $proc.StartInfo = $psi
+        $stdoutTask = $null
+        $stderrTask = $null
         try {
-            $previousErrorActionPreference = $ErrorActionPreference
-            $hasNativeCommandPreference = Test-Path variable:PSNativeCommandUseErrorActionPreference
-            $previousNativeCommandPreference = $false
-            try {
-                # Let native stderr stay in the captured log files; the real failure signal is exit code.
-                $ErrorActionPreference = "Continue"
-                if ($hasNativeCommandPreference) {
-                    $previousNativeCommandPreference = $PSNativeCommandUseErrorActionPreference
-                    $PSNativeCommandUseErrorActionPreference = $false
-                }
+            $null = $proc.Start()
+            # Drain both pipes asynchronously while the process runs so a
+            # verbose Godot/adb command cannot deadlock on a full redirected
+            # output buffer.
+            $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+            $stderrTask = $proc.StandardError.ReadToEndAsync()
 
-                & $FilePath @Arguments 1> $stdoutTemp 2> $stderrTemp
-                $exitCode = $LASTEXITCODE
+            if ($CommandTimeoutSec -gt 0) {
+                $exited = $proc.WaitForExit($CommandTimeoutSec * 1000)
             }
-            finally {
-                if ($hasNativeCommandPreference) {
-                    $PSNativeCommandUseErrorActionPreference = $previousNativeCommandPreference
-                }
-                $ErrorActionPreference = $previousErrorActionPreference
+            else {
+                $proc.WaitForExit()
+                $exited = $true
             }
 
-            if ($null -eq $exitCode -or [string]::IsNullOrWhiteSpace([string]$exitCode)) {
-                $exitCode = if ($?) { 0 } else { 1 }
+            $timedOut = -not $exited
+            if ($timedOut) {
+                Stop-ProcessTree -ProcessId $proc.Id
+                if (-not $proc.WaitForExit(5000)) {
+                    try {
+                        $proc.Kill()
+                    }
+                    catch { }
+                    $null = $proc.WaitForExit(5000)
+                }
             }
+
+            # A misbehaving descendant can retain inherited pipe handles even
+            # after the direct child exits. Keep output collection bounded too.
+            $outputDrainTimeoutMs = 5000
+            $stdoutText = if ($stdoutTask.Wait($outputDrainTimeoutMs)) {
+                $stdoutTask.GetAwaiter().GetResult()
+            }
+            else {
+                "[stdout drain did not complete within $outputDrainTimeoutMs ms]"
+            }
+            $stderrText = if ($stderrTask.Wait($outputDrainTimeoutMs)) {
+                $stderrTask.GetAwaiter().GetResult()
+            }
+            else {
+                "[stderr drain did not complete within $outputDrainTimeoutMs ms]"
+            }
+            $exitCode = if ($proc.HasExited) { $proc.ExitCode } else { 124 }
         }
         finally {
-            Pop-Location
+            if ($null -ne $proc) {
+                $proc.Dispose()
+            }
         }
 
-        $timedOut = $false
-        $stdoutText = Get-Content -Raw $stdoutTemp -ErrorAction SilentlyContinue
-        $stderrText = Get-Content -Raw $stderrTemp -ErrorAction SilentlyContinue
+        Set-Content -LiteralPath $stdoutTemp -Value $stdoutText -NoNewline
+        Set-Content -LiteralPath $stderrTemp -Value $stderrText -NoNewline
 
         if ($AppendToLogs) {
             $header = if ([string]::IsNullOrWhiteSpace($StepLabel)) {

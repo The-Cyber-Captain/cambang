@@ -1,12 +1,12 @@
 #pragma once
 
-#include <godot_cpp/classes/ref_counted.hpp>
+#include <godot_cpp/core/object.hpp>
 #include <godot_cpp/core/class_db.hpp>
 
 namespace cambang {
 
-class RenderThreadDrainHelper : public godot::RefCounted {
-  GDCLASS(RenderThreadDrainHelper, godot::RefCounted);
+class RenderThreadDrainHelper : public godot::Object {
+  GDCLASS(RenderThreadDrainHelper, godot::Object);
 
 public:
   bool drain_pending_releases_on_render_thread();
@@ -19,7 +19,7 @@ public:
 };
 
 // Internal-only: registers bridge helper classes required for Godot ClassDB/
-// RefCounted instantiation (e.g., RenderThreadDrainHelper). Not public API.
+// callback-target instantiation (e.g., RenderThreadDrainHelper). Not public API.
 void register_synthetic_gpu_backing_internal_classes();
 
 } // namespace cambang

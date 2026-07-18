@@ -190,8 +190,8 @@ PowerShell helper for local/Codex runs of harness-verdict scenes:
 ```powershell
 .\run_godot.ps1 `
   -Scene res://scenes/568_backing_plan_evaluation_verify.tscn `
-  -QuitAfter 10 `
   -CaptureLogs `
+  -TimeoutSec 60 `
   -RunLabel scene568_runtime_default `
   -ExtraArgs @("--cambang-synth-producer-output-form=runtime_default")
 ```
@@ -199,8 +199,8 @@ PowerShell helper for local/Codex runs of harness-verdict scenes:
 ```powershell
 .\run_godot.ps1 `
   -Scene res://scenes/568_backing_plan_evaluation_verify.tscn `
-  -QuitAfter 10 `
   -CaptureLogs `
+  -TimeoutSec 60 `
   -RunLabel scene568_gpu_only_expected_unsupported `
   -ExtraArgs @("--rendering-method=compatibility", "--cambang-synth-producer-output-form=gpu_only")
 ```
@@ -262,6 +262,22 @@ Launcher note:
 - `run_godot.ps1` accepts `--rendering-method=mobile`, `--rendering-method=compatibility`, and `--rendering-method=gl_compatibility`; it normalizes `compatibility` to `gl_compatibility`
 - on Windows, it passes rendering-method/driver engine args in the split `--flag value` form expected by the local Godot executable, while maintainer override args remain user args after `--`
 - `-ExpectedOkPattern` and `-ExpectedUnsupportedPattern` are intentionally not supported; add or fix a scene-level `[CamBANG][HarnessVerdict]` line instead of adding runner-side regex exceptions
+- captured host processes are subject to `-TimeoutSec`; timeout terminates the
+  process tree, records exit `124` when no earlier exit is available, and is a
+  classification error rather than an unbounded synchronous wait
+
+Authoritative Tranche 4 render-teardown gates (each iteration launches through
+`run_godot.ps1` and preserves its own artifacts):
+
+```powershell
+.\run_cpu_display_teardown_race_stress.ps1 -Iterations 25 -TimeoutSec 30
+.\run_gpu_display_teardown_race_stress.ps1 -Iterations 25 -TimeoutSec 30
+```
+
+The GPU gate is windowed and uses the mobile renderer with GPU-only Synthetic
+output. Both gates require the shared harness verdict and reject ObjectDB/RID
+leaks, release-after-closure, wrong-thread signatures, timeouts, crashes, and
+non-zero exits.
 
 Notes for Codex/agent validation on this machine:
 

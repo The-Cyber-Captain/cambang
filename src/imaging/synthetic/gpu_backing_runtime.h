@@ -50,6 +50,10 @@ struct SyntheticGpuBackingRuntimeOps final {
       uint64_t& texture_update_skipped) noexcept = nullptr;
 };
 
+// The table is non-owning and must remain alive until a matching clear has
+// returned. Installation safely drains a different active table before
+// publishing the replacement. Clear closes admission first, then waits for
+// every call already admitted through this seam to return.
 void set_synthetic_gpu_backing_runtime_ops(const SyntheticGpuBackingRuntimeOps* ops) noexcept;
 void clear_synthetic_gpu_backing_runtime_ops() noexcept;
 

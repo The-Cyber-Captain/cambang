@@ -1,6 +1,7 @@
 #include "imaging/synthetic/gpu_backing_runtime.h"
 
-#if !defined(CAMBANG_GDE_BUILD) || !(CAMBANG_GDE_BUILD)
+#if (!defined(CAMBANG_GDE_BUILD) || !(CAMBANG_GDE_BUILD)) && \
+    (!defined(CAMBANG_INTERNAL_SMOKE) || !(CAMBANG_INTERNAL_SMOKE))
 namespace cambang {
 
 std::shared_ptr<void> synthetic_gpu_backing_retain_primary_gpu_backing_rgba8(

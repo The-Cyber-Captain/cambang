@@ -1800,6 +1800,51 @@ static int test_provider_callback_ingress_null_sink_frame_release_balances_telem
   return 0;
 }
 
+static int test_resource_aggregate_clear_preserves_outstanding_backing() {
+  constexpr uint64_t kOutstandingBackingStreamId = 434343;
+  ResourceAggregateTelemetry& telemetry = global_resource_aggregate_telemetry();
+  const ScopedResourceTelemetryKey key =
+      make_stream_scoped_resource_telemetry(kOutstandingBackingStreamId);
+
+  telemetry.clear();
+  telemetry.retained_gpu_backing_created(key);
+  telemetry.clear();
+
+  auto find_bucket = [&telemetry]() -> std::optional<ScopedResourceTelemetryKey> {
+    for (const auto& bucket : telemetry.snapshot()) {
+      if (bucket.telemetry_scope == TelemetryScope::STREAM &&
+          bucket.stream_id == kOutstandingBackingStreamId) {
+        return bucket;
+      }
+    }
+    return std::nullopt;
+  };
+
+  const auto outstanding = find_bucket();
+  if (!outstanding || outstanding->retained_gpu_backing_current != 1 ||
+      outstanding->retained_gpu_backing_total_created != 1 ||
+      outstanding->retained_gpu_backing_total_released != 0) {
+    std::cerr << "Expected telemetry clear to preserve an outstanding retained GPU backing\n";
+    return 1;
+  }
+
+  telemetry.retained_gpu_backing_released(key);
+  const auto balanced = find_bucket();
+  if (!balanced || balanced->retained_gpu_backing_current != 0 ||
+      balanced->retained_gpu_backing_total_created != 1 ||
+      balanced->retained_gpu_backing_total_released != 1) {
+    std::cerr << "Expected late retained GPU backing release to balance preserved telemetry\n";
+    return 1;
+  }
+
+  telemetry.clear();
+  if (find_bucket()) {
+    std::cerr << "Expected telemetry clear to retire the balanced retained GPU backing bucket\n";
+    return 1;
+  }
+  return 0;
+}
+
 
 static int test_provider_open_close_refusal_visibility() {
   CoreRuntime rt;
@@ -4799,6 +4844,14 @@ int main(int argc, char** argv) {
                              [] { return test_provider_open_close_refusal_visibility(); })) {
       if (reporter.verbose()) reporter.print_summary();
       reporter.print_fail_line("core_spine_smoke", "test_provider_open_close_refusal_visibility", r);
+      return r;
+    }
+    if (int r = reporter.run("test_resource_aggregate_clear_preserves_outstanding_backing",
+                             [] { return test_resource_aggregate_clear_preserves_outstanding_backing(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_resource_aggregate_clear_preserves_outstanding_backing",
+                               r);
       return r;
     }
     if (int r = reporter.run("test_provider_command_refusal_and_timeout_truth",

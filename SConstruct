@@ -651,6 +651,7 @@ maintainer_tools_clean_outputs = [
     _program_path("phase3_snapshot_verify"),
     _program_path("verify_case_runner"),
     _program_path("provider_compliance_verify"),
+    _program_path("synthetic_gpu_backing_runtime_verify"),
     _program_path("restart_boundary_verify"),
     _program_path("synthetic_only_provider_support_verify"),
     _program_path("core_thread_liveness_watchdog_verify"),
@@ -803,6 +804,14 @@ if build_maintainer_tools:
         source=provider_maintainer_tools_sources,
     )
 
+    synthetic_gpu_backing_runtime_verify_prog = maintainer_tools_env.Program(
+        target=os.path.join(out_dir, "synthetic_gpu_backing_runtime_verify"),
+        source=[
+            os.path.join(maintainer_tools_obj_dir, "imaging", "synthetic", "gpu_backing_runtime.cpp"),
+            "src/smoke/synthetic_gpu_backing_runtime_verify.cpp",
+        ],
+    )
+
     synthetic_only_provider_support_obj_dir = os.path.join(out_dir, "synthetic_only_provider_support_obj")
     maintainer_tools_clean_outputs.append(synthetic_only_provider_support_obj_dir)
     synthetic_only_provider_support_env = env.Clone()
@@ -849,6 +858,7 @@ if build_maintainer_tools:
             phase3_maintainer_tools_prog,
             verify_case_runner_prog,
             provider_maintainer_tools_prog,
+            synthetic_gpu_backing_runtime_verify_prog,
             restart_boundary_maintainer_tools_prog,
             synthetic_only_provider_support_prog,
         ],
