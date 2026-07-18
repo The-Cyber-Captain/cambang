@@ -11,7 +11,10 @@
 #include <cstdlib>
 #include <cstdio>
 #include <limits>
+#include <new>
+#include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 #include "imaging/synthetic/scenario_loader.h"
@@ -211,7 +214,7 @@ SyntheticProvider::~SyntheticProvider() {
   if (initialized_) {
     (void)shutdown();
   } else {
-    stop_and_join_capture_threads_();
+    stop_and_join_capture_executor_();
   }
 }
 
@@ -517,14 +520,13 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
     callbacks_ = nullptr;
     return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
   }
-  initialized_ = true;
   shutting_down_ = false;
-  {
-    std::lock_guard<std::mutex> capture_lock(capture_mutex_);
-    capture_admission_closed_ = false;
-    ++capture_generation_;
-    in_flight_captures_.clear();
+  if (!start_capture_executor_()) {
+    strand_.stop();
+    callbacks_ = nullptr;
+    return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
   }
+  initialized_ = true;
   {
     std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
     capture_pause_depth_by_device_.clear();
@@ -1039,13 +1041,16 @@ uint64_t SyntheticProvider::ensure_native_acquisition_session_(DeviceState& d) {
     return 0;
   }
 
-  d.acquisition_session_native_id = alloc_native_id_(NativeObjectType::AcquisitionSession);
-  if (d.acquisition_session_native_id == 0) {
+  const uint64_t native_id =
+      alloc_native_id_(NativeObjectType::AcquisitionSession);
+  if (native_id == 0) {
     return 0;
   }
 
+  d.acquisition_session_native_id = native_id;
+
   NativeObjectCreateInfo info{};
-  info.native_id = d.acquisition_session_native_id;
+  info.native_id = native_id;
   info.type = static_cast<uint32_t>(NativeObjectType::AcquisitionSession);
   info.root_id = d.root_id;
   info.owner_device_instance_id = d.device_instance_id;
@@ -1053,8 +1058,16 @@ uint64_t SyntheticProvider::ensure_native_acquisition_session_(DeviceState& d) {
   info.owner_rig_id = 0;
   info.has_created_ns = true;
   info.created_ns = clock_.now_ns();
-  strand_.post_native_object_created(info);
-  return d.acquisition_session_native_id;
+  try {
+    strand_.post_native_object_created(info);
+  } catch (...) {
+    // Admission has not retained this session yet. Do not leave an unpublished
+    // native object installed in device state if the callback strand cannot
+    // accept its create fact.
+    d.acquisition_session_native_id = 0;
+    throw;
+  }
+  return native_id;
 }
 
 void SyntheticProvider::retain_native_acquisition_session_for_stream_(DeviceState& d) {
@@ -1535,24 +1548,19 @@ ProviderResult SyntheticProvider::trigger_capture_submission(const CaptureSubmis
   {
     std::unique_lock<std::mutex> capture_lock(capture_mutex_);
     std::unique_lock<std::mutex> state_lock(provider_state_mutex_);
-    admission_result =
-        validate_and_admit_capture_submission_locked_(submission, job, &failure_info);
+    try {
+      admission_result =
+          validate_and_admit_capture_submission_locked_(submission, job, &failure_info);
+    } catch (...) {
+      rollback_capture_submission_locked_(job);
+      return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
+    }
     if (!admission_result.ok()) {
       return admission_result;
     }
+    enqueue_capture_submission_locked_(job);
   }
-
-  try {
-    start_capture_thread_(job);
-  } catch (const std::exception&) {
-    for (const DeviceCaptureJob& device_job : job.device_jobs) {
-      finish_device_capture_job_(device_job,
-                                 job.generation,
-                                 CaptureTerminalKind::Failed,
-                                 ProviderError::ERR_PROVIDER_FAILED);
-    }
-    return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
-  }
+  capture_cv_.notify_all();
   return ProviderResult::success();
 }
 
@@ -1638,6 +1646,16 @@ ProviderResult SyntheticProvider::validate_and_admit_capture_submission_locked_(
       set_failure_info("capture_dimensions_overflow", req.device_instance_id, &dev_it->second);
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
+    const uint32_t stride_bytes = req.width * 4u;
+    if (static_cast<size_t>(req.height) >
+        (std::numeric_limits<size_t>::max() /
+         static_cast<size_t>(stride_bytes))) {
+      set_failure_info(
+          "capture_frame_size_overflow",
+          req.device_instance_id,
+          &dev_it->second);
+      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+    }
     if (!is_valid_capture_still_image_bundle(req.still_image_bundle, supports_multi_image_still_sequence())) {
       set_failure_info("invalid_still_image_bundle", req.device_instance_id, &dev_it->second);
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
@@ -1655,51 +1673,31 @@ ProviderResult SyntheticProvider::validate_and_admit_capture_submission_locked_(
     DeviceCaptureJob device_job{};
     device_job.request = req;
     device_job.format_fourcc = fmt;
-    device_job.stride_bytes = req.width * 4u;
+    device_job.stride_bytes = stride_bytes;
     device_job.frame_size_bytes = static_cast<size_t>(device_job.stride_bytes) * static_cast<size_t>(req.height);
+    device_job.capture_timestamp_ns = clock_.now_ns();
+    device_job.output_form_mode = resolve_producer_output_form_mode_(capture_truth);
+    if (req.requested_retained_plan.valid) {
+      device_job.output_form_mode = req.requested_retained_plan.primary_cpu()
+          ? SyntheticProducerOutputFormMode::CpuOnly
+          : (req.requested_retained_plan.retain_cpu_sidecar()
+              ? SyntheticProducerOutputFormMode::CpuAndGpu
+              : SyntheticProducerOutputFormMode::GpuOnly);
+    }
     job.device_jobs.push_back(std::move(device_job));
   }
 
-  for (DeviceCaptureJob& device_job : job.device_jobs) {
-    auto dev_it = devices_.find(device_job.request.device_instance_id);
-    if (dev_it == devices_.end() || !dev_it->second.open) {
-      const DeviceState* device_state =
-          dev_it == devices_.end() ? nullptr : &dev_it->second;
-      for (const DeviceCaptureJob& retained : job.device_jobs) {
-        if (retained.acquisition_session_id != 0) {
-          release_native_acquisition_session_for_capture_(retained.request.device_instance_id);
-        }
-      }
-      set_failure_info(
-          "device_not_open_during_retain",
-          device_job.request.device_instance_id,
-          device_state);
-      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
-    }
-    retain_native_acquisition_session_for_capture_(dev_it->second);
-    if (dev_it->second.acquisition_session_capture_refs == 0 || dev_it->second.acquisition_session_native_id == 0) {
-      for (const DeviceCaptureJob& retained : job.device_jobs) {
-        if (retained.acquisition_session_id != 0) {
-          release_native_acquisition_session_for_capture_(retained.request.device_instance_id);
-        }
-      }
-      set_failure_info(
-          "capture_session_retain_failed",
-          device_job.request.device_instance_id,
-          &dev_it->second);
-      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
-    }
-    device_job.acquisition_session_id = dev_it->second.acquisition_session_native_id;
+  if (job.device_jobs.size() >
+      (kCaptureQueueCapacity - capture_queue_count_)) {
+    set_failure_info("capture_executor_saturated", 0, nullptr);
+    return ProviderResult::failure(ProviderError::ERR_BUSY);
   }
 
   for (const DeviceCaptureJob& device_job : job.device_jobs) {
-    const InFlightCaptureKey key{device_job.request.capture_id, device_job.request.device_instance_id};
+    const InFlightCaptureKey key{
+        device_job.request.capture_id,
+        device_job.request.device_instance_id};
     if (in_flight_captures_.find(key) != in_flight_captures_.end()) {
-      for (const DeviceCaptureJob& retained : job.device_jobs) {
-        if (retained.acquisition_session_id != 0) {
-          release_native_acquisition_session_for_capture_(retained.request.device_instance_id);
-        }
-      }
       auto dev_it = devices_.find(device_job.request.device_instance_id);
       const DeviceState* device_state =
           dev_it == devices_.end() ? nullptr : &dev_it->second;
@@ -1711,24 +1709,115 @@ ProviderResult SyntheticProvider::validate_and_admit_capture_submission_locked_(
     }
   }
 
-  for (const DeviceCaptureJob& device_job : job.device_jobs) {
-    const InFlightCaptureKey key{device_job.request.capture_id, device_job.request.device_instance_id};
-    InFlightCaptureDevice in_flight{};
-    in_flight.capture_id = device_job.request.capture_id;
-    in_flight.device_instance_id = device_job.request.device_instance_id;
-    in_flight.acquisition_session_id = device_job.acquisition_session_id;
-    in_flight.generation = job.generation;
-    in_flight_captures_.emplace(key, in_flight);
-    ++capture_pause_depth_by_device_[device_job.request.device_instance_id];
+  try {
+    for (DeviceCaptureJob& device_job : job.device_jobs) {
+      auto dev_it = devices_.find(device_job.request.device_instance_id);
+      if (dev_it == devices_.end() || !dev_it->second.open) {
+        const DeviceState* device_state =
+            dev_it == devices_.end() ? nullptr : &dev_it->second;
+        rollback_capture_submission_locked_(job);
+        set_failure_info(
+            "device_not_open_during_retain",
+            device_job.request.device_instance_id,
+            device_state);
+        return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+      }
+      retain_native_acquisition_session_for_capture_(dev_it->second);
+      if (dev_it->second.acquisition_session_capture_refs == 0 ||
+          dev_it->second.acquisition_session_native_id == 0) {
+        rollback_capture_submission_locked_(job);
+        set_failure_info(
+            "capture_session_retain_failed",
+            device_job.request.device_instance_id,
+            &dev_it->second);
+        return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+      }
+      device_job.acquisition_session_id =
+          dev_it->second.acquisition_session_native_id;
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+      if (next_capture_admission_fault_for_test_ ==
+          CaptureAdmissionFaultForTest::AfterFirstRetain) {
+        next_capture_admission_fault_for_test_ =
+            CaptureAdmissionFaultForTest::None;
+        throw std::bad_alloc{};
+      }
+#endif
+    }
+  } catch (...) {
+    rollback_capture_submission_locked_(job);
+    set_failure_info("capture_session_retain_exception", 0, nullptr);
+    return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
+  }
+
+  try {
+    for (const DeviceCaptureJob& device_job : job.device_jobs) {
+      const InFlightCaptureKey key{
+          device_job.request.capture_id,
+          device_job.request.device_instance_id};
+      InFlightCaptureDevice in_flight{};
+      in_flight.capture_id = device_job.request.capture_id;
+      in_flight.device_instance_id = device_job.request.device_instance_id;
+      in_flight.acquisition_session_id = device_job.acquisition_session_id;
+      in_flight.generation = job.generation;
+      const auto inserted = in_flight_captures_.emplace(key, in_flight);
+      if (!inserted.second) {
+        rollback_capture_submission_locked_(job);
+        set_failure_info(
+            "duplicate_inflight_capture_key",
+            device_job.request.device_instance_id,
+            nullptr);
+        return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+      }
+      ++capture_pause_depth_by_device_[device_job.request.device_instance_id];
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+      if (next_capture_admission_fault_for_test_ ==
+          CaptureAdmissionFaultForTest::AfterFirstRegistration) {
+        next_capture_admission_fault_for_test_ =
+            CaptureAdmissionFaultForTest::None;
+        throw std::bad_alloc{};
+      }
+#endif
+    }
+  } catch (...) {
+    rollback_capture_submission_locked_(job);
+    set_failure_info("capture_admission_allocation_failed", 0, nullptr);
+    return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
   }
 
   out_job = std::move(job);
   return ProviderResult::success();
 }
 
-bool SyntheticProvider::capture_shutdown_requested_() const noexcept {
-  std::lock_guard<std::mutex> capture_lock(capture_mutex_);
-  return capture_admission_closed_;
+void SyntheticProvider::rollback_capture_submission_locked_(
+    CaptureSubmissionJob& job) noexcept {
+  for (DeviceCaptureJob& device_job : job.device_jobs) {
+    const InFlightCaptureKey key{
+        device_job.request.capture_id,
+        device_job.request.device_instance_id};
+    const bool had_in_flight = in_flight_captures_.erase(key) != 0;
+    if (had_in_flight) {
+      auto pause_it = capture_pause_depth_by_device_.find(
+          device_job.request.device_instance_id);
+      if (pause_it != capture_pause_depth_by_device_.end()) {
+        if (pause_it->second > 1) {
+          --pause_it->second;
+        } else {
+          capture_pause_depth_by_device_.erase(pause_it);
+        }
+      }
+    }
+    if (device_job.acquisition_session_id != 0) {
+      try {
+        release_native_acquisition_session_for_capture_(
+            device_job.request.device_instance_id);
+      } catch (...) {
+        std::fprintf(
+            stderr,
+            "[CamBANG][SyntheticProvider] exception while rolling back capture-session retain\n");
+      }
+      device_job.acquisition_session_id = 0;
+    }
+  }
 }
 
 bool SyntheticProvider::should_stop_capture_job_(uint64_t generation) const noexcept {
@@ -1736,59 +1825,183 @@ bool SyntheticProvider::should_stop_capture_job_(uint64_t generation) const noex
   return capture_admission_closed_ || generation != capture_generation_;
 }
 
-void SyntheticProvider::start_capture_thread_(const CaptureSubmissionJob& job) {
-  std::thread worker([this, job]() mutable {
-    // Thread entry function: an uncaught exception escaping here is UB and
-    // terminates the whole process, so it must not propagate past this point.
-    try {
-      run_capture_submission_(std::move(job));
-    } catch (const std::exception& e) {
-      std::fprintf(stderr, "[CamBANG][SyntheticProvider] uncaught exception in capture submission thread: %s\n", e.what());
-    } catch (...) {
-      std::fprintf(stderr, "[CamBANG][SyntheticProvider] uncaught non-standard exception in capture submission thread\n");
-    }
-  });
-  std::lock_guard<std::mutex> capture_lock(capture_mutex_);
-  capture_threads_.push_back(std::move(worker));
+void SyntheticProvider::enqueue_capture_submission_locked_(
+    CaptureSubmissionJob& job) noexcept {
+  static_assert(
+      std::is_nothrow_move_constructible_v<CaptureWorkItem>,
+      "capture queue admission must not fail after provider state commits");
+  for (DeviceCaptureJob& device_job : job.device_jobs) {
+    capture_queue_[capture_queue_tail_].emplace(
+        CaptureWorkItem{std::move(device_job), job.generation});
+    capture_queue_tail_ =
+        (capture_queue_tail_ + 1) % kCaptureQueueCapacity;
+    ++capture_queue_count_;
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+    capture_max_queued_jobs_for_test_ =
+        std::max(capture_max_queued_jobs_for_test_, capture_queue_count_);
+#endif
+  }
 }
 
-void SyntheticProvider::run_capture_submission_(CaptureSubmissionJob job) {
-  if (should_stop_capture_job_(job.generation)) {
-    for (const DeviceCaptureJob& device_job : job.device_jobs) {
-      finish_device_capture_job_(device_job, job.generation, CaptureTerminalKind::Failed, ProviderError::ERR_SHUTTING_DOWN);
-    }
-    return;
-  }
+SyntheticProvider::CaptureWorkItem
+SyntheticProvider::dequeue_capture_work_locked_() noexcept {
+  std::optional<CaptureWorkItem>& slot = capture_queue_[capture_queue_head_];
+  CaptureWorkItem item = std::move(*slot);
+  slot.reset();
+  capture_queue_head_ =
+      (capture_queue_head_ + 1) % kCaptureQueueCapacity;
+  --capture_queue_count_;
+  return item;
+}
 
-  std::vector<std::thread> device_threads;
-  device_threads.reserve(job.device_jobs.size());
+bool SyntheticProvider::start_capture_executor_() noexcept {
+  std::vector<std::thread> workers;
   try {
-    for (const DeviceCaptureJob& device_job : job.device_jobs) {
-      device_threads.emplace_back([this, device_job, generation = job.generation]() mutable {
-        // Thread entry function: an uncaught exception escaping here is UB and
-        // terminates the whole process, so it must not propagate past this point.
-        try {
-          run_device_capture_job_(std::move(device_job), generation);
-        } catch (const std::exception& e) {
-          std::fprintf(stderr, "[CamBANG][SyntheticProvider] uncaught exception in device capture thread: %s\n", e.what());
-        } catch (...) {
-          std::fprintf(stderr, "[CamBANG][SyntheticProvider] uncaught non-standard exception in device capture thread\n");
-        }
-      });
+    {
+      std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+      if (!capture_workers_.empty() || capture_queue_count_ != 0 ||
+          capture_active_jobs_ != 0 || !in_flight_captures_.empty()) {
+        return false;
+      }
+      capture_admission_closed_ = true;
+      capture_executor_stop_requested_ = false;
+      capture_queue_head_ = 0;
+      capture_queue_tail_ = 0;
+      ++capture_generation_;
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+      capture_workers_paused_for_test_ = false;
+      capture_jobs_paused_after_dequeue_for_test_ = false;
+      next_capture_admission_fault_for_test_ =
+          CaptureAdmissionFaultForTest::None;
+      next_capture_worker_fault_for_test_ =
+          CaptureWorkerFaultForTest::None;
+      capture_max_queued_jobs_for_test_ = 0;
+      capture_max_active_jobs_for_test_ = 0;
+#endif
     }
-  } catch (const std::exception&) {
-    for (const DeviceCaptureJob& device_job : job.device_jobs) {
-      finish_device_capture_job_(device_job, job.generation, CaptureTerminalKind::Failed, ProviderError::ERR_PROVIDER_FAILED);
+
+    workers.reserve(kCaptureWorkerCount);
+    for (size_t i = 0; i < kCaptureWorkerCount; ++i) {
+      workers.emplace_back([this]() { capture_worker_main_(); });
     }
-  }
-  for (std::thread& device_thread : device_threads) {
-    if (device_thread.joinable()) {
-      device_thread.join();
+
+    {
+      std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+      capture_workers_ = std::move(workers);
+      capture_admission_closed_ = false;
     }
+    return true;
+  } catch (...) {
+    {
+      std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+      capture_admission_closed_ = true;
+      capture_executor_stop_requested_ = true;
+    }
+    capture_cv_.notify_all();
+    for (std::thread& worker : workers) {
+      if (worker.joinable()) {
+        worker.join();
+      }
+    }
+    return false;
   }
 }
 
-void SyntheticProvider::run_device_capture_job_(DeviceCaptureJob job, uint64_t generation) {
+void SyntheticProvider::capture_worker_main_() noexcept {
+  while (true) {
+    CaptureWorkItem item{};
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+    CaptureWorkerFaultForTest fault = CaptureWorkerFaultForTest::None;
+#endif
+    {
+      std::unique_lock<std::mutex> capture_lock(capture_mutex_);
+      capture_cv_.wait(capture_lock, [&]() {
+        return capture_executor_stop_requested_ ||
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+               (!capture_workers_paused_for_test_ &&
+                capture_queue_count_ != 0);
+#else
+               capture_queue_count_ != 0;
+#endif
+      });
+      if (capture_executor_stop_requested_ && capture_queue_count_ == 0) {
+        return;
+      }
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+      if (capture_workers_paused_for_test_ &&
+          !capture_executor_stop_requested_) {
+        continue;
+      }
+#endif
+      item = dequeue_capture_work_locked_();
+      ++capture_active_jobs_;
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+      capture_max_active_jobs_for_test_ =
+          std::max(capture_max_active_jobs_for_test_, capture_active_jobs_);
+      capture_cv_.wait(capture_lock, [&]() {
+        return capture_executor_stop_requested_ ||
+               !capture_jobs_paused_after_dequeue_for_test_;
+      });
+      fault = next_capture_worker_fault_for_test_;
+      next_capture_worker_fault_for_test_ =
+          CaptureWorkerFaultForTest::None;
+#endif
+    }
+
+    try {
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+      if (fault == CaptureWorkerFaultForTest::StandardException) {
+        throw std::runtime_error("injected capture worker failure");
+      }
+      if (fault == CaptureWorkerFaultForTest::NonStandardException) {
+        throw 1;
+      }
+#endif
+      run_device_capture_job_(item.job, item.generation);
+    } catch (const std::exception& e) {
+      std::fprintf(
+          stderr,
+          "[CamBANG][SyntheticProvider] capture worker exception: %s\n",
+          e.what());
+      try {
+        finish_device_capture_job_(
+            item.job,
+            item.generation,
+            CaptureTerminalKind::Failed,
+            ProviderError::ERR_PROVIDER_FAILED);
+      } catch (...) {
+        std::fprintf(
+            stderr,
+            "[CamBANG][SyntheticProvider] exception while terminalizing failed capture worker job\n");
+      }
+    } catch (...) {
+      std::fprintf(
+          stderr,
+          "[CamBANG][SyntheticProvider] non-standard capture worker exception\n");
+      try {
+        finish_device_capture_job_(
+            item.job,
+            item.generation,
+            CaptureTerminalKind::Failed,
+            ProviderError::ERR_PROVIDER_FAILED);
+      } catch (...) {
+        std::fprintf(
+            stderr,
+            "[CamBANG][SyntheticProvider] exception while terminalizing failed capture worker job\n");
+      }
+    }
+
+    {
+      std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+      if (capture_active_jobs_ > 0) {
+        --capture_active_jobs_;
+      }
+    }
+    capture_cv_.notify_all();
+  }
+}
+
+void SyntheticProvider::run_device_capture_job_(const DeviceCaptureJob& job, uint64_t generation) {
   if (should_stop_capture_job_(generation)) {
     finish_device_capture_job_(job, generation, CaptureTerminalKind::Failed, ProviderError::ERR_SHUTTING_DOWN);
     return;
@@ -1862,13 +2075,10 @@ bool SyntheticProvider::generate_device_capture_payloads_(
   dst.format = PatternSpec::PackedFormat::RGBA8;
   spec_setup_ns = provider_monotonic_now_ns() - spec_begin_ns;
 
-  uint64_t capture_ts_ns = 0;
-  {
-    const uint64_t timestamp_lock_begin_ns = provider_monotonic_now_ns();
-    std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
-    timestamp_lock_wait_ns = provider_monotonic_now_ns() - timestamp_lock_begin_ns;
-    capture_ts_ns = clock_.now_ns();
-  }
+  const uint64_t capture_ts_ns = job.capture_timestamp_ns;
+  // The virtual-clock sample is captured transactionally at admission while
+  // provider_state_mutex_ is held; workers consume only this immutable value.
+  timestamp_lock_wait_ns = 0;
   PatternOverlayData ov{};
   ov.frame_index = generator_frame_ordinal_from_ns_(capture_ts_ns, req.picture);
   ov.timestamp_ns = capture_ts_ns;
@@ -1882,18 +2092,8 @@ bool SyntheticProvider::generate_device_capture_payloads_(
     return false;
   }
 
-  const ProducerBackingCapabilities capture_truth =
-      capture_parent_context_backing_capabilities_locked_(
-          req.device_instance_id, req);
-  SyntheticProducerOutputFormMode output_form_mode =
-      resolve_producer_output_form_mode_(capture_truth);
-  if (req.requested_retained_plan.valid) {
-    output_form_mode = req.requested_retained_plan.primary_cpu()
-        ? SyntheticProducerOutputFormMode::CpuOnly
-        : (req.requested_retained_plan.retain_cpu_sidecar()
-            ? SyntheticProducerOutputFormMode::CpuAndGpu
-            : SyntheticProducerOutputFormMode::GpuOnly);
-  }
+  const SyntheticProducerOutputFormMode output_form_mode =
+      job.output_form_mode;
   auto* ready_stage_metrics = &triage_capture_ready_stage_cpu_primary_;
   if (output_form_mode == SyntheticProducerOutputFormMode::GpuOnly) {
     ready_stage_metrics =
@@ -2226,6 +2426,7 @@ void SyntheticProvider::finish_device_capture_job_(const DeviceCaptureJob& job,
   uint64_t terminal_post_ns = 0;
   bool should_post_terminal = false;
   bool should_release = false;
+  std::exception_ptr terminal_post_exception{};
   uint64_t capture_lock_acquired_ns = finish_begin_ns;
   uint64_t capture_lock_wait_begin_ns = finish_begin_ns;
   uint64_t state_wait_begin_ns = 0;
@@ -2281,19 +2482,20 @@ void SyntheticProvider::finish_device_capture_job_(const DeviceCaptureJob& job,
   }
 
   if (should_post_terminal) {
-    const uint64_t terminal_post_begin_ns = provider_monotonic_now_ns();
-    {
-      std::lock_guard<std::mutex> triage_lock(
-          triage_capture_ready_metrics_mutex_);
-      CaptureReadyTimingRecord& timing_record =
-          capture_ready_timing_record_(
-              job.request.capture_id, job.request.device_instance_id);
-      timing_record.capture_id = job.request.capture_id;
-      timing_record.device_instance_id = job.request.device_instance_id;
-      timing_record.acquisition_session_id = job.acquisition_session_id;
-      if (timing_record.has_provider_last_frame_posted_steady_ns &&
-          terminal_post_begin_ns >=
-              timing_record.provider_last_frame_posted_steady_ns) {
+    try {
+      const uint64_t terminal_post_begin_ns = provider_monotonic_now_ns();
+      {
+        std::lock_guard<std::mutex> triage_lock(
+            triage_capture_ready_metrics_mutex_);
+        CaptureReadyTimingRecord& timing_record =
+            capture_ready_timing_record_(
+                job.request.capture_id, job.request.device_instance_id);
+        timing_record.capture_id = job.request.capture_id;
+        timing_record.device_instance_id = job.request.device_instance_id;
+        timing_record.acquisition_session_id = job.acquisition_session_id;
+        if (timing_record.has_provider_last_frame_posted_steady_ns &&
+            terminal_post_begin_ns >=
+                timing_record.provider_last_frame_posted_steady_ns) {
         const uint64_t after_last_frame_before_terminal_ns =
             terminal_post_begin_ns -
             timing_record.provider_last_frame_posted_steady_ns;
@@ -2474,50 +2676,51 @@ void SyntheticProvider::finish_device_capture_job_(const DeviceCaptureJob& job,
             finish_non_state_total_ns;
         timing_record.provider_capture_ready_provider_window_total_ns +=
             after_last_frame_before_terminal_ns;
+        }
+        if (terminal == CaptureTerminalKind::Completed) {
+          timing_record.has_provider_post_capture_completed_steady_ns = true;
+          timing_record.provider_post_capture_completed_steady_ns =
+              terminal_post_begin_ns;
+        }
       }
       if (terminal == CaptureTerminalKind::Completed) {
-        timing_record.has_provider_post_capture_completed_steady_ns = true;
-        timing_record.provider_post_capture_completed_steady_ns =
-            terminal_post_begin_ns;
+        strand_.post_capture_completed(
+            job.request.capture_id, job.request.device_instance_id);
+      } else {
+        const ProviderError failure_error =
+            error == ProviderError::OK ? ProviderError::ERR_PROVIDER_FAILED
+                                       : error;
+        strand_.post_capture_failed(job.request.capture_id,
+                                    job.request.device_instance_id,
+                                    failure_error);
       }
-    }
-    if (terminal == CaptureTerminalKind::Completed) {
-      strand_.post_capture_completed(
-          job.request.capture_id, job.request.device_instance_id);
-    } else {
-      const ProviderError failure_error =
-          error == ProviderError::OK ? ProviderError::ERR_PROVIDER_FAILED
-                                     : error;
-      strand_.post_capture_failed(job.request.capture_id,
-                                  job.request.device_instance_id,
-                                  failure_error);
-    }
-    terminal_post_ns = provider_monotonic_now_ns() - terminal_post_begin_ns;
-    {
-      std::lock_guard<std::mutex> triage_lock(
-          triage_capture_ready_metrics_mutex_);
-      ready_stage_metrics->capture_terminal_post_total_ns += terminal_post_ns;
-      ready_stage_metrics->capture_ready_provider_window_total_ns +=
-          terminal_post_ns;
-      CaptureReadyTimingRecord& timing_record =
-          capture_ready_timing_record_(
-              job.request.capture_id, job.request.device_instance_id);
-      timing_record.provider_capture_terminal_post_total_ns =
-          terminal_post_ns;
-      timing_record.provider_capture_ready_provider_window_total_ns +=
-          terminal_post_ns;
+      terminal_post_ns = provider_monotonic_now_ns() - terminal_post_begin_ns;
+      {
+        std::lock_guard<std::mutex> triage_lock(
+            triage_capture_ready_metrics_mutex_);
+        ready_stage_metrics->capture_terminal_post_total_ns += terminal_post_ns;
+        ready_stage_metrics->capture_ready_provider_window_total_ns +=
+            terminal_post_ns;
+        CaptureReadyTimingRecord& timing_record =
+            capture_ready_timing_record_(
+                job.request.capture_id, job.request.device_instance_id);
+        timing_record.provider_capture_terminal_post_total_ns =
+            terminal_post_ns;
+        timing_record.provider_capture_ready_provider_window_total_ns +=
+            terminal_post_ns;
+      }
+    } catch (...) {
+      terminal_post_exception = std::current_exception();
     }
   }
   if (should_release) {
     std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
     release_native_acquisition_session_for_capture_(job.request.device_instance_id);
   }
+  if (terminal_post_exception) {
+    std::rethrow_exception(terminal_post_exception);
+  }
   (void)deferred_cpu_staging_bytes;
-}
-
-void SyntheticProvider::join_finished_capture_threads_() {
-  // std::thread does not expose non-blocking completion detection. Keep this
-  // hook for future executor maintenance; shutdown performs the deterministic join.
 }
 
 SyntheticProvider::CaptureReadyTimingRecord&
@@ -2571,20 +2774,98 @@ void SyntheticProvider::drain_paused_capture_descendants_for_host_() {
   }
 }
 
-void SyntheticProvider::stop_and_join_capture_threads_() {
-  std::vector<std::thread> threads;
+void SyntheticProvider::stop_and_join_capture_executor_() noexcept {
+  std::vector<std::thread> workers;
   {
     std::lock_guard<std::mutex> capture_lock(capture_mutex_);
     capture_admission_closed_ = true;
-    ++capture_generation_;
-    threads.swap(capture_threads_);
+    if (!capture_executor_stop_requested_) {
+      capture_executor_stop_requested_ = true;
+      ++capture_generation_;
+    }
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+    capture_workers_paused_for_test_ = false;
+    capture_jobs_paused_after_dequeue_for_test_ = false;
+#endif
+    workers.swap(capture_workers_);
   }
-  for (std::thread& thread : threads) {
-    if (thread.joinable()) {
-      thread.join();
+  capture_cv_.notify_all();
+  for (std::thread& worker : workers) {
+    if (worker.joinable()) {
+      worker.join();
     }
   }
+
+  // Every queued item is drained by the fixed workers after the generation is
+  // closed. Active items observe the same generation change at their next
+  // cancellation checkpoint. Joining above therefore owns the complete
+  // worker lifetime and leaves no job that can callback into a later restart.
+  std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+  if (capture_queue_count_ != 0 || capture_active_jobs_ != 0 ||
+      !in_flight_captures_.empty()) {
+    std::fprintf(
+        stderr,
+        "[CamBANG][SyntheticProvider] capture executor failed to reach quiescence queue=%zu active=%zu in_flight=%zu\n",
+        capture_queue_count_,
+        capture_active_jobs_,
+        in_flight_captures_.size());
+  }
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+  next_capture_worker_fault_for_test_ = CaptureWorkerFaultForTest::None;
+  next_capture_admission_fault_for_test_ =
+      CaptureAdmissionFaultForTest::None;
+#endif
 }
+
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+void SyntheticProvider::set_capture_workers_paused_for_test(bool paused) {
+  {
+    std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+    capture_workers_paused_for_test_ = paused;
+  }
+  capture_cv_.notify_all();
+}
+
+void SyntheticProvider::set_capture_jobs_paused_after_dequeue_for_test(
+    bool paused) {
+  {
+    std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+    capture_jobs_paused_after_dequeue_for_test_ = paused;
+  }
+  capture_cv_.notify_all();
+}
+
+void SyntheticProvider::inject_next_capture_admission_fault_for_test(
+    CaptureAdmissionFaultForTest fault) {
+  std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+  next_capture_admission_fault_for_test_ = fault;
+}
+
+void SyntheticProvider::inject_next_capture_worker_fault_for_test(
+    CaptureWorkerFaultForTest fault) {
+  std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+  next_capture_worker_fault_for_test_ = fault;
+}
+
+SyntheticProvider::CaptureExecutorSnapshotForTest
+SyntheticProvider::capture_executor_snapshot_for_test() const {
+  std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+  std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
+  CaptureExecutorSnapshotForTest snapshot{};
+  snapshot.worker_count = capture_workers_.size();
+  snapshot.worker_limit = kCaptureWorkerCount;
+  snapshot.queued_jobs = capture_queue_count_;
+  snapshot.queue_capacity = kCaptureQueueCapacity;
+  snapshot.active_jobs = capture_active_jobs_;
+  snapshot.in_flight_jobs = in_flight_captures_.size();
+  snapshot.paused_device_count = capture_pause_depth_by_device_.size();
+  snapshot.max_queued_jobs = capture_max_queued_jobs_for_test_;
+  snapshot.max_active_jobs = capture_max_active_jobs_for_test_;
+  snapshot.admission_closed = capture_admission_closed_;
+  snapshot.stop_requested = capture_executor_stop_requested_;
+  return snapshot;
+}
+#endif
 
 bool SyntheticProvider::has_in_flight_capture_for_device_locked_(uint64_t device_instance_id) const {
   for (const auto& kv : in_flight_captures_) {
@@ -2965,7 +3246,7 @@ ProviderResult SyntheticProvider::shutdown() {
   // Close capture admission and wait for accepted capture production to post a
   // terminal fact and release its retained acquisition-session references before
   // native/device teardown below.
-  stop_and_join_capture_threads_();
+  stop_and_join_capture_executor_();
 
   {
     std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
@@ -3016,7 +3297,7 @@ ProviderResult SyntheticProvider::shutdown() {
   shutting_down_ = false;
   {
     std::lock_guard<std::mutex> capture_lock(capture_mutex_);
-    capture_admission_closed_ = false;
+    capture_admission_closed_ = true;
   }
   return ProviderResult::success();
 }

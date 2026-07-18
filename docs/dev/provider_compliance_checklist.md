@@ -54,6 +54,14 @@ callers are synchronously blocked. Confirm that:
   accepted responsibility for later terminal success or failure reporting; it does
   not mean image payloads have already been acquired, generated, retained, or
   made Godot-visible
+- asynchronous capture execution has explicit hard bounds for both concurrent
+  workers and queued device jobs; saturation is returned as an admission
+  failure rather than hidden behind unbounded thread or queue growth
+- grouped capture admission is atomic: either every device job is admitted and
+  owned by the provider, or no member can emit started, frame, or terminal facts
+- after successful admission, each device capture emits exactly one completed
+  or failed terminal fact and releases its capture-session ownership exactly
+  once, including worker failure and provider shutdown
 - `stop_*`, `destroy_*`, `close_*`, and `shutdown()` are not long backend drains
   on the calling thread
 - provider methods called under `ProviderBroker` serialization do not

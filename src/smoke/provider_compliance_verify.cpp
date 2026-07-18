@@ -3203,6 +3203,343 @@ bool run_synthetic_provider_direct_sanity_check() {
   return assert_native_balance(cb_events, "synthetic_direct");
 }
 
+bool run_synthetic_capture_executor_correctness_check() {
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 2;
+  cfg.nominal.width = 8;
+  cfg.nominal.height = 8;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(cfg);
+
+  constexpr uint64_t kDeviceA = 701;
+  constexpr uint64_t kDeviceB = 702;
+  constexpr uint64_t kRootA = 70101;
+  constexpr uint64_t kRootB = 70201;
+  constexpr uint64_t kQueuedCaptureBase = 71000;
+  constexpr uint64_t kQueueTailCapture = 71100;
+  constexpr uint64_t kRejectedGroupedCapture = 71200;
+  constexpr uint64_t kRejectedOverflowCapture = 71201;
+  constexpr uint64_t kRetainAllocationFaultCapture = 71202;
+  constexpr uint64_t kRegistrationAllocationFaultCapture = 71203;
+  constexpr uint64_t kStandardFaultCapture = 71300;
+  constexpr uint64_t kNonStandardFaultCapture = 71301;
+  constexpr uint64_t kShutdownCaptureBase = 71400;
+  constexpr uint64_t kRestartCapture = 71500;
+  constexpr uint64_t kSustainedCaptureBase = 71600;
+
+  const auto wait_until = [](const std::function<bool()>& predicate) {
+    for (int i = 0; i < kMaxIters; ++i) {
+      if (predicate()) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+    return false;
+  };
+  const auto count_event = [&](const char* tag, uint64_t capture_id) {
+    size_t count = 0;
+    for (const EventRec& event : cb.snapshot_events()) {
+      if (event.tag == tag && event.id == capture_id) {
+        ++count;
+      }
+    }
+    return count;
+  };
+  const auto count_capture_frames = [&](uint64_t capture_id) {
+    size_t count = 0;
+    for (const EventRec& event : cb.snapshot_events()) {
+      if (event.tag == "frame" && event.capture_id == capture_id) {
+        ++count;
+      }
+    }
+    return count;
+  };
+  const auto make_request = [](uint64_t capture_id, uint64_t device_id) {
+    return make_direct_provider_default_still_capture_request(
+        capture_id, device_id, 8, 8, FOURCC_RGBA);
+  };
+
+  if (!provider.initialize(&cb).ok() ||
+      !provider.open_device("synthetic:0", kDeviceA, kRootA).ok() ||
+      !provider.open_device("synthetic:1", kDeviceB, kRootB).ok()) {
+    std::cerr << "FAIL synthetic capture executor setup failed\n";
+    return false;
+  }
+
+  auto snapshot = provider.capture_executor_snapshot_for_test();
+  if (snapshot.worker_limit == 0 ||
+      snapshot.worker_count != snapshot.worker_limit ||
+      snapshot.queue_capacity == 0 || snapshot.queued_jobs != 0 ||
+      snapshot.active_jobs != 0 || snapshot.in_flight_jobs != 0 ||
+      snapshot.admission_closed || snapshot.stop_requested) {
+    std::cerr << "FAIL synthetic capture executor initial bounds/state mismatch\n";
+    (void)provider.shutdown();
+    return false;
+  }
+
+  provider.set_capture_workers_paused_for_test(true);
+  const size_t queued_prefix = snapshot.queue_capacity - 1;
+  for (size_t i = 0; i < queued_prefix; ++i) {
+    if (!provider.trigger_capture(
+            make_request(kQueuedCaptureBase + i, kDeviceA)).ok()) {
+      std::cerr << "FAIL synthetic capture executor could not fill bounded queue\n";
+      (void)provider.shutdown();
+      return false;
+    }
+  }
+
+  CaptureSubmission grouped{};
+  grouped.capture_id = kRejectedGroupedCapture;
+  grouped.origin = CaptureSubmissionOrigin::RIG_CAPTURE;
+  grouped.rig_id = 77;
+  CaptureRequest grouped_a = make_request(grouped.capture_id, kDeviceA);
+  CaptureRequest grouped_b = make_request(grouped.capture_id, kDeviceB);
+  grouped_a.rig_id = grouped.rig_id;
+  grouped_b.rig_id = grouped.rig_id;
+  grouped.device_requests.push_back(grouped_a);
+  grouped.device_requests.push_back(grouped_b);
+  const ProviderResult grouped_result =
+      provider.trigger_capture_submission(grouped);
+  if (grouped_result.ok() || grouped_result.code != ProviderError::ERR_BUSY) {
+    std::cerr << "FAIL synthetic capture executor did not atomically reject grouped saturation\n";
+    (void)provider.shutdown();
+    return false;
+  }
+
+  if (!provider.trigger_capture(
+          make_request(kQueueTailCapture, kDeviceA)).ok()) {
+    std::cerr << "FAIL synthetic capture executor could not consume final queue slot\n";
+    (void)provider.shutdown();
+    return false;
+  }
+  const ProviderResult overflow_result = provider.trigger_capture(
+      make_request(kRejectedOverflowCapture, kDeviceA));
+  snapshot = provider.capture_executor_snapshot_for_test();
+  if (overflow_result.ok() || overflow_result.code != ProviderError::ERR_BUSY ||
+      snapshot.queued_jobs != snapshot.queue_capacity ||
+      snapshot.in_flight_jobs != snapshot.queue_capacity ||
+      snapshot.active_jobs != 0 ||
+      snapshot.max_queued_jobs != snapshot.queue_capacity) {
+    std::cerr << "FAIL synthetic capture executor saturation truth mismatch\n";
+    (void)provider.shutdown();
+    return false;
+  }
+
+  provider.set_capture_workers_paused_for_test(false);
+  if (!wait_until([&]() {
+        const auto current = provider.capture_executor_snapshot_for_test();
+        return current.queued_jobs == 0 && current.active_jobs == 0 &&
+               current.in_flight_jobs == 0 &&
+               current.paused_device_count == 0;
+      })) {
+    std::cerr << "FAIL synthetic capture executor did not drain saturated queue\n";
+    (void)provider.shutdown();
+    return false;
+  }
+  provider.advance(0);
+  for (size_t i = 0; i < queued_prefix; ++i) {
+    const uint64_t capture_id = kQueuedCaptureBase + i;
+    if (count_event("capture_completed", capture_id) != 1 ||
+        count_event("capture_failed", capture_id) != 0 ||
+        count_capture_frames(capture_id) != 1) {
+      std::cerr << "FAIL synthetic capture executor queued capture terminal/frame mismatch\n";
+      (void)provider.shutdown();
+      return false;
+    }
+  }
+  if (count_event("capture_completed", kQueueTailCapture) != 1 ||
+      count_event("capture_failed", kQueueTailCapture) != 0 ||
+      count_capture_frames(kQueueTailCapture) != 1 ||
+      count_event("capture_completed", kRejectedGroupedCapture) != 0 ||
+      count_event("capture_failed", kRejectedGroupedCapture) != 0 ||
+      count_capture_frames(kRejectedGroupedCapture) != 0 ||
+      count_event("capture_completed", kRejectedOverflowCapture) != 0 ||
+      count_event("capture_failed", kRejectedOverflowCapture) != 0 ||
+      count_capture_frames(kRejectedOverflowCapture) != 0) {
+    std::cerr << "FAIL synthetic capture executor rejection/terminal truth mismatch\n";
+    (void)provider.shutdown();
+    return false;
+  }
+
+  const auto submit_faulted_group = [&](
+      uint64_t capture_id,
+      SyntheticProvider::CaptureAdmissionFaultForTest fault) {
+    CaptureSubmission faulted_group = grouped;
+    faulted_group.capture_id = capture_id;
+    for (CaptureRequest& request : faulted_group.device_requests) {
+      request.capture_id = capture_id;
+    }
+    provider.inject_next_capture_admission_fault_for_test(fault);
+    const ProviderResult result =
+        provider.trigger_capture_submission(faulted_group);
+    const auto current = provider.capture_executor_snapshot_for_test();
+    provider.advance(0);
+    return !result.ok() &&
+           result.code == ProviderError::ERR_PROVIDER_FAILED &&
+           current.queued_jobs == 0 && current.active_jobs == 0 &&
+           current.in_flight_jobs == 0 &&
+           current.paused_device_count == 0 &&
+           count_event("capture_started", capture_id) == 0 &&
+           count_event("capture_completed", capture_id) == 0 &&
+           count_event("capture_failed", capture_id) == 0 &&
+           count_capture_frames(capture_id) == 0;
+  };
+  if (!submit_faulted_group(
+          kRetainAllocationFaultCapture,
+          SyntheticProvider::CaptureAdmissionFaultForTest::AfterFirstRetain) ||
+      !submit_faulted_group(
+          kRegistrationAllocationFaultCapture,
+          SyntheticProvider::CaptureAdmissionFaultForTest::
+              AfterFirstRegistration)) {
+    std::cerr << "FAIL synthetic capture executor allocation-fault rollback mismatch\n";
+    (void)provider.shutdown();
+    return false;
+  }
+
+  constexpr size_t kSustainedCaptureCount = 256;
+  for (size_t i = 0; i < kSustainedCaptureCount; ++i) {
+    const uint64_t capture_id = kSustainedCaptureBase + i;
+    if (!provider.trigger_capture(make_request(capture_id, kDeviceA)).ok() ||
+        !wait_until([&]() {
+          const auto current = provider.capture_executor_snapshot_for_test();
+          return count_event("capture_completed", capture_id) == 1 &&
+                 current.queued_jobs == 0 && current.active_jobs == 0 &&
+                 current.in_flight_jobs == 0;
+        }) ||
+        count_event("capture_failed", capture_id) != 0 ||
+        count_capture_frames(capture_id) != 1) {
+      std::cerr << "FAIL synthetic capture executor sustained capture sequence mismatch\n";
+      (void)provider.shutdown();
+      return false;
+    }
+    const auto sustained_snapshot =
+        provider.capture_executor_snapshot_for_test();
+    if (sustained_snapshot.worker_count !=
+            sustained_snapshot.worker_limit ||
+        sustained_snapshot.queued_jobs != 0 ||
+        sustained_snapshot.active_jobs != 0 ||
+        sustained_snapshot.in_flight_jobs != 0 ||
+        sustained_snapshot.paused_device_count != 0) {
+      std::cerr << "FAIL synthetic capture executor grew or retained state during sustained capture sequence\n";
+      (void)provider.shutdown();
+      return false;
+    }
+  }
+
+  provider.inject_next_capture_worker_fault_for_test(
+      SyntheticProvider::CaptureWorkerFaultForTest::StandardException);
+  if (!provider.trigger_capture(
+          make_request(kStandardFaultCapture, kDeviceA)).ok() ||
+      !wait_until([&]() {
+        return count_event("capture_failed", kStandardFaultCapture) == 1;
+      })) {
+    std::cerr << "FAIL synthetic capture executor standard exception did not terminalize\n";
+    (void)provider.shutdown();
+    return false;
+  }
+  provider.inject_next_capture_worker_fault_for_test(
+      SyntheticProvider::CaptureWorkerFaultForTest::NonStandardException);
+  if (!provider.trigger_capture(
+          make_request(kNonStandardFaultCapture, kDeviceA)).ok() ||
+      !wait_until([&]() {
+        return count_event("capture_failed", kNonStandardFaultCapture) == 1;
+      })) {
+    std::cerr << "FAIL synthetic capture executor non-standard exception did not terminalize\n";
+    (void)provider.shutdown();
+    return false;
+  }
+  for (uint64_t capture_id :
+       {kStandardFaultCapture, kNonStandardFaultCapture}) {
+    if (count_event("capture_failed", capture_id) != 1 ||
+        count_event("capture_completed", capture_id) != 0 ||
+        count_event("capture_started", capture_id) != 0 ||
+        count_capture_frames(capture_id) != 0) {
+      std::cerr << "FAIL synthetic capture executor exception ordering mismatch\n";
+      (void)provider.shutdown();
+      return false;
+    }
+  }
+
+  snapshot = provider.capture_executor_snapshot_for_test();
+  if (snapshot.worker_count != snapshot.worker_limit ||
+      snapshot.max_active_jobs > snapshot.worker_limit ||
+      snapshot.max_queued_jobs > snapshot.queue_capacity ||
+      snapshot.in_flight_jobs != 0 || snapshot.paused_device_count != 0) {
+    std::cerr << "FAIL synthetic capture executor sustained bounds mismatch\n";
+    (void)provider.shutdown();
+    return false;
+  }
+
+  provider.set_capture_jobs_paused_after_dequeue_for_test(true);
+  constexpr size_t kShutdownCaptureCount = 4;
+  for (size_t i = 0; i < kShutdownCaptureCount; ++i) {
+    if (!provider.trigger_capture(
+            make_request(kShutdownCaptureBase + i, kDeviceA)).ok()) {
+      std::cerr << "FAIL synthetic capture executor shutdown setup admission failed\n";
+      (void)provider.shutdown();
+      return false;
+    }
+  }
+  if (!wait_until([&]() {
+        const auto current = provider.capture_executor_snapshot_for_test();
+        return current.queued_jobs == 0 &&
+               current.active_jobs == kShutdownCaptureCount &&
+               current.in_flight_jobs == kShutdownCaptureCount;
+      })) {
+    std::cerr << "FAIL synthetic capture executor did not reach active shutdown gate\n";
+    (void)provider.shutdown();
+    return false;
+  }
+  if (!provider.shutdown().ok()) {
+    std::cerr << "FAIL synthetic capture executor shutdown failed\n";
+    return false;
+  }
+  snapshot = provider.capture_executor_snapshot_for_test();
+  if (snapshot.worker_count != 0 || snapshot.queued_jobs != 0 ||
+      snapshot.active_jobs != 0 || snapshot.in_flight_jobs != 0 ||
+      snapshot.paused_device_count != 0 || !snapshot.admission_closed ||
+      !snapshot.stop_requested) {
+    std::cerr << "FAIL synthetic capture executor shutdown did not quiesce\n";
+    return false;
+  }
+  for (size_t i = 0; i < kShutdownCaptureCount; ++i) {
+    const uint64_t capture_id = kShutdownCaptureBase + i;
+    if (count_event("capture_failed", capture_id) != 1 ||
+        count_event("capture_completed", capture_id) != 0 ||
+        count_event("capture_started", capture_id) != 0 ||
+        count_capture_frames(capture_id) != 0) {
+      std::cerr << "FAIL synthetic capture executor shutdown terminal ordering mismatch\n";
+      return false;
+    }
+  }
+
+  if (!provider.initialize(&cb).ok() ||
+      !provider.open_device("synthetic:0", kDeviceA, kRootA + 1).ok()) {
+    std::cerr << "FAIL synthetic capture executor restart setup failed\n";
+    return false;
+  }
+  snapshot = provider.capture_executor_snapshot_for_test();
+  if (snapshot.worker_count != snapshot.worker_limit ||
+      snapshot.queued_jobs != 0 || snapshot.active_jobs != 0 ||
+      snapshot.in_flight_jobs != 0 || snapshot.paused_device_count != 0 ||
+      snapshot.admission_closed || snapshot.stop_requested) {
+    std::cerr << "FAIL synthetic capture executor restart state mismatch\n";
+    (void)provider.shutdown();
+    return false;
+  }
+  if (!provider.trigger_capture(
+          make_request(kRestartCapture, kDeviceA)).ok() ||
+      !wait_for_capture_completed_with_frames(cb, kRestartCapture, 1) ||
+      !provider.shutdown().ok()) {
+    std::cerr << "FAIL synthetic capture executor restart capture failed\n";
+    return false;
+  }
+
+  return assert_native_balance(
+      cb.snapshot_events(), "synthetic_capture_executor_correctness");
+}
+
 bool run_synthetic_still_only_acquisition_session_truth_check() {
   RecorderCallbacks cb;
   SyntheticProviderConfig cfg{};
@@ -8883,6 +9220,7 @@ int main(int argc, char** argv) {
       {"run_synthetic_timeline_picture_appearance_check", [] { return run_synthetic_timeline_picture_appearance_check(); }},
       {"run_stub_provider_sanity_check", [] { return run_stub_provider_sanity_check(); }},
       {"run_synthetic_provider_direct_sanity_check", [] { return run_synthetic_provider_direct_sanity_check(); }},
+      {"run_synthetic_capture_executor_correctness_check", [] { return run_synthetic_capture_executor_correctness_check(); }},
       {"run_synthetic_still_only_acquisition_session_truth_check", [] { return run_synthetic_still_only_acquisition_session_truth_check(); }},
       {"run_synthetic_multi_member_still_sequence_check", [] { return run_synthetic_multi_member_still_sequence_check(); }},
       {"run_synthetic_dynamic_still_bundle_shape_check", [] { return run_synthetic_dynamic_still_bundle_shape_check(); }},

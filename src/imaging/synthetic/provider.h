@@ -1,11 +1,14 @@
 #pragma once
 
+#include <array>
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <mutex>
 #include <map>
 #include <memory>
+#include <optional>
 #include <queue>
 #include <string>
 #include <thread>
@@ -129,6 +132,41 @@ public:
   void set_timeline_request_dispatch_hook_for_host(TimelineRequestDispatchHook hook);
   SyntheticMetricsSnapshot get_metrics_snapshot_for_host() const;
   std::vector<SyntheticStagedRigTopology> get_staged_rig_topology_for_host() const;
+
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+  enum class CaptureWorkerFaultForTest : uint8_t {
+    None = 0,
+    StandardException = 1,
+    NonStandardException = 2,
+  };
+
+  enum class CaptureAdmissionFaultForTest : uint8_t {
+    None = 0,
+    AfterFirstRetain = 1,
+    AfterFirstRegistration = 2,
+  };
+
+  struct CaptureExecutorSnapshotForTest {
+    size_t worker_count = 0;
+    size_t worker_limit = 0;
+    size_t queued_jobs = 0;
+    size_t queue_capacity = 0;
+    size_t active_jobs = 0;
+    size_t in_flight_jobs = 0;
+    size_t paused_device_count = 0;
+    size_t max_queued_jobs = 0;
+    size_t max_active_jobs = 0;
+    bool admission_closed = true;
+    bool stop_requested = true;
+  };
+
+  void set_capture_workers_paused_for_test(bool paused);
+  void set_capture_jobs_paused_after_dequeue_for_test(bool paused);
+  void inject_next_capture_admission_fault_for_test(
+      CaptureAdmissionFaultForTest fault);
+  void inject_next_capture_worker_fault_for_test(CaptureWorkerFaultForTest fault);
+  CaptureExecutorSnapshotForTest capture_executor_snapshot_for_test() const;
+#endif
 
 private:
   struct CaptureGpuBackingRetainPostureMetrics {
@@ -377,6 +415,9 @@ private:
     uint32_t stride_bytes = 0;
     size_t frame_size_bytes = 0;
     uint64_t acquisition_session_id = 0;
+    uint64_t capture_timestamp_ns = 0;
+    SyntheticProducerOutputFormMode output_form_mode =
+        SyntheticProducerOutputFormMode::CpuOnly;
   };
 
   struct CaptureSubmissionJob {
@@ -396,6 +437,11 @@ private:
     uint32_t acquisition_session_stream_refs = 0;
     uint32_t acquisition_session_capture_refs = 0;
     uint32_t acquisition_session_priming_refs = 0;
+  };
+
+  struct CaptureWorkItem {
+    DeviceCaptureJob job{};
+    uint64_t generation = 0;
   };
 
   struct InFlightCaptureDevice {
@@ -422,10 +468,9 @@ private:
       const CaptureSubmission& submission,
       CaptureSubmissionJob& out_job,
       CaptureAdmissionFailureInfo* failure_info);
-  bool capture_shutdown_requested_() const noexcept;
+  void rollback_capture_submission_locked_(CaptureSubmissionJob& job) noexcept;
   bool should_stop_capture_job_(uint64_t generation) const noexcept;
-  void run_capture_submission_(CaptureSubmissionJob job);
-  void run_device_capture_job_(DeviceCaptureJob job, uint64_t generation);
+  void run_device_capture_job_(const DeviceCaptureJob& job, uint64_t generation);
   bool generate_device_capture_payloads_(
       const DeviceCaptureJob& job,
       uint64_t generation,
@@ -436,9 +481,11 @@ private:
                                   ProviderError error,
                                   std::shared_ptr<std::vector<std::uint8_t>>
                                       deferred_cpu_staging_bytes = {});
-  void start_capture_thread_(const CaptureSubmissionJob& job);
-  void join_finished_capture_threads_();
-  void stop_and_join_capture_threads_();
+  bool start_capture_executor_() noexcept;
+  void capture_worker_main_() noexcept;
+  void stop_and_join_capture_executor_() noexcept;
+  void enqueue_capture_submission_locked_(CaptureSubmissionJob& job) noexcept;
+  CaptureWorkItem dequeue_capture_work_locked_() noexcept;
   void drain_paused_capture_descendants_for_host_();
   bool has_in_flight_capture_for_device_locked_(uint64_t device_instance_id) const;
 
@@ -456,12 +503,33 @@ private:
   mutable std::mutex provider_state_mutex_;
 
   // Capture executor state. Lock ordering, when both are needed: capture_mutex_
-  // before provider_state_mutex_.
+  // before provider_state_mutex_. Queue storage and worker concurrency are hard
+  // bounded independently of process-lifetime capture volume.
+  static constexpr size_t kCaptureWorkerCount = 4;
+  static constexpr size_t kCaptureQueueCapacity = 64;
   mutable std::mutex capture_mutex_;
+  std::condition_variable capture_cv_;
   bool capture_admission_closed_ = false;
+  bool capture_executor_stop_requested_ = true;
   uint64_t capture_generation_ = 0;
   std::map<InFlightCaptureKey, InFlightCaptureDevice> in_flight_captures_;
-  std::vector<std::thread> capture_threads_;
+  std::array<std::optional<CaptureWorkItem>, kCaptureQueueCapacity>
+      capture_queue_{};
+  size_t capture_queue_head_ = 0;
+  size_t capture_queue_tail_ = 0;
+  size_t capture_queue_count_ = 0;
+  size_t capture_active_jobs_ = 0;
+  std::vector<std::thread> capture_workers_;
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+  bool capture_workers_paused_for_test_ = false;
+  bool capture_jobs_paused_after_dequeue_for_test_ = false;
+  CaptureAdmissionFaultForTest next_capture_admission_fault_for_test_ =
+      CaptureAdmissionFaultForTest::None;
+  CaptureWorkerFaultForTest next_capture_worker_fault_for_test_ =
+      CaptureWorkerFaultForTest::None;
+  size_t capture_max_queued_jobs_for_test_ = 0;
+  size_t capture_max_active_jobs_for_test_ = 0;
+#endif
 
   std::map<uint64_t, DeviceState> devices_;
   std::map<uint64_t, StreamState> streams_;

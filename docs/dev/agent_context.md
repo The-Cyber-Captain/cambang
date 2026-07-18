@@ -210,5 +210,9 @@ Agent-guidance maintenance:
 
 * keep `docs/dev/current_tranche.md` current after accepted or committed tranches;
 * use `current_tranche.md` for volatile active-workstream state, acceptance criteria, validation expectations, and near-term constraints;
+* for the July 2026 C++ audit remediation workstream, preserve and follow the
+  authorized sequence and required backlog in
+  `docs/dev/codebase_audit_remediation_plan.md`; do not promote a queued finding ahead
+  of the active tranche without explicit maintainer authorization;
 * use `docs/dev/agent_context.md` only for durable cross-tranche expectations that should persist beyond the current workstream;
 * do not duplicate canonical architecture in either guidance file.

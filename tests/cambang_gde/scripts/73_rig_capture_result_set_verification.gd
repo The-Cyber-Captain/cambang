@@ -289,7 +289,7 @@ func _try_verify_capture_result_set() -> void:
 	_step_ok("result-set membership matches Rig A only; RigB/RigC/standalone excluded")
 
 	_append_status("PASS: rig capture result set verification complete")
-	_cleanup_and_quit(0)
+	_cleanup_and_quit(0, "rig_capture_result_set_verified")
 
 
 func _sorted_ids(input_ids: Array) -> Array[int]:
@@ -321,13 +321,18 @@ func _append_status(message: String) -> void:
 func _fail(message: String) -> void:
 	push_error(message)
 	_append_status(message)
-	_cleanup_and_quit(1)
+	_cleanup_and_quit(1, "verification_failed")
 
 
-func _cleanup_and_quit(code: int) -> void:
+func _cleanup_and_quit(code: int, reason: String) -> void:
 	if _done:
 		return
 	_done = true
+	print("[CamBANG][HarnessVerdict] scene=rig_capture_result_set_verification status=%s exit_code=%d reason=%s" % [
+		"ok" if code == 0 else "fail",
+		code,
+		reason,
+	])
 	await get_tree().create_timer(10.0).timeout
 
 	CamBANGServer.stop()
