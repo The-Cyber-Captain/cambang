@@ -21,6 +21,16 @@ Scope: synchronous Core command cancellation, truthful provider-operation
 completion, allocation-failure conversion, and transactional Core/strand
 thread startup.
 
+Sign-off correction validated on 2026-07-18 (present in the current uncommitted
+snapshot): once a synchronous command crosses its side-effect boundary, its
+truthful completion wait now polls the core-thread liveness policy. This closes
+the watchdog blind spot exposed when the waiting Godot/main caller could no
+longer perform its ordinary tick poll. The self-supervising death-test verifier
+now exercises this real wait path rather than relying on the obsolete
+assumption that the caller returns after two seconds while the provider
+operation remains live; direct invocation owns the bounded child classification
+and terminal PASS/FAIL summary.
+
 ### Tranche 2 — Provider broker call isolation and teardown drain
 
 Status: complete and committed as `7ac8f59`.

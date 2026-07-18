@@ -1,30 +1,44 @@
-// Death test for CoreRuntime::check_core_thread_liveness() (see
-// docs/dev/current_tranche.md, Step 2: enforce the provider prompt/bounded
-// contract).
+// Death test for CoreRuntime's enforcement of the provider prompt/bounded
+// contract through CoreRuntime::check_core_thread_liveness().
 //
-// This binary deliberately induces a provider call that blocks well past
-// the documented prompt/bounded contract (provider_architecture.md Section
-// 8.1), on purpose, so the watchdog's abort path fires. Because this is a
-// CAMBANG_INTERNAL_SMOKE build, check_core_thread_liveness() calls
-// std::abort() once staleness is detected -- this process is EXPECTED to
-// crash, not exit cleanly. It cannot self-report PASS/FAIL by normal return
-// (abort() ends the process at the point of detection). See
-// scripts/run_core_thread_liveness_watchdog_verify.ps1, which launches this
-// binary as a child process and asserts it terminates via abort/crash (not
-// a clean exit, not a hang) within a bounded window -- the actual PASS/FAIL
-// verdict is produced there, not here.
+// Normal invocation is the supervising verifier: it launches this executable
+// in an internal child mode, captures its output, enforces a bounded deadline,
+// and prints the final PASS/FAIL verdict. The child deliberately induces a
+// provider call that blocks beyond provider_architecture.md Section 8.1's
+// prompt/bounded contract, so CAMBANG_INTERNAL_SMOKE's watchdog abort path
+// must terminate only that child process.
 
 #if !defined(CAMBANG_INTERNAL_SMOKE)
   #error "core_thread_liveness_watchdog_verify: build through the repo SCons maintainer_tools alias so CAMBANG_INTERNAL_SMOKE=1 is defined."
 #endif
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <string>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+  #ifndef NOMINMAX
+    #define NOMINMAX
+  #endif
+  #include <windows.h>
+  // windows.h exposes ERROR as a macro; CamBANG snapshot enums use the
+  // ordinary scoped enumerator name and must not be macro-substituted.
+  #ifdef ERROR
+    #undef ERROR
+  #endif
+#else
+  #include <cerrno>
+  #include <csignal>
+  #include <sys/types.h>
+  #include <sys/wait.h>
+  #include <unistd.h>
+#endif
 
 #include "core/core_runtime.h"
 #include "core/state_snapshot_buffer.h"
@@ -158,10 +172,234 @@ bool wait_until(const std::function<bool()>& pred, int max_iters, int sleep_ms) 
   return false;
 }
 
+constexpr const char* kDeathChildArgument = "--death-child";
+constexpr auto kDeathChildTimeout = std::chrono::seconds(15);
+
+struct ChildRunResult final {
+  bool launched = false;
+  bool timed_out = false;
+  bool terminated_by_signal = false;
+  int signal_number = 0;
+  uint64_t exit_code = 0;
+  std::string output;
+  std::string launch_error;
+};
+
+#if defined(_WIN32)
+
+std::string windows_error_message(DWORD error) {
+  char* message = nullptr;
+  const DWORD length = FormatMessageA(
+      FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+          FORMAT_MESSAGE_IGNORE_INSERTS,
+      nullptr,
+      error,
+      0,
+      reinterpret_cast<char*>(&message),
+      0,
+      nullptr);
+  std::string result = length != 0 && message ? std::string(message, length)
+                                               : "Windows error " + std::to_string(error);
+  if (message) {
+    LocalFree(message);
+  }
+  return result;
+}
+
+std::string current_executable_path() {
+  std::vector<char> buffer(1024);
+  for (;;) {
+    const DWORD length = GetModuleFileNameA(
+        nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length == 0) {
+      return {};
+    }
+    if (length < buffer.size() - 1) {
+      return std::string(buffer.data(), length);
+    }
+    buffer.resize(buffer.size() * 2);
+  }
+}
+
+ChildRunResult run_death_child_process(const char*) {
+  ChildRunResult result;
+  const std::string executable = current_executable_path();
+  if (executable.empty()) {
+    result.launch_error = "GetModuleFileNameA failed";
+    return result;
+  }
+
+  SECURITY_ATTRIBUTES security{};
+  security.nLength = sizeof(security);
+  security.bInheritHandle = TRUE;
+  HANDLE read_pipe = nullptr;
+  HANDLE write_pipe = nullptr;
+  if (!CreatePipe(&read_pipe, &write_pipe, &security, 0)) {
+    result.launch_error = windows_error_message(GetLastError());
+    return result;
+  }
+  if (!SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0)) {
+    result.launch_error = windows_error_message(GetLastError());
+    CloseHandle(read_pipe);
+    CloseHandle(write_pipe);
+    return result;
+  }
+
+  STARTUPINFOA startup{};
+  startup.cb = sizeof(startup);
+  startup.dwFlags = STARTF_USESTDHANDLES;
+  startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+  startup.hStdOutput = write_pipe;
+  startup.hStdError = write_pipe;
+  PROCESS_INFORMATION process{};
+  std::string command_line = "\"" + executable + "\" " + kDeathChildArgument;
+
+  const BOOL created = CreateProcessA(
+      executable.c_str(),
+      command_line.data(),
+      nullptr,
+      nullptr,
+      TRUE,
+      CREATE_NO_WINDOW,
+      nullptr,
+      nullptr,
+      &startup,
+      &process);
+  CloseHandle(write_pipe);
+  if (!created) {
+    result.launch_error = windows_error_message(GetLastError());
+    CloseHandle(read_pipe);
+    return result;
+  }
+  result.launched = true;
+
+  const DWORD wait_ms = static_cast<DWORD>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(kDeathChildTimeout).count());
+  const DWORD wait_result = WaitForSingleObject(process.hProcess, wait_ms);
+  if (wait_result == WAIT_TIMEOUT) {
+    result.timed_out = true;
+    (void)TerminateProcess(process.hProcess, 124);
+    (void)WaitForSingleObject(process.hProcess, 5000);
+  } else if (wait_result == WAIT_FAILED) {
+    result.launch_error = windows_error_message(GetLastError());
+    (void)TerminateProcess(process.hProcess, 125);
+    (void)WaitForSingleObject(process.hProcess, 5000);
+  }
+
+  DWORD exit_code = 0;
+  if (GetExitCodeProcess(process.hProcess, &exit_code)) {
+    result.exit_code = static_cast<uint64_t>(exit_code);
+  }
+
+  char chunk[4096];
+  for (;;) {
+    DWORD read = 0;
+    if (!ReadFile(read_pipe, chunk, sizeof(chunk), &read, nullptr) || read == 0) {
+      break;
+    }
+    result.output.append(chunk, read);
+  }
+
+  CloseHandle(read_pipe);
+  CloseHandle(process.hThread);
+  CloseHandle(process.hProcess);
+  return result;
+}
+
+#else
+
+ChildRunResult run_death_child_process(const char* argv0) {
+  ChildRunResult result;
+  int output_pipe[2]{};
+  if (pipe(output_pipe) != 0) {
+    result.launch_error = std::strerror(errno);
+    return result;
+  }
+
+  const pid_t child = fork();
+  if (child < 0) {
+    result.launch_error = std::strerror(errno);
+    close(output_pipe[0]);
+    close(output_pipe[1]);
+    return result;
+  }
+  if (child == 0) {
+    (void)dup2(output_pipe[1], STDOUT_FILENO);
+    (void)dup2(output_pipe[1], STDERR_FILENO);
+    close(output_pipe[0]);
+    close(output_pipe[1]);
+    execlp(argv0, argv0, kDeathChildArgument, static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  result.launched = true;
+  close(output_pipe[1]);
+  int status = 0;
+  const auto deadline = std::chrono::steady_clock::now() + kDeathChildTimeout;
+  for (;;) {
+    const pid_t waited = waitpid(child, &status, WNOHANG);
+    if (waited == child) {
+      break;
+    }
+    if (waited < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      result.launch_error = std::strerror(errno);
+      (void)kill(child, SIGKILL);
+      (void)waitpid(child, &status, 0);
+      break;
+    }
+    if (std::chrono::steady_clock::now() >= deadline) {
+      result.timed_out = true;
+      (void)kill(child, SIGKILL);
+      (void)waitpid(child, &status, 0);
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+
+  if (WIFSIGNALED(status)) {
+    result.terminated_by_signal = true;
+    result.signal_number = WTERMSIG(status);
+    result.exit_code = static_cast<uint64_t>(128 + result.signal_number);
+  } else if (WIFEXITED(status)) {
+    result.exit_code = static_cast<uint64_t>(WEXITSTATUS(status));
+  }
+
+  char chunk[4096];
+  for (;;) {
+    const ssize_t read_count = read(output_pipe[0], chunk, sizeof(chunk));
+    if (read_count > 0) {
+      result.output.append(chunk, static_cast<size_t>(read_count));
+      continue;
+    }
+    if (read_count < 0 && errno == EINTR) {
+      continue;
+    }
+    break;
+  }
+  close(output_pipe[0]);
+  return result;
+}
+
+#endif
+
+bool child_terminated_via_expected_abort(const ChildRunResult& result) {
+#if defined(_WIN32)
+  // Windows C runtimes report abort with different nonzero process codes.
+  // Controlled verifier/setup failures return 1, so require neither success
+  // nor that controlled failure after observing the watchdog's own log line.
+  return result.exit_code != 0 && result.exit_code != 1;
+#else
+  return result.terminated_by_signal && result.signal_number == SIGABRT;
+#endif
+}
+
 } // namespace
 } // namespace cambang
 
-int main() {
+int run_death_child() {
   using namespace cambang;
 
   CoreRuntime runtime;
@@ -178,8 +416,8 @@ int main() {
     return 1;
   }
 
-  // Sleep comfortably past both the 2s caller-facing bound and the 5s
-  // core-thread staleness threshold.
+  // Sleep comfortably past the synchronous command's initial 2s cancellation
+  // window and the 5s core-thread staleness threshold.
   auto provider = std::make_unique<HangingCaptureProvider>(std::chrono::seconds(8));
 
   if (!provider->initialize(runtime.provider_callbacks()).ok()) {
@@ -241,26 +479,64 @@ int main() {
                "provider.\n");
   std::fflush(stderr);
 
-  // This call blocks the calling (main) thread for up to CoreRuntime's own
-  // internal 2s future::wait_for() bound and then returns -- it does not
-  // wait for the full 8s hang. The core thread, however, remains wedged
-  // inside HangingCaptureProvider::trigger_capture() regardless of what this
-  // call returns; check_core_thread_liveness() (polled below, exactly as a
-  // real Godot tick would call it) is what is actually expected to observe
-  // that and abort the process.
+  // Once the command begins, truthful synchronous completion requires this
+  // call to remain blocked until the provider returns. Its wait path must poll
+  // check_core_thread_liveness() itself because the same caller cannot also
+  // run the ordinary Godot-tick poll while blocked here. The watchdog is
+  // expected to abort this process at roughly the 5s stale-task threshold.
   uint64_t capture_id = 1;
   (void)runtime.try_trigger_device_capture_with_capture_id_for_server(kDeviceId, capture_id);
 
-  const auto poll_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
-  while (std::chrono::steady_clock::now() < poll_deadline) {
-    runtime.check_core_thread_liveness();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  }
-
   std::fprintf(stderr,
-               "FAIL: watchdog did not abort this process within the expected window; the "
-               "prompt/bounded contract enforcement did not fire.\n");
+               "FAIL: the blocked synchronous wait returned without the watchdog aborting; "
+               "the prompt/bounded contract enforcement did not fire.\n");
   runtime.attach_provider(nullptr);
   runtime.stop();
   return 1;
+}
+
+int main(int argc, char** argv) {
+  using namespace cambang;
+
+  if (argc == 2 && std::strcmp(argv[1], kDeathChildArgument) == 0) {
+    return run_death_child();
+  }
+  if (argc != 1) {
+    std::fprintf(stdout,
+                 "FAIL core_thread_liveness_watchdog_verify reason=invalid_arguments\n");
+    return 1;
+  }
+
+  const ChildRunResult child = run_death_child_process(argv[0]);
+  if (!child.output.empty()) {
+    std::fwrite(child.output.data(), 1, child.output.size(), stdout);
+    if (child.output.back() != '\n') {
+      std::fputc('\n', stdout);
+    }
+    std::fflush(stdout);
+  }
+
+  const bool stale_log_seen =
+      child.output.find("[CamBANG][CoreThread] stale task detected:") != std::string::npos;
+  const bool expected_abort = child_terminated_via_expected_abort(child);
+  if (!child.launched || child.timed_out || !child.launch_error.empty() ||
+      !stale_log_seen || !expected_abort) {
+    std::fprintf(
+        stdout,
+        "FAIL core_thread_liveness_watchdog_verify launched=%s timed_out=%s "
+        "stale_task_log=%s expected_abort=%s exit_code=%llu reason=%s\n",
+        child.launched ? "true" : "false",
+        child.timed_out ? "true" : "false",
+        stale_log_seen ? "true" : "false",
+        expected_abort ? "true" : "false",
+        static_cast<unsigned long long>(child.exit_code),
+        child.launch_error.empty() ? "child_contract_not_satisfied" : child.launch_error.c_str());
+    return 1;
+  }
+
+  std::fprintf(stdout,
+               "PASS core_thread_liveness_watchdog_verify stale_task_log=true "
+               "expected_abort=true exit_code=%llu\n",
+               static_cast<unsigned long long>(child.exit_code));
+  return 0;
 }

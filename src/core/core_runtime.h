@@ -271,10 +271,10 @@ enum class TryCloseDeviceStatus : uint8_t {
   // i.e. only in maintainer_tools binaries, never in a GDE/Godot plugin
   // build regardless of target=debug|release.
   //
-  // Not thread-safe against concurrent callers: assumes a single calling
-  // thread's context per process (true today -- the Godot main-thread tick
-  // is the only GDE caller, and maintainer-tool binaries call it from their
-  // own single test thread; the two never coexist in one process).
+  // Safe against concurrent callers. In addition to the Godot main-thread
+  // tick, a synchronous command wait polls this after crossing its side-effect
+  // boundary so that waiting for truthful completion cannot blind the
+  // watchdog to the very core task the caller is waiting on.
   void check_core_thread_liveness();
 
   // Diagnostic-only: count of distinct stale-task episodes detected so far
@@ -757,7 +757,7 @@ private:
       completed_.notify_all();
     }
 
-    Status wait_for_completion() {
+    Status wait_for_completion(CoreRuntime& runtime) {
       std::unique_lock<std::mutex> lock(mutex_);
       if (completed_.wait_for(lock, std::chrono::seconds(2), [this]() {
             return phase_ == Phase::Completed;
@@ -773,9 +773,17 @@ private:
       // The command has crossed the side-effect boundary. Returning a timeout
       // status now would create a lie while the mutation remained live. Provider
       // calls are contractually prompt/bounded, so wait for their actual result.
-      completed_.wait(lock, [this]() {
-        return phase_ == Phase::Completed || phase_ == Phase::Cancelled;
-      });
+      // Poll the liveness policy outside the completion mutex while waiting:
+      // the ordinary Godot tick cannot do so when this same caller is blocked
+      // here, and a test-only polling thread would leave that production blind
+      // spot intact.
+      while (!completed_.wait_for(lock, std::chrono::milliseconds(100), [this]() {
+               return phase_ == Phase::Completed || phase_ == Phase::Cancelled;
+             })) {
+        lock.unlock();
+        runtime.check_core_thread_liveness();
+        lock.lock();
+      }
       return phase_ == Phase::Completed ? result_ : fallback_;
     }
 
@@ -820,7 +828,7 @@ private:
         completion->cancel_if_pending();
         return fallback;
       }
-      return completion->wait_for_completion();
+      return completion->wait_for_completion(*this);
     } catch (...) {
       return fallback;
     }
@@ -1023,8 +1031,9 @@ private:
   // result instead of racing through STARTING together.
   std::mutex lifecycle_mutex_;
 
-  // check_core_thread_liveness() bookkeeping. Not atomic: per that method's
-  // doc comment, only ever touched from one calling thread's context.
+  // Serializes stale-episode bookkeeping when the Godot tick and a blocked
+  // synchronous-command waiter can both poll the liveness policy.
+  std::mutex core_thread_liveness_mutex_;
   uint64_t last_reported_stale_task_started_ns_ = 0;
   uint64_t last_stale_report_steady_ns_ = 0;
   std::atomic<uint64_t> core_thread_stale_detections_{0};

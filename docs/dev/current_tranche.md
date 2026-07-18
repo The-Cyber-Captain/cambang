@@ -305,6 +305,23 @@ Completed on 2026-07-18:
   all remained at `dcfab8de26e62c17b0f06c796125a63b1e437569` with no submodule
   modification.
 
-All required Tranche 4 gates passed. Existing warnings were confined to the
-pre-existing godot-cpp/macro-facing compiler surface; no required validation
-remains unrun.
+Final sign-off was subsequently reopened after the pre-existing core-thread
+liveness death test exposed that truthful synchronous-command waiting could
+prevent the same caller from polling the watchdog. The synchronous wait now
+polls the liveness policy after crossing its side-effect boundary, without
+weakening truthful completion. The maintainer, Windows MinGW, and Android arm64
+builds passed with `godot_cpp=external`; the complete native regression floor
+and runtime-ops verifier passed; and the rebuilt Windows extension passed Scene
+70 through `run_godot.ps1`.
+
+The verifier was then made self-supervising so normal direct invocation owns
+the bounded child classification and repository-standard terminal summary. It
+was rebuilt with the required external/MinGW settings; direct invocation
+observed the stale diagnostic and expected abort, ended with `PASS`, and
+returned zero. An invalid-argument probe ended with `FAIL` and returned one.
+The external PowerShell verdict driver was removed rather than retained as
+duplicate test authority.
+
+All required sign-off validation now passes. Existing warnings remain confined
+to the previously recorded Core fallthrough/unused helpers, verifier switch
+coverage, and godot-cpp/macro-facing compiler surface.

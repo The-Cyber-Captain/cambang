@@ -4188,6 +4188,14 @@ void CoreRuntime::check_core_thread_liveness() {
   if (now_ns < started_ns || now_ns - started_ns < kCoreThreadStaleTaskThresholdNs) {
     return;
   }
+
+  std::lock_guard<std::mutex> lock(core_thread_liveness_mutex_);
+  // The task may have completed or a new task may have begun while this caller
+  // waited behind another liveness poller. Do not report the stale observation
+  // against a different current task.
+  if (core_thread_.current_task_started_ns() != started_ns) {
+    return;
+  }
   const bool new_episode = started_ns != last_reported_stale_task_started_ns_;
   const bool due_for_rereport = !new_episode &&
       (now_ns - last_stale_report_steady_ns_ >= kCoreThreadStaleReReportIntervalNs);
