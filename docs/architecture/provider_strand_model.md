@@ -58,6 +58,11 @@ Providers must never drop lifecycle, native-object, or error events.
 
 SyntheticProvider and StubProvider emulate platform callbacks but still deliver events through the same strand model so that runtime behaviour matches real providers.
 
+Strand startup is transactional. Provider initialization succeeds only after
+the strand worker thread has been constructed. If worker construction fails,
+the strand remains closed and not running, its callback pointer is cleared, and
+provider initialization returns failure without publishing lifecycle facts.
+
 ## Non‑Goals
 
 This supplement does not define public APIs or lifecycle state machines. Those remain canonical in:

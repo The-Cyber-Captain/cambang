@@ -4043,7 +4043,9 @@ std::vector<SharedCaptureResultData> CoreRuntime::get_capture_result_set(uint64_
   return curate_capture_result_set_accept_all_assembly_successful_(std::move(assembly_successful));
 }
 
-bool CoreRuntime::start() {
+bool CoreRuntime::start() noexcept try {
+  std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+
   // Idempotent start: already running is a success.
   const CoreRuntimeState st0 = state_.load(std::memory_order_acquire);
   if (st0 == CoreRuntimeState::LIVE || st0 == CoreRuntimeState::STARTING) {
@@ -4113,6 +4115,9 @@ bool CoreRuntime::start() {
     state_.store(CoreRuntimeState::STOPPED, std::memory_order_release);
   }
   return ok;
+} catch (...) {
+  state_.store(CoreRuntimeState::STOPPED, std::memory_order_release);
+  return false;
 }
 
 std::vector<SharedCaptureResultData> CoreRuntime::curate_capture_result_set_accept_all_assembly_successful_(
@@ -4129,7 +4134,7 @@ void CoreRuntime::stop() {
   // exchange() below and returns via the idempotent early-return path,
   // instead of racing the first caller into its own join() on the same
   // std::thread. See stop_mutex_'s doc comment.
-  std::lock_guard<std::mutex> stop_lock(stop_mutex_);
+  std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
 
   // Idempotent stop.
   const CoreRuntimeState st0 = state_.exchange(CoreRuntimeState::TEARING_DOWN, std::memory_order_acq_rel);
@@ -5123,7 +5128,7 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
     StreamIntent intent,
     const CaptureProfile* request_profile,
     const PictureConfig* request_picture,
-    uint64_t profile_version) noexcept {
+    uint64_t profile_version) noexcept try {
   if (stream_id == 0 || device_instance_id == 0) {
     return TryCreateStreamStatus::InvalidArgument;
   }
@@ -5140,18 +5145,21 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
   const CaptureProfile request_profile_copy = has_request_profile ? *request_profile : CaptureProfile{};
   const PictureConfig request_picture_copy = has_request_picture ? *request_picture : PictureConfig{};
 
-  const CoreThread::PostResult pr = try_post([this,
-                                              stream_id,
-                                              device_instance_id,
-                                              intent,
-                                              profile_version,
-                                              tmpl,
-                                              has_request_profile,
-                                              request_profile_copy,
-                                              has_request_picture,
-                                              request_picture_copy]() {
+  return run_synchronous_command_(TryCreateStreamStatus::Busy,
+      [this,
+       stream_id,
+       device_instance_id,
+       intent,
+       profile_version,
+       tmpl,
+       has_request_profile,
+       request_profile_copy,
+       has_request_picture,
+       request_picture_copy]() -> TryCreateStreamStatus {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
-    if (!p) return;
+    if (!p) {
+      return TryCreateStreamStatus::Busy;
+    }
 
     const uint64_t effective_profile_version =
         (profile_version != 0)
@@ -5175,7 +5183,7 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
             effective.picture,
             runtime_caps,
             parent_context_caps)) {
-      return;
+      return TryCreateStreamStatus::ProviderRejected;
     }
     const RetainedPlanResetDecision retained_plan_decision =
         build_retained_plan_reset_decision(
@@ -5229,18 +5237,18 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
       stream_retained_plan_evaluators_.erase(stream_id);
       stream_retained_plan_decisions_.erase(stream_id);
       request_publish_from_core_unchecked();
-      return;
+      return TryCreateStreamStatus::ProviderRejected;
     }
     if (streams_.on_stream_created(effective.stream_id)) {
       request_publish_from_core_unchecked();
     }
+    return TryCreateStreamStatus::OK;
   });
-
-  return (pr == CoreThread::PostResult::Enqueued) ? TryCreateStreamStatus::OK
-                                                  : TryCreateStreamStatus::Busy;
+} catch (...) {
+  return TryCreateStreamStatus::Busy;
 }
 
-TryStartStreamStatus CoreRuntime::try_start_stream(uint64_t stream_id) noexcept {
+TryStartStreamStatus CoreRuntime::try_start_stream(uint64_t stream_id) noexcept try {
   if (stream_id == 0) {
     return TryStartStreamStatus::InvalidArgument;
   }
@@ -5250,31 +5258,19 @@ TryStartStreamStatus CoreRuntime::try_start_stream(uint64_t stream_id) noexcept 
     return TryStartStreamStatus::Busy;
   }
 
-  if (core_thread_.is_core_thread()) {
-    // This synchronous wrapper posts to the core thread and blocks on the
-    // result; called from the core thread itself it would self-deadlock (the
-    // posted task could never be popped by this same, now-blocked, thread).
-    // No current caller does this; fail fast rather than hang if one ever does.
-    return TryStartStreamStatus::Busy;
-  }
-
-  auto result_promise = std::make_shared<std::promise<TryStartStreamStatus>>();
-  std::future<TryStartStreamStatus> f = result_promise->get_future();
-  const CoreThread::PostResult pr = try_post([this, stream_id, result_promise]() mutable {
+  return run_synchronous_command_(TryStartStreamStatus::Busy,
+      [this, stream_id]() -> TryStartStreamStatus {
     ICameraProvider* prov_local = provider_.load(std::memory_order_acquire);
     if (!prov_local) {
-      result_promise->set_value(TryStartStreamStatus::Busy);
-      return;
+      return TryStartStreamStatus::Busy;
     }
 
     const CoreStreamRegistry::StreamRecord* rec = streams_.find(stream_id);
     if (!rec) {
-      result_promise->set_value(TryStartStreamStatus::InvalidArgument);
-      return;
+      return TryStartStreamStatus::InvalidArgument;
     }
     if (rec->started) {
-      result_promise->set_value(TryStartStreamStatus::OK);
-      return;
+      return TryStartStreamStatus::OK;
     }
     const uint64_t owner_device_instance_id = rec->device_instance_id;
     for (const auto& kv : streams_.all()) {
@@ -5283,8 +5279,7 @@ TryStartStreamStatus CoreRuntime::try_start_stream(uint64_t stream_id) noexcept 
         continue;
       }
       if (other.device_instance_id == owner_device_instance_id && other.created && other.started) {
-        result_promise->set_value(TryStartStreamStatus::Busy);
-        return;
+        return TryStartStreamStatus::Busy;
       }
     }
 
@@ -5294,8 +5289,7 @@ TryStartStreamStatus CoreRuntime::try_start_stream(uint64_t stream_id) noexcept 
                                    static_cast<unsigned long long>(stream_id),
                                    static_cast<unsigned>(sr.code));
       (void)streams_.on_stream_error(stream_id, static_cast<uint32_t>(sr.code));
-      result_promise->set_value(TryStartStreamStatus::ProviderRejected);
-      return;
+      return TryStartStreamStatus::ProviderRejected;
     }
     const bool state_changed = streams_.on_core_stream_started(stream_id);
     (void)refresh_capture_retained_plan_state_(
@@ -5304,21 +5298,13 @@ TryStartStreamStatus CoreRuntime::try_start_stream(uint64_t stream_id) noexcept 
     if (state_changed) {
       request_publish_from_core_unchecked();
     }
-    result_promise->set_value(TryStartStreamStatus::OK);
+    return TryStartStreamStatus::OK;
   });
-  if (pr != CoreThread::PostResult::Enqueued) {
-    return TryStartStreamStatus::Busy;
-  }
-  // Bounded wait: public synchronous wrappers must not block indefinitely
-  // (cpp_code_quality_policy.md); mirrors the 2s bound already used by the
-  // rig orchestration wrappers in this file.
-  if (f.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
-    return TryStartStreamStatus::Busy;
-  }
-  return f.get();
+} catch (...) {
+  return TryStartStreamStatus::Busy;
 }
 
-TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept {
+TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept try {
   if (stream_id == 0) {
     return TryStopStreamStatus::InvalidArgument;
   }
@@ -5328,28 +5314,18 @@ TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept {
     return TryStopStreamStatus::Busy;
   }
 
-  if (core_thread_.is_core_thread()) {
-    // See try_start_stream(): this wrapper would self-deadlock if called from
-    // the core thread itself. Fail fast rather than hang.
-    return TryStopStreamStatus::Busy;
-  }
-
-  auto result_promise = std::make_shared<std::promise<TryStopStreamStatus>>();
-  std::future<TryStopStreamStatus> f = result_promise->get_future();
-  const CoreThread::PostResult pr = try_post([this, stream_id, result_promise]() mutable {
+  return run_synchronous_command_(TryStopStreamStatus::Busy,
+      [this, stream_id]() -> TryStopStreamStatus {
     ICameraProvider* prov_local = provider_.load(std::memory_order_acquire);
     if (!prov_local) {
-      result_promise->set_value(TryStopStreamStatus::Busy);
-      return;
+      return TryStopStreamStatus::Busy;
     }
     const CoreStreamRegistry::StreamRecord* rec = streams_.find(stream_id);
     if (!rec) {
-      result_promise->set_value(TryStopStreamStatus::InvalidArgument);
-      return;
+      return TryStopStreamStatus::InvalidArgument;
     }
     if (!rec->started) {
-      result_promise->set_value(TryStopStreamStatus::OK);
-      return;
+      return TryStopStreamStatus::OK;
     }
     (void)streams_.mark_stop_requested_by_core(stream_id);
     const ProviderResult sr = prov_local->stop_stream(stream_id);
@@ -5357,8 +5333,7 @@ TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept {
       timeline_teardown_trace_emit("fail StopStream stream_id=%llu reason=provider_rc_%u",
                                    static_cast<unsigned long long>(stream_id),
                                    static_cast<unsigned>(sr.code));
-      result_promise->set_value(TryStopStreamStatus::ProviderRejected);
-      return;
+      return TryStopStreamStatus::ProviderRejected;
     }
     const bool state_changed =
         streams_.on_core_stream_stopped(stream_id, /*error_code=*/0);
@@ -5368,18 +5343,13 @@ TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept {
     if (state_changed) {
       request_publish_from_core_unchecked();
     }
-    result_promise->set_value(TryStopStreamStatus::OK);
+    return TryStopStreamStatus::OK;
   });
-  if (pr != CoreThread::PostResult::Enqueued) {
-    return TryStopStreamStatus::Busy;
-  }
-  if (f.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
-    return TryStopStreamStatus::Busy;
-  }
-  return f.get();
+} catch (...) {
+  return TryStopStreamStatus::Busy;
 }
 
-TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexcept {
+TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexcept try {
   if (stream_id == 0) {
     return TryDestroyStreamStatus::InvalidArgument;
   }
@@ -5389,31 +5359,21 @@ TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexc
     return TryDestroyStreamStatus::Busy;
   }
 
-  if (core_thread_.is_core_thread()) {
-    // See try_start_stream(): this wrapper would self-deadlock if called from
-    // the core thread itself. Fail fast rather than hang.
-    return TryDestroyStreamStatus::Busy;
-  }
-
-  auto result_promise = std::make_shared<std::promise<TryDestroyStreamStatus>>();
-  std::future<TryDestroyStreamStatus> f = result_promise->get_future();
-  const CoreThread::PostResult pr = try_post([this, stream_id, result_promise]() mutable {
+  return run_synchronous_command_(TryDestroyStreamStatus::Busy,
+      [this, stream_id]() -> TryDestroyStreamStatus {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
     if (!p) {
-      result_promise->set_value(TryDestroyStreamStatus::Busy);
-      return;
+      return TryDestroyStreamStatus::Busy;
     }
 
     const CoreStreamRegistry::StreamRecord* rec = streams_.find(stream_id);
     if (!rec) {
-      result_promise->set_value(TryDestroyStreamStatus::InvalidArgument);
-      return;
+      return TryDestroyStreamStatus::InvalidArgument;
     }
     if (rec->started) {
       timeline_teardown_trace_emit("fail DestroyStream stream_id=%llu reason=stream_started",
                                    static_cast<unsigned long long>(stream_id));
-      result_promise->set_value(TryDestroyStreamStatus::Started);
-      return;
+      return TryDestroyStreamStatus::Started;
     }
 
     const uint64_t owner_device_instance_id = rec->device_instance_id;
@@ -5422,8 +5382,7 @@ TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexc
       timeline_teardown_trace_emit("fail DestroyStream stream_id=%llu reason=provider_rc_%u",
                                    static_cast<unsigned long long>(stream_id),
                                    static_cast<unsigned>(dr.code));
-      result_promise->set_value(TryDestroyStreamStatus::ProviderRejected);
-      return;
+      return TryDestroyStreamStatus::ProviderRejected;
     }
     const bool state_changed = streams_.on_stream_destroyed(stream_id);
     if (state_changed) {
@@ -5437,22 +5396,16 @@ TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexc
     if (state_changed) {
       request_publish_from_core_unchecked();
     }
-    result_promise->set_value(TryDestroyStreamStatus::OK);
+    return TryDestroyStreamStatus::OK;
   });
-
-  if (pr != CoreThread::PostResult::Enqueued) {
-    return TryDestroyStreamStatus::Busy;
-  }
-  if (f.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
-    return TryDestroyStreamStatus::Busy;
-  }
-  return f.get();
+} catch (...) {
+  return TryDestroyStreamStatus::Busy;
 }
 
 TryOpenDeviceStatus CoreRuntime::try_open_device(
     const std::string& hardware_id,
     uint64_t device_instance_id,
-    uint64_t root_id) noexcept {
+    uint64_t root_id) noexcept try {
   if (hardware_id.empty() || device_instance_id == 0 || root_id == 0) {
     return TryOpenDeviceStatus::InvalidArgument;
   }
@@ -5462,20 +5415,12 @@ TryOpenDeviceStatus CoreRuntime::try_open_device(
     return TryOpenDeviceStatus::Busy;
   }
 
-  if (core_thread_.is_core_thread()) {
-    // See try_start_stream(): this wrapper would self-deadlock if called from
-    // the core thread itself. Fail fast rather than hang.
-    return TryOpenDeviceStatus::Busy;
-  }
-
   const CaptureTemplate capture_tmpl = prov->capture_template();
-  auto result_promise = std::make_shared<std::promise<TryOpenDeviceStatus>>();
-  std::future<TryOpenDeviceStatus> f = result_promise->get_future();
-  const CoreThread::PostResult pr = try_post([this, hardware_id, device_instance_id, root_id, capture_tmpl, result_promise]() mutable {
+  return run_synchronous_command_(TryOpenDeviceStatus::Busy,
+      [this, hardware_id, device_instance_id, root_id, capture_tmpl]() -> TryOpenDeviceStatus {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
     if (!p) {
-      result_promise->set_value(TryOpenDeviceStatus::Busy);
-      return;
+      return TryOpenDeviceStatus::Busy;
     }
 
     const ProviderResult open_result = p->open_device(hardware_id, device_instance_id, root_id);
@@ -5483,8 +5428,7 @@ TryOpenDeviceStatus CoreRuntime::try_open_device(
       timeline_teardown_trace_emit("fail OpenDevice device_instance_id=%llu reason=provider_rc_%u",
                                    static_cast<unsigned long long>(device_instance_id),
                                    static_cast<unsigned>(open_result.code));
-      result_promise->set_value(TryOpenDeviceStatus::ProviderRejected);
-      return;
+      return TryOpenDeviceStatus::ProviderRejected;
     }
 
     // Retain core-owned device identity/profile truth only after provider open
@@ -5500,19 +5444,13 @@ TryOpenDeviceStatus CoreRuntime::try_open_device(
     if (state_changed) {
       request_publish_from_core_unchecked();
     }
-    result_promise->set_value(TryOpenDeviceStatus::OK);
+    return TryOpenDeviceStatus::OK;
   });
-
-  if (pr != CoreThread::PostResult::Enqueued) {
-    return TryOpenDeviceStatus::Busy;
-  }
-  if (f.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
-    return TryOpenDeviceStatus::Busy;
-  }
-  return f.get();
+} catch (...) {
+  return TryOpenDeviceStatus::Busy;
 }
 
-TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) noexcept {
+TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) noexcept try {
   if (device_instance_id == 0) {
     return TryCloseDeviceStatus::InvalidArgument;
   }
@@ -5522,27 +5460,18 @@ TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) 
     return TryCloseDeviceStatus::Busy;
   }
 
-  if (core_thread_.is_core_thread()) {
-    // See try_start_stream(): this wrapper would self-deadlock if called from
-    // the core thread itself. Fail fast rather than hang.
-    return TryCloseDeviceStatus::Busy;
-  }
-
-  auto result_promise = std::make_shared<std::promise<TryCloseDeviceStatus>>();
-  std::future<TryCloseDeviceStatus> f = result_promise->get_future();
-  const CoreThread::PostResult pr = try_post([this, device_instance_id, result_promise]() mutable {
+  return run_synchronous_command_(TryCloseDeviceStatus::Busy,
+      [this, device_instance_id]() -> TryCloseDeviceStatus {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
     if (!p) {
-      result_promise->set_value(TryCloseDeviceStatus::Busy);
-      return;
+      return TryCloseDeviceStatus::Busy;
     }
     const ProviderResult cr = p->close_device(device_instance_id);
     if (!cr.ok()) {
       timeline_teardown_trace_emit("fail CloseDevice device_instance_id=%llu reason=provider_rc_%u",
                                    static_cast<unsigned long long>(device_instance_id),
                                    static_cast<unsigned>(cr.code));
-      result_promise->set_value(TryCloseDeviceStatus::ProviderRejected);
-      return;
+      return TryCloseDeviceStatus::ProviderRejected;
     }
     const uint64_t now_ns = ns_since_epoch_();
     bool retain_capture_orphans = false;
@@ -5596,21 +5525,15 @@ TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) 
     if (state_changed) {
       request_publish_from_core_unchecked();
     }
-    result_promise->set_value(TryCloseDeviceStatus::OK);
+    return TryCloseDeviceStatus::OK;
   });
-
-  if (pr != CoreThread::PostResult::Enqueued) {
-    return TryCloseDeviceStatus::Busy;
-  }
-  if (f.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
-    return TryCloseDeviceStatus::Busy;
-  }
-  return f.get();
+} catch (...) {
+  return TryCloseDeviceStatus::Busy;
 }
 
 TrySetStreamPictureStatus CoreRuntime::try_set_stream_picture_config(
     uint64_t stream_id,
-    const PictureConfig& picture) noexcept {
+    const PictureConfig& picture) noexcept try {
   if (stream_id == 0) {
     return TrySetStreamPictureStatus::InvalidArgument;
   }
@@ -5623,12 +5546,15 @@ TrySetStreamPictureStatus CoreRuntime::try_set_stream_picture_config(
     return TrySetStreamPictureStatus::NotSupported;
   }
 
-  const CoreThread::PostResult pr = try_post([this, stream_id, picture]() {
+  return run_synchronous_command_(TrySetStreamPictureStatus::Busy,
+      [this, stream_id, picture]() -> TrySetStreamPictureStatus {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
-    if (!p) return;
+    if (!p) {
+      return TrySetStreamPictureStatus::Busy;
+    }
     const ProviderResult sr = p->set_stream_picture_config(stream_id, picture);
     if (!sr.ok()) {
-      return;
+      return TrySetStreamPictureStatus::ProviderRejected;
     }
     if (streams_.set_picture(stream_id, picture)) {
       (void)refresh_stream_retained_plan_state_(
@@ -5639,15 +5565,15 @@ TrySetStreamPictureStatus CoreRuntime::try_set_stream_picture_config(
       // the normal core coalesced publication path.
       request_publish_from_core_unchecked();
     }
+    return TrySetStreamPictureStatus::OK;
   });
-
-  return (pr == CoreThread::PostResult::Enqueued) ? TrySetStreamPictureStatus::OK
-                                                  : TrySetStreamPictureStatus::Busy;
+} catch (...) {
+  return TrySetStreamPictureStatus::Busy;
 }
 
 TrySetCapturePictureStatus CoreRuntime::try_set_capture_picture_config(
     uint64_t device_instance_id,
-    const PictureConfig& picture) noexcept {
+    const PictureConfig& picture) noexcept try {
   if (device_instance_id == 0) {
     return TrySetCapturePictureStatus::InvalidArgument;
   }
@@ -5660,12 +5586,15 @@ TrySetCapturePictureStatus CoreRuntime::try_set_capture_picture_config(
     return TrySetCapturePictureStatus::NotSupported;
   }
 
-  const CoreThread::PostResult pr = try_post([this, device_instance_id, picture]() {
+  return run_synchronous_command_(TrySetCapturePictureStatus::Busy,
+      [this, device_instance_id, picture]() -> TrySetCapturePictureStatus {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
-    if (!p) return;
+    if (!p) {
+      return TrySetCapturePictureStatus::Busy;
+    }
     const ProviderResult sr = p->set_capture_picture_config(device_instance_id, picture);
     if (!sr.ok()) {
-      return;
+      return TrySetCapturePictureStatus::ProviderRejected;
     }
     if (devices_.set_capture_picture(device_instance_id, picture)) {
       (void)refresh_capture_retained_plan_state_(
@@ -5673,16 +5602,16 @@ TrySetCapturePictureStatus CoreRuntime::try_set_capture_picture_config(
           /*requested_bump_access_posture_epoch=*/false);
       request_publish_from_core_unchecked();
     }
+    return TrySetCapturePictureStatus::OK;
   });
-
-  return (pr == CoreThread::PostResult::Enqueued) ? TrySetCapturePictureStatus::OK
-                                                  : TrySetCapturePictureStatus::Busy;
+} catch (...) {
+  return TrySetCapturePictureStatus::Busy;
 }
 
 TrySetStillCaptureProfileStatus CoreRuntime::try_set_device_still_capture_profile(
     uint64_t device_instance_id,
     const CaptureProfile& profile,
-    const CaptureStillImageBundle& still_image_bundle) noexcept {
+    const CaptureStillImageBundle& still_image_bundle) noexcept try {
   if (device_instance_id == 0 || profile.width == 0 || profile.height == 0 || profile.format_fourcc == 0) {
     return TrySetStillCaptureProfileStatus::InvalidArgument;
   }
@@ -5698,7 +5627,8 @@ TrySetStillCaptureProfileStatus CoreRuntime::try_set_device_still_capture_profil
         : TrySetStillCaptureProfileStatus::NotSupported;
   }
 
-  const CoreThread::PostResult pr = try_post([this, device_instance_id, profile, still_image_bundle]() {
+  return run_synchronous_command_(TrySetStillCaptureProfileStatus::Busy,
+      [this, device_instance_id, profile, still_image_bundle]() -> TrySetStillCaptureProfileStatus {
     uint64_t next_version = 1;
     if (const auto* rec = devices_.find(device_instance_id)) {
       bool same_sequence = (rec->capture_still_image_bundle.members.size() == still_image_bundle.members.size());
@@ -5720,7 +5650,7 @@ TrySetStillCaptureProfileStatus CoreRuntime::try_set_device_still_capture_profil
           rec->capture_format == profile.format_fourcc &&
           same_sequence;
       if (unchanged) {
-        return;
+        return TrySetStillCaptureProfileStatus::OK;
       }
       next_version = rec->capture_profile_version + 1;
       if (next_version == 0) next_version = 1;
@@ -5736,43 +5666,30 @@ TrySetStillCaptureProfileStatus CoreRuntime::try_set_device_still_capture_profil
         device_instance_id,
         /*requested_bump_access_posture_epoch=*/false);
     request_publish_from_core_unchecked();
+    return TrySetStillCaptureProfileStatus::OK;
   });
-
-  return (pr == CoreThread::PostResult::Enqueued)
-      ? TrySetStillCaptureProfileStatus::OK
-      : TrySetStillCaptureProfileStatus::Busy;
+} catch (...) {
+  return TrySetStillCaptureProfileStatus::Busy;
 }
 
 TrySetWarmHoldStatus CoreRuntime::try_set_device_warm_hold_ms(
     uint64_t device_instance_id,
-    uint32_t warm_hold_ms) noexcept {
+    uint32_t warm_hold_ms) noexcept try {
   if (device_instance_id == 0) {
     return TrySetWarmHoldStatus::InvalidArgument;
   }
-  if (core_thread_.is_core_thread()) {
-    // See try_start_stream(): this wrapper would self-deadlock if called from
-    // the core thread itself. Fail fast rather than hang.
-    return TrySetWarmHoldStatus::Busy;
-  }
-  auto status_promise = std::make_shared<std::promise<TrySetWarmHoldStatus>>();
-  std::future<TrySetWarmHoldStatus> status_future = status_promise->get_future();
-  const CoreThread::PostResult pr = try_post([this, device_instance_id, warm_hold_ms, status_promise]() {
+  return run_synchronous_command_(TrySetWarmHoldStatus::Busy,
+      [this, device_instance_id, warm_hold_ms]() -> TrySetWarmHoldStatus {
     const CoreDeviceRegistry::DeviceRecord* rec = devices_.find(device_instance_id);
     if (rec == nullptr || !rec->open) {
-      status_promise->set_value(TrySetWarmHoldStatus::Busy);
-      return;
+      return TrySetWarmHoldStatus::Busy;
     }
     (void)devices_.set_warm_hold_ms(device_instance_id, warm_hold_ms);
     request_publish_from_core_unchecked();
-    status_promise->set_value(TrySetWarmHoldStatus::OK);
+    return TrySetWarmHoldStatus::OK;
   });
-  if (pr != CoreThread::PostResult::Enqueued) {
-    return TrySetWarmHoldStatus::Busy;
-  }
-  if (status_future.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
-    return TrySetWarmHoldStatus::Busy;
-  }
-  return status_future.get();
+} catch (...) {
+  return TrySetWarmHoldStatus::Busy;
 }
 
 bool CoreRuntime::materialize_capture_request_for_server(uint64_t device_instance_id, CaptureRequest& out) const {
@@ -5948,7 +5865,7 @@ TryTriggerDeviceCaptureStatus CoreRuntime::trigger_device_capture_with_capture_i
 
 TryTriggerDeviceCaptureStatus CoreRuntime::try_trigger_device_capture_with_capture_id_for_server(
     uint64_t device_instance_id,
-    uint64_t capture_id) {
+    uint64_t capture_id) noexcept try {
   if (device_instance_id == 0 || capture_id == 0) {
     return TryTriggerDeviceCaptureStatus::InvalidArgument;
   }
@@ -5957,24 +5874,12 @@ TryTriggerDeviceCaptureStatus CoreRuntime::try_trigger_device_capture_with_captu
     return trigger_device_capture_with_capture_id_(device_instance_id, capture_id);
   }
 
-  auto completion = std::make_shared<std::promise<TryTriggerDeviceCaptureStatus>>();
-  std::future<TryTriggerDeviceCaptureStatus> completed = completion->get_future();
-  const CoreThread::PostResult pr = try_post([this,
-                                              device_instance_id,
-                                              capture_id,
-                                              completion]() {
-    const TryTriggerDeviceCaptureStatus status =
-        trigger_device_capture_with_capture_id_(device_instance_id, capture_id);
-    completion->set_value(status);
+  return run_synchronous_command_(TryTriggerDeviceCaptureStatus::Busy,
+      [this, device_instance_id, capture_id]() {
+    return trigger_device_capture_with_capture_id_(device_instance_id, capture_id);
   });
-  if (pr != CoreThread::PostResult::Enqueued) {
-    return TryTriggerDeviceCaptureStatus::Busy;
-  }
-
-  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
-    return TryTriggerDeviceCaptureStatus::Busy;
-  }
-  return completed.get();
+} catch (...) {
+  return TryTriggerDeviceCaptureStatus::Busy;
 }
 
 CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_materialize_(uint64_t rig_id) const {
@@ -6309,21 +6214,12 @@ bool CoreRuntime::smoke_set_rig_member_hardware_ids(uint64_t rig_id, std::vector
     return retained;
   }
 
-  auto completion = std::make_shared<std::promise<bool>>();
-  std::future<bool> completed = completion->get_future();
-  const CoreThread::PostResult pr = try_post([this, rig_id, member_hardware_ids = std::move(member_hardware_ids), completion]() mutable {
+  return run_synchronous_command_(false,
+      [this, rig_id, member_hardware_ids = std::move(member_hardware_ids)]() mutable {
     const bool retained = rigs_.retain_member_hardware_ids(rig_id, std::move(member_hardware_ids));
     request_publish_from_core_unchecked();
-    completion->set_value(retained);
+    return retained;
   });
-  if (pr != CoreThread::PostResult::Enqueued) {
-    return false;
-  }
-
-  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
-    return false;
-  }
-  return completed.get();
 }
 
 CoreRuntime::RigAdmittedRequestBundle CoreRuntime::smoke_admit_rig_cohort_from_preflight(
@@ -6334,21 +6230,12 @@ CoreRuntime::RigAdmittedRequestBundle CoreRuntime::smoke_admit_rig_cohort_from_p
     return admit_rig_cohort_from_preflight_(rig_id, capture_id, preflight);
   }
 
-  auto completion = std::make_shared<std::promise<RigAdmittedRequestBundle>>();
-  std::future<RigAdmittedRequestBundle> completed = completion->get_future();
-  const CoreThread::PostResult pr = try_post([this, rig_id, capture_id, preflight, completion]() {
-    completion->set_value(admit_rig_cohort_from_preflight_(rig_id, capture_id, preflight));
+  RigAdmittedRequestBundle fallback = make_rig_admitted_failure(
+      rig_id, capture_id, RigCohortAdmissionFailure::PreflightFailed);
+  return run_synchronous_command_(fallback,
+      [this, rig_id, capture_id, preflight]() {
+    return admit_rig_cohort_from_preflight_(rig_id, capture_id, preflight);
   });
-  if (pr != CoreThread::PostResult::Enqueued) {
-    return make_rig_admitted_failure(
-        rig_id, capture_id, RigCohortAdmissionFailure::PreflightFailed);
-  }
-
-  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
-    return make_rig_admitted_failure(
-        rig_id, capture_id, RigCohortAdmissionFailure::PreflightFailed);
-  }
-  return completed.get();
 }
 
 CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::smoke_orchestrate_rig_capture_from_preflight(
@@ -6359,21 +6246,12 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::smoke_orchestrate_rig_ca
     return orchestrate_rig_capture_from_preflight_(rig_id, capture_id, preflight);
   }
 
-  auto completion = std::make_shared<std::promise<RigTriggerOrchestrationResult>>();
-  std::future<RigTriggerOrchestrationResult> completed = completion->get_future();
-  const CoreThread::PostResult pr = try_post([this, rig_id, capture_id, preflight, completion]() {
-    completion->set_value(orchestrate_rig_capture_from_preflight_(rig_id, capture_id, preflight));
+  RigTriggerOrchestrationResult fallback = make_rig_orchestration_preflight_failure(
+      rig_id, capture_id, RigPreflightFailure::RigNotFound);
+  return run_synchronous_command_(fallback,
+      [this, rig_id, capture_id, preflight]() {
+    return orchestrate_rig_capture_from_preflight_(rig_id, capture_id, preflight);
   });
-  if (pr != CoreThread::PostResult::Enqueued) {
-    return make_rig_orchestration_preflight_failure(
-        rig_id, capture_id, RigPreflightFailure::RigNotFound);
-  }
-
-  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
-    return make_rig_orchestration_preflight_failure(
-        rig_id, capture_id, RigPreflightFailure::RigNotFound);
-  }
-  return completed.get();
 }
 
 CoreRuntime::RigSubmissionResult CoreRuntime::smoke_submit_admitted_rig_bundle(
@@ -6382,25 +6260,14 @@ CoreRuntime::RigSubmissionResult CoreRuntime::smoke_submit_admitted_rig_bundle(
     return submit_admitted_rig_bundle_(bundle);
   }
 
-  auto completion = std::make_shared<std::promise<RigSubmissionResult>>();
-  std::future<RigSubmissionResult> completed = completion->get_future();
-  const CoreThread::PostResult pr = try_post([this, bundle, completion]() {
-    completion->set_value(submit_admitted_rig_bundle_(bundle));
+  RigSubmissionResult fallback = make_rig_submission_provider_unavailable(
+      bundle.rig_id,
+      bundle.capture_id,
+      static_cast<uint32_t>(ProviderError::ERR_BAD_STATE));
+  return run_synchronous_command_(fallback,
+      [this, bundle]() {
+    return submit_admitted_rig_bundle_(bundle);
   });
-  if (pr != CoreThread::PostResult::Enqueued) {
-    return make_rig_submission_provider_unavailable(
-        bundle.rig_id,
-        bundle.capture_id,
-        static_cast<uint32_t>(ProviderError::ERR_BAD_STATE));
-  }
-
-  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
-    return make_rig_submission_provider_unavailable(
-        bundle.rig_id,
-        bundle.capture_id,
-        static_cast<uint32_t>(ProviderError::ERR_BAD_STATE));
-  }
-  return completed.get();
 }
 
 CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::smoke_orchestrate_rig_capture_with_capture_id(
@@ -6413,46 +6280,42 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::smoke_orchestrate_rig_ca
 
 CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_with_capture_id_for_server(
     uint64_t rig_id,
-    uint64_t capture_id) {
+    uint64_t capture_id) noexcept try {
   if (core_thread_.is_core_thread()) {
     return orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
   }
 
-  auto completion = std::make_shared<std::promise<RigTriggerOrchestrationResult>>();
-  std::future<RigTriggerOrchestrationResult> completed = completion->get_future();
-  const CoreThread::PostResult pr = try_post([this, rig_id, capture_id, completion]() {
-    RigTriggerOrchestrationResult result = orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
-    completion->set_value(std::move(result));
+  RigTriggerOrchestrationResult fallback =
+      make_rig_orchestration_submission_failure(
+          make_rig_submission_provider_unavailable(
+              rig_id,
+              capture_id,
+              static_cast<uint32_t>(ProviderError::ERR_BAD_STATE)));
+  return run_synchronous_command_(fallback, [this, rig_id, capture_id]() {
+    return orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
   });
-  if (pr != CoreThread::PostResult::Enqueued) {
-    return make_rig_orchestration_submission_failure(
-        make_rig_submission_provider_unavailable(
-            rig_id,
-            capture_id,
-            static_cast<uint32_t>(ProviderError::ERR_BAD_STATE)));
-  }
-
-  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
-    return make_rig_orchestration_submission_failure(
-        make_rig_submission_provider_unavailable(
-            rig_id,
-            capture_id,
-            static_cast<uint32_t>(ProviderError::ERR_BAD_STATE)));
-  }
-  return completed.get();
+} catch (...) {
+  return make_rig_orchestration_submission_failure(
+      make_rig_submission_provider_unavailable(
+          rig_id,
+          capture_id,
+          static_cast<uint32_t>(ProviderError::ERR_BAD_STATE)));
 }
 
 bool CoreRuntime::retain_rig_member_hardware_ids(
     uint64_t rig_id,
-    const std::vector<std::string>& member_hardware_ids) {
+    const std::vector<std::string>& member_hardware_ids) noexcept try {
   if (rig_id == 0) {
     return false;
   }
-  auto pr = try_post([this, rig_id, member_hardware_ids]() {
-    (void)rigs_.retain_member_hardware_ids(rig_id, member_hardware_ids);
+  return run_synchronous_command_(false, [this, rig_id, member_hardware_ids]() {
+    const bool retained =
+        rigs_.retain_member_hardware_ids(rig_id, member_hardware_ids);
     request_publish_from_core_unchecked();
+    return retained;
   });
-  return pr == CoreThread::PostResult::Enqueued;
+} catch (...) {
+  return false;
 }
 
 CoreRuntime::IngestCameraConcurrencyResult

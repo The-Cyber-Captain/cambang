@@ -51,8 +51,9 @@ namespace cambang {
 //   lifecycle/fact delivery that must not be lost merely because ordinary work is full.
 class CoreThread final {
 public:
-  // NOTE: std::function may allocate; acceptable for scaffolding.
-  // If/when this becomes a hot path, replace with a fixed-capacity mailbox payload.
+  // std::function construction may allocate. Public/noexcept command adapters
+  // must construct and enqueue Tasks inside an exception-to-status boundary;
+  // the mailbox can report AllocFail only after a Task reached try_post*().
   using Task = std::function<void()>;
 
   enum class PostResult : uint8_t {

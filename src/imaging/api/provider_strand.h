@@ -33,7 +33,9 @@ public:
   CBProviderStrand(const CBProviderStrand&) = delete;
   CBProviderStrand& operator=(const CBProviderStrand&) = delete;
 
-  void start(IProviderCallbacks* callbacks, const char* debug_name = "provider_strand", size_t capacity = 4096);
+  // Returns false without exposing a partially-running strand if worker-thread
+  // construction fails or the strand is already running.
+  bool start(IProviderCallbacks* callbacks, const char* debug_name = "provider_strand", size_t capacity = 4096) noexcept;
 
   // Deterministic barrier: all events posted before flush() are guaranteed delivered before it returns.
   void flush();

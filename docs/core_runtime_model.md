@@ -168,6 +168,28 @@ arm/disarm rig - trigger rig capture - apply spec patches
 
 Commands are immutable message objects; core owns command execution.
 
+#### Synchronous command completion
+
+Godot-facing mutation adapters that need an immediate status do not equate
+mailbox admission with command success. They wait until Core has executed the
+command and return the resulting Core/provider status.
+
+The wait has an explicit side-effect boundary:
+
+- while a command is still queued, the caller may cancel it after the
+  two-second admission wait; a cancelled command is skipped when later dequeued
+  and cannot mutate provider or Core state;
+- once Core has begun the command, the caller waits for its actual result rather
+  than returning a timeout status while a live mutation continues;
+- provider calls made in that running phase remain subject to the prompt,
+  bounded, non-reentrant contract in `provider_architecture.md` section 8.1.
+
+Allocation or task-envelope construction failure is converted to the existing
+operation failure status and must not escape a Godot or core-thread boundary.
+This rule applies to stream/device lifecycle, stream creation, mutable picture
+and still-profile configuration, warm hold, capture submission, and rig
+mutation/submission adapters.
+
 Current public Godot-facing trigger/result surface is object-oriented:
 - device capture via `CamBANGDevice.trigger_capture() -> Error`, then
   `CamBANGDevice.get_result()` for the current completed `CaptureResult`

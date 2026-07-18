@@ -3,12 +3,15 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <deque>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "core/core_dispatcher.h"
@@ -151,6 +154,7 @@ enum class TrySetStreamPictureStatus : uint8_t {
   NotSupported = 1,
   Busy = 2,
   InvalidArgument = 3,
+  ProviderRejected = 4,
 };
 
 enum class TrySetCapturePictureStatus : uint8_t {
@@ -158,6 +162,7 @@ enum class TrySetCapturePictureStatus : uint8_t {
   NotSupported = 1,
   Busy = 2,
   InvalidArgument = 3,
+  ProviderRejected = 4,
 };
 
 enum class TrySetStillCaptureProfileStatus : uint8_t {
@@ -185,6 +190,7 @@ enum class TryCreateStreamStatus : uint8_t {
   OK = 0,
   Busy = 1,
   InvalidArgument = 2,
+  ProviderRejected = 3,
 };
 
 enum class TryStartStreamStatus : uint8_t {
@@ -244,7 +250,7 @@ enum class TryCloseDeviceStatus : uint8_t {
   CoreRuntime(const CoreRuntime&) = delete;
   CoreRuntime& operator=(const CoreRuntime&) = delete;
 
-  bool start();
+  bool start() noexcept;
   void stop();
 
   bool is_running() const { return core_thread_.is_running(); }
@@ -309,7 +315,9 @@ enum class TryCloseDeviceStatus : uint8_t {
   // Defaulting is performed by core using provider->stream_template().
   // profile_version ownership is core-authoritative for this ingress:
   // pass profile_version=0 to request core-assigned lineage.
-  // These are non-blocking and may return Busy if the provider_to_core_commands queue is full.
+  // These wait for command completion. If the command remains queued for two
+  // seconds it is cancelled and Busy is returned; once execution has begun,
+  // the provider prompt/bounded contract governs completion.
   TryCreateStreamStatus try_create_stream(
       uint64_t stream_id,
       uint64_t device_instance_id,
@@ -331,8 +339,8 @@ enum class TryCloseDeviceStatus : uint8_t {
 
   TryCloseDeviceStatus try_close_device(uint64_t device_instance_id) noexcept;
 
-  // Stream-scoped picture update path.
-  // Non-blocking: enqueues the provider call onto the core thread.
+  // Stream-scoped picture update path. Success reflects provider acceptance
+  // and committed core truth, not merely queue admission.
   TrySetStreamPictureStatus try_set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) noexcept;
   // Device-scoped capture-picture update path.
   TrySetCapturePictureStatus try_set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) noexcept;
@@ -346,7 +354,7 @@ enum class TryCloseDeviceStatus : uint8_t {
   // the core thread and only return success after the work was accepted/submitted.
   TryTriggerDeviceCaptureStatus try_trigger_device_capture_with_capture_id_for_server(
       uint64_t device_instance_id,
-      uint64_t capture_id);
+      uint64_t capture_id) noexcept;
   bool materialize_capture_request_for_server(uint64_t device_instance_id, CaptureRequest& out) const;
 
   // Compatibility alias for smoke/internal callers; still marshals to the core thread.
@@ -491,7 +499,9 @@ enum class TryCloseDeviceStatus : uint8_t {
 
 #endif
 
-  bool retain_rig_member_hardware_ids(uint64_t rig_id, const std::vector<std::string>& member_hardware_ids);
+  bool retain_rig_member_hardware_ids(
+      uint64_t rig_id,
+      const std::vector<std::string>& member_hardware_ids) noexcept;
 
   enum class IngestCameraConcurrencyStatus : uint8_t {
     Ok = 0,
@@ -531,7 +541,7 @@ enum class TryCloseDeviceStatus : uint8_t {
   // Server-internal adapter: caller supplies capture_id (no allocation here).
   RigTriggerOrchestrationResult orchestrate_rig_capture_with_capture_id_for_server(
       uint64_t rig_id,
-      uint64_t capture_id);
+      uint64_t capture_id) noexcept;
 
 #if defined(CAMBANG_INTERNAL_SMOKE)
   CoreThread::PostResult try_post_core_thread_unchecked(CoreThread::Task task) {
@@ -716,6 +726,106 @@ enum class TryCloseDeviceStatus : uint8_t {
   }
 
 private:
+  template <typename Status>
+  class SynchronousCommandCompletion final {
+  public:
+    enum class Phase : uint8_t {
+      Pending,
+      Running,
+      Cancelled,
+      Completed,
+    };
+
+    explicit SynchronousCommandCompletion(Status fallback)
+        : fallback_(fallback), result_(fallback) {}
+
+    bool try_begin() {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (phase_ != Phase::Pending) {
+        return false;
+      }
+      phase_ = Phase::Running;
+      return true;
+    }
+
+    void complete(Status result) {
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        result_ = std::move(result);
+        phase_ = Phase::Completed;
+      }
+      completed_.notify_all();
+    }
+
+    Status wait_for_completion() {
+      std::unique_lock<std::mutex> lock(mutex_);
+      if (completed_.wait_for(lock, std::chrono::seconds(2), [this]() {
+            return phase_ == Phase::Completed;
+          })) {
+        return result_;
+      }
+
+      if (phase_ == Phase::Pending) {
+        phase_ = Phase::Cancelled;
+        return fallback_;
+      }
+
+      // The command has crossed the side-effect boundary. Returning a timeout
+      // status now would create a lie while the mutation remained live. Provider
+      // calls are contractually prompt/bounded, so wait for their actual result.
+      completed_.wait(lock, [this]() {
+        return phase_ == Phase::Completed || phase_ == Phase::Cancelled;
+      });
+      return phase_ == Phase::Completed ? result_ : fallback_;
+    }
+
+    void cancel_if_pending() {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (phase_ == Phase::Pending) {
+        phase_ = Phase::Cancelled;
+      }
+    }
+
+  private:
+    std::mutex mutex_;
+    std::condition_variable completed_;
+    Phase phase_ = Phase::Pending;
+    Status fallback_;
+    Status result_;
+  };
+
+  template <typename Status, typename Operation>
+  Status run_synchronous_command_(Status fallback, Operation operation) noexcept {
+    try {
+      if (core_thread_.is_core_thread()) {
+        return fallback;
+      }
+
+      auto completion =
+          std::make_shared<SynchronousCommandCompletion<Status>>(fallback);
+      const CoreThread::PostResult post_result = try_post(
+          [completion, operation = std::move(operation), fallback]() mutable {
+            if (!completion->try_begin()) {
+              return;
+            }
+            Status result = fallback;
+            try {
+              result = operation();
+            } catch (...) {
+              result = fallback;
+            }
+            completion->complete(result);
+          });
+      if (post_result != CoreThread::PostResult::Enqueued) {
+        completion->cancel_if_pending();
+        return fallback;
+      }
+      return completion->wait_for_completion();
+    } catch (...) {
+      return fallback;
+    }
+  }
+
   void on_core_start() override;
   void on_core_timer_tick() override;
   void on_core_stop() override;
@@ -907,13 +1017,11 @@ private:
 
   std::atomic<CoreRuntimeState> state_{CoreRuntimeState::CREATED};
 
-  // Serializes stop() itself. state_'s exchange-based idempotency guard only
-  // rejects re-entry once already STOPPED/CREATED; without this lock, two
-  // callers racing while state_ is LIVE/TEARING_DOWN could both fall through
-  // and both call core_thread_.join() on the same std::thread concurrently
-  // (undefined behaviour per POSIX pthread_join semantics). See stop()'s doc
-  // comment.
-  std::mutex stop_mutex_;
+  // Serializes start/stop lifecycle transitions. Besides preventing concurrent
+  // join(), this ensures only the caller that transitions to STARTING performs
+  // reset and worker construction; concurrent start callers observe the stable
+  // result instead of racing through STARTING together.
+  std::mutex lifecycle_mutex_;
 
   // check_core_thread_liveness() bookkeeping. Not atomic: per that method's
   // doc comment, only ever touched from one calling thread's context.

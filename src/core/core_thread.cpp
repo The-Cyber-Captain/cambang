@@ -76,7 +76,21 @@ bool CoreThread::start(IHooks* hooks) {
   tasks_dropped_closed_.store(0, std::memory_order_relaxed);
   tasks_dropped_allocfail_.store(0, std::memory_order_relaxed);
 
-  thread_ = std::thread(&CoreThread::thread_main, this);
+  try {
+    thread_ = std::thread(&CoreThread::thread_main, this);
+  } catch (...) {
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      hooks_ = nullptr;
+      stop_requested_ = false;
+      stop_when_idle_ = false;
+      essential_tasks_.clear();
+      command_tasks_.clear();
+      tasks_.clear();
+    }
+    running_.store(false, std::memory_order_release);
+    return false;
+  }
   return true;
 }
 

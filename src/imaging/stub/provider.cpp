@@ -150,7 +150,10 @@ ProviderResult StubProvider::initialize(IProviderCallbacks* callbacks) {
   }
 
   callbacks_ = callbacks;
-  strand_.start(callbacks_, "stub_provider");
+  if (!strand_.start(callbacks_, "stub_provider")) {
+    callbacks_ = nullptr;
+    return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
+  }
   provider_native_id_ = alloc_native_id_(NativeObjectType::Provider);
   emit_native_created_(provider_native_id_, NativeObjectType::Provider, 0, 0, 0, 0, 0, 0);
   initialized_ = true;

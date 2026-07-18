@@ -7,9 +7,12 @@ namespace cambang {
 
 CBProviderStrand::~CBProviderStrand() { stop(); }
 
-void CBProviderStrand::start(IProviderCallbacks* callbacks, const char* debug_name, size_t capacity) {
-  if (running()) {
-    return;
+bool CBProviderStrand::start(
+    IProviderCallbacks* callbacks,
+    const char* debug_name,
+    size_t capacity) noexcept try {
+  if (!callbacks || running()) {
+    return false;
   }
   callbacks_ = callbacks;
   debug_name_ = debug_name;
@@ -19,8 +22,24 @@ void CBProviderStrand::start(IProviderCallbacks* callbacks, const char* debug_na
     closed_ = false;
   }
   stop_requested_.store(false, std::memory_order_release);
+  try {
+    worker_ = std::thread([this]() { thread_main_(); });
+  } catch (...) {
+    std::lock_guard<std::mutex> lk(mu_);
+    closed_ = true;
+    callbacks_ = nullptr;
+    debug_name_ = nullptr;
+    capacity_ = 0;
+    return false;
+  }
   running_.store(true, std::memory_order_release);
-  worker_ = std::thread([this]() { thread_main_(); });
+  return true;
+} catch (...) {
+  callbacks_ = nullptr;
+  debug_name_ = nullptr;
+  capacity_ = 0;
+  running_.store(false, std::memory_order_release);
+  return false;
 }
 
 void CBProviderStrand::stop() {

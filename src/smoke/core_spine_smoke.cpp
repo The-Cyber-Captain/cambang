@@ -1563,8 +1563,8 @@ public:
     return t;
   }
 
-  bool supports_stream_picture_updates() const noexcept override { return false; }
-  bool supports_capture_picture_updates() const noexcept override { return false; }
+  bool supports_stream_picture_updates() const noexcept override { return true; }
+  bool supports_capture_picture_updates() const noexcept override { return true; }
   bool supports_multi_image_still_sequence() const noexcept override { return false; }
 
   ProviderResult enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) override {
@@ -1585,16 +1585,21 @@ public:
     return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
   }
 
-  ProviderResult create_stream(const StreamRequest&) override { return ProviderResult::failure(ProviderError::ERR_BAD_STATE); }
+  ProviderResult create_stream(const StreamRequest&) override {
+    create_stream_called_.fetch_add(1, std::memory_order_relaxed);
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
   ProviderResult destroy_stream(uint64_t) override { return ProviderResult::failure(ProviderError::ERR_BAD_STATE); }
   ProviderResult start_stream(uint64_t, const CaptureProfile&, const PictureConfig&) override {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
   ProviderResult stop_stream(uint64_t) override { return ProviderResult::failure(ProviderError::ERR_BAD_STATE); }
   ProviderResult set_stream_picture_config(uint64_t, const PictureConfig&) override {
+    set_stream_picture_called_.fetch_add(1, std::memory_order_relaxed);
     return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
   }
   ProviderResult set_capture_picture_config(uint64_t, const PictureConfig&) override {
+    set_capture_picture_called_.fetch_add(1, std::memory_order_relaxed);
     return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
   }
   ProviderResult trigger_capture(const CaptureRequest&) override { return ProviderResult::failure(ProviderError::ERR_BAD_STATE); }
@@ -1612,11 +1617,23 @@ public:
 
   uint64_t open_called() const noexcept { return open_called_.load(std::memory_order_relaxed); }
   uint64_t close_called() const noexcept { return close_called_.load(std::memory_order_relaxed); }
+  uint64_t create_stream_called() const noexcept {
+    return create_stream_called_.load(std::memory_order_relaxed);
+  }
+  uint64_t set_stream_picture_called() const noexcept {
+    return set_stream_picture_called_.load(std::memory_order_relaxed);
+  }
+  uint64_t set_capture_picture_called() const noexcept {
+    return set_capture_picture_called_.load(std::memory_order_relaxed);
+  }
 
 private:
   IProviderCallbacks* callbacks_ = nullptr;
   std::atomic<uint64_t> open_called_{0};
   std::atomic<uint64_t> close_called_{0};
+  std::atomic<uint64_t> create_stream_called_{0};
+  std::atomic<uint64_t> set_stream_picture_called_{0};
+  std::atomic<uint64_t> set_capture_picture_called_{0};
 };
 
 static const char* compiled_provider_name() {
@@ -1857,6 +1874,102 @@ static int test_provider_open_close_refusal_visibility() {
 
   rt.stop();
   (void)provider.shutdown();
+  return 0;
+}
+
+static int test_provider_command_refusal_and_timeout_truth() {
+  CoreRuntime rt;
+  RefusingDeviceProvider provider;
+
+  if (!rt.start() ||
+      !wait_until([&]() { return rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1) ||
+      !provider.initialize(rt.provider_callbacks()).ok()) {
+    std::cerr << "FAIL: provider command refusal setup failed\n";
+    rt.stop();
+    return 1;
+  }
+  rt.attach_provider(&provider);
+
+  const TryCreateStreamStatus create_status = rt.try_create_stream(
+      kStreamId, kDeviceInstanceId, StreamIntent::PREVIEW, nullptr, nullptr, 1);
+  if (create_status != TryCreateStreamStatus::ProviderRejected ||
+      provider.create_stream_called() != 1) {
+    std::cerr << "FAIL: provider-refused create returned status="
+              << static_cast<int>(create_status)
+              << " create_calls=" << provider.create_stream_called()
+              << " expected ProviderRejected/1\n";
+    rt.stop();
+    (void)provider.shutdown();
+    return 1;
+  }
+
+  PictureConfig picture{};
+  const TrySetStreamPictureStatus stream_picture_status =
+      rt.try_set_stream_picture_config(kStreamId, picture);
+  const TrySetCapturePictureStatus capture_picture_status =
+      rt.try_set_capture_picture_config(kDeviceInstanceId, picture);
+  if (stream_picture_status != TrySetStreamPictureStatus::ProviderRejected ||
+      capture_picture_status != TrySetCapturePictureStatus::ProviderRejected ||
+      provider.set_stream_picture_called() != 1 ||
+      provider.set_capture_picture_called() != 1) {
+    std::cerr << "FAIL: provider-refused picture command truth mismatch. stream_status="
+              << static_cast<int>(stream_picture_status)
+              << " capture_status=" << static_cast<int>(capture_picture_status)
+              << " stream_calls=" << provider.set_stream_picture_called()
+              << " capture_calls=" << provider.set_capture_picture_called() << "\n";
+    rt.stop();
+    (void)provider.shutdown();
+    return 1;
+  }
+
+  auto release_gate = std::make_shared<std::promise<void>>();
+  std::shared_future<void> release_gate_done = release_gate->get_future().share();
+  std::atomic<bool> gate_started{false};
+  const auto gate_post = rt.try_post_core_thread_unchecked(
+      [release_gate_done, &gate_started]() mutable {
+        gate_started.store(true, std::memory_order_release);
+        release_gate_done.wait();
+      });
+  if (gate_post != CoreThread::PostResult::Enqueued ||
+      !wait_until([&]() { return gate_started.load(std::memory_order_acquire); }, 200, 1)) {
+    std::cerr << "FAIL: core gate setup failed for queued-command timeout truth\n";
+    release_gate->set_value();
+    rt.stop();
+    (void)provider.shutdown();
+    return 1;
+  }
+
+  std::atomic<bool> caller_done{false};
+  TryCreateStreamStatus timed_status = TryCreateStreamStatus::OK;
+  std::thread caller([&]() {
+    timed_status = rt.try_create_stream(
+        kStreamId + 1, kDeviceInstanceId, StreamIntent::PREVIEW, nullptr, nullptr, 2);
+    caller_done.store(true, std::memory_order_release);
+  });
+  const bool caller_returned =
+      wait_until([&]() { return caller_done.load(std::memory_order_acquire); }, 500, 10);
+  release_gate->set_value();
+  caller.join();
+
+  auto barrier = std::make_shared<std::promise<void>>();
+  auto barrier_done = barrier->get_future();
+  const auto barrier_post = rt.try_post_core_thread_unchecked(
+      [barrier]() mutable { barrier->set_value(); });
+  const bool drained = barrier_post == CoreThread::PostResult::Enqueued &&
+      barrier_done.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+
+  const uint64_t create_calls_after_timeout = provider.create_stream_called();
+  rt.stop();
+  (void)provider.shutdown();
+  if (!caller_returned || !drained || timed_status != TryCreateStreamStatus::Busy ||
+      create_calls_after_timeout != 1) {
+    std::cerr << "FAIL: timed-out queued create was not cancelled. returned="
+              << caller_returned << " drained=" << drained
+              << " status=" << static_cast<int>(timed_status)
+              << " create_calls=" << create_calls_after_timeout << " expected Busy/1\n";
+    return 1;
+  }
+
   return 0;
 }
 
@@ -4686,6 +4799,12 @@ int main(int argc, char** argv) {
                              [] { return test_provider_open_close_refusal_visibility(); })) {
       if (reporter.verbose()) reporter.print_summary();
       reporter.print_fail_line("core_spine_smoke", "test_provider_open_close_refusal_visibility", r);
+      return r;
+    }
+    if (int r = reporter.run("test_provider_command_refusal_and_timeout_truth",
+                             [] { return test_provider_command_refusal_and_timeout_truth(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_provider_command_refusal_and_timeout_truth", r);
       return r;
     }
     if (int r = reporter.run("test_stream_registry_non_ok_stop_ack_does_not_clobber_restart",
