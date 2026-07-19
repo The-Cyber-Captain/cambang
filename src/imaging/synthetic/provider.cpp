@@ -1181,24 +1181,18 @@ ProviderResult SyntheticProvider::close_device(uint64_t device_instance_id) {
   if (!initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
-  {
-    std::lock_guard<std::mutex> capture_lock(capture_mutex_);
-    if (has_in_flight_capture_for_device_locked_(device_instance_id)) {
-      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
-    }
+  // Hold both locks (capture_mutex_ before provider_state_mutex_ -- the same
+  // documented nesting order capture admission uses) across the in-flight
+  // check AND the close, so no trigger_capture from another thread can be
+  // admitted for this device between the check and the erase. Previously the
+  // check released capture_mutex_ first, leaving a check-then-act window that
+  // was unreachable only because every mutating entry point happens to be
+  // core-thread-serialized; the contract-independent closure is required for
+  // the reference implementation (docs/provider_implementation_brief.md).
+  std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+  if (has_in_flight_capture_for_device_locked_(device_instance_id)) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
-  // Known check-then-act window: the in-flight check above releases
-  // capture_mutex_ before the close below takes provider_state_mutex_ (the
-  // sequential order is required -- capture_mutex_ before provider_state_
-  // mutex_, never nested the other way). A trigger_capture racing in from a
-  // *different* thread could be admitted in that gap and produce a capture for
-  // a device this call is about to erase. This is currently unreachable under
-  // the intended-use contract: every mutating ICameraProvider entry point is
-  // invoked from the single core thread (public commands, rig submission, and
-  // the warm-expiry close all execute there), so close and trigger cannot
-  // overlap. If a future caller drives provider mutations from more than one
-  // thread, this window must be closed (e.g. re-check in-flight captures under
-  // provider_state_mutex_ after admission also takes it) rather than relied on.
   std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
   auto it = devices_.find(device_instance_id);
   if (it == devices_.end() || !it->second.open) {

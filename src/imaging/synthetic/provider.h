@@ -504,8 +504,12 @@ private:
 private:
   SyntheticProviderConfig cfg_{};
   IProviderCallbacks* callbacks_ = nullptr;
-  bool initialized_ = false;
-  bool shutting_down_ = false;
+  // Atomic because entry-point guards read these before taking any provider
+  // mutex; under broker mediation admission is closed and drained before
+  // shutdown mutates them, but the reference implementation must not carry
+  // even a formally-racy read (docs/provider_implementation_brief.md).
+  std::atomic<bool> initialized_{false};
+  std::atomic<bool> shutting_down_{false};
 
   SyntheticVirtualClock clock_;
 

@@ -39,7 +39,7 @@ out/core_spine_smoke.exe              # core lifecycle/shutdown spine
 out/provider_compliance_verify.exe    # provider contract (36 checks)
 out/restart_boundary_verify.exe
 out/verify_case_runner.exe            # runs authored verification cases
-scripts/run_core_thread_liveness_watchdog_verify.ps1   # death test; abort IS the pass condition
+out/core_thread_liveness_watchdog_verify.exe   # self-supervising death test (abort + failed-latch modes; ~30s)
 ```
 
 Godot scene verification runs from `tests/cambang_gde/` (PowerShell). The **only** authoritative classification is the shared harness verdict line `[CamBANG][HarnessVerdict] scene=<name> status=<ok|expected_unsupported|fail|error> ...`, checked by the launcher — never add runner-side regex exceptions; fix the scene's verdict instead.

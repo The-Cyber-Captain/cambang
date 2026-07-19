@@ -1335,6 +1335,12 @@ CamBANGServer::~CamBANGServer() {
 
   // Ensure graceful stop if the extension is torn down.
   runtime_.stop();
+  if (runtime_.core_thread_failed()) {
+    // Mirror stop(): the member unique_ptr must not destroy a broker the
+    // abandoned core thread may still be blocked inside (the broker
+    // destructor drains active-call leases and would hang process exit).
+    (void)provider_.release();
+  }
   result_access_cost_evidence::clear();
   _clear_live_retained_result_access_calibration_state_();
   if (singleton_ == this) {
@@ -1576,7 +1582,19 @@ void CamBANGServer::stop() {
   // CoreRuntime owns attached-provider shutdown while the core thread is live.
   runtime_.stop();
   runtime_.attach_provider(nullptr);
-  provider_.reset();
+  if (runtime_.core_thread_failed()) {
+    // Terminal wedged-provider latch: the abandoned (detached) core thread
+    // may still be blocked inside this provider. Destroying the broker would
+    // wait on the wedged active-call lease (or free state that thread still
+    // touches), so deliberately leak it instead. One loud line; the latch
+    // logs the full posture.
+    ERR_PRINT("CamBANGServer: stop() on a FAILED runtime -- deliberately "
+              "leaking the provider/broker the wedged core thread may still "
+              "reference. Restart the application to recover.");
+    (void)provider_.release();
+  } else {
+    provider_.reset();
+  }
   CamBANGStreamResult::clear_live_stream_cpu_display_views();
   synthetic_gpu_backing_drain_render_releases_before_stop();
   drain_live_cpu_display_bridge_before_stop();

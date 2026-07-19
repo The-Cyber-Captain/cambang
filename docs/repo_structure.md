@@ -56,7 +56,7 @@ cambang/
 |   |   |-- cambang_ui_design_standard_integrated.md
 |   |   |-- cambangstatuspanel_mappings.md
 |   |   |-- maintainer_tools.md
-|   |   |-- provider_compliance_checklist.md
+|   |   |-- (provider audit criteria: ../provider_implementation_brief.md)
 |   |   |-- state_snapshot_schema_mapping.md
 |   |   |-- status_panel_fixture_taxonomy.md
 |   |   |-- testing_audit_lenses.md

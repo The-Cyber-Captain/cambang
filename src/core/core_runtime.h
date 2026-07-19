@@ -262,7 +262,7 @@ enum class TryCloseDeviceStatus : uint8_t {
   // kCoreThreadStaleTaskThresholdNs. This exists because "provider calls
   // must be prompt and bounded" (provider_architecture.md Section 8.1) is
   // otherwise enforced only by a human following
-  // docs/dev/provider_compliance_checklist.md Section 2's manual review
+  // docs/provider_implementation_brief.md Section 2's manual review
   // item -- see docs/dev/current_tranche.md's Step 2 entry.
   //
   // Always logs to stderr on a new stale episode (or every
@@ -282,6 +282,25 @@ enum class TryCloseDeviceStatus : uint8_t {
   uint64_t core_thread_stale_detections() const noexcept {
     return core_thread_stale_detections_.load(std::memory_order_relaxed);
   }
+
+  // True once check_core_thread_liveness() has latched the terminal
+  // runtime-failed state (a provider call exceeded the 15s hard threshold;
+  // the core thread is treated as permanently wedged). One-way for the
+  // process session: blocked synchronous waiters return their fallback,
+  // new commands/posts are refused, and stop() abandons rather than joins
+  // (docs/provider_implementation_brief.md, "When a provider violates
+  // promptness"). Safe to read from any thread.
+  bool core_thread_failed() const noexcept {
+    return core_thread_failed_.load(std::memory_order_acquire);
+  }
+
+#if defined(CAMBANG_INTERNAL_SMOKE)
+  // Failed-latch death test only: suppress the maintainer-build 5s abort so
+  // the production latch path is exercisable inside a smoke binary.
+  void smoke_set_suppress_liveness_abort(bool suppress) noexcept {
+    smoke_suppress_liveness_abort_.store(suppress, std::memory_order_release);
+  }
+#endif
 
   // Tick-bounded publication bridge support.
   //
@@ -782,6 +801,14 @@ private:
              })) {
         lock.unlock();
         runtime.check_core_thread_liveness();
+        if (runtime.core_thread_failed()) {
+          // The runtime has been declared failed (wedged provider past the
+          // hard threshold). The command's real result will never arrive;
+          // release this caller with the fallback rather than hanging the
+          // application forever. The latch, not this return value, is the
+          // truth surface for what happened.
+          return fallback_;
+        }
         lock.lock();
       }
       return phase_ == Phase::Completed ? result_ : fallback_;
@@ -806,6 +833,11 @@ private:
   Status run_synchronous_command_(Status fallback, Operation operation) noexcept {
     try {
       if (core_thread_.is_core_thread()) {
+        return fallback;
+      }
+      if (core_thread_failed()) {
+        // Terminal wedged-provider latch: refuse immediately instead of
+        // posting work the wedged core thread will never run.
         return fallback;
       }
 
@@ -1043,6 +1075,11 @@ private:
   uint64_t last_reported_stale_task_started_ns_ = 0;
   uint64_t last_stale_report_steady_ns_ = 0;
   std::atomic<uint64_t> core_thread_stale_detections_{0};
+  // Terminal wedged-provider latch; see core_thread_failed().
+  std::atomic<bool> core_thread_failed_{false};
+#if defined(CAMBANG_INTERNAL_SMOKE)
+  std::atomic<bool> smoke_suppress_liveness_abort_{false};
+#endif
 
   SnapshotBuilder snapshot_builder_;
   // Non-owning. Set via set_snapshot_publisher(); caller (CamBANGServer or a

@@ -143,6 +143,26 @@ void CoreThread::join() {
   running_.store(false, std::memory_order_release);
 }
 
+void CoreThread::abandon_wedged_thread() noexcept {
+  if (!running_.load(std::memory_order_acquire)) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    stop_requested_ = true;
+  }
+  cv_.notify_all();
+  // The wedged thread cannot be joined (it is blocked inside a provider call
+  // that never returns). Detach so stop()/the destructor cannot hang; the
+  // thread, its stack, and everything it references leak for the remainder
+  // of the process by design.
+  if (thread_.joinable()) {
+    thread_.detach();
+  }
+  core_tid_.store(std::thread::id{}, std::memory_order_release);
+  running_.store(false, std::memory_order_release);
+}
+
 
 void CoreThread::post(Task task) {
   (void)try_post(std::move(task));

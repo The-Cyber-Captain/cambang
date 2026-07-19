@@ -174,6 +174,12 @@ bool wait_until(const std::function<bool()>& pred, int max_iters, int sleep_ms) 
 
 constexpr const char* kDeathChildArgument = "--death-child";
 constexpr auto kDeathChildTimeout = std::chrono::seconds(15);
+// Failed-latch mode: the child suppresses the maintainer 5s abort so the
+// production hard-threshold latch (15s) is reachable, hangs the provider for
+// 30s, and asserts the latch semantics itself (returns 0 on success). The
+// parent only enforces the bound, the latch log, and the exit code.
+constexpr const char* kFailedLatchChildArgument = "--failed-latch-child";
+constexpr auto kFailedLatchChildTimeout = std::chrono::seconds(40);
 
 struct ChildRunResult final {
   bool launched = false;
@@ -221,7 +227,9 @@ std::string current_executable_path() {
   }
 }
 
-ChildRunResult run_death_child_process(const char*) {
+ChildRunResult run_death_child_process(const char*,
+                                       const char* child_argument,
+                                       std::chrono::seconds timeout) {
   ChildRunResult result;
   const std::string executable = current_executable_path();
   if (executable.empty()) {
@@ -252,7 +260,7 @@ ChildRunResult run_death_child_process(const char*) {
   startup.hStdOutput = write_pipe;
   startup.hStdError = write_pipe;
   PROCESS_INFORMATION process{};
-  std::string command_line = "\"" + executable + "\" " + kDeathChildArgument;
+  std::string command_line = "\"" + executable + "\" " + child_argument;
 
   const BOOL created = CreateProcessA(
       executable.c_str(),
@@ -274,7 +282,7 @@ ChildRunResult run_death_child_process(const char*) {
   result.launched = true;
 
   const DWORD wait_ms = static_cast<DWORD>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(kDeathChildTimeout).count());
+      std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count());
   const DWORD wait_result = WaitForSingleObject(process.hProcess, wait_ms);
   if (wait_result == WAIT_TIMEOUT) {
     result.timed_out = true;
@@ -308,7 +316,9 @@ ChildRunResult run_death_child_process(const char*) {
 
 #else
 
-ChildRunResult run_death_child_process(const char* argv0) {
+ChildRunResult run_death_child_process(const char* argv0,
+                                       const char* child_argument,
+                                       std::chrono::seconds timeout) {
   ChildRunResult result;
   int output_pipe[2]{};
   if (pipe(output_pipe) != 0) {
@@ -328,14 +338,14 @@ ChildRunResult run_death_child_process(const char* argv0) {
     (void)dup2(output_pipe[1], STDERR_FILENO);
     close(output_pipe[0]);
     close(output_pipe[1]);
-    execlp(argv0, argv0, kDeathChildArgument, static_cast<char*>(nullptr));
+    execlp(argv0, argv0, child_argument, static_cast<char*>(nullptr));
     _exit(127);
   }
 
   result.launched = true;
   close(output_pipe[1]);
   int status = 0;
-  const auto deadline = std::chrono::steady_clock::now() + kDeathChildTimeout;
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
   for (;;) {
     const pid_t waited = waitpid(child, &status, WNOHANG);
     if (waited == child) {
@@ -495,11 +505,146 @@ int run_death_child() {
   return 1;
 }
 
+// Failed-latch mode child: suppress the maintainer 5s abort, hang the
+// provider for 30s, and assert the production hard-threshold latch semantics
+// end to end (docs/provider_implementation_brief.md, "When a provider
+// violates promptness"). Returns 0 only if every assertion holds.
+int run_failed_latch_child() {
+  using namespace cambang;
+  using clock = std::chrono::steady_clock;
+
+  CoreRuntime runtime;
+  StateSnapshotBuffer buffer;
+  runtime.set_snapshot_publisher(&buffer);
+  runtime.smoke_set_suppress_liveness_abort(true);
+
+  if (!runtime.start()) {
+    std::fprintf(stderr, "FAIL: runtime start failed\n");
+    return 1;
+  }
+  if (!wait_until([&]() { return runtime.state_copy() == CoreRuntimeState::LIVE; }, 500, 5)) {
+    std::fprintf(stderr, "FAIL: timed out waiting for runtime LIVE\n");
+    runtime.stop();
+    return 1;
+  }
+
+  // 30s hang: far past the 15s hard threshold, so the blocked waiter must be
+  // released by the latch (~15s), not by the provider waking up (30s).
+  auto provider = std::make_unique<HangingCaptureProvider>(std::chrono::seconds(30));
+  if (!provider->initialize(runtime.provider_callbacks()).ok()) {
+    std::fprintf(stderr, "FAIL: provider initialize failed\n");
+    runtime.stop();
+    return 1;
+  }
+  std::vector<CameraEndpoint> endpoints;
+  if (!provider->enumerate_endpoints(endpoints).ok() || endpoints.empty()) {
+    std::fprintf(stderr, "FAIL: enumerate_endpoints failed\n");
+    runtime.stop();
+    return 1;
+  }
+  runtime.attach_provider(provider.get());
+
+  constexpr uint64_t kDeviceId = 100;
+  constexpr uint64_t kRootId = 900;
+  if (runtime.retain_device_identity(kDeviceId, endpoints.front().hardware_id) !=
+          CoreThread::PostResult::Enqueued ||
+      !provider->open_device(endpoints.front().hardware_id, kDeviceId, kRootId).ok()) {
+    std::fprintf(stderr, "FAIL: device setup failed\n");
+    runtime.attach_provider(nullptr);
+    runtime.stop();
+    return 1;
+  }
+  if (!wait_until(
+          [&]() {
+            auto snap = buffer.snapshot_copy();
+            if (!snap) {
+              return false;
+            }
+            for (const auto& d : snap->devices) {
+              if (d.instance_id == kDeviceId) {
+                return true;
+              }
+            }
+            return false;
+          },
+          500,
+          5)) {
+    std::fprintf(stderr, "FAIL: timed out waiting for device open publish\n");
+    runtime.attach_provider(nullptr);
+    runtime.stop();
+    return 1;
+  }
+
+  std::fprintf(stderr,
+               "[core_thread_liveness_watchdog_verify] failed-latch mode: triggering capture "
+               "against a 30s-hanging provider with the maintainer abort suppressed; expect "
+               "the blocked wait to be released by the 15s hard-threshold latch.\n");
+  std::fflush(stderr);
+
+  const auto trigger_begin = clock::now();
+  const TryTriggerDeviceCaptureStatus first =
+      runtime.try_trigger_device_capture_with_capture_id_for_server(kDeviceId, 1);
+  const double first_s =
+      std::chrono::duration<double>(clock::now() - trigger_begin).count();
+  if (first != TryTriggerDeviceCaptureStatus::Busy) {
+    std::fprintf(stderr, "FAIL: latched wait returned status %d, expected Busy fallback\n",
+                 static_cast<int>(first));
+    return 1;
+  }
+  if (first_s < 12.0 || first_s > 25.0) {
+    std::fprintf(stderr,
+                 "FAIL: blocked wait released after %.1fs; expected the ~15s hard-threshold "
+                 "latch window (12-25s), not the 2s cancel path or the 30s provider wakeup\n",
+                 first_s);
+    return 1;
+  }
+  if (!runtime.core_thread_failed()) {
+    std::fprintf(stderr, "FAIL: core_thread_failed() not latched after release\n");
+    return 1;
+  }
+
+  const auto second_begin = clock::now();
+  const TryTriggerDeviceCaptureStatus second =
+      runtime.try_trigger_device_capture_with_capture_id_for_server(kDeviceId, 2);
+  const double second_s =
+      std::chrono::duration<double>(clock::now() - second_begin).count();
+  if (second != TryTriggerDeviceCaptureStatus::Busy || second_s > 1.0) {
+    std::fprintf(stderr,
+                 "FAIL: post-latch command status=%d elapsed=%.2fs; expected immediate Busy\n",
+                 static_cast<int>(second), second_s);
+    return 1;
+  }
+
+  const auto stop_begin = clock::now();
+  runtime.stop();
+  const double stop_s = std::chrono::duration<double>(clock::now() - stop_begin).count();
+  if (stop_s > 5.0) {
+    std::fprintf(stderr, "FAIL: stop() on failed runtime took %.1fs; expected prompt abandon\n",
+                 stop_s);
+    return 1;
+  }
+
+  // Mirror production: the abandoned (detached) core thread is still asleep
+  // inside this provider; deliberately leak it rather than destroying an
+  // object that thread may touch before process exit kills it.
+  (void)provider.release();
+
+  std::fprintf(stderr,
+               "[core_thread_liveness_watchdog_verify] failed-latch child assertions satisfied: "
+               "release=%.1fs post_latch=%.2fs stop=%.2fs\n",
+               first_s, second_s, stop_s);
+  std::fflush(stderr);
+  return 0;
+}
+
 int main(int argc, char** argv) {
   using namespace cambang;
 
   if (argc == 2 && std::strcmp(argv[1], kDeathChildArgument) == 0) {
     return run_death_child();
+  }
+  if (argc == 2 && std::strcmp(argv[1], kFailedLatchChildArgument) == 0) {
+    return run_failed_latch_child();
   }
   if (argc != 1) {
     std::fprintf(stdout,
@@ -507,7 +652,9 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  const ChildRunResult child = run_death_child_process(argv[0]);
+  // Mode 1: maintainer abort death test (unchanged contract).
+  const ChildRunResult child =
+      run_death_child_process(argv[0], kDeathChildArgument, kDeathChildTimeout);
   if (!child.output.empty()) {
     std::fwrite(child.output.data(), 1, child.output.size(), stdout);
     if (child.output.back() != '\n') {
@@ -534,9 +681,41 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  // Mode 2: production failed-latch semantics (abort suppressed in child).
+  const ChildRunResult latch_child = run_death_child_process(
+      argv[0], kFailedLatchChildArgument, kFailedLatchChildTimeout);
+  if (!latch_child.output.empty()) {
+    std::fwrite(latch_child.output.data(), 1, latch_child.output.size(), stdout);
+    if (latch_child.output.back() != '\n') {
+      std::fputc('\n', stdout);
+    }
+    std::fflush(stdout);
+  }
+
+  const bool latch_log_seen =
+      latch_child.output.find("[CamBANG][CoreThread] runtime declared FAILED") !=
+      std::string::npos;
+  const bool latch_assertions_seen =
+      latch_child.output.find("failed-latch child assertions satisfied") != std::string::npos;
+  if (!latch_child.launched || latch_child.timed_out || !latch_child.launch_error.empty() ||
+      latch_child.exit_code != 0 || !latch_log_seen || !latch_assertions_seen) {
+    std::fprintf(
+        stdout,
+        "FAIL core_thread_liveness_watchdog_verify mode=failed_latch launched=%s "
+        "timed_out=%s latch_log=%s assertions=%s exit_code=%llu reason=%s\n",
+        latch_child.launched ? "true" : "false",
+        latch_child.timed_out ? "true" : "false",
+        latch_log_seen ? "true" : "false",
+        latch_assertions_seen ? "true" : "false",
+        static_cast<unsigned long long>(latch_child.exit_code),
+        latch_child.launch_error.empty() ? "child_contract_not_satisfied"
+                                         : latch_child.launch_error.c_str());
+    return 1;
+  }
+
   std::fprintf(stdout,
                "PASS core_thread_liveness_watchdog_verify stale_task_log=true "
-               "expected_abort=true exit_code=%llu\n",
+               "expected_abort=true failed_latch=true abort_exit_code=%llu\n",
                static_cast<unsigned long long>(child.exit_code));
   return 0;
 }

@@ -4152,9 +4152,26 @@ void CoreRuntime::stop() {
   // attached-provider shutdown must not be skipped because the ordinary queue is
   // full or closed to new external work during stop.
   if (core_thread_.is_running()) {
-    shutdown_requested_from_stop_.store(true, std::memory_order_release);
-    core_thread_.request_timer_tick();
-    core_thread_.join();
+    if (core_thread_failed()) {
+      // Terminal wedged-provider latch: the core thread is blocked inside a
+      // provider call that will never return, so the deterministic shutdown
+      // pump cannot run and join() would hang this caller forever. Abandon:
+      // detach the wedged thread and deliberately leak it, the core state it
+      // owns, and the attached provider for the remainder of the process.
+      // The owner (CamBANGServer) must likewise skip provider destruction
+      // after observing core_thread_failed().
+      std::fprintf(stderr,
+                   "[CamBANG][CoreRuntime] stop() on a FAILED runtime: "
+                   "abandoning the wedged core thread (deliberate leak of the "
+                   "thread, core state, and attached provider). In-process "
+                   "restart is unsupported after this condition.\n");
+      std::fflush(stderr);
+      core_thread_.abandon_wedged_thread();
+    } else {
+      shutdown_requested_from_stop_.store(true, std::memory_order_release);
+      core_thread_.request_timer_tick();
+      core_thread_.join();
+    }
   }
 
   state_.store(CoreRuntimeState::STOPPED, std::memory_order_release);
@@ -4171,6 +4188,12 @@ constexpr uint64_t kCoreThreadStaleTaskThresholdNs = 5'000'000'000ull;
 // gate) at this cadence rather than once at first detection and then never
 // again for the rest of the hang.
 constexpr uint64_t kCoreThreadStaleReReportIntervalNs = 5'000'000'000ull;
+// Hard-failure threshold: 3x the stale threshold. A single task still in
+// flight this long is treated as a permanently wedged provider call, and the
+// runtime latches core_thread_failed_ (terminal for the process session).
+// Maintainer builds abort at the 5s stale threshold and therefore never
+// reach this latch; it is the production (GDE) posture.
+constexpr uint64_t kCoreThreadFailedThresholdNs = 15'000'000'000ull;
 
 uint64_t steady_now_ns() noexcept {
   return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -4213,7 +4236,7 @@ void CoreRuntime::check_core_thread_liveness() {
                "%.1fs (>= %.1fs threshold). This means a provider call did not "
                "honor the documented prompt/bounded contract (see "
                "provider_architecture.md Section 8.1 and "
-               "docs/dev/provider_compliance_checklist.md Section 2).\n",
+               "docs/provider_implementation_brief.md).\n",
                stuck_s,
                static_cast<double>(kCoreThreadStaleTaskThresholdNs) / 1e9);
   std::fflush(stderr);
@@ -4223,8 +4246,32 @@ void CoreRuntime::check_core_thread_liveness() {
   // GDE/Godot plugin build (see SConstruct: CAMBANG_INTERNAL_SMOKE is only
   // ever appended to maintainer_tools/validation environments), so this can
   // never newly abort a shipped game or a developer's own editor session.
-  std::abort();
+  // The failed-latch death test suppresses this abort via the smoke hook so
+  // the production latch path below is exercisable in a maintainer build.
+  if (!smoke_suppress_liveness_abort_.load(std::memory_order_acquire)) {
+    std::abort();
+  }
 #endif
+
+  // Production posture past the hard threshold: latch the runtime as failed.
+  // One-way for the process session; the wedged thread is unrecoverable and
+  // every waiter/caller must be released rather than hung
+  // (docs/provider_implementation_brief.md, "When a provider violates
+  // promptness").
+  if (now_ns - started_ns >= kCoreThreadFailedThresholdNs &&
+      !core_thread_failed_.exchange(true, std::memory_order_acq_rel)) {
+    std::fprintf(stderr,
+                 "[CamBANG][CoreThread] runtime declared FAILED: the wedged "
+                 "provider call has exceeded the %.0fs hard threshold. Blocked "
+                 "synchronous callers now return their fallback status, new "
+                 "commands are refused, and stop() will abandon (detach and "
+                 "deliberately leak) the wedged core thread and provider. "
+                 "In-process restart after this condition is unsupported; the "
+                 "hosting application should surface an error and exit or "
+                 "relaunch.\n",
+                 static_cast<double>(kCoreThreadFailedThresholdNs) / 1e9);
+    std::fflush(stderr);
+  }
 }
 
 void CoreRuntime::on_core_start() {
@@ -5126,6 +5173,11 @@ CoreThread::PostResult CoreRuntime::retain_imaging_spec_patch(
 CoreThread::PostResult CoreRuntime::try_post(CoreThread::Task task) {
   const CoreRuntimeState st = state_.load(std::memory_order_acquire);
   if (st != CoreRuntimeState::LIVE) {
+    return core_thread_.reject_closed();
+  }
+  if (core_thread_failed()) {
+    // Terminal wedged-provider latch: the core thread will never drain new
+    // work; account the refusal instead of queueing into the void.
     return core_thread_.reject_closed();
   }
 

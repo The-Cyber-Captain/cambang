@@ -103,7 +103,21 @@ public:
   // Stop and join the core thread.
   // - safe to call multiple times
   // - guarantees the core thread has exited before returning
+  // - EXCEPTION: after abandon_wedged_thread() the join is skipped (the
+  //   thread was detached because it provably cannot be joined); see below.
   void stop();
+
+  // Terminal abandonment for a wedged core thread (a provider call that
+  // violated the prompt/bounded contract and never returned). Closes task
+  // admission, detaches the underlying std::thread, and marks the loop
+  // not-running so stop()/~CoreThread() cannot block forever on a join that
+  // would never complete. The thread and everything it references (core
+  // state, the provider) are deliberately leaked for the remainder of the
+  // process; callers must not destroy objects the wedged thread may still
+  // touch. This is a one-way door used only by CoreRuntime's
+  // core-thread-failed policy (docs/provider_implementation_brief.md,
+  // "When a provider violates promptness").
+  void abandon_wedged_thread() noexcept;
 
   // Request the core loop to stop (asynchronously) without joining.
   // Closes task admission once requested.

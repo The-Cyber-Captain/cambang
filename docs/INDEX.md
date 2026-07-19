@@ -14,6 +14,7 @@ guard-rail policies. They are authoritative and must not be contradicted by
 other documents.
 
 - `provider_architecture.md`
+- `provider_implementation_brief.md`
 - `core_runtime_model.md`
 - `arbitration_policy.md`
 - `state_snapshot.md`
@@ -167,7 +168,6 @@ Build / platform scaffolding:
 
 Maintainer tooling / provider validation:
 - `dev/maintainer_tools.md`
-- `dev/provider_compliance_checklist.md`
 
 C++ code quality / audit aids:
 - `dev/cpp_code_quality_policy.md`

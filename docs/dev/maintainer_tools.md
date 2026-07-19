@@ -132,10 +132,11 @@ This layering matches the architecture rules defined in:
 Deterministic provider validation must not rely on physical hardware.
 Platform validation is performed separately using explicit tools.
 
-The terse provider-audit checklist remains separately documented in:
+The canonical implementer-facing provider contract (which superseded the
+retired provider-audit checklist) is:
 
 ```text
-docs/dev/provider_compliance_checklist.md
+docs/provider_implementation_brief.md
 ```
 ## 4.x Synthetic provider output-form and Backing Plan controls
 
@@ -630,10 +631,16 @@ Any failure indicates a regression in Godot-boundary snapshot exposure.
 ### Purpose
 
 `core_thread_liveness_watchdog_verify` is a self-supervising death test for the
-documented prompt/bounded provider-call contract. Its private child mode wedges
-one Core-thread provider call deliberately; the normal invocation supervises
-that child, requires the stale-task diagnostic and expected abnormal child
-termination within a fixed bound, and then emits its own final verdict.
+documented prompt/bounded provider-call contract. It supervises two private
+child modes: the maintainer abort mode (a wedged provider call must produce
+the stale-task diagnostic and the expected abnormal child termination within a
+fixed bound) and the production failed-latch mode (the child suppresses the
+maintainer abort, wedges a provider call past the 15s hard threshold, and
+asserts the latch semantics itself: the blocked caller is released with its
+fallback status, subsequent commands refuse immediately, and stop() abandons
+promptly instead of joining the wedged thread — see
+`docs/provider_implementation_brief.md`, "When a provider violates
+promptness"). The normal invocation runs both and emits one final verdict.
 
 ### Usage
 
@@ -644,12 +651,13 @@ termination within a fixed bound, and then emits its own final verdict.
 Expected terminal summary:
 
 ```text
-PASS core_thread_liveness_watchdog_verify stale_task_log=true expected_abort=true exit_code=<platform-specific>
+PASS core_thread_liveness_watchdog_verify stale_task_log=true expected_abort=true failed_latch=true abort_exit_code=<platform-specific>
 ```
 
-The diagnostic explaining the stale task appears before this final line. Run
-the executable directly; the internal child argument is implementation detail,
-not a maintainer workflow.
+The diagnostics for both modes appear before this final line (the run takes
+roughly half a minute; the failed-latch child alone waits ~15s for the hard
+threshold). Run the executable directly; the internal child arguments are
+implementation detail, not a maintainer workflow.
 
 ---
 
