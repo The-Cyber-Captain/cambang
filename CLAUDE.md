@@ -8,7 +8,7 @@ This repo has its own agent-instruction chain that takes precedence over generic
 
 1. `AGENTS.md` — workflow rules (minimal high-confidence changes, never weaken tests to get PASS, never commit unless explicitly asked, required validation is a hard completion gate).
 2. `docs/dev/agent_context.md` — durable project expectations (source authority, public-API lock, snapshot/lifecycle rules, camera-fact model boundaries).
-3. `docs/dev/current_tranche.md` — the *active* work order: scope, acceptance criteria, validation expectations. This is forward-looking steering, not a changelog — replace its content when a tranche is accepted; never append retrospective "what I did" sections to it. For the audit-remediation workstream, the authorized sequence lives in `docs/dev/codebase_audit_remediation_plan.md`; do not promote queued findings ahead of the active tranche.
+3. `docs/dev/current_tranche.md` — the *active* work order only: scope, acceptance criteria, validation expectations. Reset it to its stub once a tranche is accepted and committed. Do not create tranche-completion records, remediation-plan backlogs, or deferred-task files anywhere in the repo — git history is the record of completed work; put validation detail in the commit message. Future work is queued only when the maintainer activates it in this file.
 4. `docs/INDEX.md` — canonical-vs-supplement doc hierarchy. When docs and source disagree: source and tests win; report the mismatch rather than silently picking one.
 
 The Godot-facing public API (methods, signals, constants, dictionary shapes) is **locked** unless the active tranche explicitly authorizes a change.

@@ -16,6 +16,10 @@ bin/*.so
 bin/*.dylib
 run-logs/
 
+# Suite-runner outputs (godot_test_suite.ps1 default LogPath and render fixtures)
+godot-suite*.log
+artifacts/
+
 # If copied for MinGW runtime
 bin/libstdc++-6.dll
 bin/libgcc_s_seh-1.dll

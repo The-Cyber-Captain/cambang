@@ -216,11 +216,14 @@ Keep documentation:
 
 Agent-guidance maintenance:
 
-* keep `docs/dev/current_tranche.md` current after accepted or committed tranches;
-* use `current_tranche.md` for volatile active-workstream state, acceptance criteria, validation expectations, and near-term constraints;
-* for the July 2026 C++ audit remediation workstream, preserve and follow the
-  authorized sequence and required backlog in
-  `docs/dev/codebase_audit_remediation_plan.md`; do not promote a queued finding ahead
-  of the active tranche without explicit maintainer authorization;
+* use `current_tranche.md` only for the maintainer-approved active work order
+  (scope, acceptance criteria, validation expectations, near-term
+  constraints); reset it to its stub once the tranche is accepted and
+  committed;
+* do not keep tranche-completion records, remediation-plan backlogs, or
+  deferred-task lists as repository files — git history is the record of
+  completed work, and future work is queued only when the maintainer
+  activates it in `current_tranche.md`; put validation detail in commit
+  messages, not record files;
 * use `docs/dev/agent_context.md` only for durable cross-tranche expectations that should persist beyond the current workstream;
 * do not duplicate canonical architecture in either guidance file.
