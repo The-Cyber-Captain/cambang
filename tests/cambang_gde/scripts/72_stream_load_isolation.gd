@@ -4,8 +4,10 @@ const DEFAULT_SCENARIO_FILE := "stream_load_2x_1080p30_moving_bar.json"#"stream_
 const DEFAULT_DURATION_SEC := 20.0
 const DEFAULT_POLL_RESULTS := true
 const DEFAULT_BIND_DISPLAY := true
-const EXERCISE_DISPLAY_ONESHOT := "display_oneshot"
-const EXERCISE_DISPLAY_LATEST := "display_latest"
+const EXERCISE_BIND_ONCE_LIVE_DISPLAY := "bind_once_live_display"
+const EXERCISE_BIND_ONCE_LIVE_DISPLAY_ALIAS := "display_oneshot"
+const EXERCISE_REACQUIRE_DISPLAY_EACH_FRAME_DEBUG := "reacquire_display_each_frame_debug"
+const EXERCISE_REACQUIRE_DISPLAY_EACH_FRAME_DEBUG_ALIAS := "display_latest"
 const EXERCISE_NO_DISPLAY_DEFAULT := "no_display_default"
 const EXERCISE_NO_DISPLAY_EAGER := "no_display_eager"
 const PRINT_DECIMALS := 2
@@ -17,9 +19,9 @@ const PRINT_DECIMALS := 2
 var _duration_sec := DEFAULT_DURATION_SEC
 var _poll_results := DEFAULT_POLL_RESULTS
 var _bind_display := DEFAULT_BIND_DISPLAY
-var _exercise := EXERCISE_DISPLAY_ONESHOT
+var _exercise := EXERCISE_BIND_ONCE_LIVE_DISPLAY
 var _exercise_defaulted := true
-var _bind_mode_latest := false
+var _bind_mode_reacquire_each_frame_debug := false
 var _display_bound_by_slot: Dictionary = {}
 var _display_bind_failed_logged_by_slot: Dictionary = {}
 var _requested_gpu_policy := ""
@@ -96,7 +98,7 @@ func _config_from_env() -> bool:
 	_display_path_trace_enabled = _env_bool("CAMBANG_STREAM_LOAD_DISPLAY_PATH_TRACE", false)
 	if _frame_spike_top_n < 1:
 		_frame_spike_top_n = 1
-	_bind_mode_latest = (_exercise == EXERCISE_DISPLAY_LATEST)
+	_bind_mode_reacquire_each_frame_debug = (_exercise == EXERCISE_REACQUIRE_DISPLAY_EACH_FRAME_DEBUG)
 	_resolve_effective_gpu_policy_or_fail()
 	return not _done
 
@@ -104,18 +106,24 @@ func _config_from_env() -> bool:
 func _resolve_exercise_or_fail() -> void:
 	var exercise_raw := OS.get_environment("CAMBANG_EXERCISE").strip_edges()
 	if exercise_raw == "":
-		_exercise = EXERCISE_DISPLAY_ONESHOT
+		_exercise = EXERCISE_BIND_ONCE_LIVE_DISPLAY
 		_exercise_defaulted = true
 		return
 	_exercise_defaulted = false
 	match exercise_raw:
-		EXERCISE_DISPLAY_ONESHOT, EXERCISE_DISPLAY_LATEST, EXERCISE_NO_DISPLAY_DEFAULT, EXERCISE_NO_DISPLAY_EAGER:
+		EXERCISE_BIND_ONCE_LIVE_DISPLAY, EXERCISE_NO_DISPLAY_DEFAULT, EXERCISE_NO_DISPLAY_EAGER:
 			_exercise = exercise_raw
+		EXERCISE_BIND_ONCE_LIVE_DISPLAY_ALIAS:
+			_exercise = EXERCISE_BIND_ONCE_LIVE_DISPLAY
+		EXERCISE_REACQUIRE_DISPLAY_EACH_FRAME_DEBUG, EXERCISE_REACQUIRE_DISPLAY_EACH_FRAME_DEBUG_ALIAS:
+			_exercise = EXERCISE_REACQUIRE_DISPLAY_EACH_FRAME_DEBUG
 		_:
-			push_error("[CamBANG][Scene72] exercise=%s supported=false supported_exercises=%s,%s,%s,%s" % [
+			push_error("[CamBANG][Scene72] exercise=%s supported=false supported_exercises=%s,%s,%s,%s,%s,%s" % [
 				exercise_raw,
-				EXERCISE_DISPLAY_ONESHOT,
-				EXERCISE_DISPLAY_LATEST,
+				EXERCISE_BIND_ONCE_LIVE_DISPLAY,
+				EXERCISE_BIND_ONCE_LIVE_DISPLAY_ALIAS,
+				EXERCISE_REACQUIRE_DISPLAY_EACH_FRAME_DEBUG,
+				EXERCISE_REACQUIRE_DISPLAY_EACH_FRAME_DEBUG_ALIAS,
 				EXERCISE_NO_DISPLAY_DEFAULT,
 				EXERCISE_NO_DISPLAY_EAGER
 			])
@@ -125,10 +133,10 @@ func _resolve_exercise_or_fail() -> void:
 
 func _apply_exercise_defaults() -> void:
 	match _exercise:
-		EXERCISE_DISPLAY_ONESHOT:
+		EXERCISE_BIND_ONCE_LIVE_DISPLAY:
 			_bind_display = true
 			_poll_results = true
-		EXERCISE_DISPLAY_LATEST:
+		EXERCISE_REACQUIRE_DISPLAY_EACH_FRAME_DEBUG:
 			_bind_display = true
 			_poll_results = true
 		EXERCISE_NO_DISPLAY_DEFAULT:
@@ -194,7 +202,7 @@ func _bootstrap() -> void:
 		scenario_file,
 		str(_poll_results),
 		str(_bind_display),
-		("latest" if _bind_mode_latest else "oneshot"),
+		("reacquire_each_frame_debug" if _bind_mode_reacquire_each_frame_debug else "bind_once_live_display"),
 		_requested_gpu_policy,
 		_effective_gpu_policy,
 		OS.get_environment("CAMBANG_DEV_SYNTH_CATCHUP_CAP")
@@ -326,7 +334,7 @@ func _poll_stream_results() -> float:
 			_record_display_path_kind(int(stream_result.get_display_view_path_kind()))
 
 		var slot_bound := bool(_display_bound_by_slot.get(i, false))
-		if _bind_mode_latest or not slot_bound:
+		if _bind_mode_reacquire_each_frame_debug or not slot_bound:
 			var display_view: Variant = stream_result.get_display_view()
 			var texture_valid := (display_view is Texture2D)
 			if texture_valid:
@@ -341,7 +349,7 @@ func _poll_stream_results() -> float:
 					_log("[CamBANG][Scene72] display_bind slot=%d stream_id=%d bind=%s result_valid=true texture_valid=true path=%d" % [
 						i,
 						stream_id,
-						("latest" if _bind_mode_latest else "oneshot"),
+						("reacquire_each_frame_debug" if _bind_mode_reacquire_each_frame_debug else "bind_once_live_display"),
 						(int(stream_result.get_display_view_path_kind()) if stream_result.has_method("get_display_view_path_kind") else -1)
 					])
 			else:
@@ -350,7 +358,7 @@ func _poll_stream_results() -> float:
 					_log("[CamBANG][Scene72] display_bind slot=%d stream_id=%d bind=%s result_valid=true texture_valid=false path=%d" % [
 						i,
 						stream_id,
-						("latest" if _bind_mode_latest else "oneshot"),
+						("reacquire_each_frame_debug" if _bind_mode_reacquire_each_frame_debug else "bind_once_live_display"),
 						(int(stream_result.get_display_view_path_kind()) if stream_result.has_method("get_display_view_path_kind") else -1)
 					])
 		display_sec += _elapsed_sec_from_ticks(display_start_usec)
@@ -419,8 +427,13 @@ func _print_summary_and_quit() -> void:
 		_log_calls
 	])
 	_print_frame_spike_trace()
-	CamBANGServer.stop()
-	get_tree().quit(0)
+	
+	_stream_a.texture = null
+	_stream_b.texture = null
+
+	print("INFO: before CamBANGServer.stop_and_quit")
+	CamBANGServer.stop_and_quit()
+	print("INFO: after CamBANGServer.stop_and_quit")
 
 
 func _record_frame_spike(process_call_index: int, delta_sec: float, process_sec: float, latch_sec: float, poll_sec: float, display_sec: float, log_sec: float) -> void:
@@ -471,9 +484,10 @@ func _print_frame_spike_trace() -> void:
 
 
 func _repo_external_scenario_path(filename: String) -> String:
-	var repo_root := ProjectSettings.globalize_path("res://../..")
-	return repo_root.path_join("external_scenarios").path_join(filename)
-
+	#var repo_root := ProjectSettings.globalize_path("res://../..")
+	#var repo_root := ProjectSettings.globalize_path("res://scenarios/")
+	#return repo_root.path_join("external_scenarios").path_join(filename)
+	return "res://scenarios/external_scenarios/%s" % filename
 
 func _env_bool(env_key: String, default_value: bool) -> bool:
 	var raw := OS.get_environment(env_key).strip_edges().to_lower()
@@ -510,6 +524,7 @@ func _require(condition: bool, message: String) -> void:
 		return
 	push_error(message)
 	_log("FAIL: %s" % message)
-	CamBANGServer.stop()
+	_stream_a.texture = null
+	_stream_b.texture = null
 	_done = true
-	get_tree().quit(1)
+	CamBANGServer.stop_and_quit(1)

@@ -31,6 +31,110 @@ bool check_step(int index, const SnapshotExpectation& exp, const ObservedSnapsho
 bool expect_step(int index, const SnapshotExpectation& exp, const ObservedSnapshot& observed);
 bool fail_step(int index, const std::string& message);
 
+bool provider_realizes_stream_acquisition_session(VerifyCaseProviderKind provider_kind) {
+  return provider_kind == VerifyCaseProviderKind::Synthetic ||
+         provider_kind == VerifyCaseProviderKind::Stub;
+}
+
+bool wait_for_settled_stream_create(VerifyCaseHarness& h,
+                                    VerifyCaseProviderKind provider_kind,
+                                    std::string& error) {
+  return h.wait_for_core_snapshot(
+      [&](const CamBANGStateSnapshot& s) {
+        if (!VerifyCaseHarness::has_stream(s, VerifyCaseHarness::kStreamId)) {
+          return false;
+        }
+        if (provider_realizes_stream_acquisition_session(provider_kind)) {
+          return !s.acquisition_sessions.empty();
+        }
+        return true;
+      },
+      error,
+      500,
+      5,
+      "timed out waiting for settled stream create publish");
+}
+
+bool check_monotonic_stream_create_step(int index,
+                                        VerifyCaseProviderKind provider_kind,
+                                        const ObservedSnapshot& observed) {
+  const bool expect_acquisition_session =
+      provider_realizes_stream_acquisition_session(provider_kind);
+  if (!expect_step(index,
+                   SnapshotExpectation{}
+                       .device_count(1)
+                       .stream_count(1)
+                       .acquisition_session_count(expect_acquisition_session ? 1 : 0)
+                       .expect_acquisition_session(expect_acquisition_session),
+                   observed)) {
+    return false;
+  }
+  if (provider_kind == VerifyCaseProviderKind::Synthetic) {
+    if (observed.version < 2) {
+      return fail_step(index, "version regressed below create boundary");
+    }
+    if (observed.topology_version < 2) {
+      return fail_step(index, "topology_version regressed below create boundary");
+    }
+  } else {
+    if (observed.version != 2) {
+      return fail_step(index, "version mismatch");
+    }
+    if (observed.topology_version != 2) {
+      return fail_step(index, "topology_version mismatch");
+    }
+  }
+  cli::line("step ", index, " OK");
+  return true;
+}
+
+bool check_stream_non_topology_step(int index,
+                                    const ObservedSnapshot& observed,
+                                    uint64_t expected_version,
+                                    uint64_t expected_topology_version,
+                                    size_t expected_acquisition_session_count,
+                                    bool expect_acquisition_session) {
+  return check_step(index,
+                    SnapshotExpectation{}
+                        .version(expected_version)
+                        .topology_version(expected_topology_version)
+                        .device_count(1)
+                        .stream_count(1)
+                        .acquisition_session_count(expected_acquisition_session_count)
+                        .expect_acquisition_session(expect_acquisition_session),
+                    observed);
+}
+
+bool check_topology_only_step(int index,
+                              const ObservedSnapshot& observed,
+                              size_t expected_device_count,
+                              size_t expected_stream_count,
+                              size_t expected_acquisition_session_count,
+                              bool expect_acquisition_session,
+                              uint64_t minimum_version,
+                              uint64_t minimum_topology_version) {
+  if (!expect_step(index,
+                   SnapshotExpectation{}
+                       .device_count(expected_device_count)
+                       .stream_count(expected_stream_count)
+                       .acquisition_session_count(expected_acquisition_session_count)
+                       .expect_acquisition_session(expect_acquisition_session),
+                   observed)) {
+    return false;
+  }
+  if (observed.version < minimum_version) {
+    return fail_step(index, "version regressed below prior topology boundary");
+  }
+  if (observed.topology_version < minimum_topology_version) {
+    return fail_step(index, "topology_version regressed below prior topology boundary");
+  }
+  if (observed.version != observed.topology_version) {
+    return fail_step(index, "version/topology_version diverged during topology-only sequence");
+  }
+  cli::line("step ", index, " OK");
+  return true;
+}
+
 bool wait_until_poll(const std::function<bool()>& pred,
                      std::string& error,
                      const char* timeout_message,
@@ -52,6 +156,8 @@ const char* native_type_name(uint32_t type) {
     case NativeObjectType::Device: return "device";
     case NativeObjectType::AcquisitionSession: return "acquisition_session";
     case NativeObjectType::Stream: return "stream";
+    case NativeObjectType::FrameBufferLease: return "framebuffer_lease";
+    case NativeObjectType::GpuBacking: return "gpu_backing";
   }
   return "unknown";
 }
@@ -129,6 +235,9 @@ struct NativeShapeSummary {
   size_t current_generation_device_count = 0;
   size_t current_generation_acquisition_session_count = 0;
   size_t current_generation_stream_count = 0;
+  // Resource records are diagnostic inventory, not topology descendants.
+  size_t current_generation_framebuffer_lease_count = 0;
+  size_t current_generation_gpu_backing_count = 0;
   size_t stale_prior_generation_count = 0;
 };
 
@@ -144,6 +253,8 @@ NativeShapeSummary summarize_native_shape(const CamBANGStateSnapshot& snap, uint
       case NativeObjectType::Device: ++summary.current_generation_device_count; break;
       case NativeObjectType::AcquisitionSession: ++summary.current_generation_acquisition_session_count; break;
       case NativeObjectType::Stream: ++summary.current_generation_stream_count; break;
+      case NativeObjectType::FrameBufferLease: ++summary.current_generation_framebuffer_lease_count; break;
+      case NativeObjectType::GpuBacking: ++summary.current_generation_gpu_backing_count; break;
     }
   }
   return summary;
@@ -171,6 +282,10 @@ void log_restarted_baseline_diagnostic(int step_index, const ObservedSnapshot& o
              (summary.current_generation_acquisition_session_count > 0 ? "yes" : "no"),
              " current_gen_stream_descendants_present=",
              (summary.current_generation_stream_count > 0 ? "yes" : "no"),
+             " current_gen_framebuffer_lease_resources_present=",
+             (summary.current_generation_framebuffer_lease_count > 0 ? "yes" : "no"),
+             " current_gen_gpu_backing_resources_present=",
+             (summary.current_generation_gpu_backing_count > 0 ? "yes" : "no"),
              " stale_prior_generation_native_objects_present=",
              (summary.stale_prior_generation_count > 0 ? "yes" : "no"));
 
@@ -544,6 +659,26 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
            count_native_type(s, NativeObjectType::Stream) == 1;
   };
 
+  const auto is_stream_realization_settled = [&](const CamBANGStateSnapshot& s) {
+    if (!is_stream_realization_native_shape(s)) {
+      return false;
+    }
+    if (provider_kind != VerifyCaseProviderKind::Synthetic) {
+      return true;
+    }
+    return s.acquisition_sessions.size() == 1;
+  };
+
+  const auto is_full_realization_settled = [&](const CamBANGStateSnapshot& s) {
+    if (!is_full_realization_native_shape(s)) {
+      return false;
+    }
+    if (provider_kind != VerifyCaseProviderKind::Synthetic) {
+      return true;
+    }
+    return s.acquisition_sessions.size() == 1;
+  };
+
   if (!h.start_runtime(error)) {
     cli::error("FAIL: ", error);
     return 1;
@@ -665,9 +800,6 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
                       .version(current_version + 1)
                       .topology_version(current_topology_version + 1)
                       .device_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      
                       .stream_count(1),
                   h.observed())) {
     return 1;
@@ -677,7 +809,7 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
                            1,
                            1,
                            "timed out waiting for stream-descendant native shape after stream realization",
-                           is_stream_realization_native_shape)) {
+                           is_stream_realization_settled)) {
     log_restarted_baseline_diagnostic(4, h.observed());
     fail_step(4, "stream realization native-object shape mismatch");
     return 1;
@@ -700,9 +832,6 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
                       .version(current_version + 1)
                       .topology_version(current_topology_version)
                       .device_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      
                       .stream_count(1),
                   h.observed())) {
     return 1;
@@ -712,7 +841,7 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
                            1,
                            1,
                            "timed out waiting for continuity native shape after start_stream",
-                           is_full_realization_native_shape)) {
+                           is_full_realization_settled)) {
     log_restarted_baseline_diagnostic(5, h.observed());
     fail_step(5, "full realization native-object shape mismatch");
     return 1;
@@ -1844,6 +1973,8 @@ int restart_nil_before_baseline(VerifyCaseProviderKind provider_kind) {
 
 int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
   VerifyCaseHarness h(provider_kind);
+  const bool expect_stream_acquisition_session =
+      provider_realizes_stream_acquisition_session(provider_kind);
   std::string error;
   if (!h.start_runtime(error)) {
     cli::error("FAIL: ", error);
@@ -1892,35 +2023,34 @@ int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
     cli::error("FAIL: ", error);
     return 1;
   }
-  h.tick();
-  if (!check_step(2,
-                  SnapshotExpectation{}
-                      .version(2)
-                      .topology_version(2)
-                      .device_count(1)
-                      .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      ,
-                  h.observed())) {
+  if (!wait_for_settled_stream_create(h, provider_kind, error)) {
+    cli::error("FAIL: ", error);
     return 1;
   }
+  h.tick();
+  if (!check_monotonic_stream_create_step(2, provider_kind, h.observed())) {
+    return 1;
+  }
+  const uint64_t create_version = h.observed().version;
+  const uint64_t create_topology_version = h.observed().topology_version;
 
   if (!h.start_stream(error)) {
     cli::error("FAIL: ", error);
     return 1;
   }
   h.tick();
-  if (!check_step(3,
-                  SnapshotExpectation{}
-                      .version(3)
-                      .topology_version(2)
-                      .device_count(1)
-                      .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      ,
-                  h.observed())) {
+  if (!check_stream_non_topology_step(3,
+                                      h.observed(),
+                                      create_version + 1,
+                                      create_topology_version,
+                                      expect_stream_acquisition_session ? 1 : 0,
+                                      expect_stream_acquisition_session)) {
+    return 1;
+  }
+
+  if (provider_kind == VerifyCaseProviderKind::Stub &&
+      !h.wait_for_stream_quiescence(VerifyCaseHarness::kStreamId, error)) {
+    cli::error("FAIL: ", error);
     return 1;
   }
 
@@ -1929,16 +2059,12 @@ int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(4,
-                  SnapshotExpectation{}
-                      .version(4)
-                      .topology_version(2)
-                      .device_count(1)
-                      .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      ,
-                  h.observed())) {
+  if (!check_stream_non_topology_step(4,
+                                      h.observed(),
+                                      create_version + 2,
+                                      create_topology_version,
+                                      expect_stream_acquisition_session ? 1 : 0,
+                                      expect_stream_acquisition_session)) {
     return 1;
   }
 
@@ -1947,16 +2073,12 @@ int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(5,
-                  SnapshotExpectation{}
-                      .version(5)
-                      .topology_version(2)
-                      .device_count(1)
-                      .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      ,
-                  h.observed())) {
+  if (!check_stream_non_topology_step(5,
+                                      h.observed(),
+                                      create_version + 3,
+                                      create_topology_version,
+                                      expect_stream_acquisition_session ? 1 : 0,
+                                      expect_stream_acquisition_session)) {
     return 1;
   }
 
@@ -1966,6 +2088,8 @@ int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
 
 int topology_change_versions(VerifyCaseProviderKind provider_kind) {
   VerifyCaseHarness h(provider_kind);
+  const bool expect_stream_acquisition_session =
+      provider_realizes_stream_acquisition_session(provider_kind);
   std::string error;
   if (!h.start_runtime(error)) {
     cli::error("FAIL: ", error);
@@ -2005,53 +2129,65 @@ int topology_change_versions(VerifyCaseProviderKind provider_kind) {
     cli::error("FAIL: ", error);
     return 1;
   }
-  h.tick();
-  if (!check_step(2,
-                  SnapshotExpectation{}
-                      .version(2)
-                      .topology_version(2)
-                      .device_count(1)
-                      .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      ,
-                  h.observed())) {
+  if (!wait_for_settled_stream_create(h, provider_kind, error)) {
+    cli::error("FAIL: ", error);
     return 1;
   }
+  h.tick();
+  if (!check_topology_only_step(2,
+                                h.observed(),
+                                1,
+                                1,
+                                expect_stream_acquisition_session ? 1 : 0,
+                                expect_stream_acquisition_session,
+                                2,
+                                2)) {
+    return 1;
+  }
+  const uint64_t create_version = h.observed().version;
+  const uint64_t create_topology_version = h.observed().topology_version;
 
   if (!h.destroy_stream(error)) {
     cli::error("FAIL: ", error);
     return 1;
   }
-  h.tick();
-  if (!check_step(3,
-                  SnapshotExpectation{}
-                      .version(3)
-                      .topology_version(3)
-                      .device_count(1)
-                      .stream_count(0)
-                      .acquisition_session_count(0)
-                      .expect_acquisition_session(false)
-                      ,
-                  h.observed())) {
+  // Stream destroy can publish before the matching acquisition-session teardown
+  // becomes visible; wait for the fully settled topology boundary before checking
+  // the structural snapshot contract.
+  if (!h.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        return s.acquisition_sessions.empty() &&
+               !VerifyCaseHarness::has_stream(s, VerifyCaseHarness::kStreamId);
+      }, error, 500, 5, "timed out waiting for acquisition session teardown publish")) {
+    cli::error("FAIL: ", error);
     return 1;
   }
+  h.tick();
+  if (!check_topology_only_step(3,
+                                h.observed(),
+                                1,
+                                0,
+                                0,
+                                false,
+                                create_version + 1,
+                                create_topology_version + 1)) {
+    return 1;
+  }
+  const uint64_t destroy_version = h.observed().version;
+  const uint64_t destroy_topology_version = h.observed().topology_version;
 
   if (!h.close_device(error)) {
     cli::error("FAIL: ", error);
     return 1;
   }
   h.tick();
-  if (!check_step(4,
-                  SnapshotExpectation{}
-                      .version(4)
-                      .topology_version(4)
-                      .device_count(0)
-                      .stream_count(0)
-                      .acquisition_session_count(0)
-                      .expect_acquisition_session(false)
-                      ,
-                  h.observed())) {
+  if (!check_topology_only_step(4,
+                                h.observed(),
+                                0,
+                                0,
+                                0,
+                                false,
+                                destroy_version + 1,
+                                destroy_topology_version + 1)) {
     return 1;
   }
 
@@ -2078,10 +2214,20 @@ int publication_coalescing(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
 
-  if (!h.perform_coalesced_burst(error)) {
+  if (!h.open_device(error) ||
+      !h.create_stream(error) ||
+      !h.start_stream(error) ||
+      (provider_kind == VerifyCaseProviderKind::Synthetic && !h.emit_frame(error)) ||
+      !h.stop_stream(error)) {
     cli::error("FAIL: ", error);
     return 1;
   }
+
+  const bool expect_acquisition_session =
+      provider_kind == VerifyCaseProviderKind::Synthetic ||
+      provider_kind == VerifyCaseProviderKind::Stub;
+  const size_t expected_acquisition_session_count =
+      expect_acquisition_session ? 1u : 0u;
 
   const ObservedSnapshot before_tick = h.observed();
   if (!SnapshotExpectation{}
@@ -2091,7 +2237,6 @@ int publication_coalescing(VerifyCaseProviderKind provider_kind) {
            .stream_count(0)
            .acquisition_session_count(0)
            .expect_acquisition_session(false)
-           
            .matches(before_tick, error)) {
     cli::error("step 1 FAIL (state changed before observation boundary)");
     return 1;
@@ -2104,9 +2249,8 @@ int publication_coalescing(VerifyCaseProviderKind provider_kind) {
                       .topology_version(1)
                       .device_count(1)
                       .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      ,
+                      .acquisition_session_count(expected_acquisition_session_count)
+                      .expect_acquisition_session(expect_acquisition_session),
                   h.observed())) {
     return 1;
   }
@@ -2118,11 +2262,11 @@ int publication_coalescing(VerifyCaseProviderKind provider_kind) {
 int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
   if (provider_kind != VerifyCaseProviderKind::Synthetic) {
     cli::line("SKIP: verification case 'canonical_timeline_realization' requires synthetic provider");
-    return 0;
+    return kVerifyCaseSkipped;
   }
   if (!ProviderBroker::check_mode_supported_in_build(RuntimeMode::synthetic).ok()) {
     cli::line("SKIP: verification case 'canonical_timeline_realization' synthetic mode not built");
-    return 0;
+    return kVerifyCaseSkipped;
   }
 
   CoreRuntime runtime;
@@ -2374,7 +2518,7 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   // NOTE: verify-case smoke builds do not have a dedicated frame-copy observer
-  // exposed at this layer (dev-node mailbox surface removed; verify via snapshot counters).
+  // exposed at this layer, so verify via snapshot counters.
   // We therefore assert update request dispatch + post-update frame progression
   // rather than pixel signatures in this runtime/harness verification.
 
@@ -2457,7 +2601,7 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
 int device_disconnect(VerifyCaseProviderKind provider_kind) {
   if (provider_kind != VerifyCaseProviderKind::Synthetic) {
     cli::line("SKIP: verification case 'device_disconnect' requires SyntheticProvider timeline support");
-    return 0;
+    return kVerifyCaseSkipped;
   }
 
   VerifyCaseHarness h(provider_kind);
@@ -2538,6 +2682,8 @@ int device_disconnect(VerifyCaseProviderKind provider_kind) {
 
 int close_while_streaming(VerifyCaseProviderKind provider_kind) {
   VerifyCaseHarness h(provider_kind);
+  const bool expect_stream_acquisition_session =
+      provider_realizes_stream_acquisition_session(provider_kind);
   std::string error;
   if (!h.start_runtime(error) ||
       !h.wait_for_core_snapshot([](const CamBANGStateSnapshot&) { return true; }, error)) {
@@ -2556,6 +2702,10 @@ int close_while_streaming(VerifyCaseProviderKind provider_kind) {
     cli::error("FAIL: ", error);
     return 1;
   }
+  if (!wait_for_settled_stream_create(h, provider_kind, error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
   h.tick();
   if (!check_step(1,
                   SnapshotExpectation{}
@@ -2563,8 +2713,8 @@ int close_while_streaming(VerifyCaseProviderKind provider_kind) {
                       .topology_version(1)
                       .device_count(1)
                       .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .acquisition_session_count(expect_stream_acquisition_session ? 1 : 0)
+                      .expect_acquisition_session(expect_stream_acquisition_session)
                       ,
                   h.observed())) {
     return 1;
@@ -2581,8 +2731,8 @@ int close_while_streaming(VerifyCaseProviderKind provider_kind) {
                       .topology_version(1)
                       .device_count(1)
                       .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .acquisition_session_count(expect_stream_acquisition_session ? 1 : 0)
+                      .expect_acquisition_session(expect_stream_acquisition_session)
                       ,
                   h.observed())) {
     return 1;
@@ -2613,7 +2763,7 @@ int close_while_streaming(VerifyCaseProviderKind provider_kind) {
 int frame_starvation(VerifyCaseProviderKind provider_kind) {
   if (provider_kind != VerifyCaseProviderKind::Synthetic) {
     cli::line("SKIP: verification case 'frame_starvation' requires SyntheticProvider timeline support");
-    return 0;
+    return kVerifyCaseSkipped;
   }
 
   VerifyCaseHarness h(provider_kind);
@@ -2703,7 +2853,7 @@ int frame_starvation(VerifyCaseProviderKind provider_kind) {
 int provider_error_mid_stream(VerifyCaseProviderKind provider_kind) {
   if (provider_kind != VerifyCaseProviderKind::Synthetic) {
     cli::line("SKIP: verification case 'provider_error_mid_stream' requires SyntheticProvider timeline support");
-    return 0;
+    return kVerifyCaseSkipped;
   }
 
   VerifyCaseHarness h(provider_kind);
@@ -2771,6 +2921,8 @@ int provider_error_mid_stream(VerifyCaseProviderKind provider_kind) {
 
 int redundant_stop(VerifyCaseProviderKind provider_kind) {
   VerifyCaseHarness h(provider_kind);
+  const bool expect_stream_acquisition_session =
+      provider_realizes_stream_acquisition_session(provider_kind);
   std::string error;
   if (!h.start_runtime(error) ||
       !h.wait_for_core_snapshot([](const CamBANGStateSnapshot&) { return true; }, error)) {
@@ -2789,6 +2941,10 @@ int redundant_stop(VerifyCaseProviderKind provider_kind) {
     cli::error("FAIL: ", error);
     return 1;
   }
+  if (!wait_for_settled_stream_create(h, provider_kind, error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
   h.tick();
   if (!check_step(1,
                   SnapshotExpectation{}
@@ -2796,8 +2952,8 @@ int redundant_stop(VerifyCaseProviderKind provider_kind) {
                       .topology_version(1)
                       .device_count(1)
                       .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .acquisition_session_count(expect_stream_acquisition_session ? 1 : 0)
+                      .expect_acquisition_session(expect_stream_acquisition_session)
                       ,
                   h.observed())) {
     return 1;
@@ -2814,8 +2970,8 @@ int redundant_stop(VerifyCaseProviderKind provider_kind) {
                       .topology_version(1)
                       .device_count(1)
                       .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .acquisition_session_count(expect_stream_acquisition_session ? 1 : 0)
+                      .expect_acquisition_session(expect_stream_acquisition_session)
                       ,
                   h.observed())) {
     return 1;
@@ -2832,8 +2988,8 @@ int redundant_stop(VerifyCaseProviderKind provider_kind) {
                       .topology_version(1)
                       .device_count(1)
                       .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .acquisition_session_count(expect_stream_acquisition_session ? 1 : 0)
+                      .expect_acquisition_session(expect_stream_acquisition_session)
                       ,
                   h.observed())) {
     return 1;
@@ -2853,7 +3009,7 @@ int redundant_stop(VerifyCaseProviderKind provider_kind) {
 int multi_device_topology_change(VerifyCaseProviderKind provider_kind) {
   if (provider_kind != VerifyCaseProviderKind::Synthetic) {
     cli::line("SKIP: verification case 'multi_device_topology_change' requires SyntheticProvider timeline support");
-    return 0;
+    return kVerifyCaseSkipped;
   }
 
   VerifyCaseHarness h(provider_kind);
@@ -2926,6 +3082,62 @@ int multi_device_topology_change(VerifyCaseProviderKind provider_kind) {
   return 0;
 }
 
+int native_object_type_diagnostics() {
+  struct ExpectedName {
+    NativeObjectType type;
+    std::string_view name;
+  };
+  const ExpectedName expected_names[] = {
+      {NativeObjectType::Provider, "provider"},
+      {NativeObjectType::Device, "device"},
+      {NativeObjectType::AcquisitionSession, "acquisition_session"},
+      {NativeObjectType::Stream, "stream"},
+      {NativeObjectType::FrameBufferLease, "framebuffer_lease"},
+      {NativeObjectType::GpuBacking, "gpu_backing"},
+  };
+
+  CamBANGStateSnapshot snapshot{};
+  uint64_t native_id = 1;
+  for (const auto& expected : expected_names) {
+    if (std::string_view(native_type_name(static_cast<uint32_t>(expected.type))) !=
+        expected.name) {
+      cli::error("FAIL: native object type diagnostic name mismatch for type=",
+                 static_cast<uint32_t>(expected.type));
+      return 1;
+    }
+    NativeObjectRecord record{};
+    record.native_id = native_id++;
+    record.type = static_cast<uint32_t>(expected.type);
+    record.creation_gen = 7;
+    snapshot.native_objects.push_back(record);
+  }
+  if (std::string_view(native_type_name(0)) != "unknown") {
+    cli::error("FAIL: unknown native object type did not retain an explicit diagnostic name");
+    return 1;
+  }
+
+  NativeObjectRecord stale_record{};
+  stale_record.native_id = native_id;
+  stale_record.type = static_cast<uint32_t>(NativeObjectType::Provider);
+  stale_record.creation_gen = 6;
+  snapshot.native_objects.push_back(stale_record);
+
+  const NativeShapeSummary summary = summarize_native_shape(snapshot, 7);
+  if (summary.current_generation_provider_count != 1 ||
+      summary.current_generation_device_count != 1 ||
+      summary.current_generation_acquisition_session_count != 1 ||
+      summary.current_generation_stream_count != 1 ||
+      summary.current_generation_framebuffer_lease_count != 1 ||
+      summary.current_generation_gpu_backing_count != 1 ||
+      summary.stale_prior_generation_count != 1) {
+    cli::error("FAIL: native object diagnostic shape did not classify every known type");
+    return 1;
+  }
+
+  cli::line("Verification case PASSED");
+  return 0;
+}
+
 } // namespace
 
 std::vector<VerifyCaseDefinition> verify_case_catalog(VerifyCaseProviderKind provider_kind,
@@ -2953,6 +3165,7 @@ std::vector<VerifyCaseDefinition> verify_case_catalog(VerifyCaseProviderKind pro
       {"provider_error_mid_stream", [provider_kind]() { return provider_error_mid_stream(provider_kind); }},
       {"redundant_stop", [provider_kind]() { return redundant_stop(provider_kind); }},
       {"multi_device_topology_change", [provider_kind]() { return multi_device_topology_change(provider_kind); }},
+      {"native_object_type_diagnostics", []() { return native_object_type_diagnostics(); }},
   };
 }
 

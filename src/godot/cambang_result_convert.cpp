@@ -1,6 +1,8 @@
 #include "godot/cambang_result_convert.h"
 
 #include <cstring>
+#include <cstddef>
+#include <cstdint>
 
 namespace cambang {
 
@@ -9,11 +11,35 @@ int to_prov_int(ResultFactProvenance v) {
   return static_cast<int>(v);
 }
 
-godot::PackedByteArray to_pba(const std::vector<uint8_t>& bytes) {
+godot::PackedByteArray payload_rgba_to_pba(
+    const CoreResultPayloadCpuPacked& payload,
+    size_t required_bytes) {
   godot::PackedByteArray out;
-  out.resize(static_cast<int64_t>(bytes.size()));
-  if (!bytes.empty()) {
-    std::memcpy(out.ptrw(), bytes.data(), bytes.size());
+  out.resize(static_cast<int64_t>(required_bytes));
+  if (required_bytes == 0) {
+    return out;
+  }
+
+  std::memcpy(out.ptrw(), payload.data(), required_bytes);
+  return out;
+}
+
+godot::PackedByteArray payload_bgra_to_rgba_pba(
+    const CoreResultPayloadCpuPacked& payload,
+    size_t required_bytes) {
+  godot::PackedByteArray out;
+  out.resize(static_cast<int64_t>(required_bytes));
+  if (required_bytes == 0) {
+    return out;
+  }
+
+  uint8_t* dst = out.ptrw();
+  const uint8_t* src = payload.data();
+  for (size_t i = 0; i + 3 < required_bytes; i += 4) {
+    dst[i] = src[i + 2];
+    dst[i + 1] = src[i + 1];
+    dst[i + 2] = src[i];
+    dst[i + 3] = 255;
   }
   return out;
 }
@@ -104,26 +130,30 @@ godot::Dictionary to_dict(const ResultOpticalCalibrationProvenance& v) {
 }
 
 godot::Ref<godot::Image> payload_to_image(const CoreResultPayloadCpuPacked& payload) {
-  if (payload.width == 0 || payload.height == 0 || payload.bytes.empty()) {
+  if (payload.width == 0 || payload.height == 0 || payload.empty()) {
     return godot::Ref<godot::Image>();
   }
 
-  std::vector<uint8_t> rgba = payload.bytes;
-  if (payload.format_fourcc == FOURCC_BGRA) {
-    for (size_t i = 0; i + 3 < rgba.size(); i += 4) {
-      std::swap(rgba[i], rgba[i + 2]);
-      rgba[i + 3] = 255;
-    }
-  } else if (payload.format_fourcc != FOURCC_RGBA) {
+  if (payload.format_fourcc != FOURCC_RGBA && payload.format_fourcc != FOURCC_BGRA) {
     return godot::Ref<godot::Image>();
   }
+
+  const size_t required_bytes =
+      static_cast<size_t>(payload.width) * static_cast<size_t>(payload.height) * 4u;
+  if (payload.stride_bytes != payload.width * 4u || payload.size_bytes() < required_bytes) {
+    return godot::Ref<godot::Image>();
+  }
+
+  godot::PackedByteArray bytes = payload.format_fourcc == FOURCC_RGBA
+      ? payload_rgba_to_pba(payload, required_bytes)
+      : payload_bgra_to_rgba_pba(payload, required_bytes);
 
   return godot::Image::create_from_data(
       static_cast<int>(payload.width),
       static_cast<int>(payload.height),
       false,
       godot::Image::FORMAT_RGBA8,
-      to_pba(rgba));
+      bytes);
 }
 
 } // namespace cambang

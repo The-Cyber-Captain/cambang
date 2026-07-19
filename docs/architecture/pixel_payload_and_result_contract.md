@@ -43,7 +43,7 @@ The image-bearing path should satisfy the following goals.
 2. Avoid forcing all runtime image-bearing artifacts into GPU-only access semantics.
 3. Keep backend/platform specifics contained inside Providers.
 4. Keep Core authoritative for routing, retained truth, lifecycle/resource accounting, and result semantics.
-5. Expose release-facing image access through Result Objects rather than mailbox-oriented terms.
+5. Expose release-facing image access through Result Objects rather than sink-storage terms.
 6. Make expensive conversions/readbacks/materializations explicit rather than silently universal.
 7. Preserve truthful original image artifacts while allowing derived materializations.
 
@@ -200,7 +200,7 @@ Properties:
 
 ## 6. Payload metadata requirements
 
-Every accepted payload must carry enough provider-agnostic metadata for truthful routing, retention, and later materialization decisions.
+Every accepted payload must carry enough provider-agnostic metadata for truthful retention and later materialization decisions.
 
 Depending on `payload_kind`, this may include:
 
@@ -208,24 +208,27 @@ Depending on `payload_kind`, this may include:
 - pixel/encoding format
 - plane/stride layout
 - orientation/crop information where relevant
-- provider-agnostic capture timestamp representation
+- optional source-neutral Image Acquisition Timing
 - stream/capture association
 - ownership/release handle/callback wrapper
 - provenance of original vs derived representation where relevant
 
 This document does not freeze exact C++ field layout, but the presence of adequate metadata is part of the contract.
 
-## 6.x Primary backing vs auxiliary backing
+## 6.x Primary backing vs sidecar backing
 
 A realized image-bearing artifact may have:
 
 - one **primary backing**
-- zero or more **auxiliary backings**
+- zero or more **sidecar backings**
 
 The result’s `payload_kind` reflects the **primary backing only**.
 
-Auxiliary backings may improve access/materialization capability and cost outcomes,
-but they do not create multiple primary payload kinds for a single accepted artifact.
+Sidecar backings may improve access/materialization capability, but they do
+not create multiple primary payload kinds for a single accepted artifact.
+Primary/sidecar is an identity and retention model, not a performance ranking:
+a sidecar backing may support a particular operation while the primary backing
+remains the principal retained representation.
 
 ### 6.x.1 CPU and GPU backing are not treated as symmetric choices
 
@@ -247,14 +250,60 @@ for example:
 - CPU-backed and GPU-backed realization for the same stream frame
 - CPU-readable and encoded forms for the same capture artifact
 
-Provider policy chooses one backing as primary and may optionally retain another as
-auxiliary when that improves usefulness or avoids later expensive materialization.
+Provider policy chooses one backing as primary and may optionally retain another
+as sidecar backing when that improves usefulness or avoids later expensive materialization.
 
 For synthetic stream results, current retained-primary `GPU_SURFACE` truth is
-determined by the emitted/retained GPU artifact itself, not by whether an
-auxiliary CPU backing is also retained.
+determined by the emitted/retained GPU artifact itself, not by whether a
+sidecar CPU backing is also retained.
 
-### 6.x.3 Unsupported GPU-only realization
+### 6.x.3 Backing Plan, Backing State, Operation Support, and Access Evidence
+
+CamBANG separates parent-scoped retention planning from the truth carried by a
+retained result.
+
+**Backing Plan** is the internal production/retention plan owned by the
+relevant Native Payload Support Parent. It states which backing forms CamBANG
+intends to retain for that parent's image-bearing work. During bounded
+evaluation this may temporarily exist as both a Requested Plan and a Steady
+Plan. It is not public API, provider API, snapshot schema, a route table, or a
+per-call route-economics mechanism.
+
+**Backing State** is the concrete backing state actually associated with a
+retained result or capture member.
+
+**Operation Support** is operation-level support for that retained
+artifact/member, expressed using `ResultCapability` for operations such as
+`display_view`, `to_image`, and `encoded_bytes`. It is populated from current
+Backing State and implemented access paths. Godot result capability methods
+consume Operation Support, while materialization methods remain defensive and
+verify the concrete backing/path they use.
+
+**Access Evidence**, when exposed through Synthetic dev metrics, is evidence
+collected at the real retained-result operation seam. It is not Operation
+Support, not `CamBANGStateSnapshot`, not schema v1, and not an input to state
+publication. Bounded internal calibration uses this evidence for live retained
+artifacts/postures and records a refined result-facing classification beside
+provisional Operation Support. Public user-triggered `get_display_view()`,
+`to_image()`, and `to_image_member()` calls remain instrumented, but they are
+not the normal recalibration heartbeat; calibration renewal belongs to the live
+applied production-posture boundary.
+
+Parent-scoped evaluation input is kept separate from all of the above. CamBANG
+first resolves the truthful outer provider/runtime envelope, then resolves the
+parent-context capability for the owning `Stream` or `AcquisitionSession`. That
+parent-context capability is input to parent-scoped Backing Plan evaluation; it
+is not itself Backing Plan, Backing State, Operation Support, or Access
+Evidence.
+
+Capture-side Backing Plan evaluation remains owned by the capture-side Native
+Payload Support Parent. When a real `AcquisitionSession` exists, it owns the
+capture Backing Plan decision. When capture admission must happen before a real
+session exists, provisional priming or seed reuse may supply the first
+Requested Plan, but real `AcquisitionSession` ownership takes over once the
+session is truthfully realized.
+
+### 6.x.4 Unsupported GPU-only realization
 
 If a source offers only GPU-backed realization and the current runtime does not provide
 a usable GPU realization path for that result flow, that source/path is unsupported for
@@ -305,10 +354,40 @@ No resource may be reported as released before it is actually released.
 
 Original payload truth and derived-retention truth must remain auditable through Core/runtime accounting.
 
+Resource-aggregate telemetry must preserve an outstanding create across an
+observation/reset boundary until its matching release is observed. Clearing
+telemetry may retire only balanced buckets; it must not erase evidence needed
+to account for a later release.
+
 ### 7.6 Adapter-layer ownership transfer
 
 Display wrappers/adapters (for example Godot-side `Texture2DRD`) are
 adapter-layer display realizations, not the retained-primary payload-kind seam.
+Godot display adapter ownership belongs in the Godot layer, not in Core,
+platform providers, or public result APIs.
+
+The internal `godot_gpu_display_service` is the Godot-side GPU display adapter
+resolution boundary. It is currently non-owning: it does not cache or retain
+`Texture2D` refs, Godot RIDs, or backend-native handles. In the present
+synthetic path it delegates the legacy retained GPU backing / primary backing
+artifact to the synthetic deferred-wrapper bridge. `RetainedGpuBackingDescriptor`
+remains the provider-neutral scalar display/backing metadata seam; descriptor-only
+and platform-backed display resolution are future activation points. A
+`backing_id` identifies a retained backing resource, not the image/frame currently
+represented by that resource. A value of `0` is compatibility metadata only and
+must not be treated as valid descriptor-cache identity.
+
+Core assigns a separate non-zero retained-frame identity after successful
+retention. Identity `0` means no retained frame. Identities are issued from one
+monotonically increasing Core-owned sequence for the lifetime of the
+`CoreResultStore` instance; ordinary result clearing and runtime stop/start do
+not reset or reuse that sequence. Every retained representation of the same
+frame shares its identity. A newly retained frame receives a new identity even
+when it reuses the same mutable GPU backing and therefore the same `backing_id`.
+Acquisition timing is not a substitute for either identity.
+
+Platform providers must not expose Godot `Texture2D` refs, Godot RIDs, or
+backend-native public handles through the provider contract.
 
 When GPU artifact ownership (for example RID ownership) is transferred into an
 adapter object, retained-backing cleanup must not also free that same resource.
@@ -317,6 +396,19 @@ For repeating-stream retained GPU display state, release timing must remain
 deterministic at stream-lifetime boundaries (for example stop/destroy/provider
 teardown/reconfiguration invalidation), with adapter-layer deferral limited to
 narrow fallback cases where immediate release is not possible.
+
+Synthetic provider-native `GpuBacking` lifecycle facts describe the
+provider-owned live stream backing handle: create on realization/recreation and
+destroy on downgrade/replacement/release. Godot RIDs, `Texture2DRD` wrappers,
+and retained-result artifacts are adapter/retention-layer resources and are
+accounted separately; their existence must not fabricate an additional
+provider-native `GpuBacking` lifecycle.
+
+At `CamBANGServer.stop()`, live GPU display wrappers are detached while still
+addressable and both CPU/GPU render-work queues are fenced and drained before
+stop returns. A wrapper retained by user code after stop is inert and owns no
+thread-affine `Texture2DRD` delegate. Extension uninstall closes admission only
+after accepted producers and callbacks are quiescent.
 
 ---
 
@@ -456,7 +548,7 @@ A retained image under a Capture Result may use one or more retained or material
 - CPU packed payload
 - derived forms requested or retained by policy
 
-A Capture Result is structurally homogeneous across its bracket images. Shared result-level truth must not be duplicated independently for every bracket image. Per-bracket-image truth is limited to facts that genuinely vary between bracket images (for example, ordering/identity within the result, capture timestamp, exposure/capture attributes, retained backing resource instance, release state, and materialization state). Backing resource instances may vary per bracket image; structural backing kind/policy belongs to the homogeneous Capture Result unless a separate documented result shape explicitly permits otherwise.
+A Capture Result is structurally homogeneous across its bracket images. Shared result-level truth must not be duplicated independently for every bracket image. Per-bracket-image truth is limited to facts that genuinely vary between bracket images (for example, ordering/identity within the result, Image Acquisition Timing, exposure/capture attributes, retained backing resource instance, release state, and materialization state). Backing resource instances may vary per bracket image; structural backing kind/policy belongs to the homogeneous Capture Result unless a separate documented result shape explicitly permits otherwise.
 
 For the current still-capture bracket tranche:
 
@@ -514,7 +606,7 @@ Direct descriptive fields:
 - `height`
 - `format`
 - `payload_kind`
-- `capture_timestamp`
+- `camera_facts.acquisition_timing` when present
 - `stream_id`
 - `device_instance_id`
 - `intent`
@@ -549,7 +641,6 @@ Direct scalar/default-image convenience fields:
 - `height`
 - `format`
 - `payload_kind`
-- `capture_timestamp`
 - `device_instance_id`
 - `capture_id`
 
@@ -571,6 +662,48 @@ Image-member access:
 including applied and realized exposure truth. Invalid/out-of-range access
 returns an empty `Dictionary`.
 
+For a completed member with resolved camera facts, that dictionary also has an
+optional `camera_facts` dictionary. Classification entries (`facing`,
+`camera_nature`, and `sensor_orientation_degrees`) are `{ "value": ..., "origin": ... }`.
+`intrinsics`, `distortion`, and `pose` are complete atomic dictionaries which
+each contain `origin`; they are never flattened or merged. Absent facts are
+omitted, and `camera_facts` is omitted when all resolved camera facts are
+absent. `origin` describes provenance, not the internal resolution authority.
+
+Provider-owned per-member image facts are optional entries in that same
+dictionary:
+
+- `acquisition_timing` contains `origin`, `acquisition_mark`,
+  `tick_period_numerator_ns`, `tick_period_denominator`, `clock_domain`,
+  `reference_event`, and `comparability`;
+- `focus_state` contains `origin`, `state`, and `distance_m` only for the
+  `at_distance` state;
+- `realized_image_transform` contains `origin`, `rotation_degrees`,
+  `mirrored`, and `pixels_already_transformed`.
+
+These are exact per-member provider facts. In particular,
+`acquisition_timing.acquisition_mark` is in its declared provider domain and
+is not Capture Date-Time, capture-admission time, geolocation sample time, or
+another member's mark. Godot exposes all three numeric timing components
+directly as signed `int` values. The canonical acquisition mark is a
+nonnegative signed 64-bit value; the tick-period numerator in nanoseconds and
+denominator are positive signed 64-bit values.
+
+`get_capture_datetime_unix_nanoseconds()` exposes the shared UTC
+capture-admission instant. It is distinct from per-member Image Acquisition
+Timing.
+`has_geolocation()` and `get_geolocation()` expose the shared optional
+capture-admission geolocation; an absent value yields `false` and an empty
+dictionary. Present dictionaries use WGS 84 geodetic decimal degrees for
+`latitude_degrees`/`longitude_degrees` and optional WGS 84 ellipsoidal
+`altitude_meters` in metres.
+
+`CamBANGServer.set_capture_geolocation(Dictionary)` configures that optional
+context independently of camera facts. Empty clears; non-empty input is
+transactionally validated as finite WGS 84 geodetic latitude/longitude within
+their public ranges and optional finite WGS 84 ellipsoidal altitude. It affects
+only future successful admissions, never retained results.
+
 `get_image_count()` reports retained member count only and does not imply all
 authored/intended members were retained. Missing additional intended members are
 represented by absence, not sparse members and not public per-member failure
@@ -584,6 +717,7 @@ Non-goals:
 - no filesystem save APIs
 - no RAW processing/export APIs
 - no backend-native public handles
+- no StreamResult camera-fact or geolocation exposure
 
 `can_get_encoded_bytes()` / `get_encoded_bytes()` may be bound as capability
 probes, but currently report unsupported / empty. Encoded output requires a
@@ -593,19 +727,22 @@ FourCC-style format value alone.
 ### 10.6.3 Capture Result Set initial surface
 
 Public Godot rig capture uses `CamBANGRig.trigger_capture() -> Error` and polls
-`CamBANGRig.get_result()` for the current completed `CaptureResultSet`.
-Explicit `capture_id` result-set lookup remains advanced/dev/scenario tooling via
-`CamBANGServer.get_capture_result_set_by_id(capture_id)`.
+`CamBANGRig.get_result()` for the current completed capture group, returned as
+a plain `Array[CamBANGCaptureResult]` (no dedicated grouping/wrapper class).
+Explicit `capture_id` result-set lookup remains advanced/dev/scenario tooling
+via `CamBANGServer.get_capture_result_set_by_id(capture_id) -> Array[CamBANGCaptureResult]`.
 
-- `capture_id`
-- `size()`
-- `is_empty()`
-- `get_results()`
-- `get_result_for_device(device_instance_id)`
-
-`CaptureResultSet` is a grouping/container surface, not itself an image-bearing
-result object. `CaptureResultSet` is not the bracket-member container for a
-single-device `CaptureResult`.
+An earlier revision of this surface introduced a dedicated `CaptureResultSet`
+RefCounted wrapper class (`capture_id`, `size()`, `is_empty()`, `get_results()`,
+`get_result_for_device(device_instance_id)`). It was removed: every one of
+those is either a native `Array` method already (`size()`, `is_empty()`), a
+per-element property already exposed by `CamBANGCaptureResult` itself
+(`capture_id`), or a trivial client-side iteration
+(`get_result_for_device`, which had no callers). Godot/GDScript-facing class
+surface is treated as a cost, not a convenience, in this project -- prefer a
+built-in `Array`/`Dictionary` over a bespoke wrapper class unless the wrapper
+earns its keep with real behavior beyond what the built-in type already
+provides.
 
 ## 11. Capability and cost-aware materialization
 
@@ -630,9 +767,9 @@ In particular:
 - the existence of more than one backing for the same artifact does not change the
   single-primary-payload rule
 
-`to_image()` remains explicit CPU materialization and should select the least
-expensive supported CPU route from the current retained state, whether that
-route uses auxiliary CPU backing or explicit GPU readback/materialization.
+`to_image()` remains explicit CPU materialization. Its reported capability is
+Operation Support populated from the current Backing State and the implemented
+access paths, not a per-call route-economics recalculation.
 
 Recommended first-pass capability/cost states:
 
@@ -643,17 +780,32 @@ Recommended first-pass capability/cost states:
 
 ### Intended meaning
 
-- `READY`  
-  The representation is already retained and directly accessible.
+- `UNSUPPORTED`
+  Structural support/availability truth: the representation cannot currently be
+  obtained through a supported CamBANG path.
 
-- `CHEAP`  
-  The representation is not currently retained but can be obtained without substantial additional work.
+- `READY`
+  Operation-specific direct retained-availability truth. `READY` does **not**
+  mean merely “very cheap.” For the specific result operation being classified,
+  the target representation is already retained and directly accessible without
+  materialization work such as readback, conversion, decode, repack, or
+  full-frame copy.
 
-- `EXPENSIVE`  
-  The representation is supported but requires meaningful additional work such as readback, conversion, decode, or full-frame copy/repack.
+- `CHEAP`
+  The representation is supported but not directly retained for this operation,
+  and can be obtained without substantial additional work.
 
-- `UNSUPPORTED`  
-  The representation cannot currently be obtained through a supported CamBANG path.
+- `EXPENSIVE`
+  The representation is supported but requires meaningful additional work such
+  as readback, conversion, decode, or full-frame copy/repack.
+
+Examples:
+
+- retained stream GPU display backing may be `READY` for `get_display_view()`;
+- retained CPU payload or a CPU sidecar for `to_image()` is not automatically
+  `READY`; it may still be `CHEAP`;
+- supported GPU materializer/readback paths are not `READY`; they are at best
+  supported non-ready paths.
 
 ## 11.3 Naming discipline
 
@@ -708,6 +860,10 @@ providers/paths.
   publishes those no-demand frames as CPU-primary with current CPU bytes.
 - When display demand is active and GPU update succeeds, frames may publish as
   GPU-primary (`GPU_SURFACE`).
+- When the effective plan requires GPU primary and both the current update and
+  its permitted recreate/retry fail, that frame is not published. CamBANG must
+  not relabel stale live GPU content as the current frame and must not silently
+  publish CPU primary contrary to the effective plan.
 - Payload kind may therefore vary across successive stream frames under
   display-demanded policy, while remaining truthful per retained frame.
 - `get_display_view()` is the demand-establishing access path for stream
@@ -740,11 +896,19 @@ CPU-backed storage.
 For synthetic stream GPU-primary/live-backing paths, `to_image()` must remain an
 explicit materialization outcome and must not silently return stale content:
 
-- use a current retained CPU/auxiliary payload when available (current
+- use a current retained CPU sidecar payload when available (current
   synthetic `to_image()` path preference), or
 - perform/require explicit supported materialization from a fresh source, or
 - report unsupported/expensive rather than presenting stale image content as
   current materialization truth.
+
+Timing evidence for stream `to_image()` is collected around this real Godot call
+path because it is the real retained-result access seam. CPU-packed stream
+results and GPU-primary results with a current retained CPU sidecar are expected
+to calibrate within the cheap access class; GPU-only stream results without
+materialization remain unsupported; GPU-only stream results with the Synthetic
+GPU backing materializer remain expensive. Invalidation/renewal belongs to
+live applied production-posture changes as described in 11.7.
 
 ## 11.6 Capture-result guardrail
 
@@ -753,6 +917,49 @@ display-view semantics.
 
 A Capture Result is the device-level still-capture result at the public result seam. Its still-capture backing and materialization behaviour must remain explicit and capture-result-specific; the stream-side live GPU-backed display model must not be generalized into a public model of retained or exposed per-capture GPU artifacts.
 
+For a capture member that retains both a current CPU sidecar and a GPU primary
+artifact, `to_image_member()` prefers the current CPU bytes. The GPU
+materializer is used only when no current CPU sidecar is available. Capability
+and access-cost evidence must describe the route actually selected.
+
+## 11.7 Access-cost evidence guardrail
+
+Real access-cost evidence exists to inform actual retained-result
+Operation Support classification for a supported access path. It does not
+change snapshot truth, structural support/availability truth, direct retained
+target-representation availability truth, or the underlying Backing State.
+
+Provisional result-facing classification starts from structural Operation
+Support. `UNSUPPORTED` remains structural support/availability truth. `READY`
+remains operation-specific direct retained target-representation availability
+truth. Measured evidence is used only to refine supported non-ready paths,
+primarily the split between `CHEAP` and `EXPENSIVE`.
+
+Evidence must be tied to the current live applied Backing Plan and the realized
+Backing State/access path. It must not be treated as a generic property of a
+method name, and it must not be treated as repeating-stream-only evidence.
+
+When a new live applied stream or still-capture Backing Plan changes the
+realized Backing State/access domain, prior evidence for that domain is stale.
+Renewal should be launched from that live-acceptance boundary rather than from
+first user-visible `to_image()` demand.
+
+Evidence gathering must remain at the real result-access seam. It must not be
+interpreted as provider-local generation/staging cost, snapshot publication
+cost, later render-thread draw/UI scheduling cost, or unrelated GPU
+upload/update cost.
+
+The implemented calibration policy is intentionally simple and relative, not a
+benchmarking subsystem. For supported non-ready candidates, it compares
+normalized measured cost using a single explicit CamBANG-wide multiplier
+constant, currently `kResultAccessCheapWithinBestMultiplier = 2`.
+
+That multiplier is a documented policy constant, not a hidden threshold or a
+benchmark-tuning subsystem.
+
+Single-candidate supported non-ready paths retain their provisional
+non-ready classification after calibration rather than being automatically
+promoted or demoted merely because they are alone.
 ---
 
 ## 12. “Useful display” tiers
@@ -953,7 +1160,7 @@ CamBANG’s release-facing image path is a **multi-representation, provider-adap
 
 - Providers surface the most efficient truthful payload available on that backend/platform.
 - Core routes, retains, accounts for, and releases image-bearing artifacts deterministically.
-- Stream paths are latest-result and latency/display oriented.
+- Stream paths are current-retained-result and latency/display oriented.
 - Capture paths are discrete-result and fidelity/persistence oriented.
 - Result Objects expose capability/cost-aware access and explicit materialization.
 - Rich image-associated facts remain attached to results rather than bloating the hot snapshot path.

@@ -52,6 +52,27 @@ When operations conflict, core uses the following strict priority order:
 
 Repeating streams are always preemptible by triggered capture.
 
+### 2.1 Provider-fact integration priority
+
+Provider callbacks still enter core through the serialized provider strand, but
+CoreRuntime classifies already-admitted provider facts before expensive
+integration. Capture lifecycle, capture frame/member, capture completion, and
+capture failure facts are capture-critical. Repeating stream frames are
+lower-priority latest-state work. Core may defer repeating stream-frame
+integration behind pending public/Core command work, and capture-critical facts
+may pass a prefix of queued repeating stream frames. Unknown, lifecycle,
+native-object, and error facts remain conservative/non-lossy and are not treated
+as droppable stream work. Repeating stream frames are latest-state work; before
+expensive dispatch, core may coalesce an older queued repeating stream frame
+when a newer frame for the same stream/session is queued before any non-lossy
+barrier. Stage D also implements the existing capture-over-stream policy by
+preempting lower-priority repeating stream frames for affected device instances
+from accepted capture admission until the capture reaches terminal/result-safe
+state. Public stream objects remain valid; suppressed stream frames are counted
+as received/released/dropped according to stream counter semantics and are never
+counted as delivered/presented. Capture frames and capture lifecycle facts are
+never coalesced or suppressed.
+
 ------------------------------------------------------------------------
 
 ## 3. One-stream-per-device invariant
@@ -124,10 +145,15 @@ authoritative").
 
 When a triggered capture begins on a device instance:
 
--   Any repeating stream on that device instance may be stopped
-    (preempted) according to policy.
--   v1 default policy: stop repeating streams during the capture window
-    for determinism on affected devices.
+-   Any repeating stream on that device instance may be preempted
+    according to policy.
+-   Current Core policy preserves public stream object identity and gates
+    lower-priority repeating stream frame integration during the capture
+    window rather than faking a public stream stop.
+-   Triggered capture preempts lower-priority repeating stream work for the
+    affected device(s) during the capture window. Public stream objects remain
+    valid; capture facts remain exact; stream frame suppression is accounted
+    for truthfully.
 
 ### 6.2 VIEWFINDER rule (v1 simple)
 
@@ -193,8 +219,8 @@ updated on completion (success or failure where meaningful).
 ### 8.3 Stream counters
 
 -   `frames_received` increments when provider delivers a frame.
--   `frames_delivered` increments when core hands the frame to its frame sink
-  (e.g., latest-frame mailbox in v1). This does not imply consumption by Godot.
+-   `frames_delivered` increments when core hands the frame to an installed
+    core frame sink. This does not imply consumption by Godot.
 -   `frames_dropped` increments when core drops a frame (queue full /
     latest-only).
 -   `queue_depth` reports instantaneous queue size at publish time.
@@ -209,7 +235,14 @@ default: return error code but do not increment failure counters.
 
 ## 9. Capture IDs and determinism
 
-Core issues `capture_id` as a monotonic `uint64`.
+`capture_id` is a monotonic `uint64`, unique for the runtime session.
+Implementation note: it is minted at the Godot boundary
+(`CamBANGServer::next_capture_id_`) rather than inside `CoreRuntime`, so
+that a synchronous `trigger_capture()`/`trigger_rig_capture()` call can
+return the assigned ID to its caller without waiting on a core-thread round
+trip; the same counter is shared across device-triggered and rig-triggered
+requests, so uniqueness/monotonicity guarantees hold regardless of which
+path issued it.
 
 Rules: - capture_id is assigned when a capture request is accepted (not
 when it completes). - rig-triggered capture assigns one capture_id for

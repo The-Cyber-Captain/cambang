@@ -1,0 +1,777 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:cambang:provisional:adc:camera_description:v2:schema",
+  "title": "ADC v2 Camera Description",
+  "description": "Machine-readable schema for the provisionally hosted ADC v2 camera-description contract currently targeted by CamBANG.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "cameras"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2,
+      "description": "ADC camera-description schema version."
+    },
+    "generator": {
+      "type": "string",
+      "description": "Optional non-authoritative document provenance."
+    },
+    "generator_version": {
+      "type": "string",
+      "description": "Optional non-authoritative document provenance."
+    },
+    "timestamp_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Optional non-authoritative document provenance."
+    },
+    "device_model": {
+      "type": "string",
+      "description": "Optional non-authoritative document provenance."
+    },
+    "device_manufacturer": {
+      "type": "string",
+      "description": "Optional non-authoritative document provenance."
+    },
+    "android_version": {
+      "type": "string",
+      "description": "Optional non-authoritative document provenance."
+    },
+    "godot_version": {
+      "type": "string",
+      "description": "Optional non-authoritative document provenance."
+    },
+    "cameras": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/cameraEntry"
+      }
+    },
+    "concurrent_camera_support": {
+      "$ref": "#/$defs/concurrentCameraSupport"
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "factSource": {
+      "type": "string",
+      "enum": [
+        "native_reported",
+        "user_supplied",
+        "derived",
+        "virtual_camera_authored",
+        "unknown"
+      ]
+    },
+    "cameraFacing": {
+      "type": "string",
+      "enum": [
+        "front",
+        "back",
+        "external",
+        "unknown"
+      ]
+    },
+    "cameraNature": {
+      "type": "string",
+      "enum": [
+        "physical",
+        "virtual",
+        "hybrid",
+        "unknown"
+      ]
+    },
+    "sensorOrientationDegrees": {
+      "type": "integer",
+      "enum": [
+        0,
+        90,
+        180,
+        270
+      ]
+    },
+    "coordinateDomain": {
+      "type": "string",
+      "enum": [
+        "android_sensor_pre_correction_active_array",
+        "android_sensor_active_array",
+        "delivered_image",
+        "platform_defined"
+      ]
+    },
+    "imageState": {
+      "type": "string",
+      "enum": [
+        "distorted",
+        "rectified",
+        "unknown"
+      ]
+    },
+    "referenceKind": {
+      "type": "string",
+      "enum": [
+        "camera",
+        "primary_camera",
+        "device_motion_sensor",
+        "automotive_reference",
+        "custom_reference",
+        "platform_defined",
+        "unknown"
+      ]
+    },
+    "coordinateConvention": {
+      "type": "string",
+      "enum": [
+        "android_camera2",
+        "camera_optical_frame",
+        "platform_defined"
+      ]
+    },
+    "finiteNumber": {
+      "type": "number"
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "translationMeters": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finiteNumber"
+      },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "rotationQuaternionXyzw": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finiteNumber"
+      },
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "facingRecord": {
+      "type": "object",
+      "required": [
+        "source",
+        "value"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/factSource"
+        },
+        "value": {
+          "$ref": "#/$defs/cameraFacing"
+        }
+      },
+      "additionalProperties": true
+    },
+    "cameraNatureRecord": {
+      "type": "object",
+      "required": [
+        "source",
+        "value"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/factSource"
+        },
+        "value": {
+          "$ref": "#/$defs/cameraNature"
+        }
+      },
+      "additionalProperties": true
+    },
+    "sensorOrientationRecord": {
+      "type": "object",
+      "required": [
+        "source",
+        "value_degrees"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/factSource"
+        },
+        "value_degrees": {
+          "$ref": "#/$defs/sensorOrientationDegrees"
+        }
+      },
+      "additionalProperties": true
+    },
+    "intrinsics": {
+      "type": "object",
+      "required": [
+        "source",
+        "focal_length_x_px",
+        "focal_length_y_px",
+        "principal_point_x_px",
+        "principal_point_y_px",
+        "reference_width_px",
+        "reference_height_px",
+        "coordinate_domain"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/factSource"
+        },
+        "focal_length_x_px": {
+          "$ref": "#/$defs/finiteNumber"
+        },
+        "focal_length_y_px": {
+          "$ref": "#/$defs/finiteNumber"
+        },
+        "principal_point_x_px": {
+          "$ref": "#/$defs/finiteNumber"
+        },
+        "principal_point_y_px": {
+          "$ref": "#/$defs/finiteNumber"
+        },
+        "skew_px": {
+          "$ref": "#/$defs/finiteNumber"
+        },
+        "reference_width_px": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reference_height_px": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "coordinate_domain": {
+          "$ref": "#/$defs/coordinateDomain"
+        },
+        "platform_defined_domain": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "coordinate_domain": {
+                "const": "platform_defined"
+              }
+            },
+            "required": [
+              "coordinate_domain"
+            ]
+          },
+          "then": {
+            "required": [
+              "platform_defined_domain"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "platform_defined_domain"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "distortionBrownConrady5": {
+      "type": "object",
+      "required": [
+        "source",
+        "model",
+        "radial_k1",
+        "radial_k2",
+        "radial_k3",
+        "tangential_p1",
+        "tangential_p2",
+        "reference_width_px",
+        "reference_height_px",
+        "coordinate_domain",
+        "image_state"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/factSource"
+        },
+        "model": {
+          "const": "brown_conrady_5"
+        },
+        "radial_k1": {
+          "$ref": "#/$defs/finiteNumber"
+        },
+        "radial_k2": {
+          "$ref": "#/$defs/finiteNumber"
+        },
+        "radial_k3": {
+          "$ref": "#/$defs/finiteNumber"
+        },
+        "tangential_p1": {
+          "$ref": "#/$defs/finiteNumber"
+        },
+        "tangential_p2": {
+          "$ref": "#/$defs/finiteNumber"
+        },
+        "reference_width_px": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reference_height_px": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "coordinate_domain": {
+          "$ref": "#/$defs/coordinateDomain"
+        },
+        "image_state": {
+          "$ref": "#/$defs/imageState"
+        },
+        "platform_defined_domain": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "coordinate_domain": {
+                "const": "platform_defined"
+              }
+            },
+            "required": [
+              "coordinate_domain"
+            ]
+          },
+          "then": {
+            "required": [
+              "platform_defined_domain"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "platform_defined_domain"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "distortionNone": {
+      "type": "object",
+      "required": [
+        "source",
+        "model",
+        "image_state"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/factSource"
+        },
+        "model": {
+          "const": "none"
+        },
+        "image_state": {
+          "$ref": "#/$defs/imageState"
+        }
+      },
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "radial_k1"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "radial_k2"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "radial_k3"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "tangential_p1"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "tangential_p2"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "reference_width_px"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "reference_height_px"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "coordinate_domain"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "platform_defined_domain"
+            ]
+          }
+        }
+      ]
+    },
+    "distortion": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/distortionBrownConrady5"
+        },
+        {
+          "$ref": "#/$defs/distortionNone"
+        }
+      ]
+    },
+    "poseReferenceCamera": {
+      "properties": {
+        "reference_kind": {
+          "const": "camera"
+        }
+      },
+      "required": [
+        "reference_kind",
+        "reference_camera_id"
+      ],
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "reference_id"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "platform_defined_reference"
+            ]
+          }
+        }
+      ]
+    },
+    "poseReferenceCustom": {
+      "properties": {
+        "reference_kind": {
+          "const": "custom_reference"
+        }
+      },
+      "required": [
+        "reference_kind",
+        "reference_id"
+      ],
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "reference_camera_id"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "platform_defined_reference"
+            ]
+          }
+        }
+      ]
+    },
+    "poseReferencePlatformDefined": {
+      "properties": {
+        "reference_kind": {
+          "const": "platform_defined"
+        }
+      },
+      "required": [
+        "reference_kind",
+        "platform_defined_reference"
+      ],
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "reference_camera_id"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "reference_id"
+            ]
+          }
+        }
+      ]
+    },
+    "poseReferenceImplicit": {
+      "properties": {
+        "reference_kind": {
+          "enum": [
+            "primary_camera",
+            "device_motion_sensor",
+            "automotive_reference",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "reference_kind"
+      ],
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "reference_camera_id"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "reference_id"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "platform_defined_reference"
+            ]
+          }
+        }
+      ]
+    },
+    "poseCoordinateConventionPlatformDefined": {
+      "properties": {
+        "coordinate_convention": {
+          "const": "platform_defined"
+        }
+      },
+      "required": [
+        "coordinate_convention",
+        "platform_defined_convention"
+      ]
+    },
+    "poseCoordinateConventionKnown": {
+      "properties": {
+        "coordinate_convention": {
+          "enum": [
+            "android_camera2",
+            "camera_optical_frame"
+          ]
+        }
+      },
+      "required": [
+        "coordinate_convention"
+      ],
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "platform_defined_convention"
+            ]
+          }
+        }
+      ]
+    },
+    "pose": {
+      "type": "object",
+      "required": [
+        "source",
+        "reference_kind",
+        "coordinate_convention",
+        "translation_m",
+        "rotation_xyzw"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/factSource"
+        },
+        "reference_kind": {
+          "$ref": "#/$defs/referenceKind"
+        },
+        "coordinate_convention": {
+          "$ref": "#/$defs/coordinateConvention"
+        },
+        "translation_m": {
+          "$ref": "#/$defs/translationMeters"
+        },
+        "rotation_xyzw": {
+          "$ref": "#/$defs/rotationQuaternionXyzw"
+        },
+        "reference_camera_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reference_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "platform_defined_reference": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "platform_defined_convention": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/poseReferenceCamera"
+            },
+            {
+              "$ref": "#/$defs/poseReferenceCustom"
+            },
+            {
+              "$ref": "#/$defs/poseReferencePlatformDefined"
+            },
+            {
+              "$ref": "#/$defs/poseReferenceImplicit"
+            }
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/poseCoordinateConventionPlatformDefined"
+            },
+            {
+              "$ref": "#/$defs/poseCoordinateConventionKnown"
+            }
+          ]
+        },
+        {
+          "not": {
+            "properties": {
+              "rotation_xyzw": {
+                "const": [
+                  0,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            },
+            "required": [
+              "rotation_xyzw"
+            ]
+          }
+        }
+      ]
+    },
+    "cameraEntry": {
+      "type": "object",
+      "required": [
+        "camera_id"
+      ],
+      "properties": {
+        "camera_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "facing": {
+          "$ref": "#/$defs/facingRecord"
+        },
+        "camera_nature": {
+          "$ref": "#/$defs/cameraNatureRecord"
+        },
+        "sensor_orientation": {
+          "$ref": "#/$defs/sensorOrientationRecord"
+        },
+        "intrinsics": {
+          "$ref": "#/$defs/intrinsics"
+        },
+        "distortion": {
+          "$ref": "#/$defs/distortion"
+        },
+        "pose": {
+          "$ref": "#/$defs/pose"
+        }
+      },
+      "additionalProperties": true
+    },
+    "cameraIdArray": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    },
+    "concurrentCameraSupportSupported": {
+      "type": "object",
+      "required": [
+        "supported",
+        "camera_id_combinations"
+      ],
+      "properties": {
+        "supported": {
+          "const": true
+        },
+        "camera_id_combinations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/cameraIdArray"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "concurrentCameraSupportUnsupported": {
+      "type": "object",
+      "required": [
+        "supported"
+      ],
+      "properties": {
+        "supported": {
+          "const": false
+        },
+        "camera_id_combinations": {
+          "type": "array",
+          "maxItems": 0
+        }
+      },
+      "additionalProperties": true
+    },
+    "concurrentCameraSupport": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/concurrentCameraSupportSupported"
+        },
+        {
+          "$ref": "#/$defs/concurrentCameraSupportUnsupported"
+        }
+      ]
+    }
+  }
+}

@@ -10,8 +10,11 @@ These tools are **not user-facing applications** and are not intended to
 ship as part of production builds. They exist to help maintainers validate
 correctness while developing the runtime.
 
-Most tools are **opt-in build artifacts** and will not appear in normal
-build outputs unless explicitly requested.
+Deterministic maintainer tools are default development-build artifacts under
+`maintainer_tools=yes`. They are still not production artifacts; they are built
+by default so local development builds continuously exercise deterministic
+runtime checks. Platform-backed runtime validation remains separate and explicit
+via `platform_runtime_validate=yes`.
 
 ---
 
@@ -32,13 +35,17 @@ Maintainer tools fall into three broad categories.
 | Tool / asset | Purpose | Category |
 |---|---|---|
 | `core_spine_smoke` | Minimal Core runtime invariant validation using the stub provider | Smoke test |
+| `core_thread_liveness_watchdog_verify` | Self-supervising death test for prompt/bounded Core-thread provider calls | Verification |
 | `synthetic_timeline_verify` | Deterministic verification of SyntheticProvider timeline behaviour and Core registry truth | Verification |
 | `phase3_snapshot_verify` | Focused verification for snapshot/native-object/publication semantics | Verification |
 | `restart_boundary_verify` | Deterministic verification of the CamBANGServer stop/start boundary contract | Verification |
 | `provider_compliance_verify` | Deterministic provider-contract verification using Stub and Synthetic only | Verification |
-| `windows_mf_runtime_validate` | Opt-in Windows Media Foundation runtime validation against real hardware | Verification |
+| `synthetic_only_provider_support_verify` | Deterministic build-support and access/readiness preflight for synthetic-only maintainer builds | Verification |
 | `pattern_render_bench` | Pattern renderer performance benchmark | Benchmark |
 | Godot boundary verification scenes | Validation of the Godot-facing runtime boundary | Verification |
+
+For mechanical/static-analysis guidance supporting C++ audits, see
+`docs/dev/static_analysis.md`.
 
 ---
 
@@ -65,8 +72,15 @@ Verification tools should:
 
 - be deterministic
 - avoid platform hardware dependencies where possible
-- produce a clear pass / fail result
+- emit diagnostics first and a final summary whose first token is `PASS` or
+  `FAIL`
+- return zero exactly when that final summary is `PASS`, and nonzero when it is
+  `FAIL`
 - run quickly
+
+The final summary belongs to the executable itself. A shell wrapper may add
+transport or artifact handling, but must not infer success from a partial log
+or supply a missing verdict on the verifier's behalf.
 
 ### Verification case terminology (maintainer tooling)
 
@@ -118,39 +132,111 @@ This layering matches the architecture rules defined in:
 Deterministic provider validation must not rely on physical hardware.
 Platform validation is performed separately using explicit tools.
 
-The terse provider-audit checklist remains separately documented in:
+The canonical implementer-facing provider contract (which superseded the
+retired provider-audit checklist) is:
 
 ```text
-docs/dev/provider_compliance_checklist.md
+docs/provider_implementation_brief.md
 ```
-## 4.x Dev-only producer capability override
+## 4.x Synthetic provider output-form and Backing Plan controls
 
-For internal verification only, maintainer tooling may temporarily force synthetic
-producer backing advertisement to shapes such as:
-
-- CPU-only
-- CPU+GPU
-- GPU-only
-
-This exists solely to validate provider/core/result policy handling for backing
-selection and fallback behavior.
-
-These overrides are:
-
-- non-release
-- intentionally capability-falsifying when selected
-- not runtime truth
-- not part of the public/provider contract
-
-Maintainers should treat such modes as verification aids rather than as evidence
-that the synthetic producer truthfully supports those capability sets in normal
-operation.
+Synthetic provider backing advertisement reports the output forms available from
+the current runtime. Backing Plan policy chooses primary and auxiliary
+retention within that truthful set. Maintainer controls for Synthetic
+output-form and Backing Plan behavior belong on truthful production paths and
+must not redefine provider-contract truth.
 
 For backing-contract truth and result/payload semantics, use:
 
 - `docs/architecture/pixel_payload_and_result_contract.md`
 
-### 4.x.1 Synthetic stream GPU/update maintainer controls
+### 4.x.1 Synthetic producer output-form / Backing Plan maintainer control
+
+This control is a maintainer/verification aid only. It is Synthetic-only, is not
+product or user runtime configuration, and does not affect platform-backed
+providers or public Godot API.
+
+- Project setting: `cambang/maintainer/synthetic_producer_output_form`
+  - values: `runtime_default|cpu_only|cpu_gpu|gpu_only`
+  - default/unset: `runtime_default`
+  - `runtime_default` is the explicit no-forcing value: it preserves the normal
+    Synthetic runtime default policy rather than acting as a disguised spelling
+    for one of the forced modes
+  - this project-backed setting is the single authoritative maintainer surface
+    for the selection and works for deploy-based verification from the same
+    Godot project
+  - host command-line runs may pass
+    `--cambang-synth-producer-output-form=runtime_default|cpu_only|cpu_gpu|gpu_only`;
+    startup feeds that value through the same project-setting authority path
+    before the provider reads it, so command-line selection is not a separate
+    authority path; Scene 70 reports both the stored project setting and the
+    effective runtime selection when this transient command-line input is active
+  - there is no environment-variable fallback
+  - controls truthful Synthetic producer output-form reporting and the matching
+    retained/produced behaviour for repeating-stream frames and still-capture
+    frames where Synthetic has the corresponding backing seam
+  - `cpu_only` reports and retains CPU-backed output only
+  - `cpu_gpu` allows CPU and GPU output; provider/runtime realizability narrows
+    that truthful set, so unavailable GPU backing collapses to CPU-backed
+    behaviour while available GPU backing retains GPU primary output with a CPU
+    sidecar
+  - `gpu_only` reports GPU output only when the Synthetic GPU runtime is
+    actually available, retaining GPU primary output without a CPU sidecar
+  - `gpu_only` selections that cannot realize GPU backing fail deterministically
+    with `ERR_NOT_SUPPORTED` instead of advertising GPU truth or falling back to
+    CPU
+
+Use this control for local validation of real result/backing/materialization
+routes and Backing Plan behaviour. It must not be used to fabricate capability
+advertisement.
+
+### 4.x.2 Synthetic parent-context capability downgrade controls
+
+These controls are maintainer/verification aids only. They are Synthetic-only,
+internal, downgrade-only, and must not be treated as public API, platform
+provider configuration, or a second authority for the outer output-form
+envelope.
+
+- Project setting:
+  `cambang/maintainer/synthetic_stream_capability_downgrades`
+  - default/unset: empty
+  - host command-line runs may pass
+    `--cambang-synth-stream-capability-downgrades=...`
+  - startup feeds the command-line value through that same project-setting
+    authority path before provider construction
+  - condition grammar is `;`-separated entries of comma-separated `key=value`
+    pairs
+  - required key: `device=<hardware_id>`
+  - optional keys: `intent=preview|viewfinder`, `width=<u32>`,
+    `height=<u32>`, `format=<FOURCC-or-u32>`, `fps=<u32>`
+- Project setting:
+  `cambang/maintainer/synthetic_capture_capability_downgrades`
+  - default/unset: empty
+  - host command-line runs may pass
+    `--cambang-synth-capture-capability-downgrades=...`
+  - startup feeds the command-line value through that same project-setting
+    authority path before provider construction
+  - condition grammar is `;`-separated entries of comma-separated `key=value`
+    pairs
+  - required key: `device=<hardware_id>`
+  - optional keys: `width=<u32>`, `height=<u32>`,
+    `format=<FOURCC-or-u32>`, `bundle=default|multi`
+
+Behavior:
+
+- these conditions narrow only the **parent-context capability**
+- they do not change the truthful outer provider/runtime envelope reported by
+  `SyntheticProvider`
+- they may only narrow an effectively mixed context to `cpu_only`
+- they are inert when the outer envelope is already `cpu_only`
+- they are rejected as contradictory when `gpu_only` is the configured outer
+  envelope
+- stream conditions apply to stream-owned contexts
+- capture conditions apply to capture/`AcquisitionSession`-owned contexts
+- they are intended for deterministic verification of backing-plan evaluation consumption and
+  must not be used to fabricate capability truth
+
+### 4.x.3 Synthetic stream GPU/update maintainer controls
 
 These controls are maintainer/verification aids only. They are not product or
 user runtime configuration and do not redefine provider-contract truth.
@@ -158,6 +244,19 @@ user runtime configuration and do not redefine provider-contract truth.
 - `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=display_demanded|always`
   - default: `display_demanded`
   - `always` is a maintainer eager-update comparison override
+
+
+Scene 68 (`68_inner_evidence_reset_verify`) remains only a secondary
+retained-result evidence/reset surface.
+
+Scene 568 (`568_backing_plan_evaluation_verify`) is the canonical automatable
+Backing Plan evaluator verifier. It uses the existing
+`CamBANGServer.get_synthetic_metrics_snapshot()` maintainer surface to read
+parent-scoped `backing_plan_evaluation_reports`, including candidate-specific
+decision evidence and explicit completion reasons. This is a verification-only
+seam, not public API and not snapshot schema. Decision provenance for Scene 568
+comes from Core's per-candidate report payload rather than from the global
+`result_access_timing_evidence` aggregates.
 
 Retained maintainer diagnostics:
 
@@ -172,6 +271,13 @@ Retained maintainer diagnostics:
 - `CAMBANG_DEV_SYNTH_GPU_TRACE`
 - `CAMBANG_STREAM_LOAD_FRAME_SPIKE_TRACE`
 - `CAMBANG_STREAM_LOAD_FRAME_SPIKE_TOP_N`
+- `CAMBANG_TIMELINE_TEARDOWN_TRACE` (`imaging/api/timeline_teardown_trace.h`)
+  - accepts `1`/`t`/`T`/`y`/`Y` as enabled
+  - gates a bounded (256-entry) in-memory trace queue of timeline
+    teardown-phase diagnostic lines; also toggleable at runtime via
+    `timeline_teardown_trace_set_enabled(bool)` independent of the env var
+  - not `CAMBANG_DEV_`-prefixed for historical reasons; functionally the
+    same class of maintainer-only diagnostic knob as the others in this list
 
 Harness selector:
 
@@ -188,6 +294,38 @@ Aggregate telemetry note:
 - High-frequency lease/backing observability is via
   `scoped_resource_telemetry` counters, while long-lived identity-bearing native
   resources remain in `native_objects`.
+
+Synthetic dev metrics also expose retained-result access timing evidence at
+`CamBANGServer.get_synthetic_metrics_snapshot()["result_access_timing_evidence"]`.
+This evidence is gathered only from the real Godot result-operation seam for
+retained-result access operations. It is not `CamBANGStateSnapshot`, is not
+schema v1 truth, and does not participate in state publication. Its purpose is
+to inform refined result-facing classification for supported non-ready paths
+under the current live applied production posture; `UNSUPPORTED` support truth
+and operation-specific `READY` direct-retained availability remain structural.
+Evidence collection/renewal belongs to live applied production-posture
+acceptance/application boundaries, not first user-visible `to_image()` demand.
+Public access calls remain instrumented, but are not the normal recalibration
+heartbeat. Retained GPU display-view timings measure wrapper/display-view
+acquisition, not later render-thread draw, UI scheduling, or Synthetic GPU
+upload/update cost.
+
+Timing semantics reminder:
+
+- `display_view_elapsed_ns` measures the real Godot `get_display_view()` seam
+  for stream results.
+- Capture member `materialization_elapsed_ns` measures the real Godot
+  `to_image_member()` seam for that member.
+- Capture `capture_ready_elapsed_ns` is lifecycle latency from dispatcher and
+  acquisition-session timestamps, not a Godot result-access call boundary.
+- Capture `total_elapsed_ns` is a conservative chooser score for the whole
+  required still result: readiness once plus the slowest required member
+  materialization.
+- `normalized_cost_units` is byte-normalized classification evidence for
+  supported non-ready access, not a chooser latency score or a general
+  provider/hardware benchmark.
+- These timings must not be read as provider-local generation/staging cost,
+  snapshot publication cost, or UI draw cost.
 
 Removed temporary knobs:
 
@@ -263,6 +401,11 @@ This is the primary maintainer check for provider-contract rules such as:
 - still-image-bundle capability-gate checks proving:
   - default-only bundle validity is not gated by multi-member capability
   - multi-member authored bundle rejection when multi-member capability is false
+- parent-scoped Backing Plan evaluator regressions proving:
+  - capture winners require complete readiness-plus-materialization evidence
+  - stale or duplicate result observations cannot satisfy another candidate
+  - direct single-viable selection remains visibly non-evaluated
+  - partial stream comparison reports the live-display-demand family-crossing guard truthfully
 
 ### What it proves for synthetic timeline destructive sequencing
 
@@ -288,25 +431,22 @@ It deliberately does **not**:
 
 - enumerate physical cameras
 - open platform-backed devices
-- validate real Media Foundation or other platform APIs
+- validate real platform-backed OS APIs
 - exercise hardware-driven asynchronous device callbacks
 
 Those concerns belong to platform validation tools.
 
 ### Build and usage
 
-Typical smoke-only build form:
+Typical deterministic maintainer-tool build forms:
 
 ```text
-scons smoke=1 gde=no smoke
+scons gde=no
+scons maintainer_tools
 ```
 
-If also building the GDExtension in the same invocation, pass an explicit
-provider selection because the GDE target requires `provider=...`:
-
-```text
-scons smoke=1 provider=stub smoke
-```
+Maintainer tools are host-native and are not scoped by `platform=<...>`. The GDE
+build does not require a public provider-selection variable.
 
 Usage:
 
@@ -401,6 +541,41 @@ replace `provider_compliance_verify` or change the role of
 
 ---
 
+## 6.2 `synthetic_only_provider_support_verify`
+
+**Category:** Verification tool
+
+### Purpose
+
+`synthetic_only_provider_support_verify` validates the deterministic provider
+selection preflight for maintainer builds compiled with synthetic support and
+without a compiled platform provider.
+
+It checks that:
+
+- platform-backed mode reports build-unsupported
+- synthetic mode reports build-supported
+- synthetic mode reports access/readiness as ready
+
+### Usage
+
+```text
+./out/synthetic_only_provider_support_verify.exe
+```
+
+Expected output shape:
+
+```text
+OK platform_backed_build_support
+OK synthetic_build_support
+OK synthetic_access_readiness
+PASS synthetic_only_provider_support_verify
+```
+
+Failures identify the failed check and exit nonzero.
+
+---
+
 ## 7. `restart_boundary_verify`
 
 **Category:** Verification tool
@@ -442,56 +617,56 @@ step 1 OK
 step 2 OK
 step 3 OK
 step 4 OK
-OK: restart_boundary_verify passed
+PASS restart_boundary_verify
 ```
 
 Any failure indicates a regression in Godot-boundary snapshot exposure.
 
 ---
 
-## 8. `windows_mf_runtime_validate`
+## 7.1 `core_thread_liveness_watchdog_verify`
 
-**Category:** Verification tool (platform-backed)
+**Category:** Verification tool
 
 ### Purpose
 
-`windows_mf_runtime_validate` validates the **current Windows Media
-Foundation dev accelerator** (`WindowsProvider`) against real hardware under
-asynchronous platform-backed execution.
+`core_thread_liveness_watchdog_verify` is a self-supervising death test for the
+documented prompt/bounded provider-call contract. It supervises two private
+child modes: the maintainer abort mode (a wedged provider call must produce
+the stale-task diagnostic and the expected abnormal child termination within a
+fixed bound) and the production failed-latch mode (the child suppresses the
+maintainer abort, wedges a provider call past the 15s hard threshold, and
+asserts the latch semantics itself: the blocked caller is released with its
+fallback status, subsequent commands refuse immediately, and stop() abandons
+promptly instead of joining the wedged thread — see
+`docs/provider_implementation_brief.md`, "When a provider violates
+promptness"). The normal invocation runs both and emits one final verdict.
 
-It exercises:
-
-- device enumeration
-- real device open
-- stream start / stop
-- shutdown behaviour
-
-Passing this tool complements deterministic provider verification, but it does
-**not** prove final Windows release-provider completeness.
-
-### Build and usage
+### Usage
 
 ```text
-scons platform_validate=1 windows_mf_runtime_validate
-./out/windows_mf_runtime_validate.exe --real-hardware
+./out/core_thread_liveness_watchdog_verify.exe
 ```
 
-Expected high-level behaviour:
+Expected terminal summary:
 
-1. enumerate camera
-2. open device
-3. negotiate media type
-4. start stream
-5. shut down cleanly
+```text
+PASS core_thread_liveness_watchdog_verify stale_task_log=true expected_abort=true failed_latch=true abort_exit_code=<platform-specific>
+```
+
+The diagnostics for both modes appear before this final line (the run takes
+roughly half a minute; the failed-latch child alone waits ~15s for the hard
+threshold). Run the executable directly; the internal child arguments are
+implementation detail, not a maintainer workflow.
 
 ---
 
-## 9. Other native tools
+## 8. Other native tools
 
 ### `core_spine_smoke`
 
-Minimal runtime sanity check validating the Core runtime spine using the
-stub provider.
+Minimal runtime sanity check validating the Core runtime spine using deterministic
+maintainer-tool provider coverage.
 
 
 
@@ -526,13 +701,25 @@ Godot scenes verify:
 
 ## Output Discipline
 
-Scenes must flush output before quitting so that PASS/FAIL messages are reliably captured by automated runs.
+Automated scenes must emit exactly one shared `[CamBANG][HarnessVerdict]` record
+before quitting. Human-readable `OK: ... PASS` / `FAIL: ...` lines may remain,
+but `run_godot.ps1` classifies the structured verdict and matching process exit
+status rather than scene-specific text.
 
 
 ## Scene 70 maintainer-teaching note (`stream_inspection_live`)
 
 Scene 70 is a maintainer-facing verification/teaching scene for stream result
 surfaces.
+
+Its replacement summary for the older temporary `CaptureLatencyTrace` path is
+transported through framed log records that `tests/cambang_gde/run_godot.ps1`
+parses back into recovered files. This is a runner/tooling transport
+convention, not a shared Godot harness layer.
+
+Harnesses remain encapsulated; another harness can locally implement the same
+tiny emitter if needed. Runner recovery preserves incomplete records too, so
+failed runs can still retain partial structured data.
 
 It now demonstrates:
 

@@ -56,7 +56,7 @@ provider contract.
 
 Examples include:
 
-- `windows_mediafoundation`
+- future `windows_winrt`
 - future `android_camera2`
 - future additional platform providers
 
@@ -67,7 +67,7 @@ source of truth for what the contract means.
 
 CamBANG is designed to support platform-backed provider families including:
 
-- `windows_mediafoundation` — Windows / Media Foundation
+- `windows_winrt` — Windows / WinRT
 - `android_camera2` — Android / Camera2
 - `linux_v4l2` — Linux / Video4Linux2
 - `apple_avfoundation` — macOS / iOS / iPadOS / AVFoundation
@@ -86,11 +86,11 @@ A provider may be:
 - **minimal / transitional** — enough to validate architecture and basic
   runtime integration
 - **release-quality** — robust negotiation, lifecycle handling,
-  timestamping, and functional feature coverage
+  acquisition-timing reporting, and functional feature coverage
 
 Capability maturity does **not** change the contract. A minimal provider
 may support fewer features, but it must still obey the same lifecycle,
-threading, native-object, and timestamp rules.
+threading, native-object, and acquisition-timing rules.
 
 ---
 
@@ -126,6 +126,7 @@ Core owns and decides:
 - arbitration and preemption
 - warm timing (`warm_hold_ms`) and teardown scheduling
 - validation and normalization of capture / picture configuration
+- retention of effective `CameraSpec` / `ImagingSpec` runtime truth
 - provider-type defaulting via `StreamTemplate`
 - `CoreNativeObjectRegistry` and destroyed-record retention
 - `SnapshotBuilder`, `IStateSnapshotPublisher`, and snapshot publication
@@ -137,13 +138,25 @@ A provider owns and implements:
 
 - backend API calls and native handles
 - backend worker threads / loopers required to operate those APIs
-- frame acquisition, timestamp extraction or synthesis, and delivery
+- frame acquisition, truthful image-acquisition timing extraction or synthesis, and delivery
 - mapping backend pixel formats into CamBANG pixel formats
 - truthful reporting of owned native object lifecycle to Core
 - backend-specific error detection and reporting
 
 Providers execute validated Core intent; they do not reinterpret the
 model.
+
+Reference-provider note:
+
+- `SyntheticProvider` may perform synthetic-only frame-generation work such as
+  deterministic exposure-variant synthesis for bracket members. That is part of
+  Synthetic's role as an executable reference/test provider, not a requirement
+  that platform-backed providers fabricate equivalent source frames.
+- Format adaptation is different in kind. Any provider may need to map
+  backend-local pixel memory into CamBANG's negotiated packed pixel contract
+  such as `FOURCC_RGBA` / `FOURCC_BGRA`. The contract requires truthful mapped
+  delivery, but it does not require platform-backed providers to use
+  SyntheticProvider's frame-generation strategy to achieve it.
 
 ---
 
@@ -168,6 +181,16 @@ A provider must support, where applicable:
 
 Core validates and materializes effective request state before calling a
 provider.
+
+For retained specification truth, the split remains explicit:
+
+- `CameraSpec` is the per-camera capability seam
+- `ImagingSpec` is the cross-camera / imaging-subsystem capability seam Core
+  may use for current admission and validation truth
+
+Providers may receive validated imaging-spec patch/version application through
+the internal provider boundary, but they do not redefine what `ImagingSpec`
+means.
 
 A provider may reject a request only when:
 
@@ -241,6 +264,11 @@ Providers must not add a second hidden layer of defaulting beneath that.
   `CaptureRequest.format_fourcc`, and status-panel `capture_fmt` are the same
   provider-agnostic CamBANG FourCC-style still-result format value at different
   layers.
+- Public Godot constants for currently exposed raw pixel-buffer format values use
+  the `PIXEL_FORMAT_*` naming family, for example
+  `CamBANGServer.PIXEL_FORMAT_RGBA`; this is a Godot-facing name for the same
+  provider-agnostic FourCC-style integer value, not a separate
+  provider/backend format namespace.
 - Current implemented displayable still paths use packed pixel formats such as
   `FOURCC_RGBA` / `FOURCC_BGRA`; encoded JPEG or RAW still outputs require
   matching payload-kind/result support and are not implied by writing those
@@ -309,11 +337,51 @@ context.
 This rule is backend-independent and applies equally to synthetic,
 stub, and platform-backed providers.
 
+### 8.1 Prompt submission and non-reentrancy
+
+Provider API methods reached through `CoreRuntime` / `ProviderBroker`
+synchronous paths must be prompt, bounded submission or control operations.
+Future platform-backed providers must not:
+
+- perform long backend drains while public / Godot callers are synchronously
+  blocked
+- wait on core-thread work, Godot-thread work, render-thread work, or provider
+  callbacks from inside provider API calls
+- synchronously invoke callbacks that can re-enter `CoreRuntime`,
+  `ProviderBroker`, Godot, or wait on public / core completion
+- recursively invoke provider-forwarding `ProviderBroker` methods or broker
+  lifecycle methods from inside a provider API call
+- treat one provider's stop / shutdown shape as a contract template
+
+Backend-specific long work belongs on provider-owned worker / looper threads.
+Completion, errors, and lifecycle truth must be reported back through provider
+facts / callbacks according to the provider strand model.
+
+`ProviderBroker` separates provider lifetime/admission protection from provider
+call serialization. It does not hold its lifecycle mutex while provider code
+runs. Benign broker state queries, such as latched runtime configuration, may
+therefore complete while a provider call is active. Provider calls themselves
+remain serialized. Recursive provider-forwarding calls are rejected as busy,
+and provider-triggered broker shutdown is rejected rather than waiting on the
+calling provider operation's own in-flight lease.
+
+Broker shutdown first closes provider-call admission, then waits for already
+admitted prompt/bounded calls to drain. It invokes provider `shutdown()` and
+destroys the provider outside broker locks. Calls racing after admission closes
+fail with `ERR_SHUTTING_DOWN` without reaching the provider.
+
 ---
 
 ## 9. Lifecycle truthfulness
 
 Providers must report native-object and lifecycle state truthfully.
+
+Stream lifecycle reconciliation distinguishes Core-directed lifecycle
+transitions from provider-fact lifecycle acknowledgements. Delayed provider facts
+that acknowledge already-applied Core-directed transitions must not overwrite
+newer Core truth. Non-OK acknowledgement facts still preserve/report error
+information, but they do not resurrect or stop a stream through stale lifecycle
+truth.
 
 ### 9.1 No normal-operation auto-cascade
 
@@ -439,6 +507,29 @@ capture-originated truth, and it does not depend on any `FrameProducer` row.
 Native Payload Support is interpreted through this placement rule and is not
 parented by a producer-row concept.
 
+### Backing Plan evaluation capability placement
+
+Backing/output-form capability relevant to parent-scoped Backing Plan
+evaluation is not treated as one undifferentiated provider-wide input.
+
+CamBANG keeps two levels of truth separate:
+
+- the **provider/runtime envelope capability**, which is the truthful outer set
+  available from the current provider/runtime configuration
+- the **parent-context capability**, which is the capability of the specific
+  Native Payload Support Parent that carries the image-bearing truth for the
+  operation
+
+For parent-scoped image-bearing work, the Native Payload Support Parent is:
+
+- `Stream` for stream-originated payload/backing operations
+- `AcquisitionSession` for capture-originated payload/backing operations
+
+This distinction is internal architecture truth. It does not require a new
+public Godot API surface and it must not be blurred with the parent's Backing
+Plan, any result Backing State, result-facing Operation Support, or measured
+Access Evidence.
+
 ### Native Payload Support as a projection grouping concept
 
 Native Payload Support is the canonical projection grouping concept for
@@ -485,23 +576,44 @@ including diagnostically useful ordering failures.
 
 ---
 
-## 11. Timestamp contract
+## 11. Image Acquisition Timing contract
 
-Every frame delivered to Core must carry a contract-valid
-`CaptureTimestamp` containing:
+A provider may attach source-neutral `ImageAcquisitionTiming` to each delivered
+frame when the backend can supply it truthfully. The timing record carries:
 
-- `value`
-- `tick_ns`
-- `domain`
+- an acquisition mark;
+- a rational tick period;
+- a declared clock domain;
+- a reference event;
+- a comparability scope;
+- fact origin/provenance.
 
-Providers should use a meaningful monotonic or provider-monotonic domain
-where feasible.
+The acquisition mark is provider-authored descriptive metadata in the declared
+clock domain. It is not required to be wall-clock time, globally monotonic,
+unique, or comparable with another device/session, and a mark of zero is valid.
+Absence must remain distinct from a present zero-valued mark. Canonically, the
+mark is a nonnegative signed 64-bit value and the tick-period numerator in
+nanoseconds and denominator are positive signed 64-bit values retained in
+reduced form.
 
-Placeholder-shaped timestamps are not contract-valid merely because the
-fields are present.
+Providers that start from unsigned or wider native counters must perform one
+checked conversion at the provider boundary. If a native acquisition mark
+cannot be represented within the canonical nonnegative signed 64-bit range,
+acquisition timing remains unavailable rather than wrapping, clamping, or being
+reinterpreted.
 
-Timestamp validity is backend-independent: synthetic, stub, and
-platform-backed providers all owe the same contract.
+The delivered frame is the single provider-to-Core transport for acquisition
+timing. Providers must not send the same acquisition event through a separate
+per-image fact callback.
+
+Core must not use Image Acquisition Timing as retained-frame identity, backing
+identity, freshness, ordering, deduplication, lifecycle chronology, or latency
+evidence. Core supplies its own retained-frame identity wherever those semantics
+are required.
+
+Synthetic, stub, and platform-backed providers owe the same truthfulness rules;
+a provider that cannot supply valid timing omits it rather than fabricating a
+placeholder.
 
 ---
 
@@ -520,6 +632,9 @@ Do **not**:
 
 - copy incidental behaviour from a provisional backend adapter and treat
   it as canonical
+- copy one backend adapter's teardown, callback ownership,
+  synchronization, timeout, or stride-handling patterns into another
+  provider without an explicit contract reason
 - add provider-side execution-time defaulting
 - normalize invalid lifecycle ordering by silent cleanup
 - special-case Core semantics to fit one backend API
@@ -538,3 +653,28 @@ Core/provider semantics.
 
 Release-quality providers extend functional coverage; they do not change
 what the provider contract means.
+
+For the future Release Windows provider specifically, do not copy a
+provisional backend adapter unless each unsafe pattern is replaced: no worker
+detach while
+provider/stream state can still be accessed; no callback lifetime based on raw
+provider/stream pointers unless teardown proves drain; one consistent
+synchronization discipline for camera/reader handles; correct signed/negative
+stride handling or safe normalization; shutdown timeout failure that leaves no
+callbacks against destroyed state; and validation for repeated lifecycle,
+callback drain, stop/destroy races, timeout paths, and frame release semantics.
+
+## Still capture admission boundary
+
+Provider still-capture entry points are admission/submission boundaries. A
+successful provider `trigger_capture(...)` return means the provider has accepted
+responsibility for the request or grouped submission and will later report
+terminal success or failure through the provider callback/strand path. It does
+not mean image payloads have already been acquired/generated, retained,
+assembled, or become Godot-visible.
+
+SyntheticProvider may generate pixels internally, but that production is
+provider-owned work after admission rather than synchronous public/Core
+admission work. Rig capture should be represented to capable providers as one
+grouped submission containing all admitted member-device requests for the shared
+capture id.

@@ -178,9 +178,24 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
 
             // Map minimal state.
             d.phase = rec.open ? CBLifecyclePhase::LIVE : CBLifecyclePhase::CREATED;
-            d.mode = (in.streams && in.streams->has_flowing_stream_for_device(id))
-                         ? CBDeviceMode::STREAMING
-                         : CBDeviceMode::IDLE;
+            const bool capture_in_flight =
+                in.acquisition_sessions &&
+                in.acquisition_sessions->has_capture_in_flight_for_device(id);
+            const bool has_stream_error =
+                in.streams && in.streams->has_error_stream_for_device(id);
+            const bool has_flowing_stream =
+                in.streams && in.streams->has_flowing_stream_for_device(id);
+            if (capture_in_flight) {
+                d.mode = CBDeviceMode::CAPTURING;
+            } else if (rec.last_error_code != 0) {
+                d.mode = CBDeviceMode::ERROR;
+            } else if (has_stream_error) {
+                d.mode = CBDeviceMode::ERROR;
+            } else if (has_flowing_stream) {
+                d.mode = CBDeviceMode::STREAMING;
+            } else {
+                d.mode = CBDeviceMode::IDLE;
+            }
             d.engaged = rec.open;
             d.warm_hold_ms = rec.warm_hold_ms;
             if (rec.warm_deadline_active && rec.warm_deadline_ns > timestamp_ns) {
@@ -250,12 +265,14 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
                 s.mode = rec.started ? CBStreamMode::FLOWING : CBStreamMode::STOPPED;
             }
 
-            if (rec.started || rec.last_stop_origin == CoreStreamRegistry::StopOrigin::None) {
+            if (rec.started) {
                 s.stop_reason = CBStreamStopReason::NONE;
             } else if (rec.last_stop_origin == CoreStreamRegistry::StopOrigin::User) {
                 s.stop_reason = CBStreamStopReason::USER;
             } else if (rec.last_error_code != 0) {
                 s.stop_reason = CBStreamStopReason::PROVIDER;
+            } else if (rec.last_stop_origin == CoreStreamRegistry::StopOrigin::None) {
+                s.stop_reason = CBStreamStopReason::NONE;
             } else {
                 s.stop_reason = CBStreamStopReason::PROVIDER;
             }
@@ -383,9 +400,18 @@ uint64_t SnapshotBuilder::compute_topology_signature(const Inputs& in) const {
         }
     }
     if (in.acquisition_sessions) {
-        fnv1a_u64(h, static_cast<uint64_t>(in.acquisition_sessions->all().size()));
+        uint64_t visible_session_count = 0;
         for (const auto& [session_id, rec] : in.acquisition_sessions->all()) {
-            (void)rec;
+            (void)session_id;
+            if (rec.phase != CBLifecyclePhase::DESTROYED) {
+                ++visible_session_count;
+            }
+        }
+        fnv1a_u64(h, visible_session_count);
+        for (const auto& [session_id, rec] : in.acquisition_sessions->all()) {
+            if (rec.phase == CBLifecyclePhase::DESTROYED) {
+                continue;
+            }
             fnv1a_u64(h, session_id);
         }
     }

@@ -5,6 +5,7 @@
 #include <godot_cpp/variant/packed_byte_array.hpp>
 
 #include "core/core_result_store.h"
+#include "godot/cambang_result_convert_timing.h"
 
 namespace cambang {
 

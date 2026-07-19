@@ -7,6 +7,10 @@
 
 namespace cambang {
 
+ProviderAccessStatus StubProvider::check_access_readiness() noexcept {
+  return ProviderAccessStatus::ready("stub_provider_ready");
+}
+
 // NOTE: Prefer the canonical helpers/constants in provider_contract_datatypes.h.
 
 const char* StubProvider::provider_name() const {
@@ -26,6 +30,20 @@ StreamTemplate StubProvider::stream_template() const {
   t.picture.overlay_frame_index_offsets = true;
   t.picture.overlay_moving_bar = true;
   return t;
+}
+
+ProducerBackingCapabilities StubProvider::stream_backing_capabilities(
+    const CaptureProfile& profile,
+    const PictureConfig& picture) const noexcept {
+  (void)profile;
+  (void)picture;
+  return ProducerBackingCapabilities{true, false, false};
+}
+
+ProducerBackingCapabilities StubProvider::capture_backing_capabilities(
+    const CaptureRequest& req) const noexcept {
+  (void)req;
+  return ProducerBackingCapabilities{true, false, false};
 }
 
 CaptureTemplate StubProvider::capture_template() const {
@@ -107,7 +125,7 @@ uint64_t StubProvider::ensure_native_acquisition_session_(DeviceState& dev) {
 }
 
 void StubProvider::release_native_acquisition_session_(DeviceState& dev) {
-  if (dev.acquisition_session_native_id == 0) {
+  if (dev.acquisition_session_native_id == 0 || dev.acquisition_session_primed) {
     return;
   }
   emit_native_destroyed_(dev.acquisition_session_native_id);
@@ -132,7 +150,10 @@ ProviderResult StubProvider::initialize(IProviderCallbacks* callbacks) {
   }
 
   callbacks_ = callbacks;
-  strand_.start(callbacks_, "stub_provider");
+  if (!strand_.start(callbacks_, "stub_provider")) {
+    callbacks_ = nullptr;
+    return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
+  }
   provider_native_id_ = alloc_native_id_(NativeObjectType::Provider);
   emit_native_created_(provider_native_id_, NativeObjectType::Provider, 0, 0, 0, 0, 0, 0);
   initialized_ = true;
@@ -207,6 +228,7 @@ ProviderResult StubProvider::close_device(uint64_t device_instance_id) {
   }
 
   it->second.open = false;
+  it->second.acquisition_session_primed = false;
   release_native_acquisition_session_(it->second);
   const uint64_t native_id = it->second.native_id;
   strand_.post_device_closed(device_instance_id);
@@ -492,13 +514,24 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     fv.height = h;
     fv.format_fourcc = fmt;
 
-    fv.capture_timestamp.value = capture_ts_ns;
-    fv.capture_timestamp.tick_ns = 1;
-    fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
+    const auto tick_period = TickPeriod::create(1, 1);
+    const auto checked_mark = ImageAcquisitionTiming::checked_mark_from_unsigned(capture_ts_ns);
+    if (tick_period && checked_mark) {
+      const auto timing = ImageAcquisitionTiming::create(
+          *checked_mark,
+          *tick_period,
+          ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+          ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
+          ImageAcquisitionComparability::SAME_PROVIDER);
+      if (timing) {
+        fv.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{*timing, FactOrigin::DERIVED};
+      }
+    }
 
     fv.data = slot->bytes.data();
     fv.size_bytes = slot->bytes.size();
     fv.stride_bytes = static_cast<uint32_t>(row_bytes);
+    fv.requested_retained_plan = st.req.requested_retained_plan;
 
     fv.release = &StubProvider::release_test_frame;
     fv.release_user = slot;
@@ -532,6 +565,28 @@ ProviderResult StubProvider::stop_stream(uint64_t stream_id) {
   return ProviderResult::success();
 }
 
+ProviderResult StubProvider::update_stream_retained_production_plan(
+    uint64_t stream_id,
+    CoreRetainedProductionPlan requested_retained_plan) {
+  if (!initialized_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (!requested_retained_plan.valid) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  auto st_it = streams_.find(stream_id);
+  if (st_it == streams_.end() || !st_it->second.created) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  const ProducerBackingCapabilities caps =
+      stream_backing_capabilities(st_it->second.req.profile, st_it->second.picture);
+  if (!caps.viable(requested_retained_plan.posture)) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  st_it->second.req.requested_retained_plan = requested_retained_plan;
+  return ProviderResult::success();
+}
+
 ProviderResult StubProvider::set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) {
   if (!initialized_ || shutting_down_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
@@ -559,6 +614,41 @@ ProviderResult StubProvider::set_capture_picture_config(uint64_t device_instance
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
   dev_it->second.capture_picture = picture;
+  return ProviderResult::success();
+}
+
+ProviderResult StubProvider::sync_capture_parent_priming(const CaptureRequest& req) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (req.device_instance_id == 0) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  auto dev_it = devices_.find(req.device_instance_id);
+  if (dev_it == devices_.end() || !dev_it->second.open) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  dev_it->second.acquisition_session_primed = true;
+  return ensure_native_acquisition_session_(dev_it->second) != 0
+      ? ProviderResult::success()
+      : ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+}
+
+ProviderResult StubProvider::release_capture_parent_priming(uint64_t device_instance_id) {
+  if (!initialized_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (device_instance_id == 0) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  auto dev_it = devices_.find(device_instance_id);
+  if (dev_it == devices_.end() || !dev_it->second.open) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  dev_it->second.acquisition_session_primed = false;
+  if (dev_it->second.stream_id == 0) {
+    release_native_acquisition_session_(dev_it->second);
+  }
   return ProviderResult::success();
 }
 
@@ -654,6 +744,8 @@ ProviderResult StubProvider::shutdown() {
   // Close all devices.
   for (auto& [dev_id, dev] : devices_) {
     if (dev.open) {
+      dev.acquisition_session_primed = false;
+      release_native_acquisition_session_(dev);
       dev.open = false;
       strand_.post_device_closed(dev_id);
       emit_native_destroyed_(dev.native_id);

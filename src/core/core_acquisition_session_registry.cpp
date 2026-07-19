@@ -1,9 +1,16 @@
 #include "core/core_acquisition_session_registry.h"
 
+#include <limits>
+
 #include "imaging/api/provider_contract_datatypes.h"
 
 namespace cambang {
 namespace {
+bool same_retained_plan(CoreRetainedProductionPlan a,
+                        CoreRetainedProductionPlan b) noexcept {
+  return a.valid == b.valid && (!a.valid || a.posture == b.posture);
+}
+
 bool same_bundle_members(const CaptureStillImageBundle& a, const CaptureStillImageBundle& b) {
   if (a.members.size() != b.members.size()) {
     return false;
@@ -20,6 +27,14 @@ bool same_bundle_members(const CaptureStillImageBundle& a, const CaptureStillIma
   return true;
 }
 } // namespace
+
+uint64_t CoreAcquisitionSessionRegistry::allocate_capture_access_posture_epoch() noexcept {
+  const uint64_t epoch = next_capture_access_posture_epoch_;
+  if (next_capture_access_posture_epoch_ != std::numeric_limits<uint64_t>::max()) {
+    ++next_capture_access_posture_epoch_;
+  }
+  return epoch == 0 ? 1 : epoch;
+}
 
 bool CoreAcquisitionSessionRegistry::on_native_object_created(uint64_t native_id,
                                                               uint32_t type,
@@ -74,6 +89,10 @@ bool CoreAcquisitionSessionRegistry::on_native_object_created(uint64_t native_id
   }
   if (entry.capture_profile_version != capture_profile_version) {
     entry.capture_profile_version = capture_profile_version;
+    changed = true;
+  }
+  if (entry.capture_access_posture_epoch == 0) {
+    entry.capture_access_posture_epoch = allocate_capture_access_posture_epoch();
     changed = true;
   }
   if (!same_bundle_members(entry.capture_still_image_bundle, capture_still_image_bundle)) {
@@ -159,6 +178,10 @@ bool CoreAcquisitionSessionRegistry::on_capture_started(uint64_t device_instance
     entry.capture_profile_version = capture_profile_version;
     changed = true;
   }
+  if (entry.capture_access_posture_epoch == 0) {
+    entry.capture_access_posture_epoch = allocate_capture_access_posture_epoch();
+    changed = true;
+  }
   if (!same_bundle_members(entry.capture_still_image_bundle, capture_still_image_bundle)) {
     entry.capture_still_image_bundle = capture_still_image_bundle;
     changed = true;
@@ -236,6 +259,72 @@ bool CoreAcquisitionSessionRegistry::on_capture_failed(uint64_t device_instance_
   return true;
 }
 
+bool CoreAcquisitionSessionRegistry::set_backing_capabilities(
+    uint64_t acquisition_session_id,
+    ProducerBackingCapabilities runtime_backing_capabilities,
+    ProducerBackingCapabilities parent_context_backing_capabilities) {
+  if (acquisition_session_id == 0) {
+    return false;
+  }
+  auto it = sessions_.find(acquisition_session_id);
+  if (it == sessions_.end()) {
+    return false;
+  }
+  it->second.runtime_backing_capabilities = runtime_backing_capabilities;
+  it->second.parent_context_backing_capabilities =
+      parent_context_backing_capabilities;
+  return true;
+}
+
+bool CoreAcquisitionSessionRegistry::set_requested_retained_plan(
+    uint64_t acquisition_session_id,
+    CoreRetainedProductionPlan requested_retained_plan,
+    bool bump_capture_access_posture_epoch) {
+  if (acquisition_session_id == 0) {
+    return false;
+  }
+  auto it = sessions_.find(acquisition_session_id);
+  if (it == sessions_.end()) {
+    return false;
+  }
+  AcquisitionSessionEntry& entry = it->second;
+  const bool changed =
+      !same_retained_plan(entry.requested_retained_plan, requested_retained_plan);
+  entry.requested_retained_plan = requested_retained_plan;
+  if ((changed && bump_capture_access_posture_epoch) ||
+      entry.capture_access_posture_epoch == 0) {
+    entry.capture_access_posture_epoch = allocate_capture_access_posture_epoch();
+  }
+  return true;
+}
+
+bool CoreAcquisitionSessionRegistry::set_steady_retained_plan(
+    uint64_t acquisition_session_id,
+    CoreRetainedProductionPlan steady_retained_plan) {
+  if (acquisition_session_id == 0) {
+    return false;
+  }
+  auto it = sessions_.find(acquisition_session_id);
+  if (it == sessions_.end()) {
+    return false;
+  }
+  it->second.steady_retained_plan = steady_retained_plan;
+  return true;
+}
+
+bool CoreAcquisitionSessionRegistry::clear_steady_retained_plan(
+    uint64_t acquisition_session_id) {
+  if (acquisition_session_id == 0) {
+    return false;
+  }
+  auto it = sessions_.find(acquisition_session_id);
+  if (it == sessions_.end()) {
+    return false;
+  }
+  it->second.steady_retained_plan = CoreRetainedProductionPlan{};
+  return true;
+}
+
 uint64_t CoreAcquisitionSessionRegistry::resolve_live_session_id_for_device_(uint64_t device_instance_id) const {
   auto count_it = device_live_session_count_.find(device_instance_id);
   if (count_it == device_live_session_count_.end() || count_it->second != 1) {
@@ -246,6 +335,59 @@ uint64_t CoreAcquisitionSessionRegistry::resolve_live_session_id_for_device_(uin
     return 0;
   }
   return live_it->second;
+}
+
+const CoreAcquisitionSessionRegistry::AcquisitionSessionEntry*
+CoreAcquisitionSessionRegistry::find(
+    uint64_t acquisition_session_id) const noexcept {
+  auto it = sessions_.find(acquisition_session_id);
+  return it == sessions_.end() ? nullptr : &it->second;
+}
+
+uint64_t CoreAcquisitionSessionRegistry::resolve_live_session_id_for_device(
+    uint64_t device_instance_id) const noexcept {
+  return resolve_live_session_id_for_device_(device_instance_id);
+}
+
+bool CoreAcquisitionSessionRegistry::has_capture_in_flight_for_device(
+    uint64_t device_instance_id) const noexcept {
+  if (device_instance_id == 0) {
+    return false;
+  }
+  for (const auto& kv : captures_in_flight_) {
+    const uint64_t session_id = kv.second.acquisition_session_id;
+    if (session_id == 0) {
+      continue;
+    }
+    const auto it = sessions_.find(session_id);
+    if (it == sessions_.end()) {
+      continue;
+    }
+    if (it->second.device_instance_id == device_instance_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+uint64_t CoreAcquisitionSessionRegistry::resolve_session_id_for_capture(
+    uint64_t device_instance_id,
+    uint64_t capture_id,
+    uint64_t acquisition_session_id_hint) const noexcept {
+  if (acquisition_session_id_hint != 0) {
+    if (const auto* entry = find(acquisition_session_id_hint);
+        entry != nullptr &&
+        entry->device_instance_id == device_instance_id) {
+      return acquisition_session_id_hint;
+    }
+  }
+  if (capture_id != 0) {
+    if (const auto it = captures_in_flight_.find(capture_id);
+        it != captures_in_flight_.end()) {
+      return it->second.acquisition_session_id;
+    }
+  }
+  return resolve_live_session_id_for_device_(device_instance_id);
 }
 
 void CoreAcquisitionSessionRegistry::rebuild_device_live_index_(uint64_t device_instance_id) {
@@ -279,6 +421,7 @@ void CoreAcquisitionSessionRegistry::clear() {
   device_live_session_id_.clear();
   device_live_session_count_.clear();
   captures_in_flight_.clear();
+  next_capture_access_posture_epoch_ = 1;
 }
 
 } // namespace cambang

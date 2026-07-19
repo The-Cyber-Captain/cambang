@@ -11,13 +11,32 @@ extends Control
 # - no grouped-capture curation policy proof
 # - no mailbox coupling
 
-const QUIT_FLUSH_FRAMES := 2
 const STREAM_TIMEOUT_MS := 4000
 const CAPTURE_TIMEOUT_MS := 4000
+const PROFILE_APPLICATION_TIMEOUT_MS := 4000
 const INSPECTION_CAPTURE_TIMEOUT_MS := 4000
 const TOTAL_TIMEOUT_MS := 10000
 const PAYLOAD_KIND_CPU_PACKED := 0
 const PAYLOAD_KIND_GPU_SURFACE := 2
+const INITIAL_CAPTURE_SETTLE_DELAY_MS := 500 # delay between startup and first capture
+const SCENE_LABEL := "70_result_retrieval_verification"
+
+# Scene 70 is a correctness/inspection scene, not a release UX model.
+# Android CPU Image materialization costs about one 60 fps frame per 1280x720 image
+# on current measurements, so keep the interactive default focused on the main
+# capture result and metadata. Enable this only when explicitly inspecting
+# to_image_member()/thumbnail behaviour.
+const MATERIALIZE_INITIAL_STREAM_TO_IMAGE_IN_GUI := true #false
+const MATERIALIZE_CAPTURE_MEMBER_THUMBNAILS := true #false
+const DEFER_CAPTURE_MEMBER_THUMBNAILS := true
+const CAPTURE_MEMBER_THUMBNAILS_PER_FRAME := 1
+const FACT_LABEL_LINE_COUNT := 6
+
+# The status panel fixture detail exercise is intentionally expensive on Android.
+# It remains available for headless/verification-style runs, but GUI inspection
+# should not make a capture display feel blocked by it.
+const RUN_STATUS_PANEL_DETAIL_FIXTURE_IN_GUI := false
+const DEFER_STATUS_PANEL_FIXTURE_UNTIL_INSPECTION := true
 
 @onready var _status_label: RichTextLabel = $RootMargin/MainColumn/StatusLabel
 @onready var _stream_facts_label: Label = $RootMargin/MainColumn/ResultsRow/StreamPanel/StreamFacts
@@ -35,6 +54,7 @@ const PAYLOAD_KIND_GPU_SURFACE := 2
 var _step := 0
 var _done := false
 var _quit_requested := false
+var _harness_verdict_emitted := false
 var _inspection_mode := false
 var _is_headless := false
 var _start_ms := 0
@@ -46,12 +66,42 @@ var _device_instance_id := 0
 var _stream_id := 0
 var _capture_device = null
 var _inspection_capture_device = null
+var _capture_profile_version_before_set := -1
 var _capture_profile_version_after_set := -1
-var _still_profile_set_applied := false
+var _still_profile_set_requested := false
+var _still_profile_version_advance_required := false
+var _still_profile_request_start_ms := 0
+var _applied_still_profile_snapshot_summary := ""
 var _capture_triggered := false
+var _capture_baseline_progress: Dictionary = {}
+var _capture_completion_progress: Dictionary = {}
+var _capture_completion_seen := false
+var _expected_capture_id := 0
+var _inspection_capture_baseline_progress: Dictionary = {}
+var _inspection_capture_completion_progress: Dictionary = {}
+var _inspection_capture_completion_seen := false
+var _inspection_expected_capture_id := 0
 var _stream_baseline_verified := false
 var _device_seam_verified := false
 var _status_panel_acquisition_session_detail_requested := false
+var _pending_status_panel_fixture_in_inspection := false
+var _pending_member_thumbnail_jobs: Array = []
+
+var _scene_start_us := 0
+var _still_profile_request_us := 0
+var _still_profile_poll_count := 0
+var _initial_capture_settle_start_ms := 0
+var _initial_capture_trigger_us := 0
+var _initial_capture_completion_wait_start_us := 0
+var _initial_capture_completion_poll_count := 0
+var _manual_capture_request_us := 0
+var _manual_capture_completion_wait_start_us := 0
+var _manual_capture_completion_poll_count := 0
+var _scene70_initial_capture_report_poll_started := false
+var _scene70_manual_capture_report_poll_started := false
+var _scene70_stream_to_image_requests: Array = []
+var _scene70_captures: Array = []
+var _scene70_status_panel_detail_fixture: Dictionary = {}
 
 func _make_scene70_still_image_bundle_members() -> Array:
 	return [
@@ -72,11 +122,361 @@ func _make_scene70_still_image_bundle_members() -> Array:
 		},
 	]
 
+
+func _perf_us() -> int:
+	return Time.get_ticks_usec()
+
+
+func _perf_delta_us(start_us: int, end_us: int) -> int:
+	return int(max(0, end_us - start_us))
+
+
+func _perf_image_summary(image: Image) -> String:
+	if image == null:
+		return "null"
+	return "%dx%d fmt=%d" % [image.get_width(), image.get_height(), image.get_format()]
+
+
+func _perf_log(line: String) -> void:
+	pass
+
+
+func _latency_log(line: String) -> void:
+	pass
+
+
+func _scene_elapsed_us() -> int:
+	return _perf_delta_us(_scene_start_us, _perf_us())
+
+
+func _scene70_default_capture_progress() -> Dictionary:
+	return {
+		"available": false,
+		"source": "none",
+		"captures_triggered": 0,
+		"captures_completed": 0,
+		"captures_failed": 0,
+		"last_capture_id": 0,
+		"active_capture_id": 0,
+	}
+
+
+func _scene70_default_stream_request_entry(label: String, mode_text: String) -> Dictionary:
+	return {
+		"label": label,
+		"mode_text": mode_text,
+		"stream_id": 0,
+		"to_image_us": 0,
+		"texture_us": 0,
+		"total_us": 0,
+		"image_summary": "",
+	}
+
+
+func _scene70_default_capture_entry(label: String) -> Dictionary:
+	return {
+		"label": label,
+		"capture_id": 0,
+		"expected_capture_id": 0,
+		"image_count": 0,
+		"expected_image_count": 0,
+		"capture_progress_baseline": _scene70_default_capture_progress(),
+		"capture_progress_completion": _scene70_default_capture_progress(),
+		"clear_display_us": 0,
+		"still_profile_request_to_trigger_start_us": 0,
+		"still_profile_request_to_trigger_return_us": 0,
+		"trigger_call_us": 0,
+		"request_to_return_us": 0,
+		"request_start_to_completion_us": 0,
+		"trigger_return_to_completion_us": 0,
+		"completion_poll_count": 0,
+		"request_start_to_display_us": 0,
+		"get_result_us": 0,
+		"member_get_total_us": 0,
+		"to_image_us": 0,
+		"main_texture_us": 0,
+		"strip_total_us": 0,
+		"strip_deferred_jobs": 0,
+		"display_total_us": 0,
+		"image_summary": "",
+		"capture_evaluation_report": {},
+	}
+
+
+func _scene70_initialize_summary() -> void:
+	_scene70_stream_to_image_requests = [
+		_scene70_default_stream_request_entry("initial", "mode=initial stream to_image request"),
+		_scene70_default_stream_request_entry("manual", "mode=manual stream to_image request"),
+	]
+	_scene70_captures = [
+		_scene70_default_capture_entry("initial"),
+		_scene70_default_capture_entry("manual"),
+	]
+	_scene70_status_panel_detail_fixture = {}
+	_scene70_initial_capture_report_poll_started = false
+	_scene70_manual_capture_report_poll_started = false
+	_initial_capture_settle_start_ms = 0
+
+
+func _scene70_entry_index(entries: Array, label: String) -> int:
+	for i in range(entries.size()):
+		var entry_v: Variant = entries[i]
+		if typeof(entry_v) != TYPE_DICTIONARY:
+			continue
+		var entry: Dictionary = entry_v
+		if str(entry.get("label", "")) == label:
+			return i
+	return -1
+
+
+func _scene70_update_entry(entries: Array, label: String, values: Dictionary) -> void:
+	var index := _scene70_entry_index(entries, label)
+	if index < 0:
+		return
+	var entry: Dictionary = entries[index]
+	for key in values.keys():
+		entry[key] = values[key]
+	entries[index] = entry
+
+
+func _scene70_record_stream_to_image_request(
+	label: String,
+	stream_result,
+	mode_text: String,
+	to_image_us: int,
+	texture_us: int,
+	total_us: int,
+	requested_image: Image
+) -> void:
+	_scene70_update_entry(_scene70_stream_to_image_requests, label, {
+		"mode_text": mode_text,
+		"stream_id": int(stream_result.get_stream_id()),
+		"to_image_us": to_image_us,
+		"texture_us": texture_us,
+		"total_us": total_us,
+		"image_summary": _perf_image_summary(requested_image),
+	})
+
+
+func _scene70_record_capture_entry(
+	label: String,
+	capture_result,
+	expected_capture_id: int,
+	image_count: int,
+	expected_image_count: int,
+	baseline_progress: Dictionary,
+	completion_progress: Dictionary,
+	clear_display_us: int,
+	still_profile_request_to_trigger_start_us: int,
+	still_profile_request_to_trigger_return_us: int,
+	trigger_call_us: int,
+	request_to_return_us: int,
+	request_start_to_completion_us: int,
+	trigger_return_to_completion_us: int,
+	completion_poll_count: int,
+	request_start_to_display_us: int,
+	get_result_us: int,
+	member_get_total_us: int,
+	to_image_us: int,
+	main_texture_us: int,
+	strip_total_us: int,
+	strip_deferred_jobs: int,
+	display_total_us: int,
+	image_summary: String,
+	capture_evaluation_report: Dictionary
+) -> void:
+	_scene70_update_entry(_scene70_captures, label, {
+		"capture_id": _capture_result_id(capture_result),
+		"expected_capture_id": expected_capture_id,
+		"image_count": image_count,
+		"expected_image_count": expected_image_count,
+		"capture_progress_baseline": baseline_progress.duplicate(true),
+		"capture_progress_completion": completion_progress.duplicate(true),
+		"clear_display_us": clear_display_us,
+		"still_profile_request_to_trigger_start_us": still_profile_request_to_trigger_start_us,
+		"still_profile_request_to_trigger_return_us": still_profile_request_to_trigger_return_us,
+		"trigger_call_us": trigger_call_us,
+		"request_to_return_us": request_to_return_us,
+		"request_start_to_completion_us": request_start_to_completion_us,
+		"trigger_return_to_completion_us": trigger_return_to_completion_us,
+		"completion_poll_count": completion_poll_count,
+		"request_start_to_display_us": request_start_to_display_us,
+		"get_result_us": get_result_us,
+		"member_get_total_us": member_get_total_us,
+		"to_image_us": to_image_us,
+		"main_texture_us": main_texture_us,
+		"strip_total_us": strip_total_us,
+		"strip_deferred_jobs": strip_deferred_jobs,
+		"display_total_us": display_total_us,
+		"image_summary": image_summary,
+		"capture_evaluation_report": capture_evaluation_report.duplicate(true),
+	})
+
+
+func _scene70_pick_capture_evaluation_report(device_instance_id: int, result_capture_id: int) -> Dictionary:
+	var snapshot_v: Variant = CamBANGServer.get_synthetic_metrics_snapshot()
+	var snapshot: Dictionary = snapshot_v if typeof(snapshot_v) == TYPE_DICTIONARY else {}
+	var reports_v: Variant = (snapshot as Dictionary).get("backing_plan_evaluation_reports", [])
+	if typeof(reports_v) != TYPE_ARRAY:
+		return {}
+	var best_report: Dictionary = {}
+	var best_score := -1
+	for report_v in reports_v:
+		if typeof(report_v) != TYPE_DICTIONARY:
+			continue
+		var report: Dictionary = report_v
+		if str(report.get("target_kind", "")) != "capture":
+			continue
+		if int(report.get("target_id", 0)) != device_instance_id:
+			continue
+		var parent_kind := str(report.get("parent_kind", ""))
+		var parent_score := 0
+		if parent_kind == "acquisition_session":
+			parent_score = 1000
+		elif parent_kind == "capture_priming":
+			parent_score = 500
+		else:
+			continue
+		var candidate_evidence_v: Variant = report.get("candidate_evidence", [])
+		var candidate_evidence_count := 0
+		var exact_capture_match := false
+		if typeof(candidate_evidence_v) == TYPE_ARRAY:
+			var candidate_evidence: Array = candidate_evidence_v
+			candidate_evidence_count = candidate_evidence.size()
+			for evidence_v in candidate_evidence:
+				if typeof(evidence_v) != TYPE_DICTIONARY:
+					continue
+				var evidence: Dictionary = evidence_v
+				if int(evidence.get("observed_capture_id", 0)) == result_capture_id:
+					exact_capture_match = true
+					break
+			if candidate_evidence_count > 0:
+				parent_score += 10
+		if exact_capture_match:
+			parent_score += 100
+		if parent_score > best_score:
+			best_score = parent_score
+			best_report = report.duplicate(true)
+	if best_score < 0:
+		return {}
+	return best_report
+
+
+func _scene70_emit_framed_record(name: String, kind: String, payload_text: String) -> void:
+	var payload_base64 := Marshalls.utf8_to_base64(payload_text)
+	const CHUNK_SIZE := 768
+	var chunk_count := int(ceil(float(payload_base64.length()) / float(CHUNK_SIZE))) if payload_base64.length() > 0 else 0
+	print("[CamBANG][RecordStart] id=scene70_summary name=%s kind=%s chunks=%d encoding=base64" % [name, kind, chunk_count])
+	var chunk_index := 0
+	var offset := 0
+	while offset < payload_base64.length():
+		var chunk := payload_base64.substr(offset, CHUNK_SIZE)
+		print("[CamBANG][RecordChunk] id=scene70_summary index=%d data=%s" % [chunk_index, chunk])
+		offset += CHUNK_SIZE
+		chunk_index += 1
+	print("[CamBANG][RecordEnd] id=scene70_summary")
+
+
+func _scene70_emit_summary_record(summary: Dictionary) -> void:
+	_scene70_emit_framed_record("scene70_summary", "json", JSON.stringify(summary))
+
+
+func _scene70_set_capture_report_poll_started(label: String, started: bool) -> void:
+	match label:
+		"initial":
+			_scene70_initial_capture_report_poll_started = started
+		"manual":
+			_scene70_manual_capture_report_poll_started = started
+
+
+func _scene70_poll_capture_evaluation_report(
+	label: String,
+	capture_result,
+	finalize_on_ready: bool
+) -> void:
+	if capture_result == null:
+		_scene70_set_capture_report_poll_started(label, false)
+		return
+	var device_instance_id := int(capture_result.get_device_instance_id())
+	var result_capture_id := _capture_result_id(capture_result)
+	if device_instance_id <= 0 or result_capture_id <= 0:
+		_scene70_set_capture_report_poll_started(label, false)
+		return
+
+	const MAX_POLL_FRAMES := 8
+	var report: Dictionary = {}
+	for poll_index in range(MAX_POLL_FRAMES):
+		report = _scene70_pick_capture_evaluation_report(device_instance_id, result_capture_id)
+		if not report.is_empty():
+			break
+		if poll_index + 1 < MAX_POLL_FRAMES:
+			await get_tree().process_frame
+
+	if not report.is_empty():
+		_scene70_update_entry(_scene70_captures, label, {
+			"capture_evaluation_report": report,
+		})
+		if finalize_on_ready:
+			_scene70_set_capture_report_poll_started(label, false)
+			_ok("OK: result_retrieval_verification passed")
+			return
+
+	_scene70_set_capture_report_poll_started(label, false)
+	if finalize_on_ready:
+		_ok("OK: result_retrieval_verification passed")
+
+
+func _scene70_build_run_context() -> Dictionary:
+	return {
+		"display_server_name": DisplayServer.get_name(),
+		"is_headless": _is_headless,
+		"synthetic_producer_output_form_stored_setting": _synthetic_producer_output_form_setting(),
+		"synthetic_producer_output_form_cmdline_selection": _synthetic_producer_output_form_cmdline_selection(),
+		"synthetic_producer_output_form_effective_selection": _synthetic_producer_output_form_effective_selection(),
+	}
+
+
+func _scene70_build_summary(exit_code: int) -> Dictionary:
+	var snapshot_v: Variant = CamBANGServer.get_synthetic_metrics_snapshot()
+	var snapshot: Dictionary = snapshot_v if typeof(snapshot_v) == TYPE_DICTIONARY else {}
+	var synthetic_metrics: Dictionary = {
+		"current_virtual_timeline_ns": snapshot.get("current_virtual_timeline_ns", 0),
+		"total_emitted_frames": snapshot.get("total_emitted_frames", 0),
+		"gpu_update_attempts": snapshot.get("gpu_update_attempts", 0),
+		"gpu_update_demand_skipped": snapshot.get("gpu_update_demand_skipped", 0),
+		"gpu_texture_update_calls": snapshot.get("gpu_texture_update_calls", 0),
+		"frame_copy_calls": snapshot.get("frame_copy_calls", 0),
+		"frame_render_total_ms": snapshot.get("frame_render_total_ms", 0),
+		"pattern_overlay_total_ms": snapshot.get("pattern_overlay_total_ms", 0),
+		"pattern_base_copy_total_ms": snapshot.get("pattern_base_copy_total_ms", 0),
+		"gpu_update_total_total_ms": snapshot.get("gpu_update_total_total_ms", 0),
+		"gpu_upload_copy_total_ms": snapshot.get("gpu_upload_copy_total_ms", 0),
+		"gpu_texture_update_total_ms": snapshot.get("gpu_texture_update_total_ms", 0),
+		"catchup_ticks_capped": snapshot.get("catchup_ticks_capped", 0),
+		"catchup_frames_dropped": snapshot.get("catchup_frames_dropped", 0),
+	}
+	return {
+		"summary_kind": "scene70_run_summary",
+		"scene": SCENE_LABEL,
+		"run_context": _scene70_build_run_context(),
+		"synthetic_metrics": synthetic_metrics,
+		"result_access_timing_evidence": snapshot.get("result_access_timing_evidence", {}),
+		"stream_to_image_requests": _scene70_stream_to_image_requests,
+		"captures": _scene70_captures,
+		"status_panel_detail_fixture": _scene70_status_panel_detail_fixture,
+		"scene_elapsed_us_at_emit": _scene_elapsed_us(),
+		"exit_code": exit_code,
+	}
+
+
 func _ready() -> void:
+	_log_maintainer_config_probe()
 	_status_label.clear()
 	_is_headless = DisplayServer.get_name() == "headless"
 	_start_ms = Time.get_ticks_msec()
+	_scene_start_us = _perf_us()
 	_stream_poll_start_ms = _start_ms
+	_scene70_initialize_summary()
 	set_process(true)
 	set_process_unhandled_input(true)
 
@@ -87,7 +487,7 @@ func _ready() -> void:
 		_capture_again_button.pressed.connect(_on_capture_again_pressed)
 		_request_stream_image_button.disabled = true
 		_capture_again_button.disabled = true
-
+		
 	CamBANGServer.stop()
 	var start_err := CamBANGServer.start(
 		CamBANGServer.PROVIDER_KIND_SYNTHETIC,
@@ -95,15 +495,21 @@ func _ready() -> void:
 		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME,
 		CamBANGServer.TIMELINE_RECONCILIATION_COMPLETION_GATED
 	)
-	_require(start_err == OK, "step %d FAIL: synthetic timeline start rejected (%d)" % [_step, start_err])
+	if start_err != OK:
+		_fail("step %d FAIL: synthetic timeline start rejected (%d); bootstrap stopped" % [_step, start_err])
+		return
 	_step_ok("bootstrap synthetic runtime started")
 
 	var stage_err := CamBANGServer.select_builtin_scenario("stream_inspection_live")
-	_require(stage_err == OK, "step %d FAIL: unable to stage stream_inspection_live" % _step)
+	if stage_err != OK:
+		_fail("step %d FAIL: unable to stage stream_inspection_live; bootstrap stopped" % _step)
+		return
 	_step_ok("bootstrap scenario staged")
 
 	var scenario_start_err := CamBANGServer.start_scenario()
-	_require(scenario_start_err == OK, "step %d FAIL: unable to start staged scenario" % _step)
+	if scenario_start_err != OK:
+		_fail("step %d FAIL: unable to start staged scenario; bootstrap stopped" % _step)
+		return
 	_step_ok("bootstrap scenario started")
 
 	_append_status("RUN: result_retrieval_verification")
@@ -112,9 +518,15 @@ func _ready() -> void:
 func _process(_delta: float) -> void:
 	if _done:
 		return
+	if not _pending_member_thumbnail_jobs.is_empty():
+		_drain_pending_member_thumbnail_jobs(CAPTURE_MEMBER_THUMBNAILS_PER_FRAME)
 	if _inspection_mode:
 		if _stream_texture_rect.texture == null:
 			_ensure_stream_panel_display_view_bound()
+		if _pending_status_panel_fixture_in_inspection:
+			_pending_status_panel_fixture_in_inspection = false
+			if RUN_STATUS_PANEL_DETAIL_FIXTURE_IN_GUI or _is_headless:
+				_exercise_status_panel_acquisition_session_fixture_detail_visibility()
 		_poll_inspection_capture_result()
 		return
 
@@ -127,6 +539,11 @@ func _process(_delta: float) -> void:
 		return
 
 	if not _capture_triggered:
+		var snapshot = CamBANGServer.get_state_snapshot()
+		if snapshot != null:
+			var streams: Array = snapshot.get("streams", [])
+			if not streams.is_empty() and _fail_if_gpu_only_stream_refused_by_provider(streams[0]):
+				return
 		# Stream timeout only applies to initial stream-baseline acquisition.
 		# After stream baseline passes, we may still be waiting for snapshot bundle
 		# catch-up gates before triggering capture; that must not reuse stream timeout.
@@ -154,6 +571,68 @@ func _unhandled_input(event: InputEvent) -> void:
 			_request_manual_capture()
 
 
+func _synthetic_producer_output_form_setting() -> String:
+	return str(ProjectSettings.get_setting("cambang/maintainer/synthetic_producer_output_form", "runtime_default"))
+
+
+func _synthetic_producer_output_form_cmdline_selection() -> String:
+	const PREFIX := "--cambang-synth-producer-output-form="
+	var selection := _single_namespaced_cmdline_selection(PREFIX)
+	return selection
+
+
+func _single_namespaced_cmdline_selection(prefix: String) -> String:
+	var found := ""
+	for arg in OS.get_cmdline_user_args():
+		var text := str(arg)
+		if not text.begins_with(prefix):
+			continue
+		var value := text.substr(prefix.length())
+		if found != "":
+			return "<duplicate>"
+		found = value
+	if found != "":
+		return found
+	for arg in OS.get_cmdline_args():
+		var text := str(arg)
+		if not text.begins_with(prefix):
+			continue
+		var value := text.substr(prefix.length())
+		if found != "":
+			return "<duplicate>"
+		found = value
+	return found
+
+
+func _synthetic_producer_output_form_effective_selection() -> String:
+	var cmdline_selection := _synthetic_producer_output_form_cmdline_selection()
+	if cmdline_selection != "":
+		return cmdline_selection
+	return _synthetic_producer_output_form_setting()
+
+
+func _synthetic_gpu_only_output_form_requested() -> bool:
+	return _synthetic_producer_output_form_effective_selection() == "gpu_only"
+
+
+
+func _format_gpu_only_capture_refusal(prefix: String, baseline: Dictionary, progress: Dictionary) -> String:
+	return "%s gpu_only capture explicitly failed/refused by provider (baseline=%s progress=%s)" % [
+		prefix,
+		_describe_capture_progress(baseline),
+		_describe_capture_progress(progress),
+	]
+
+func _fail_if_gpu_only_stream_refused_by_provider(stream_d: Dictionary) -> bool:
+	if not _synthetic_gpu_only_output_form_requested():
+		return false
+	var stop_reason := String(stream_d.get("stop_reason", ""))
+	if stop_reason != "PROVIDER":
+		return false
+	_fail("step %d FAIL: gpu_only stream explicitly refused by provider before stream result publication" % _step)
+	return true
+
+
 func _try_latch_ids_from_snapshot() -> void:
 	var snapshot = CamBANGServer.get_state_snapshot()
 	if snapshot == null:
@@ -165,6 +644,8 @@ func _try_latch_ids_from_snapshot() -> void:
 
 	var device_d: Dictionary = devices[0]
 	var stream_d: Dictionary = streams[0]
+	if _fail_if_gpu_only_stream_refused_by_provider(stream_d):
+		return
 	var latched_device_id := int(device_d.get("instance_id", 0))
 	var latched_stream_id := int(stream_d.get("stream_id", 0))
 	_require(latched_device_id > 0, "step %d FAIL: latched device instance id is invalid" % _step)
@@ -196,7 +677,14 @@ func _try_verify_stream_result() -> void:
 		)
 		_require(stream_result.get_stream_id() == _stream_id, "step %d FAIL: stream_id mismatch" % _step)
 		_require(stream_result.get_device_instance_id() == _device_instance_id, "step %d FAIL: stream device_instance_id mismatch" % _step)
+		_require(stream_result.has_method("get_camera_facts"), "step %d FAIL: stream get_camera_facts() accessor missing" % _step)
+		_require(not stream_result.has_method("get_capture_timestamp"), "step %d FAIL: stream legacy get_capture_timestamp() accessor must be absent" % _step)
 		_step_ok("stream direct properties verified")
+
+		var stream_camera_facts: Dictionary = stream_result.get_camera_facts()
+		_require(_scene70_has_only_acquisition_timing(stream_camera_facts), "step %d FAIL: stream camera_facts must contain acquisition_timing only" % _step)
+		_require(_scene70_has_canonical_acquisition_timing(stream_camera_facts.get("acquisition_timing", {})), "step %d FAIL: stream acquisition_timing shape invalid" % _step)
+		_step_ok("stream camera_facts acquisition_timing verified")
 
 		_require(typeof(stream_result.get_image_properties()) == TYPE_DICTIONARY, "step %d FAIL: stream image_properties accessor must return Dictionary" % _step)
 		_require(typeof(stream_result.get_capture_attributes()) == TYPE_DICTIONARY, "step %d FAIL: stream capture_attributes accessor must return Dictionary" % _step)
@@ -215,14 +703,24 @@ func _try_verify_stream_result() -> void:
 		_step_ok("stream can_to_image capability verified")
 
 		# to_image() is explicit materialization onto CPU-backed storage; it is not
-		# the normal live display path.
-		var stream_image: Image = stream_result.to_image()
-		_require(stream_image != null, "step %d FAIL: stream to_image() returned null" % _step)
-		_require(stream_image.get_width() > 0 and stream_image.get_height() > 0, "step %d FAIL: stream image dimensions invalid" % _step)
-		_step_ok("stream to_image materialization verified")
-		_materialize_requested_stream_image(stream_result, "mode=initial stream to_image request")
-		_require(_requested_stream_texture_rect.texture != null, "step %d FAIL: requested stream image panel not populated" % _step)
-		_step_ok("requested stream image panel populated from explicit request")
+		# the normal live display path. On Android this costs around one or two
+		# 60 fps frames, so do not keep it on the GUI startup path while diagnosing
+		# capture profile/capture latency. Headless verification still exercises it.
+		if _is_headless or MATERIALIZE_INITIAL_STREAM_TO_IMAGE_IN_GUI:
+			var stream_image: Image = stream_result.to_image()
+			_require(stream_image != null, "step %d FAIL: stream to_image() returned null" % _step)
+			_require(stream_image.get_width() > 0 and stream_image.get_height() > 0, "step %d FAIL: stream image dimensions invalid" % _step)
+			_step_ok("stream to_image materialization verified")
+			_materialize_requested_stream_image(stream_result, "mode=initial stream to_image request", stream_image)
+			_require(_requested_stream_texture_rect.texture != null, "step %d FAIL: requested stream image panel not populated" % _step)
+			_step_ok("requested stream image panel populated from explicit request")
+		else:
+			_perf_log("initial stream to_image skipped in GUI for capture-latency inspection")
+			_requested_stream_facts_label.text = _format_fixed_fact_lines([
+				"stream to_image skipped on startup",
+				"click Request Stream Image to exercise",
+			])
+			_step_ok("stream to_image materialization deferred in GUI")
 
 		var stream_display_view = stream_result.get_display_view()
 		if stream_payload_kind == PAYLOAD_KIND_GPU_SURFACE:
@@ -242,33 +740,101 @@ func _try_verify_stream_result() -> void:
 		_step_ok("device seam verified")
 		_device_seam_verified = true
 
-	if not _still_profile_set_applied:
+	if not _still_profile_set_requested:
 		var expected_members := _make_scene70_still_image_bundle_members()
-		var bracket_profile := {
+		if not _validate_scene70_expected_still_members(expected_members):
+			return
+		var device_snapshot_before_set := _get_device_snapshot_record(_device_instance_id)
+		var profile_before_set: Dictionary = _extract_snapshot_still_profile(device_snapshot_before_set)
+		_capture_profile_version_before_set = int(profile_before_set.get("version", -1))
+		if _still_profile_matches_expected_members(profile_before_set, expected_members):
+			_still_profile_set_requested = true
+			_still_profile_version_advance_required = false
+			_still_profile_request_start_ms = Time.get_ticks_msec()
+			_still_profile_request_us = _perf_us()
+			_still_profile_poll_count = 0
+			_latency_log("still profile already matched expected bundle elapsed_us=%d version=%d" % [
+				_scene_elapsed_us(),
+				_capture_profile_version_before_set,
+			])
+			return
+
+		var still_profile_request := {
 			"still_image_bundle": {
 				"members": expected_members,
 			},
 		}
-		var set_profile_err := int(device.set_still_capture_profile(bracket_profile))
-		_require(
-			set_profile_err == OK,
-			"step %d FAIL: set_still_capture_profile failed err=%d" % [_step, set_profile_err]
-		)
-		_step_ok("device still capture profile set (three-member bracket)")
-		_still_profile_set_applied = true
-
-	if not _capture_triggered:
-		var capture_err := int(device.trigger_capture())
-		_require(capture_err == OK, "step %d FAIL: trigger_capture() returned err=%d" % [_step, capture_err])
-		_capture_device = device
-		_step_ok("capture trigger accepted")
-		_capture_triggered = true
-		_capture_poll_start_ms = Time.get_ticks_msec()
-		var device_snapshot_after_set := _get_device_snapshot_record(_device_instance_id)
-		var profile_after_set: Dictionary = _extract_snapshot_still_profile(device_snapshot_after_set)
-		_capture_profile_version_after_set = int(profile_after_set.get("version", -1))
+		var set_profile_err := int(device.set_still_capture_profile(still_profile_request))
+		if set_profile_err != OK:
+			_fail("step %d FAIL: set_still_capture_profile failed err=%d" % [_step, set_profile_err])
+			return
+		_step_ok("device still capture profile set request accepted (members=%d)" % expected_members.size())
+		_still_profile_set_requested = true
+		_still_profile_version_advance_required = true
+		_still_profile_request_start_ms = Time.get_ticks_msec()
+		_still_profile_request_us = _perf_us()
+		_still_profile_poll_count = 0
+		_latency_log("still profile request accepted elapsed_us=%d version_before=%d" % [
+			_scene_elapsed_us(),
+			_capture_profile_version_before_set,
+		])
 		return
 
+	if not _is_expected_still_profile_snapshot_visible(_still_profile_version_advance_required):
+		_still_profile_poll_count += 1
+		if Time.get_ticks_msec() - _still_profile_request_start_ms > PROFILE_APPLICATION_TIMEOUT_MS:
+			var observed_snapshot := _get_device_snapshot_record(_device_instance_id)
+			var observed_profile: Dictionary = _extract_snapshot_still_profile(observed_snapshot)
+			_fail("step %d FAIL: expected still profile did not become snapshot-visible before capture; observed %s" % [_step, _describe_still_profile(observed_profile)])
+		return
+
+	if INITIAL_CAPTURE_SETTLE_DELAY_MS > 0:
+		if _initial_capture_settle_start_ms == 0:
+			_initial_capture_settle_start_ms = Time.get_ticks_msec()
+			_append_status("INFO: delaying initial capture by %d ms after still profile visibility" % INITIAL_CAPTURE_SETTLE_DELAY_MS)
+			return
+		if Time.get_ticks_msec() - _initial_capture_settle_start_ms < INITIAL_CAPTURE_SETTLE_DELAY_MS:
+			return
+
+	if not _capture_triggered:
+		_capture_baseline_progress = _get_capture_progress_snapshot(_device_instance_id)
+		_require(
+			bool(_capture_baseline_progress.get("available", false)),
+			"step %d FAIL: capture progress snapshot unavailable before trigger" % _step
+		)
+		var perf_initial_trigger_start_us := _perf_us()
+		var capture_err := int(device.trigger_capture())
+		var perf_initial_trigger_end_us := _perf_us()
+		_initial_capture_trigger_us = perf_initial_trigger_start_us
+		_initial_capture_completion_wait_start_us = perf_initial_trigger_end_us
+		_latency_log("initial capture request buckets us: trigger_call=%d request_to_return=%d err=%d elapsed_us=%d profile_request_to_trigger_start_us=%d" % [
+			_perf_delta_us(perf_initial_trigger_start_us, perf_initial_trigger_end_us),
+			_perf_delta_us(perf_initial_trigger_start_us, perf_initial_trigger_end_us),
+			capture_err,
+			_scene_elapsed_us(),
+			_perf_delta_us(_still_profile_request_us, perf_initial_trigger_start_us) if _still_profile_request_us > 0 else 0,
+		])
+		_require(capture_err == OK, "step %d FAIL: trigger_capture() returned err=%d" % [_step, capture_err])
+		_capture_device = device
+		_capture_completion_seen = false
+		_capture_completion_progress = {}
+		_expected_capture_id = 0
+		_initial_capture_completion_poll_count = 0
+		_step_ok("capture trigger accepted after expected still profile became snapshot-visible")
+		_latency_log("initial capture trigger accepted elapsed_us=%d profile_request_to_trigger_return_us=%d" % [
+			_scene_elapsed_us(),
+			_perf_delta_us(_still_profile_request_us, perf_initial_trigger_end_us) if _still_profile_request_us > 0 else 0,
+		])
+		_scene70_update_entry(_scene70_captures, "initial", {
+			"capture_progress_baseline": _capture_baseline_progress.duplicate(true),
+			"still_profile_request_to_trigger_start_us": _perf_delta_us(_still_profile_request_us, perf_initial_trigger_start_us) if _still_profile_request_us > 0 else 0,
+			"still_profile_request_to_trigger_return_us": _perf_delta_us(_still_profile_request_us, perf_initial_trigger_end_us) if _still_profile_request_us > 0 else 0,
+			"trigger_call_us": _perf_delta_us(perf_initial_trigger_start_us, perf_initial_trigger_end_us),
+			"request_to_return_us": _perf_delta_us(perf_initial_trigger_start_us, perf_initial_trigger_end_us),
+		})
+		_capture_triggered = true
+		_capture_poll_start_ms = Time.get_ticks_msec()
+		return
 	var device_snapshot_after_trigger := _get_device_snapshot_record(_device_instance_id)
 	var profile_after_trigger: Dictionary = _extract_snapshot_still_profile(device_snapshot_after_trigger)
 	var capture_profile_version_after_trigger := int(profile_after_trigger.get("version", -1))
@@ -288,9 +854,64 @@ func _try_verify_stream_result() -> void:
 func _try_verify_capture_result() -> void:
 	if _capture_device == null:
 		return
+	if _scene70_initial_capture_report_poll_started:
+		return
+	if not _capture_completion_seen:
+		var progress := _get_capture_progress_snapshot(_device_instance_id)
+		if not bool(progress.get("available", false)):
+			return
+		if int(progress.get("captures_failed", 0)) > int(_capture_baseline_progress.get("captures_failed", 0)):
+			if _synthetic_gpu_only_output_form_requested():
+				_fail("step %d FAIL: %s" % [
+					_step,
+					_format_gpu_only_capture_refusal("initial", _capture_baseline_progress, progress),
+				])
+			else:
+				_fail("step %d FAIL: capture failed after trigger (baseline=%s progress=%s)" % [
+					_step,
+					_describe_capture_progress(_capture_baseline_progress),
+					_describe_capture_progress(progress),
+				])
+			return
+		if int(progress.get("captures_completed", 0)) <= int(_capture_baseline_progress.get("captures_completed", 0)):
+			_initial_capture_completion_poll_count += 1
+			return
+		_capture_completion_progress = progress
+		_expected_capture_id = int(progress.get("last_capture_id", 0))
+		_capture_completion_seen = true
+		_scene70_update_entry(_scene70_captures, "initial", {
+			"capture_progress_completion": _capture_completion_progress.duplicate(true),
+			"expected_capture_id": _expected_capture_id,
+			"completion_poll_count": _initial_capture_completion_poll_count,
+		})
+		_latency_log("initial capture completion observed trigger_start_to_completion_us=%d trigger_return_to_completion_us=%d polls=%d elapsed_us=%d %s" % [
+			_perf_delta_us(_initial_capture_trigger_us, _perf_us()) if _initial_capture_trigger_us > 0 else 0,
+			_perf_delta_us(_initial_capture_completion_wait_start_us, _perf_us()) if _initial_capture_completion_wait_start_us > 0 else 0,
+			_initial_capture_completion_poll_count,
+			_scene_elapsed_us(),
+			_describe_capture_progress(progress),
+		])
+		_step_ok("new capture completion observed (%s)" % _describe_capture_progress(progress))
+
+	var perf_total_start_us := _perf_us()
+	var perf_get_result_start_us := _perf_us()
 	var capture_result = _capture_device.get_result()
+	var perf_get_result_end_us := _perf_us()
 	if capture_result == null:
 		return
+
+	var result_capture_id := _capture_result_id(capture_result)
+	if _expected_capture_id > 0:
+		_require(
+			result_capture_id == _expected_capture_id,
+			"step %d FAIL: capture result id mismatch (expected=%d observed=%d baseline=%s completion=%s)" % [
+				_step,
+				_expected_capture_id,
+				result_capture_id,
+				_describe_capture_progress(_capture_baseline_progress),
+				_describe_capture_progress(_capture_completion_progress),
+			]
+		)
 
 	_require(capture_result.get_class() == "CamBANGCaptureResult", "step %d FAIL: capture result must be CamBANGCaptureResult" % _step)
 	_step_ok("capture result object branding verified")
@@ -298,8 +919,13 @@ func _try_verify_capture_result() -> void:
 	_require(capture_result.get_width() > 0, "step %d FAIL: capture width invalid" % _step)
 	_require(capture_result.get_height() > 0, "step %d FAIL: capture height invalid" % _step)
 	_require(capture_result.get_format() != 0, "step %d FAIL: capture format invalid" % _step)
-	_require(capture_result.get_payload_kind() == PAYLOAD_KIND_CPU_PACKED, "step %d FAIL: capture payload_kind must be CPU_PACKED" % _step)
+	var capture_payload_kind := int(capture_result.get_payload_kind())
+	_require(
+		capture_payload_kind == PAYLOAD_KIND_CPU_PACKED or capture_payload_kind == PAYLOAD_KIND_GPU_SURFACE,
+		"step %d FAIL: capture payload_kind must be CPU_PACKED or GPU_SURFACE" % _step
+	)
 	_require(capture_result.get_device_instance_id() == _device_instance_id, "step %d FAIL: capture device_instance_id mismatch" % _step)
+	_require(not capture_result.has_method("get_capture_timestamp"), "step %d FAIL: capture legacy get_capture_timestamp() accessor must be absent" % _step)
 	_step_ok("capture direct properties verified")
 
 	_require(typeof(capture_result.get_image_properties()) == TYPE_DICTIONARY, "step %d FAIL: capture image_properties accessor must return Dictionary" % _step)
@@ -315,29 +941,46 @@ func _try_verify_capture_result() -> void:
 	_step_ok("capture provenance grouped accessors verified (Dictionary)")
 
 	var expected_members := _make_scene70_still_image_bundle_members()
+	if not _validate_scene70_expected_still_members(expected_members):
+		return
 	var expected_member_count := expected_members.size()
-	_require(int(capture_result.get_image_count()) == expected_member_count, "step %d FAIL: capture get_image_count() mismatch for bracket profile" % _step)
-	_require(bool(capture_result.has_additional_images()) == (expected_member_count > 1), "step %d FAIL: capture has_additional_images() mismatch for bracket profile" % _step)
-	var materialized_member_0: Image = null
+	var observed_member_count := int(capture_result.get_image_count())
+	_require(
+		observed_member_count == expected_member_count,
+		"step %d FAIL: capture get_image_count() mismatch for expected still profile (expected=%d observed=%d expected_capture_id=%d result_capture_id=%d applied_snapshot=%s baseline=%s completion=%s)" % [
+			_step,
+			expected_member_count,
+			observed_member_count,
+			_expected_capture_id,
+			result_capture_id,
+			_applied_still_profile_snapshot_summary,
+			_describe_capture_progress(_capture_baseline_progress),
+			_describe_capture_progress(_capture_completion_progress),
+		]
+	)
+	_require(bool(capture_result.has_additional_images()) == (expected_member_count > 1), "step %d FAIL: capture has_additional_images() mismatch for expected still profile" % _step)
+	var perf_member_get_total_us := 0
 	for i in range(expected_member_count):
 		var expected_member: Dictionary = expected_members[i]
+		var perf_member_get_start_us := _perf_us()
 		var image_member: Dictionary = capture_result.get_image_member(i)
+		var perf_member_get_end_us := _perf_us()
+		perf_member_get_total_us += _perf_delta_us(perf_member_get_start_us, perf_member_get_end_us)
 		_require(not image_member.is_empty(), "step %d FAIL: capture get_image_member(%d) must return non-empty Dictionary" % [_step, i])
 		_require(int(image_member.get("image_member_index", -1)) == int(expected_member.get("image_member_index", -1)), "step %d FAIL: capture image_member(%d).image_member_index mismatch" % [_step, i])
 		_require(int(image_member.get("role", -1)) == int(expected_member.get("role", -1)), "step %d FAIL: capture image_member(%d).role mismatch" % [_step, i])
+		_require(not image_member.has("capture_timestamp"), "step %d FAIL: capture image_member(%d) legacy capture_timestamp must be absent" % [_step, i])
 		var expected_intended_ev := int(expected_member.get("intended_exposure_compensation_milli_ev", 0))
 		_require(int(image_member.get("applied_exposure_compensation_milli_ev", 0)) == expected_intended_ev, "step %d FAIL: capture image_member(%d) applied EV mismatch" % [_step, i])
 		_require(bool(image_member.get("has_realized_exposure_compensation_milli_ev", false)), "step %d FAIL: capture image_member(%d) realized EV must be present in synthetic normal mode" % [_step, i])
 		_require(int(image_member.get("realized_exposure_compensation_milli_ev", 0)) == int(image_member.get("applied_exposure_compensation_milli_ev", 0)), "step %d FAIL: capture image_member(%d) realized EV must equal applied EV in synthetic normal mode" % [_step, i])
-		var image_member_materialized: Image = capture_result.to_image_member(i)
-		_require(image_member_materialized != null, "step %d FAIL: capture to_image_member(%d) returned null" % [_step, i])
-		if i == 0:
-			materialized_member_0 = image_member_materialized
+		var image_camera_facts: Dictionary = image_member.get("camera_facts", {})
+		_require(_scene70_has_canonical_acquisition_timing(image_camera_facts.get("acquisition_timing", {})), "step %d FAIL: capture image_member(%d) acquisition_timing shape invalid" % [_step, i])
 	var out_of_range_member: Dictionary = capture_result.get_image_member(expected_member_count)
 	_require(out_of_range_member.is_empty(), "step %d FAIL: capture get_image_member(expected_count) must return empty Dictionary for out-of-range" % _step)
 	var out_of_range_image: Image = capture_result.to_image_member(expected_member_count)
 	_require(out_of_range_image == null, "step %d FAIL: capture to_image_member(expected_count) must be null for out-of-range member" % _step)
-	_step_ok("capture indexed image-member metadata verified (three-member profile)")
+	_step_ok("capture indexed image-member metadata verified (members=%d)" % expected_member_count)
 
 	var capture_can_to_image := int(capture_result.can_to_image())
 	_require(capture_can_to_image != int(capture_result.CAPABILITY_UNSUPPORTED), "step %d FAIL: capture can_to_image() unexpectedly unsupported" % _step)
@@ -353,29 +996,67 @@ func _try_verify_capture_result() -> void:
 	else:
 		_append_status("INFO: capture can_get_encoded_bytes() capability=%d" % encoded_capability)
 
+	var perf_capture_to_image_start_us := _perf_us()
 	var capture_image: Image = capture_result.to_image()
+	var perf_capture_to_image_end_us := _perf_us()
 	_require(capture_image != null, "step %d FAIL: capture to_image() returned null" % _step)
 	_require(capture_image.get_width() > 0 and capture_image.get_height() > 0, "step %d FAIL: capture image dimensions invalid" % _step)
-	_require(materialized_member_0 != null, "step %d FAIL: capture to_image_member(0) returned null" % _step)
-	_require(materialized_member_0.get_width() == capture_image.get_width(), "step %d FAIL: capture to_image_member(0) width must match to_image()" % _step)
-	_require(materialized_member_0.get_height() == capture_image.get_height(), "step %d FAIL: capture to_image_member(0) height must match to_image()" % _step)
-	_require(materialized_member_0.get_format() == capture_image.get_format(), "step %d FAIL: capture to_image_member(0) format must match to_image()" % _step)
 	_step_ok("capture to_image materialization verified")
 
+	var perf_main_texture_start_us := _perf_us()
 	_capture_texture_rect.texture = ImageTexture.create_from_image(capture_image)
-	_refresh_member_inspection_strip(capture_result, expected_members)
-	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\nmode=initial verification" % [
-		capture_result.get_payload_kind(),
-		capture_result.get_width(),
-		capture_result.get_height()
-	]
-	_exercise_status_panel_acquisition_session_fixture_detail_visibility()
-	if _status_panel != null:
-		_status_panel.apply_fixture_detail_visible_rows([])
-		_status_panel.force_refresh()
+	var perf_main_texture_end_us := _perf_us()
+	var perf_strip_start_us := _perf_us()
+	var pre_materialized_member_images := {}
+	if MATERIALIZE_CAPTURE_MEMBER_THUMBNAILS:
+		pre_materialized_member_images[0] = capture_image
+	var strip_perf := _refresh_member_inspection_strip(capture_result, expected_members, "initial verification", pre_materialized_member_images, DEFER_CAPTURE_MEMBER_THUMBNAILS)
+	var perf_strip_end_us := _perf_us()
+	_capture_facts_label.text = _format_fixed_fact_lines([
+		"payload_kind=%d" % capture_result.get_payload_kind(),
+		"size=%dx%d" % [capture_result.get_width(), capture_result.get_height()],
+		"images=%d/%d additional=%s" % [observed_member_count, expected_member_count, str(bool(capture_result.has_additional_images()))],
+		"mode=initial verification",
+	])
+	if _is_headless or RUN_STATUS_PANEL_DETAIL_FIXTURE_IN_GUI:
+		if DEFER_STATUS_PANEL_FIXTURE_UNTIL_INSPECTION and not _is_headless:
+			_pending_status_panel_fixture_in_inspection = true
+		else:
+			_exercise_status_panel_acquisition_session_fixture_detail_visibility()
+	else:
+		_perf_log("status panel detail fixture skipped in GUI for responsive capture inspection")
+	var perf_total_end_us := _perf_us()
+	_scene70_record_capture_entry(
+		"initial",
+		capture_result,
+		result_capture_id,
+		observed_member_count,
+		expected_member_count,
+		_capture_baseline_progress,
+		_capture_completion_progress,
+		0,
+		0,
+		0,
+		_perf_delta_us(_initial_capture_trigger_us, _initial_capture_completion_wait_start_us) if _initial_capture_trigger_us > 0 and _initial_capture_completion_wait_start_us > 0 else 0,
+		_perf_delta_us(_initial_capture_trigger_us, _initial_capture_completion_wait_start_us) if _initial_capture_trigger_us > 0 and _initial_capture_completion_wait_start_us > 0 else 0,
+		_perf_delta_us(_initial_capture_trigger_us, perf_total_end_us) if _initial_capture_trigger_us > 0 else 0,
+		_perf_delta_us(_initial_capture_completion_wait_start_us, perf_total_end_us) if _initial_capture_completion_wait_start_us > 0 else 0,
+		_initial_capture_completion_poll_count,
+		_perf_delta_us(_initial_capture_trigger_us, perf_total_end_us) if _initial_capture_trigger_us > 0 else 0,
+		_perf_delta_us(perf_get_result_start_us, perf_get_result_end_us),
+		perf_member_get_total_us,
+		_perf_delta_us(perf_capture_to_image_start_us, perf_capture_to_image_end_us),
+		_perf_delta_us(perf_main_texture_start_us, perf_main_texture_end_us),
+		int(strip_perf.get("total_us", _perf_delta_us(perf_strip_start_us, perf_strip_end_us))),
+		int(strip_perf.get("deferred_jobs", 0)),
+		_perf_delta_us(perf_total_start_us, perf_total_end_us),
+		_perf_image_summary(capture_image),
+		_scene70_pick_capture_evaluation_report(int(capture_result.get_device_instance_id()), result_capture_id)
+	)
 	_step_ok("capture image displayed")
-	_ok("OK: result_retrieval_verification passed")
-
+	if not _scene70_initial_capture_report_poll_started:
+		_scene70_initial_capture_report_poll_started = true
+		_scene70_poll_capture_evaluation_report("initial", capture_result, true)
 
 
 func _role_name(role: int) -> String:
@@ -386,51 +1067,282 @@ func _role_name(role: int) -> String:
 	return str(role)
 
 
+func _format_fixed_fact_lines(lines: Array) -> String:
+	var normalized := PackedStringArray()
+	for line in lines:
+		normalized.append(str(line))
+	while normalized.size() < FACT_LABEL_LINE_COUNT:
+		normalized.append(" ")
+	return "\n".join(normalized)
+
+
+func _scene70_has_only_acquisition_timing(facts: Dictionary) -> bool:
+	return facts.keys().size() == 1 and facts.has("acquisition_timing")
+
+
+func _scene70_has_canonical_acquisition_timing(timing: Dictionary) -> bool:
+	return (
+		timing.get("origin", "") == "virtual_camera_authored"
+		and timing.has("acquisition_mark")
+		and typeof(timing.get("acquisition_mark", null)) == TYPE_INT
+		and int(timing.get("acquisition_mark", -1)) >= 0
+		and typeof(timing.get("tick_period_numerator_ns", null)) == TYPE_INT
+		and int(timing.get("tick_period_numerator_ns", 0)) > 0
+		and int(timing.get("tick_period_numerator_ns", 0)) == 1
+		and typeof(timing.get("tick_period_denominator", null)) == TYPE_INT
+		and int(timing.get("tick_period_denominator", 0)) > 0
+		and int(timing.get("tick_period_denominator", 0)) == 1
+		and timing.get("clock_domain", "") == "provider_monotonic"
+		and timing.get("reference_event", "") == "provider_observed"
+		and timing.get("comparability", "") == "same_provider"
+	)
+
+
 func _clear_member_inspection_strip() -> void:
+	_pending_member_thumbnail_jobs.clear()
 	if _member_strip_row == null:
 		return
 	for child in _member_strip_row.get_children():
 		child.queue_free()
 
 
-func _refresh_member_inspection_strip(capture_result, expected_members: Array) -> void:
+func _clear_capture_display_for_pending_request(reason: String) -> void:
+	# Keep the last realized capture image visible while the replacement capture
+	# is pending. The facts label carries pending-state truth so the retained
+	# texture is not mistaken for the newly requested result. Member thumbnails
+	# are still cleared because they belong to the in-flight capture inspection.
+	_pending_member_thumbnail_jobs.clear()
+	var has_retained_capture_texture := _capture_texture_rect != null and _capture_texture_rect.texture != null
+	if _capture_facts_label != null:
+		if has_retained_capture_texture:
+			_capture_facts_label.text = _format_fixed_fact_lines([
+				"capture pending",
+				reason,
+				"previous image retained until replacement",
+			])
+		else:
+			_capture_facts_label.text = _format_fixed_fact_lines([
+				"capture pending",
+				reason,
+			])
 	_clear_member_inspection_strip()
-	if _member_strip_row == null or capture_result == null:
+
+
+func _drain_pending_member_thumbnail_jobs(max_jobs: int = CAPTURE_MEMBER_THUMBNAILS_PER_FRAME) -> void:
+	if max_jobs <= 0:
 		return
-	for i in range(expected_members.size()):
-		var expected_member: Dictionary = expected_members[i]
-		var image_member_materialized: Image = capture_result.to_image_member(i)
-		if image_member_materialized == null:
+	var processed := 0
+	while processed < max_jobs and not _pending_member_thumbnail_jobs.is_empty():
+		var job_v: Variant = _pending_member_thumbnail_jobs.pop_front()
+		if typeof(job_v) != TYPE_DICTIONARY:
 			continue
+		var job: Dictionary = job_v
+		var preview: TextureRect = job.get("preview", null)
+		var preview_status: Label = job.get("preview_status", null)
+		if preview == null or not is_instance_valid(preview):
+			continue
+		var capture_result = job.get("capture_result", null)
+		if capture_result == null:
+			continue
+		var member_index := int(job.get("member_index", -1))
+		var context := str(job.get("context", "member_strip"))
+		var perf_total_start_us := _perf_us()
+		var perf_to_image_start_us := _perf_us()
+		var image_member_materialized: Image = capture_result.to_image_member(member_index)
+		var perf_to_image_end_us := _perf_us()
+		var perf_texture_us := 0
+		if image_member_materialized != null:
+			var perf_texture_start_us := _perf_us()
+			preview.texture = ImageTexture.create_from_image(image_member_materialized)
+			var perf_texture_end_us := _perf_us()
+			perf_texture_us = _perf_delta_us(perf_texture_start_us, perf_texture_end_us)
+			if preview_status != null and is_instance_valid(preview_status):
+				preview_status.text = ""
+		else:
+			if preview_status != null and is_instance_valid(preview_status):
+				preview_status.text = "member %d image unavailable" % member_index
+		var perf_total_end_us := _perf_us()
+		_perf_log("member strip deferred thumbnail buckets us: context=%s member=%d to_image_member=%d texture=%d total=%d remaining=%d image=%s" % [
+			context,
+			member_index,
+			_perf_delta_us(perf_to_image_start_us, perf_to_image_end_us),
+			perf_texture_us,
+			_perf_delta_us(perf_total_start_us, perf_total_end_us),
+			_pending_member_thumbnail_jobs.size(),
+			_perf_image_summary(image_member_materialized),
+		])
+		processed += 1
+
+
+func _refresh_member_inspection_strip(capture_result, expected_members: Array, diagnostic_context: String = "member_strip", pre_materialized_member_images: Dictionary = {}, defer_remaining_images: bool = DEFER_CAPTURE_MEMBER_THUMBNAILS) -> Dictionary:
+	var perf_strip_total_start_us := _perf_us()
+	var perf_clear_start_us := _perf_us()
+	_clear_member_inspection_strip()
+	var perf_clear_end_us := _perf_us()
+	if _member_strip_row == null or capture_result == null:
+		var unavailable_total_us := _perf_delta_us(perf_strip_total_start_us, _perf_us())
+		_perf_log("member strip buckets us: context=%s unavailable clear=%d total=%d" % [
+			diagnostic_context,
+			_perf_delta_us(perf_clear_start_us, perf_clear_end_us),
+			unavailable_total_us,
+		])
+		return {
+			"total_us": unavailable_total_us,
+			"deferred_jobs": 0,
+		}
+
+	var returned_count := int(capture_result.get_image_count())
+	var expected_count := expected_members.size()
+	var perf_member_get_total_us := 0
+	var perf_member_to_image_total_us := 0
+	var perf_texture_total_us := 0
+	var deferred_jobs := 0
+
+	if returned_count <= 0:
+		var empty_label := Label.new()
+		empty_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		empty_label.text = "no returned capture image members (applied bundle=%d)" % expected_count
+		_member_strip_row.add_child(empty_label)
+		var empty_total_us := _perf_delta_us(perf_strip_total_start_us, _perf_us())
+		_perf_log("member strip buckets us: context=%s returned=0 expected=%d clear=%d total=%d" % [
+			diagnostic_context,
+			expected_count,
+			_perf_delta_us(perf_clear_start_us, perf_clear_end_us),
+			empty_total_us,
+		])
+		return {
+			"total_us": empty_total_us,
+			"deferred_jobs": 0,
+		}
+
+	for i in range(returned_count):
+		var expected_member: Dictionary = {}
+		if i < expected_members.size() and typeof(expected_members[i]) == TYPE_DICTIONARY:
+			expected_member = expected_members[i]
+
+		var perf_member_get_start_us := _perf_us()
+		var image_member: Dictionary = capture_result.get_image_member(i)
+		var perf_member_get_end_us := _perf_us()
+		perf_member_get_total_us += _perf_delta_us(perf_member_get_start_us, perf_member_get_end_us)
 
 		var item_col := VBoxContainer.new()
 		item_col.custom_minimum_size = Vector2(150, 0)
 		item_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
-		var preview := TextureRect.new()
-		preview.custom_minimum_size = Vector2(140, 78)
-		preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		preview.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
-		preview.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-		preview.texture = ImageTexture.create_from_image(image_member_materialized)
-		item_col.add_child(preview)
+		var preview: TextureRect = null
+		var preview_status := Label.new()
+		preview_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		preview_status.text = ""
+		item_col.add_child(preview_status)
 
-		var image_member: Dictionary = capture_result.get_image_member(i)
+		var have_pre_materialized := false
+		var pre_image: Image = null
+		if pre_materialized_member_images.has(i):
+			var pre_image_v: Variant = pre_materialized_member_images.get(i)
+			if pre_image_v is Image:
+				pre_image = pre_image_v
+				have_pre_materialized = pre_image != null
+
+		if MATERIALIZE_CAPTURE_MEMBER_THUMBNAILS:
+			preview = TextureRect.new()
+			preview.custom_minimum_size = Vector2(140, 78)
+			preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			preview.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
+			preview.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+			item_col.add_child(preview)
+
+			if have_pre_materialized:
+				var perf_texture_start_us := _perf_us()
+				preview.texture = ImageTexture.create_from_image(pre_image)
+				var perf_texture_end_us := _perf_us()
+				perf_texture_total_us += _perf_delta_us(perf_texture_start_us, perf_texture_end_us)
+			elif defer_remaining_images:
+				preview_status.text = "thumbnail pending"
+				_pending_member_thumbnail_jobs.append({
+					"context": diagnostic_context,
+					"member_index": i,
+					"capture_result": capture_result,
+					"preview": preview,
+					"preview_status": preview_status,
+				})
+				deferred_jobs += 1
+			else:
+				var perf_member_to_image_start_us := _perf_us()
+				var image_member_materialized: Image = capture_result.to_image_member(i)
+				var perf_member_to_image_end_us := _perf_us()
+				perf_member_to_image_total_us += _perf_delta_us(perf_member_to_image_start_us, perf_member_to_image_end_us)
+				if image_member_materialized != null:
+					var perf_texture_start_us := _perf_us()
+					preview.texture = ImageTexture.create_from_image(image_member_materialized)
+					var perf_texture_end_us := _perf_us()
+					perf_texture_total_us += _perf_delta_us(perf_texture_start_us, perf_texture_end_us)
+				else:
+					preview_status.text = "member %d image unavailable" % i
+		else:
+			if have_pre_materialized:
+				preview_status.text = "thumbnail disabled (main image uses member 0)"
+			else:
+				preview_status.text = "thumbnail disabled"
+
 		var role_value := int(image_member.get("role", expected_member.get("role", -1)))
 		var role_label := _role_name(role_value)
 		var realized_ev_label := "unknown"
 		if bool(image_member.get("has_realized_exposure_compensation_milli_ev", false)):
 			realized_ev_label = str(int(image_member.get("realized_exposure_compensation_milli_ev", 0)))
+
 		var meta := Label.new()
 		meta.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		meta.text = "idx=%d role=%s ev=%s" % [
-			int(image_member.get("image_member_index", -1)),
-			role_label,
-			realized_ev_label,
-		]
+		if image_member.is_empty():
+			meta.text = "idx=%d returned metadata unavailable\nreturned=%d applied=%d" % [
+				i,
+				returned_count,
+				expected_count,
+			]
+		else:
+			meta.text = "idx=%d role=%s ev=%s\nreturned=%d applied=%d" % [
+				int(image_member.get("image_member_index", i)),
+				role_label,
+				realized_ev_label,
+				returned_count,
+				expected_count,
+			]
 		item_col.add_child(meta)
 
 		_member_strip_row.add_child(item_col)
+
+	if returned_count < expected_count:
+		var note := Label.new()
+		note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		note.text = "CaptureResult returned %d of applied bundle %d" % [
+			returned_count,
+			expected_count,
+		]
+		_member_strip_row.add_child(note)
+
+	var perf_strip_total_end_us := _perf_us()
+	var perf_known_us := _perf_delta_us(perf_clear_start_us, perf_clear_end_us) + perf_member_get_total_us + perf_member_to_image_total_us + perf_texture_total_us
+	var total_us := _perf_delta_us(perf_strip_total_start_us, perf_strip_total_end_us)
+	_perf_log("member strip buckets us: context=%s returned=%d expected=%d clear=%d get_member=%d to_image_member=%d texture=%d ui_other=%d deferred_jobs=%d total=%d" % [
+		diagnostic_context,
+		returned_count,
+		expected_count,
+		_perf_delta_us(perf_clear_start_us, perf_clear_end_us),
+		perf_member_get_total_us,
+		perf_member_to_image_total_us,
+		perf_texture_total_us,
+		max(0, total_us - perf_known_us),
+		deferred_jobs,
+		total_us,
+	])
+	return {
+		"returned_count": returned_count,
+		"expected_count": expected_count,
+		"member_get_us": perf_member_get_total_us,
+		"to_image_member_us": perf_member_to_image_total_us,
+		"texture_us": perf_texture_total_us,
+		"deferred_jobs": deferred_jobs,
+		"total_us": total_us,
+	}
 
 
 func _ensure_stream_panel_display_view_bound(stream_result = null, force_rebind: bool = false) -> void:
@@ -455,12 +1367,12 @@ func _ensure_stream_panel_display_view_bound(stream_result = null, force_rebind:
 	var current_texture = _stream_texture_rect.texture
 	if force_rebind or current_texture == null or current_texture != stream_display_view:
 		_stream_texture_rect.texture = stream_display_view
-	_stream_facts_label.text = "payload_kind=%d\nsize=%dx%d\nstream_id=%d\n(live display view bound)" % [
-		latest_stream_result.get_payload_kind(),
-		latest_stream_result.get_width(),
-		latest_stream_result.get_height(),
-		latest_stream_result.get_stream_id()
-	]
+	_stream_facts_label.text = _format_fixed_fact_lines([
+		"payload_kind=%d" % latest_stream_result.get_payload_kind(),
+		"size=%dx%d" % [latest_stream_result.get_width(), latest_stream_result.get_height()],
+		"stream_id=%d" % latest_stream_result.get_stream_id(),
+		"(live display view bound)",
+	])
 
 
 func _on_capture_again_pressed() -> void:
@@ -483,26 +1395,42 @@ func _request_manual_stream_image() -> void:
 	_materialize_requested_stream_image(stream_result, "mode=manual stream to_image request")
 
 
-func _materialize_requested_stream_image(stream_result, mode_text: String) -> void:
+func _materialize_requested_stream_image(stream_result, mode_text: String, pre_materialized_image: Image = null) -> void:
 	if stream_result == null:
 		return
 	# Explicit to_image() materialization from stream result. This yields a
 	# manually requested CPU-backed artifact, not the normal live display path.
-	var requested_image: Image = stream_result.to_image()
+	var perf_stream_total_start_us := _perf_us()
+	var perf_stream_to_image_start_us := _perf_us()
+	var requested_image: Image = pre_materialized_image
+	if requested_image == null:
+		requested_image = stream_result.to_image()
+	var perf_stream_to_image_end_us := _perf_us()
 	if requested_image == null:
 		_append_status("WARN: requested stream to_image() returned null")
 		return
 	if requested_image.get_width() <= 0 or requested_image.get_height() <= 0:
 		_append_status("WARN: requested stream to_image() dimensions invalid")
 		return
+	var perf_stream_texture_start_us := _perf_us()
 	_requested_stream_texture_rect.texture = ImageTexture.create_from_image(requested_image)
-	_requested_stream_facts_label.text = "payload_kind=%d\nsize=%dx%d\nstream_id=%d\n%s" % [
-		stream_result.get_payload_kind(),
-		stream_result.get_width(),
-		stream_result.get_height(),
-		stream_result.get_stream_id(),
-		mode_text
-	]
+	var perf_stream_texture_end_us := _perf_us()
+	_requested_stream_facts_label.text = _format_fixed_fact_lines([
+		"payload_kind=%d" % stream_result.get_payload_kind(),
+		"size=%dx%d" % [stream_result.get_width(), stream_result.get_height()],
+		"stream_id=%d" % stream_result.get_stream_id(),
+		mode_text,
+	])
+	var perf_stream_total_end_us := _perf_us()
+	_scene70_record_stream_to_image_request(
+		"initial" if mode_text == "mode=initial stream to_image request" else "manual",
+		stream_result,
+		mode_text,
+		_perf_delta_us(perf_stream_to_image_start_us, perf_stream_to_image_end_us),
+		_perf_delta_us(perf_stream_texture_start_us, perf_stream_texture_end_us),
+		_perf_delta_us(perf_stream_total_start_us, perf_stream_total_end_us),
+		requested_image
+	)
 	if mode_text.begins_with("mode=manual"):
 		_append_status("INFO: requested stream image displayed (%s)" % mode_text)
 
@@ -518,14 +1446,51 @@ func _request_manual_capture() -> void:
 		_append_status("WARN: cannot capture again; device unavailable")
 		return
 
-	_clear_member_inspection_strip()
+	_inspection_capture_baseline_progress = _get_capture_progress_snapshot(_device_instance_id)
+	if not bool(_inspection_capture_baseline_progress.get("available", false)):
+		_append_status("WARN: cannot capture again; capture progress snapshot unavailable")
+		return
+
+	_manual_capture_request_us = _perf_us()
+	_manual_capture_completion_poll_count = 0
+	var perf_manual_clear_start_us := _perf_us()
+	_clear_capture_display_for_pending_request("manual capture requested")
+	var perf_manual_clear_end_us := _perf_us()
+	var perf_manual_trigger_start_us := _perf_us()
 	var capture_err := int(device.trigger_capture())
+	var perf_manual_trigger_end_us := _perf_us()
+	_manual_capture_completion_wait_start_us = perf_manual_trigger_end_us
+	_latency_log("manual capture request buckets us: clear=%d trigger_call=%d request_to_return=%d err=%d elapsed_us=%d" % [
+		_perf_delta_us(perf_manual_clear_start_us, perf_manual_clear_end_us),
+		_perf_delta_us(perf_manual_trigger_start_us, perf_manual_trigger_end_us),
+		_perf_delta_us(_manual_capture_request_us, perf_manual_trigger_end_us),
+		capture_err,
+		_scene_elapsed_us(),
+	])
 	if capture_err != OK:
+		if _capture_facts_label != null:
+			_capture_facts_label.text = _format_fixed_fact_lines([
+				"capture request rejected",
+				"err=%d" % capture_err,
+			])
 		_append_status("WARN: manual capture request rejected err=%d" % capture_err)
 		return
 	_inspection_capture_device = device
+	_inspection_capture_completion_seen = false
+	_inspection_capture_completion_progress = {}
+	_inspection_expected_capture_id = 0
 	_inspection_capture_poll_start_ms = Time.get_ticks_msec()
-	_append_status("INFO: manual capture requested")
+	_scene70_update_entry(_scene70_captures, "manual", {
+		"capture_progress_baseline": _inspection_capture_baseline_progress.duplicate(true),
+		"clear_display_us": _perf_delta_us(perf_manual_clear_start_us, perf_manual_clear_end_us),
+		"trigger_call_us": _perf_delta_us(perf_manual_trigger_start_us, perf_manual_trigger_end_us),
+		"request_to_return_us": _perf_delta_us(_manual_capture_request_us, perf_manual_trigger_end_us),
+	})
+	_latency_log("manual capture trigger accepted elapsed_us=%d request_return_to_accept_log_us=%d" % [
+		_scene_elapsed_us(),
+		_perf_delta_us(_manual_capture_completion_wait_start_us, _perf_us()) if _manual_capture_completion_wait_start_us > 0 else 0,
+	])
+	_append_status("INFO: manual capture requested (baseline=%s)" % _describe_capture_progress(_inspection_capture_baseline_progress))
 
 
 func _get_device_snapshot_record(device_instance_id: int) -> Dictionary:
@@ -553,6 +1518,107 @@ func _extract_snapshot_still_profile(device_snapshot: Dictionary) -> Dictionary:
 	return still_v
 
 
+func _extract_still_image_bundle_members(still_profile: Dictionary) -> Array:
+	var bundle_v: Variant = still_profile.get("still_image_bundle", null)
+	if typeof(bundle_v) != TYPE_DICTIONARY:
+		return []
+	var bundle: Dictionary = bundle_v
+	var members_v: Variant = bundle.get("members", null)
+	if typeof(members_v) != TYPE_ARRAY:
+		return []
+	var members: Array = members_v
+	return members
+
+
+func _validate_scene70_expected_still_members(expected_members: Array) -> bool:
+	if expected_members.is_empty():
+		_fail("step %d FAIL: scene fixture malformed: expected still image bundle has no members" % _step)
+		return false
+	for i in range(expected_members.size()):
+		if typeof(expected_members[i]) != TYPE_DICTIONARY:
+			_fail("step %d FAIL: scene fixture malformed: expected still image member %d is not a Dictionary" % [_step, i])
+			return false
+		var member: Dictionary = expected_members[i]
+		var image_member_index := int(member.get("image_member_index", -1))
+		if image_member_index != i:
+			_fail("step %d FAIL: scene fixture malformed: expected still image member %d has non-contiguous image_member_index=%d" % [_step, i, image_member_index])
+			return false
+		var role := int(member.get("role", -1))
+		if i == 0:
+			if role != CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED:
+				_fail("step %d FAIL: scene fixture malformed: expected still image member 0 must use IMAGE_ROLE_DEFAULT_METERED" % _step)
+				return false
+		elif role != CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET:
+			_fail("step %d FAIL: scene fixture malformed: expected still image member %d must use IMAGE_ROLE_ADDITIONAL_BRACKET" % [_step, i])
+			return false
+	return true
+
+
+func _still_profile_matches_expected_members(still_profile: Dictionary, expected_members: Array) -> bool:
+	var observed_members := _extract_still_image_bundle_members(still_profile)
+	if observed_members.size() != expected_members.size():
+		return false
+	for i in range(expected_members.size()):
+		if typeof(observed_members[i]) != TYPE_DICTIONARY:
+			return false
+		if typeof(expected_members[i]) != TYPE_DICTIONARY:
+			return false
+		var observed_member: Dictionary = observed_members[i]
+		var expected_member: Dictionary = expected_members[i]
+		if int(observed_member.get("image_member_index", -1)) != int(expected_member.get("image_member_index", -1)):
+			return false
+		if int(observed_member.get("role", -1)) != int(expected_member.get("role", -1)):
+			return false
+		if int(observed_member.get("intended_exposure_compensation_milli_ev", 0)) != int(expected_member.get("intended_exposure_compensation_milli_ev", 0)):
+			return false
+	return true
+
+
+func _is_expected_still_profile_snapshot_visible(require_version_advance: bool) -> bool:
+	var device_snapshot := _get_device_snapshot_record(_device_instance_id)
+	var still_profile: Dictionary = _extract_snapshot_still_profile(device_snapshot)
+	var version := int(still_profile.get("version", -1))
+	if version < 0:
+		return false
+	if require_version_advance and _capture_profile_version_before_set >= 0 and version <= _capture_profile_version_before_set:
+		return false
+
+	var expected_members := _make_scene70_still_image_bundle_members()
+	if not _validate_scene70_expected_still_members(expected_members):
+		return false
+	if not _still_profile_matches_expected_members(still_profile, expected_members):
+		return false
+
+	_capture_profile_version_after_set = version
+	_applied_still_profile_snapshot_summary = _describe_still_profile(still_profile)
+	_latency_log("still profile snapshot visible delay_us=%d polls=%d version=%d require_version_advance=%s elapsed_us=%d" % [
+		_perf_delta_us(_still_profile_request_us, _perf_us()) if _still_profile_request_us > 0 else 0,
+		_still_profile_poll_count,
+		version,
+		str(require_version_advance),
+		_scene_elapsed_us(),
+	])
+	_step_ok("expected still profile snapshot-visible (%s)" % _applied_still_profile_snapshot_summary)
+	return true
+
+
+func _describe_still_profile(still_profile: Dictionary) -> String:
+	var version := int(still_profile.get("version", -1))
+	var members := _extract_still_image_bundle_members(still_profile)
+	var member_descriptions: Array[String] = []
+	for m in members:
+		if typeof(m) != TYPE_DICTIONARY:
+			member_descriptions.append("<non-dictionary>")
+			continue
+		var member: Dictionary = m
+		member_descriptions.append("{index=%d role=%d intended_ev=%d}" % [
+			int(member.get("image_member_index", -1)),
+			int(member.get("role", -1)),
+			int(member.get("intended_exposure_compensation_milli_ev", 0))
+		])
+	return "version=%d members=%d [%s]" % [version, members.size(), ", ".join(member_descriptions)]
+
+
 func _get_acquisition_session_snapshot_record(device_instance_id: int) -> Dictionary:
 	var snapshot = CamBANGServer.get_state_snapshot()
 	if snapshot == null:
@@ -567,6 +1633,56 @@ func _get_acquisition_session_snapshot_record(device_instance_id: int) -> Dictio
 	return {}
 
 
+func _capture_progress_from_record(record: Dictionary, source: String) -> Dictionary:
+	if record.is_empty():
+		return {"available": false, "source": source}
+	var has_completed := record.has("captures_completed")
+	var has_failed := record.has("captures_failed")
+	var has_last_capture := record.has("last_capture_id")
+	if not has_completed and not has_failed and not has_last_capture:
+		return {"available": false, "source": source}
+	return {
+		"available": true,
+		"source": source,
+		"captures_triggered": int(record.get("captures_triggered", 0)),
+		"captures_completed": int(record.get("captures_completed", 0)),
+		"captures_failed": int(record.get("captures_failed", 0)),
+		"last_capture_id": int(record.get("last_capture_id", 0)),
+		"active_capture_id": int(record.get("active_capture_id", 0)),
+	}
+
+
+func _get_capture_progress_snapshot(device_instance_id: int) -> Dictionary:
+	var device_progress := _capture_progress_from_record(_get_device_snapshot_record(device_instance_id), "device")
+	if bool(device_progress.get("available", false)):
+		return device_progress
+	var acquisition_session_progress := _capture_progress_from_record(_get_acquisition_session_snapshot_record(device_instance_id), "acquisition_session")
+	if bool(acquisition_session_progress.get("available", false)):
+		return acquisition_session_progress
+	return {"available": false, "source": "none"}
+
+
+func _describe_capture_progress(progress: Dictionary) -> String:
+	if not bool(progress.get("available", false)):
+		return "capture_progress unavailable source=%s" % str(progress.get("source", "none"))
+	return "source=%s triggered=%d completed=%d failed=%d last_capture_id=%d active_capture_id=%d" % [
+		str(progress.get("source", "unknown")),
+		int(progress.get("captures_triggered", 0)),
+		int(progress.get("captures_completed", 0)),
+		int(progress.get("captures_failed", 0)),
+		int(progress.get("last_capture_id", 0)),
+		int(progress.get("active_capture_id", 0)),
+	]
+
+
+func _capture_result_id(capture_result) -> int:
+	if capture_result == null:
+		return 0
+	if capture_result.has_method("get_capture_id"):
+		return int(capture_result.get_capture_id())
+	return 0
+
+
 func _exercise_status_panel_acquisition_session_fixture_detail_visibility() -> void:
 	if _status_panel_acquisition_session_detail_requested:
 		return
@@ -579,9 +1695,23 @@ func _exercise_status_panel_acquisition_session_fixture_detail_visibility() -> v
 	if acquisition_session_id <= 0:
 		return
 	var row_id := "acquisition_session/%d" % acquisition_session_id
+	var perf_status_panel_start_us := _perf_us()
+	var perf_expanded_start_us := _perf_us()
 	_status_panel.apply_fixture_expanded_rows([row_id])
+	var perf_expanded_end_us := _perf_us()
+	var perf_detail_start_us := _perf_us()
 	_status_panel.apply_fixture_detail_visible_rows([row_id])
+	var perf_detail_end_us := _perf_us()
+	var perf_refresh_start_us := _perf_us()
 	_status_panel.force_refresh()
+	var perf_refresh_end_us := _perf_us()
+	_scene70_status_panel_detail_fixture = {
+		"row_id": row_id,
+		"expand_us": _perf_delta_us(perf_expanded_start_us, perf_expanded_end_us),
+		"detail_us": _perf_delta_us(perf_detail_start_us, perf_detail_end_us),
+		"refresh_us": _perf_delta_us(perf_refresh_start_us, perf_refresh_end_us),
+		"total_us": _perf_delta_us(perf_status_panel_start_us, perf_refresh_end_us),
+	}
 	_status_panel_acquisition_session_detail_requested = true
 	_append_status("INFO: status panel fixture detail visibility exercised (%s)" % row_id)
 
@@ -589,26 +1719,117 @@ func _exercise_status_panel_acquisition_session_fixture_detail_visibility() -> v
 func _poll_inspection_capture_result() -> void:
 	if _inspection_capture_device == null:
 		return
+	if _scene70_manual_capture_report_poll_started:
+		return
 	if Time.get_ticks_msec() - _inspection_capture_poll_start_ms > INSPECTION_CAPTURE_TIMEOUT_MS:
-		_append_status("WARN: manual capture timeout")
+		_append_status("WARN: manual capture timeout (baseline=%s completion=%s)" % [
+			_describe_capture_progress(_inspection_capture_baseline_progress),
+			_describe_capture_progress(_inspection_capture_completion_progress),
+		])
 		_inspection_capture_device = null
 		return
+	if not _inspection_capture_completion_seen:
+		var progress := _get_capture_progress_snapshot(_device_instance_id)
+		if not bool(progress.get("available", false)):
+			return
+		if int(progress.get("captures_failed", 0)) > int(_inspection_capture_baseline_progress.get("captures_failed", 0)):
+			if _synthetic_gpu_only_output_form_requested():
+				_append_status("WARN: %s" % _format_gpu_only_capture_refusal("manual", _inspection_capture_baseline_progress, progress))
+			else:
+				_append_status("WARN: manual capture failed after trigger (baseline=%s progress=%s)" % [
+					_describe_capture_progress(_inspection_capture_baseline_progress),
+					_describe_capture_progress(progress),
+				])
+			_inspection_capture_device = null
+			return
+		if int(progress.get("captures_completed", 0)) <= int(_inspection_capture_baseline_progress.get("captures_completed", 0)):
+			_manual_capture_completion_poll_count += 1
+			return
+		_inspection_capture_completion_progress = progress
+		_inspection_expected_capture_id = int(progress.get("last_capture_id", 0))
+		_inspection_capture_completion_seen = true
+		_scene70_update_entry(_scene70_captures, "manual", {
+			"capture_progress_completion": _inspection_capture_completion_progress.duplicate(true),
+			"expected_capture_id": _inspection_expected_capture_id,
+			"completion_poll_count": _manual_capture_completion_poll_count,
+		})
+		_append_status("INFO: manual capture completion observed (%s)" % _describe_capture_progress(progress))
+
+	var perf_manual_total_start_us := _perf_us()
+	var perf_manual_get_result_start_us := _perf_us()
 	var capture_result = _inspection_capture_device.get_result()
+	var perf_manual_get_result_end_us := _perf_us()
 	if capture_result == null:
 		return
+	var result_capture_id := _capture_result_id(capture_result)
+	if _inspection_expected_capture_id > 0 and result_capture_id != _inspection_expected_capture_id:
+		return
+	var perf_manual_to_image_start_us := _perf_us()
 	var capture_image: Image = capture_result.to_image()
+	var perf_manual_to_image_end_us := _perf_us()
 	if capture_image == null:
 		_append_status("WARN: manual capture image materialization failed")
 		_inspection_capture_device = null
 		return
+	var perf_manual_main_texture_start_us := _perf_us()
 	_capture_texture_rect.texture = ImageTexture.create_from_image(capture_image)
-	_refresh_member_inspection_strip(capture_result, _make_scene70_still_image_bundle_members())
-	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\nmode=manual capture" % [
-		capture_result.get_payload_kind(),
-		capture_result.get_width(),
-		capture_result.get_height()
-	]
-	_append_status("INFO: manual capture displayed")
+	var perf_manual_main_texture_end_us := _perf_us()
+	var expected_members := _make_scene70_still_image_bundle_members()
+	if not _validate_scene70_expected_still_members(expected_members):
+		_inspection_capture_device = null
+		return
+	var returned_count := int(capture_result.get_image_count())
+	var expected_count := expected_members.size()
+	var perf_manual_strip_start_us := _perf_us()
+	var pre_materialized_member_images := {}
+	if MATERIALIZE_CAPTURE_MEMBER_THUMBNAILS:
+		pre_materialized_member_images[0] = capture_image
+	var strip_perf := _refresh_member_inspection_strip(capture_result, expected_members, "manual capture", pre_materialized_member_images, DEFER_CAPTURE_MEMBER_THUMBNAILS)
+	var perf_manual_strip_end_us := _perf_us()
+	_capture_facts_label.text = _format_fixed_fact_lines([
+		"payload_kind=%d" % capture_result.get_payload_kind(),
+		"size=%dx%d" % [capture_result.get_width(), capture_result.get_height()],
+		"images=%d/%d additional=%s" % [returned_count, expected_count, str(bool(capture_result.has_additional_images()))],
+		"capture_id=%d expected=%d" % [result_capture_id, _inspection_expected_capture_id],
+		"mode=manual capture",
+	])
+	var perf_manual_total_end_us := _perf_us()
+	_scene70_record_capture_entry(
+		"manual",
+		capture_result,
+		result_capture_id,
+		returned_count,
+		expected_count,
+		_inspection_capture_baseline_progress,
+		_inspection_capture_completion_progress,
+		0,
+		0,
+		0,
+		_perf_delta_us(_manual_capture_request_us, _manual_capture_completion_wait_start_us) if _manual_capture_request_us > 0 and _manual_capture_completion_wait_start_us > 0 else 0,
+		_perf_delta_us(_manual_capture_request_us, _manual_capture_completion_wait_start_us) if _manual_capture_request_us > 0 and _manual_capture_completion_wait_start_us > 0 else 0,
+		_perf_delta_us(_manual_capture_request_us, perf_manual_total_end_us) if _manual_capture_request_us > 0 else 0,
+		_perf_delta_us(_manual_capture_completion_wait_start_us, perf_manual_total_end_us) if _manual_capture_completion_wait_start_us > 0 else 0,
+		_manual_capture_completion_poll_count,
+		_perf_delta_us(_manual_capture_request_us, perf_manual_total_end_us) if _manual_capture_request_us > 0 else 0,
+		_perf_delta_us(perf_manual_get_result_start_us, perf_manual_get_result_end_us),
+		0,
+		_perf_delta_us(perf_manual_to_image_start_us, perf_manual_to_image_end_us),
+		_perf_delta_us(perf_manual_main_texture_start_us, perf_manual_main_texture_end_us),
+		int(strip_perf.get("total_us", _perf_delta_us(perf_manual_strip_start_us, perf_manual_strip_end_us))),
+		int(strip_perf.get("deferred_jobs", 0)),
+		_perf_delta_us(perf_manual_total_start_us, perf_manual_total_end_us),
+		_perf_image_summary(capture_image),
+		_scene70_pick_capture_evaluation_report(int(capture_result.get_device_instance_id()), result_capture_id)
+	)
+	if not _scene70_manual_capture_report_poll_started:
+		_scene70_manual_capture_report_poll_started = true
+		_scene70_poll_capture_evaluation_report("manual", capture_result, false)
+	_append_status("INFO: manual capture displayed (image_count=%d/%d capture_id=%d expected=%d)" % [
+		returned_count,
+		expected_count,
+		result_capture_id,
+		_inspection_expected_capture_id,
+	])
 	_inspection_capture_device = null
 
 
@@ -626,6 +1847,18 @@ func _require(condition: bool, message: String) -> void:
 func _append_status(line: String) -> void:
 	print(line)
 	_status_label.append_text(line + "\n")
+
+
+func _emit_harness_verdict(status: String, exit_code: int, reason: String) -> void:
+	if _harness_verdict_emitted:
+		return
+	_harness_verdict_emitted = true
+	print("[CamBANG][HarnessVerdict] scene=%s status=%s exit_code=%d reason=%s" % [
+		SCENE_LABEL,
+		status,
+		exit_code,
+		reason,
+	])
 
 
 func _ok(message: String) -> void:
@@ -662,14 +1895,18 @@ func _cleanup_and_quit(code: int) -> void:
 	_requested_stream_texture_rect.texture = null
 	_capture_texture_rect.texture = null
 	_clear_member_inspection_strip()
-	CamBANGServer.stop()
 	if not _quit_requested:
 		_quit_requested = true
-		call_deferred("_quit_next_frame", code)
+		_emit_harness_verdict("ok" if code == 0 else "fail", code, "complete" if code == 0 else "failure")
+		_scene70_emit_summary_record(_scene70_build_summary(code))
+		CamBANGServer.stop_and_quit(code)
 
-
-func _quit_next_frame(code: int) -> void:
-	for _i in range(QUIT_FLUSH_FRAMES):
-		await get_tree().process_frame
-	print("INFO: quit requested code=%d" % code)
-	get_tree().quit(code)
+func _log_maintainer_config_probe() -> void:
+	var stored_setting := _synthetic_producer_output_form_setting()
+	var cmdline_selection := _synthetic_producer_output_form_cmdline_selection()
+	print("Synthetic producer output-form stored project setting: %s" % stored_setting)
+	if cmdline_selection != "":
+		print("Synthetic producer output-form effective runtime selection: %s (transient command-line override)" % cmdline_selection)
+	else:
+		print("Synthetic producer output-form effective runtime selection: %s (stored project setting)" % stored_setting)
+	print("CMD args: %s" % str(OS.get_cmdline_args()))

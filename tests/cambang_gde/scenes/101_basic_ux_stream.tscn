@@ -1,0 +1,364 @@
+[gd_scene load_steps=4 format=3 uid="uid://bqius85f2n78h"]
+
+[ext_resource type="Script" uid="uid://djv2vyhmruoh2" path="res://addons/cambang/cambang_status_panel.gd" id="1_bdgjy"]
+
+[sub_resource type="GDScript" id="GDScript_xnvps"]
+resource_name = "100_control"
+script/source = "extends Control
+const WAIT_BEFORE_QUIT = 1.0
+const METRICS_SAMPLE_INTERVAL_S = 1.0
+
+#var capture_profile_00 : Dictionary = {
+	#\"width\": 1280,
+	#\"height\": 720,
+	#\"format_fourcc\": 0x00000020, # use the project/provider FOURCC value you intend
+	#\"still_image_bundle\": {
+		#\"members\": [
+			#{
+				#\"image_member_index\": 0,
+				#\"role\": \"DEFAULT_METERED\",
+				#\"intended_exposure_compensation_milli_ev\": 0,
+			#},
+		#],
+	#},
+#}
+
+var capture_profile_00 : Dictionary = {
+	\"width\": 64,
+	\"height\": 64,
+	\"still_image_bundle\": {
+		\"members\": [
+			{
+				\"image_member_index\": 0,
+				\"role\": \"DEFAULT_METERED\",
+				\"intended_exposure_compensation_milli_ev\": 0,
+			},
+		],
+	},
+}
+
+var capture_profile_bun : Dictionary = {
+	\"still_image_bundle\": {
+		\"members\": [
+		{
+			\"image_member_index\": 0,
+			\"role\": CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED,
+			\"intended_exposure_compensation_milli_ev\": 0,
+		},
+		{
+			\"image_member_index\": 1,
+			\"role\": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			\"intended_exposure_compensation_milli_ev\": -1000,
+		},
+		{
+			\"image_member_index\": 2,
+			\"role\": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			\"intended_exposure_compensation_milli_ev\": 1000,
+		},
+	]
+	},
+}
+#var device_roster : Array[CamBANGDevice] = [CamBANGDevice.new()]
+var _metrics_sample_elapsed_s := 0.0
+var _last_metrics_snapshot: Dictionary = {}
+var _first_bind_trace_emitted := false
+
+func _make_still_image_bundle_members() -> Array:
+	return [
+		{
+			\"image_member_index\": 0,
+			\"role\": CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED,
+			\"intended_exposure_compensation_milli_ev\": 0,
+		},
+		{
+			\"image_member_index\": 1,
+			\"role\": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			\"intended_exposure_compensation_milli_ev\": -1000,
+		},
+		{
+			\"image_member_index\": 2,
+			\"role\": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			\"intended_exposure_compensation_milli_ev\": 1000,
+		},
+	]
+
+func _metrics_delta_u64(curr: Dictionary, key: String) -> int:
+	var c := int(curr.get(key, 0))
+	var p := int(_last_metrics_snapshot.get(key, 0))
+	if c < p:
+		return c
+	return c - p
+
+func _metrics_delta_f(curr: Dictionary, key: String) -> float:
+	var c := float(curr.get(key, 0.0))
+	var p := float(_last_metrics_snapshot.get(key, 0.0))
+	if c < p:
+		return c
+	return c - p
+
+func _backing_plan_report_summary(metrics: Dictionary) -> String:
+	var reports_v: Variant = metrics.get(\"backing_plan_evaluation_reports\", [])
+	if typeof(reports_v) != TYPE_ARRAY:
+		return \"stream_reports=0 active_stream_evaluators=0\"
+	var reports: Array = reports_v
+	var stream_reports := 0
+	var active_stream_evaluators := 0
+	for report_v in reports:
+		if typeof(report_v) != TYPE_DICTIONARY:
+			continue
+		var report: Dictionary = report_v
+		if str(report.get(\"parent_kind\", \"\")) != \"stream\":
+			continue
+		stream_reports += 1
+		if bool(report.get(\"evaluator_active\", false)):
+			active_stream_evaluators += 1
+	return \"stream_reports=%d active_stream_evaluators=%d\" % [stream_reports, active_stream_evaluators]
+
+func _display_path_kind_name(path_kind: int) -> String:
+	match path_kind:
+		CamBANGStreamResult.DISPLAY_PATH_RETAINED_GPU_BACKING:
+			return \"retained_gpu_backing\"
+		CamBANGStreamResult.DISPLAY_PATH_STREAM_LIVE_CPU_DISPLAY_VIEW:
+			return \"stream_live_cpu_display_view\"
+		_:
+			return \"none\"
+
+func _find_stream_backing_plan_report(metrics: Dictionary, stream_id: int) -> Dictionary:
+	var reports_v: Variant = metrics.get(\"backing_plan_evaluation_reports\", [])
+	if typeof(reports_v) != TYPE_ARRAY:
+		return {}
+	var reports: Array = reports_v
+	for report_v in reports:
+		if typeof(report_v) != TYPE_DICTIONARY:
+			continue
+		var report: Dictionary = report_v
+		if str(report.get(\"target_kind\", \"\")) != \"stream\":
+			continue
+		if int(report.get(\"stream_id\", 0)) != stream_id:
+			continue
+		return report
+	return {}
+
+func _plan_posture_is_gpu(posture: String) -> bool:
+	return posture.begins_with(\"GPU-primary\")
+
+func _warn_on_suspicious_first_stream_bind(stream: CamBANGStream, result: CamBANGStreamResult) -> void:
+	if _first_bind_trace_emitted:
+		return
+	var metrics: Dictionary = {}
+	if CamBANGServer.has_method(\"get_synthetic_metrics_snapshot\"):
+		var snap_v: Variant = CamBANGServer.get_synthetic_metrics_snapshot()
+		if typeof(snap_v) == TYPE_DICTIONARY:
+			metrics = snap_v
+	var report := _find_stream_backing_plan_report(metrics, int(stream.get_stream_id()))
+	var requested: Dictionary = report.get(\"requested\", {}) if not report.is_empty() else {}
+	var steady: Dictionary = report.get(\"steady\", {}) if not report.is_empty() else {}
+	var decision_selected: Dictionary = report.get(\"decision_selected\", {}) if not report.is_empty() else {}
+	var display_view_path := _display_path_kind_name(int(result.get_display_view_path_kind()))
+	var requested_posture := str(requested.get(\"posture\", \"\"))
+	var steady_posture := str(steady.get(\"posture\", \"\"))
+	var decision_selected_posture := str(decision_selected.get(\"posture\", \"\"))
+	var gpu_expected := false
+	if int(result.get_payload_kind()) == 2:
+		gpu_expected = true
+	elif _plan_posture_is_gpu(decision_selected_posture):
+		gpu_expected = true
+	elif _plan_posture_is_gpu(steady_posture):
+		gpu_expected = true
+	elif _plan_posture_is_gpu(requested_posture):
+		gpu_expected = true
+	if not gpu_expected or display_view_path == \"retained_gpu_backing\":
+		return
+	_first_bind_trace_emitted = true
+	var bind_line := \"[WARNING][CamBANG][Scene101BindTrace] stream_id=%d result_live=%s payload_kind=%d can_get_display_view=%d display_view_path=%s report_present=%s evaluator_active=%s current_candidate_index=%d requested=%s steady=%s completion_reason=%s decision_from_evaluation=%s decision_selected=%s\" % [
+		int(stream.get_stream_id()),
+		str(stream.result_live),
+		int(result.get_payload_kind()),
+		int(result.can_get_display_view()),
+		display_view_path,
+		str(not report.is_empty()),
+		str(bool(report.get(\"evaluator_active\", false))),
+		int(report.get(\"current_candidate_index\", -1)),
+		requested_posture,
+		steady_posture,
+		str(report.get(\"completion_reason\", \"\")),
+		str(bool(report.get(\"decision_from_evaluation\", false))),
+		decision_selected_posture,
+	]
+	print(bind_line)
+	push_warning(bind_line)
+
+func _sample_synthetic_metrics(note: String) -> void:
+	if not CamBANGServer.has_method(\"get_synthetic_metrics_snapshot\"):
+		return
+	var snap_v: Variant = CamBANGServer.get_synthetic_metrics_snapshot()
+	if typeof(snap_v) != TYPE_DICTIONARY:
+		return
+	var snap: Dictionary = snap_v
+	var line := \"[CamBANG][Scene101Metrics] note=%s frames_delta=%d gpu_update_attempts_delta=%d gpu_update_demand_skipped_delta=%d gpu_texture_update_calls_delta=%d frame_copy_calls_delta=%d cpu_display_refresh_attempts_delta=%d cpu_display_refresh_updated_delta=%d cpu_display_refresh_live_attempts_delta=%d cpu_display_refresh_live_updated_delta=%d cpu_display_refresh_ephemeral_attempts_delta=%d cpu_display_refresh_ephemeral_updated_delta=%d cpu_display_refresh_total_ms_delta=%.3f cpu_display_refresh_update_ms_delta=%.3f cpu_display_refresh_live_total_ms_delta=%.3f cpu_display_refresh_live_update_ms_delta=%.3f cpu_display_refresh_ephemeral_total_ms_delta=%.3f cpu_display_refresh_ephemeral_update_ms_delta=%.3f frame_render_total_ms_delta=%.3f gpu_update_total_total_ms_delta=%.3f live_retained_calibration_arm_total_ms_delta=%.3f live_retained_calibration_observe_stream_total_ms_delta=%.3f live_retained_calibration_observe_capture_total_ms_delta=%.3f live_retained_calibration_process_total_ms_delta=%.3f %s\" % [
+		note,
+		_metrics_delta_u64(snap, \"total_emitted_frames\"),
+		_metrics_delta_u64(snap, \"gpu_update_attempts\"),
+		_metrics_delta_u64(snap, \"gpu_update_demand_skipped\"),
+		_metrics_delta_u64(snap, \"gpu_texture_update_calls\"),
+		_metrics_delta_u64(snap, \"frame_copy_calls\"),
+		_metrics_delta_u64(snap, \"cpu_display_refresh_attempts\"),
+		_metrics_delta_u64(snap, \"cpu_display_refresh_updated\"),
+		_metrics_delta_u64(snap, \"cpu_display_refresh_live_attempts\"),
+		_metrics_delta_u64(snap, \"cpu_display_refresh_live_updated\"),
+		_metrics_delta_u64(snap, \"cpu_display_refresh_ephemeral_attempts\"),
+		_metrics_delta_u64(snap, \"cpu_display_refresh_ephemeral_updated\"),
+		_metrics_delta_f(snap, \"cpu_display_refresh_total_ms\"),
+		_metrics_delta_f(snap, \"cpu_display_refresh_update_ms\"),
+		_metrics_delta_f(snap, \"cpu_display_refresh_live_total_ms\"),
+		_metrics_delta_f(snap, \"cpu_display_refresh_live_update_ms\"),
+		_metrics_delta_f(snap, \"cpu_display_refresh_ephemeral_total_ms\"),
+		_metrics_delta_f(snap, \"cpu_display_refresh_ephemeral_update_ms\"),
+		_metrics_delta_f(snap, \"frame_render_total_ms\"),
+		_metrics_delta_f(snap, \"gpu_update_total_total_ms\"),
+		_metrics_delta_f(snap, \"live_retained_calibration_arm_total_ms\"),
+		_metrics_delta_f(snap, \"live_retained_calibration_observe_stream_total_ms\"),
+		_metrics_delta_f(snap, \"live_retained_calibration_observe_capture_total_ms\"),
+		_metrics_delta_f(snap, \"live_retained_calibration_process_total_ms\"),
+		_backing_plan_report_summary(snap),
+	]
+	print(line)
+	%SceneInfoText.text = line
+	_last_metrics_snapshot = snap.duplicate(true)
+
+
+func _ready():
+	CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC)
+	var endpoints: Array = CamBANGServer.enumerate_devices()
+	if endpoints.is_empty():
+		push_error(\"KERR No CamBANG endpoints\")
+		return
+
+	var endpoint = endpoints[0]
+	print(\"ENDPOINTS: \", endpoints)
+	if typeof(endpoint) != TYPE_DICTIONARY:
+		push_error(\"KERR Endpoint entry was not a Dictionary\")
+		return
+
+	var hardware_id: String = str(endpoint.get(\"hardware_id\", \"\"))
+	if hardware_id.is_empty():
+		push_error(\"KERR Endpoint had no hardware_id\")
+		return
+		
+	var device_00 : CamBANGDevice = CamBANGServer.get_device_for_hardware_id(\"synthetic:0\")
+	#var device_01 : CamBANGDevice = CamBANGServer.get_device_for_hardware_id(\"synthetic:1\")
+
+	device_00.engage()
+	#device_01.engage()
+
+	while not device_00.live:
+		await device_00.live_changed
+	
+	#var stream_00 : CamBANGStream = device_00.create_stream()
+	var stream_00 : CamBANGStream = device_00.create_stream(({
+	\"intent\": CamBANGStream.INTENT_VIEWFINDER,
+	\"profile\": {
+		\"width\": 1280,
+		\"height\": 720,
+		\"format_fourcc\": CamBANGServer.PIXEL_FORMAT_RGBA,
+		\"target_fps_min\": 30,
+		\"target_fps_max\": 30,
+	}
+}))
+	var stream_00_b : CamBANGStream = device_00.create_stream()
+
+	
+	stream_00.start()
+	#stream_00_b.start()
+
+	_sample_synthetic_metrics(\"after_start\")
+	while not stream_00.result_live:
+		await stream_00.result_live_changed
+	var stream_result := stream_00.get_result()
+	if stream_result == null:
+		push_error(\"KERR stream result unexpectedly null after result_live\")
+		return
+	_warn_on_suspicious_first_stream_bind(stream_00, stream_result)
+	%StreamDisplayTexture.texture = stream_result.get_display_view()
+
+
+func _process(delta: float) -> void:
+	_metrics_sample_elapsed_s += delta
+	if _metrics_sample_elapsed_s < METRICS_SAMPLE_INTERVAL_S:
+		return
+	_metrics_sample_elapsed_s = 0.0
+	_sample_synthetic_metrics(\"periodic\")
+
+func _do_teardown():
+	# some stuff
+	await get_tree().create_timer(WAIT_BEFORE_QUIT).timeout
+
+	get_tree().quit()
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo:
+		var key_event := event as InputEventKey
+		if key_event.keycode == KEY_ESCAPE:
+			%SceneInfoText.text += \"Esc pressed; quitting scene\\n\"
+			_do_teardown()
+	
+"
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_bdgjy"]
+bg_color = Color(0.07, 0.09, 0.12, 0.9)
+corner_radius_top_left = 6
+corner_radius_top_right = 6
+corner_radius_bottom_right = 6
+corner_radius_bottom_left = 6
+
+[node name="101_basic_ux_demo" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+script = SubResource("GDScript_xnvps")
+
+[node name="MarginContainer" type="MarginContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer"]
+layout_mode = 2
+
+[node name="Panel" type="Panel" parent="MarginContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="StreamDisplayTexture" type="TextureRect" parent="MarginContainer/VBoxContainer/Panel"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(800, 600)
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 40.0
+
+[node name="CamBANGStatusPanel" type="PanelContainer" parent="MarginContainer/VBoxContainer"]
+custom_minimum_size = Vector2(320, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/panel = SubResource("StyleBoxFlat_bdgjy")
+script = ExtResource("1_bdgjy")
+metadata/_custom_type_script = "uid://djv2vyhmruoh2"
+
+[node name="SceneInfoPanel" type="Panel" parent="MarginContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.1
+
+[node name="SceneInfoText" type="Label" parent="MarginContainer/VBoxContainer/SceneInfoPanel"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 23.0

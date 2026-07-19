@@ -7,6 +7,9 @@
 #include <string>
 #include <vector>
 
+#include "core/capture_admission_context.h"
+#include "core/camera_fact_types.h"
+
 // Pattern preset vocabulary is provider-agnostic and lives in the Pattern Module.
 // It is safe to depend on here (no platform headers).
 #include "pixels/pattern/pattern_registry.h"
@@ -48,6 +51,11 @@ enum class ProviderError : uint32_t {
   ERR_TRANSIENT_FAILURE,
   ERR_PROVIDER_FAILED,
   ERR_SHUTTING_DOWN,
+  // Deadline exceeded before a terminal capture fact arrived. Used by Core's
+  // own capture-admission watchdog (see icamera_provider.h's
+  // capture_admission_watchdog_timeout_ns()); also available for a provider
+  // to return directly for a genuine hardware-timeout failure.
+  ERR_TIMEOUT,
 };
 
 
@@ -60,9 +68,41 @@ enum class ProducerBackingKind : uint8_t {
   GPU = 1,
 };
 
+enum class CoreProductionPostureShape : uint8_t {
+  CpuPrimary = 0,
+  GpuPrimaryNoCpuSidecar = 1,
+  GpuPrimaryWithCpuSidecar = 2,
+};
+
+struct CoreRetainedProductionPlan {
+  CoreProductionPostureShape posture = CoreProductionPostureShape::CpuPrimary;
+  bool valid = false;
+
+  constexpr bool primary_cpu() const noexcept { return posture == CoreProductionPostureShape::CpuPrimary; }
+  constexpr bool primary_gpu() const noexcept { return posture != CoreProductionPostureShape::CpuPrimary; }
+  constexpr bool retain_cpu_sidecar() const noexcept {
+    return posture == CoreProductionPostureShape::CpuPrimary ||
+           posture == CoreProductionPostureShape::GpuPrimaryWithCpuSidecar;
+  }
+  constexpr bool retain_gpu_display() const noexcept { return primary_gpu(); }
+};
+
 struct ProducerBackingCapabilities {
   bool cpu_backed_available = false;
   bool gpu_backed_available = false;
+  bool gpu_with_cpu_sidecar_available = false;
+
+  constexpr bool viable(CoreProductionPostureShape posture) const noexcept {
+    switch (posture) {
+      case CoreProductionPostureShape::CpuPrimary:
+        return cpu_backed_available;
+      case CoreProductionPostureShape::GpuPrimaryNoCpuSidecar:
+        return gpu_backed_available;
+      case CoreProductionPostureShape::GpuPrimaryWithCpuSidecar:
+        return gpu_backed_available && gpu_with_cpu_sidecar_available;
+    }
+    return false;
+  }
 };
 
 // Deterministic result for provider method calls.
@@ -258,6 +298,12 @@ struct StreamRequest {
   PictureConfig picture{};
 
   uint64_t profile_version = 0;      // core bookkeeping
+  CoreRetainedProductionPlan requested_retained_plan{}; // core-selected internal production posture
+};
+
+enum class CaptureSubmissionOrigin : uint8_t {
+  DEVICE_CAPTURE = 0,
+  RIG_CAPTURE = 1,
 };
 
 // Normalized still capture request (validated by core).
@@ -266,6 +312,8 @@ struct CaptureRequest {
   uint64_t device_instance_id = 0;   // core-issued
 
   uint64_t rig_id = 0;               // 0 if not a rig capture
+  bool has_admission_context = false;
+  CaptureAdmissionContext admission_context{};
 
   uint32_t width = 0;
   uint32_t height = 0;
@@ -278,6 +326,17 @@ struct CaptureRequest {
   CaptureStillImageBundle still_image_bundle{};
 
   uint64_t profile_version = 0;      // core bookkeeping
+  CoreRetainedProductionPlan requested_retained_plan{}; // core-selected internal production posture
+};
+
+// Normalized provider capture submission. A device capture is represented as a
+// one-device submission; a rig capture is represented as one grouped submission
+// containing all admitted member-device requests for a shared capture_id/rig_id.
+struct CaptureSubmission {
+  uint64_t capture_id = 0;
+  CaptureSubmissionOrigin origin = CaptureSubmissionOrigin::DEVICE_CAPTURE;
+  uint64_t rig_id = 0;
+  std::vector<CaptureRequest> device_requests{};
 };
 
 // Opaque spec patch payload (core-validated).
@@ -311,23 +370,6 @@ struct NativeObjectDestroyInfo {
   uint64_t destroyed_ns = 0;              // provider value (0 is valid when has_destroyed_ns=true)
 };
 
-// Provider-agnostic capture timestamp.
-// See provider_architecture.md §7.x (canonical).
-enum class CaptureTimestampDomain : uint8_t {
-  PROVIDER_MONOTONIC = 0,
-  CORE_MONOTONIC = 1,
-  // NOTE: Avoid the Windows GDI macro `OPAQUE` (commonly defined as 2 via wingdi.h)
-  // which can break compilation when <windows.h> is included before this header.
-  // Semantics remain "opaque / ordering-only" as described in provider_architecture.md.
-  DOMAIN_OPAQUE = 2,
-};
-
-struct CaptureTimestamp {
-  uint64_t value = 0;     // integer tick value
-  uint32_t tick_ns = 0;   // tick period in nanoseconds (1 = ns, 100 = 100ns, etc.)
-  CaptureTimestampDomain domain = CaptureTimestampDomain::DOMAIN_OPAQUE;
-};
-
 // Internal still-capture image routing marker (provider -> core).
 //
 // Default-initialized and legacy-populated frames remain DEFAULT_METERED.
@@ -344,6 +386,25 @@ struct CaptureImageFrameMetadata {
   int32_t applied_exposure_compensation_milli_ev = 0;
   bool has_realized_exposure_compensation_milli_ev = false;
   int32_t realized_exposure_compensation_milli_ev = 0;
+};
+
+// Neutral description of a retained GPU backing. This struct intentionally
+// carries only scalar identity, shape, and capability facts so provider/core
+// metadata can describe GPU-backed frames without exposing rendering-resource
+// ownership details to CoreResultStore or Godot-facing result objects.
+struct RetainedGpuBackingDescriptor {
+  bool valid = false;
+  uint64_t stream_id = 0;
+  // Opaque provider-scoped backing identity or generation. Zero means the
+  // provider/core path knows a GPU backing exists but has no scalar identity.
+  uint64_t backing_id = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t stride_bytes = 0;
+  uint32_t format_fourcc = 0;
+  bool display_available = false;
+  bool materialization_available = false;
+  bool materialization_requires_gpu_readback = false;
 };
 
 // Frame view delivered from provider.
@@ -363,21 +424,57 @@ struct FrameView {
   uint32_t format_fourcc = 0;
   ProducerBackingKind primary_backing_kind = ProducerBackingKind::CPU;
 
-  // Timing
-  CaptureTimestamp capture_timestamp{};
+  // Optional provider-authored timing for this exact acquired frame. A present
+  // zero-valued acquisition mark is valid and remains distinct from absence.
+  std::optional<SourcedFact<ImageAcquisitionTiming>> acquisition_timing{};
 
   // Buffer
   const uint8_t* data = nullptr;
   size_t size_bytes = 0;
+  // Internal provider->Core retention intent for CPU bytes. This distinguishes
+  // CPU bytes deliberately published for primary/sidecar retention from
+  // provider-local staging/upload details. CPU-primary frames with CPU payload
+  // are still retained as primary by Core; GPU-primary frames retain CPU sidecar
+  // data only when this remains true.
+  bool retain_cpu_sidecar = true;
+  // Optional immutable owner for tightly packed CPU payload bytes. Providers may
+  // set this only when the pointed-to vector exactly backs data/size_bytes and
+  // will not be mutated after posting. Core may then retain/adopt the shared
+  // payload instead of copying it. release_now() still releases provider-side
+  // frame bookkeeping; this shared owner is the retained-result byte lifetime.
+  std::shared_ptr<const std::vector<uint8_t>> cpu_payload_owner{};
   // Optional opaque primary artifact for non-CPU-backed frames.
   // For ProducerBackingKind::GPU this carries the authoritative provider->core
   // primary backing when available.
   std::shared_ptr<void> primary_backing_artifact{};
+  // Neutral metadata for the primary GPU backing above. This tranche keeps the
+  // legacy primary_backing_artifact path authoritative for behavior; the
+  // descriptor is passive scaffolding for later resource-ownership isolation.
+  RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
+  // Echo of the Core-requested internal retention posture that produced this frame.
+  CoreRetainedProductionPlan requested_retained_plan{};
 
   // Optional per-row stride (0 if tightly packed/unknown)
   uint32_t stride_bytes = 0;
 
-  // Release hook
+  // Release hook.
+  //
+  // THREADING (load-bearing, not an implementation detail): release() has no
+  // fixed thread affinity relative to the thread that called on_frame() to
+  // deliver this frame, and the calling thread differs by outcome:
+  //   - Normal path: once Core has finished with the frame (consumed/retained
+  //     it, or is dropping it after successful ingress), release() is invoked
+  //     from Core's own dedicated core thread -- NOT the Provider thread that
+  //     delivered the frame.
+  //   - Ingress-failure path (Core could not accept the frame, e.g. queue
+  //     full or closing): release() is invoked synchronously, still inside
+  //     the Provider's own on_frame() call, on whatever thread the Provider
+  //     used to call on_frame().
+  // A Provider's release callback MUST therefore be safe to invoke from a
+  // thread other than the one that produced the frame, and must not assume
+  // any particular thread/context affinity (e.g. a GPU context or buffer-pool
+  // API that requires same-thread symmetry with acquisition is NOT safe to
+  // drive directly from this callback without its own internal marshalling).
   using ReleaseFn = void (*)(void* user, const FrameView* frame);
   ReleaseFn release = nullptr;
   void* release_user = nullptr;

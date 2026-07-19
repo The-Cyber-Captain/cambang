@@ -4,6 +4,7 @@
 #include <atomic>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <string>
 
 #include "imaging/api/provider_contract_datatypes.h"
@@ -14,6 +15,7 @@
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/string.hpp>
+#include <godot_cpp/variant/typed_array.hpp>
 #include <godot_cpp/variant/variant.hpp>
 
 #include "core/core_runtime.h"
@@ -38,7 +40,6 @@ namespace cambang {
 class CamBANGStreamResult;
 class CamBANGStream;
 class CamBANGCaptureResult;
-class CamBANGCaptureResultSet;
 class CamBANGDevice;
 class CamBANGRig;
 
@@ -83,6 +84,10 @@ public:
   static constexpr int TIMELINE_RECONCILIATION_COMPLETION_GATED = 0;
   static constexpr int TIMELINE_RECONCILIATION_STRICT = 1;
 
+  // Public CamBANG FourCC-style pixel format constants for Godot Dictionary profile fields.
+  static constexpr int PIXEL_FORMAT_RGBA = static_cast<int>(FOURCC_RGBA);
+  static constexpr int PIXEL_FORMAT_BGRA = static_cast<int>(FOURCC_BGRA);
+
   // User-facing control of core processing.
   godot::Error start(
       const godot::Variant& provider_kind = godot::Variant(),
@@ -90,13 +95,17 @@ public:
       const godot::Variant& timing_driver = godot::Variant(),
       const godot::Variant& timeline_reconciliation = godot::Variant());
   void stop();
+  void stop_and_quit(int64_t exit_code = 0);
   bool is_running() const;
 
   godot::Variant get_active_provider_config() const;
+  godot::Dictionary get_provider_support() const;
   godot::Variant get_synthetic_metrics_snapshot() const;
 
   godot::Error select_builtin_scenario(const godot::String& scenario_name);
   godot::Error load_external_scenario(const godot::String& json_text);
+  godot::Error ingest_camera_description(const godot::String& json_text);
+  godot::Error set_capture_geolocation(const godot::Dictionary& geolocation);
   godot::Error start_scenario();
   godot::Error stop_scenario();
   godot::Error set_timeline_paused(bool paused);
@@ -114,11 +123,18 @@ public:
   godot::Ref<CamBANGRig> get_rig(uint64_t rig_id) const;
   godot::Ref<CamBANGStreamResult> get_stream_result_by_stream_id(uint64_t stream_id) const;
   godot::Ref<CamBANGCaptureResult> get_capture_result_by_id(uint64_t capture_id, uint64_t device_instance_id) const;
-  godot::Ref<CamBANGCaptureResultSet> get_capture_result_set_by_id(uint64_t capture_id) const;
+  uint64_t get_latest_capture_id_for_device(uint64_t device_instance_id) const;
+  godot::TypedArray<CamBANGCaptureResult> get_capture_result_set_by_id(uint64_t capture_id) const;
+  void report_capture_result_member_observation(
+      const SharedCaptureResultData& data,
+      uint32_t image_member_index) const;
   void mark_stream_display_demand(uint64_t stream_id);
   void retain_stream_display_demand(uint64_t stream_id);
   void release_stream_display_demand(uint64_t stream_id);
-  uint64_t trigger_device_capture(uint64_t device_instance_id);
+  void release_stream_display_demand_async(uint64_t stream_id);
+  godot::Error trigger_device_capture(
+      uint64_t device_instance_id,
+      uint64_t& out_capture_id);
   godot::Error set_device_still_capture_profile(uint64_t device_instance_id,
                                                 const CaptureProfile& profile,
                                                 const CaptureStillImageBundle& still_image_bundle);
@@ -132,7 +148,9 @@ public:
   bool get_endpoint_capture_template_profile(const godot::String& hardware_id, CaptureProfile& out_profile) const;
   godot::Error engage_endpoint_handle(const godot::String& hardware_id, const godot::String& display_name);
   godot::Error disengage_endpoint_handle(const godot::String& hardware_id);
-  godot::Ref<CamBANGStream> create_stream_for_endpoint_hardware_id(const godot::String& hardware_id);
+  godot::Ref<CamBANGStream> create_stream_for_endpoint_hardware_id(
+      const godot::String& hardware_id,
+      const godot::Variant& definition);
   godot::Error destroy_direct_stream_handle(uint64_t stream_id,
                                             const godot::String& hardware_id,
                                             uint64_t device_instance_id);
@@ -148,12 +166,26 @@ protected:
   static void _bind_methods();
 
 private:
+  friend class CamBANGDevice;
+  friend class CamBANGStream;
   friend class CamBANGRig;
   // Called on the Godot main thread via the SceneTree "process_frame" signal.
   void _on_godot_process_frame();
 
   // Core tick handler (Godot main thread) invoked by _on_godot_process_frame().
   void _on_godot_tick(double delta);
+  void _arm_live_retained_result_access_calibration_from_snapshot_(
+      uint64_t now_ns,
+      const std::vector<CoreBackingPlanEvaluationReport>& backing_plan_reports);
+  void _observe_active_stream_evaluation_calibration_identities_(
+      uint64_t now_ns,
+      const std::vector<CoreBackingPlanEvaluationReport>& backing_plan_reports);
+  void _observe_active_capture_evaluation_calibration_identities_(
+      uint64_t now_ns,
+      const std::vector<CoreBackingPlanEvaluationReport>& backing_plan_reports);
+  void _process_armed_live_retained_result_access_calibration_(uint64_t now_ns);
+  void _clear_live_retained_result_access_calibration_state_();
+  void _drain_pending_stop_and_quit_();
   void _reconcile_endpoint_lifecycle_from_snapshot(const CamBANGStateSnapshot& snap);
 
   // Consume latest core snapshot (if published_seq advanced) and emit
@@ -171,6 +203,13 @@ private:
   void _drain_pending_endpoint_startup_intents_after_baseline_();
   godot::Error _start_scenario_now_();
   void _drain_pending_scenario_start_after_baseline_();
+  void _refresh_tracked_wrapper_live_states_from_snapshot_();
+  void _set_all_tracked_wrapper_live_states_false_();
+  bool _is_device_live_by_identity_(const godot::String& hardware_id,
+                                    uint64_t device_instance_id) const;
+  bool _is_stream_result_live_by_identity_(uint64_t stream_id) const;
+  void register_tracked_device_wrapper_(uint64_t wrapper_object_id);
+  void register_tracked_stream_wrapper_(uint64_t wrapper_object_id);
 
   static CamBANGServer* singleton_;
 
@@ -207,6 +246,7 @@ private:
   uint64_t accepted_min_gen_ = 0;
 
   void _ensure_tick_connected();
+  void _disconnect_tick_if_connected_();
   godot::Error _start_with_provider_config(
       RuntimeMode mode,
       SyntheticRole synthetic_role,
@@ -218,11 +258,56 @@ private:
       TimingDriver timing_driver);
 
   // Server-internal helper for rig-trigger orchestration (not Godot-bound).
-  uint64_t trigger_rig_capture_internal_(uint64_t rig_id);
+  // capture_id == 0 means the trigger was rejected and `error` carries the
+  // mapped public result: ERR_UNCONFIGURED for the ImagingSpec admission-gate
+  // categories (missing/rejected camera-concurrency truth -- a permanent
+  // configuration gap the caller must fix via ingest_camera_description()),
+  // ERR_BUSY for every other category (tranche 7 deliberately maps only the
+  // configuration gate; see docs/dev/current_tranche.md at that date).
+  struct RigTriggerInternalResult {
+    uint64_t capture_id = 0;
+    godot::Error error = godot::ERR_BUSY;
+  };
+  RigTriggerInternalResult trigger_rig_capture_internal_(uint64_t rig_id);
+  // One-shot per runtime session: the first rejected rig trigger logs its
+  // concrete orchestration failure category so collapsed public codes stay
+  // self-describing in the log. Reset on start().
+  bool rig_trigger_rejection_logged_ = false;
 
   // SceneTree tick hook state.
   bool tick_connected_ = false;
   uint64_t last_tick_time_ns_ = 0;
+
+  struct ArmedLiveStreamRetainedResultCalibration {
+    uint64_t stream_id = 0;
+    uint64_t posture_id = 0;
+    uint64_t evaluation_identity = 0;
+    ResultCapability display_view = ResultCapability::UNSUPPORTED;
+    ResultCapability to_image = ResultCapability::UNSUPPORTED;
+    uint64_t due_after_ns = 0;
+  };
+  struct ArmedLiveCaptureRetainedResultCalibration {
+    uint64_t device_instance_id = 0;
+    uint64_t capture_id = 0;
+    uint64_t acquisition_session_id = 0;
+    uint64_t member_identity_signature = 0;
+    uint64_t evaluation_identity = 0;
+    uint64_t due_after_ns = 0;
+  };
+  std::unordered_map<uint64_t, ArmedLiveStreamRetainedResultCalibration>
+      pending_live_stream_retained_result_calibrations_;
+  std::unordered_map<uint64_t, ArmedLiveStreamRetainedResultCalibration>
+      completed_live_stream_retained_result_calibrations_;
+  std::unordered_map<uint64_t, ArmedLiveCaptureRetainedResultCalibration>
+      pending_live_capture_retained_result_calibrations_;
+  std::unordered_map<uint64_t, ArmedLiveCaptureRetainedResultCalibration>
+      completed_live_capture_retained_result_calibrations_;
+
+  // Editor/debugger diagnostic flush workaround for stop_and_quit().
+  static constexpr uint32_t kEditorDiagnosticQuitFlushFrames = 30;
+  bool pending_stop_and_quit_ = false;
+  uint32_t pending_stop_and_quit_frames_remaining_ = 0;
+  int pending_stop_and_quit_exit_code_ = 0;
 
   void _refresh_timeline_teardown_trace_mode();
   void _handle_timeline_teardown_trace_line(const std::string& line);
@@ -234,6 +319,14 @@ private:
   bool strict_scenario_unmet_logged_ = false;
 
   bool scenario_config_staged_for_session_ = false;
+  struct SyntheticStreamResultObservation {
+    uint64_t retained_frame_id = 0;
+    uint64_t revision = 0;
+  };
+  // Scenario-only metrics state. It deliberately exposes an opaque revision,
+  // never a retained-frame identity, through the synthetic diagnostics seam.
+  mutable std::map<uint64_t, SyntheticStreamResultObservation>
+      synthetic_stream_result_observations_;
   bool pending_scenario_start_after_baseline_ = false;
   uint64_t pending_scenario_start_session_id_ = 0;
   bool pending_timeline_pause_after_scenario_start_ = false;
@@ -275,6 +368,9 @@ private:
   };
   std::unordered_map<std::string, EndpointLifecycleState> endpoint_lifecycle_by_hardware_id_;
   std::unordered_map<uint64_t, godot::String> direct_stream_hardware_id_by_stream_id_;
+  std::unordered_map<uint64_t, uint64_t> latest_capture_id_by_device_instance_id_;
+  std::unordered_set<uint64_t> tracked_device_wrapper_object_ids_;
+  std::unordered_set<uint64_t> tracked_stream_wrapper_object_ids_;
 };
 
 } // namespace cambang

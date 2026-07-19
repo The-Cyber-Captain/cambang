@@ -18,11 +18,21 @@ namespace cambang {
 // - Exactly one dedicated CamBANG core thread owns all mutable core state.
 // - Core logic MUST execute only on the core thread.
 // - All external threads (providers, Godot, etc.) must marshal work into the core
-//   via post()/try_post() (and never touch core state directly).
+//   via post()/try_post()/try_post_essential() (and never touch core state directly).
 // - All tasks are executed serially (no concurrent core execution).
+// - FIFO ordering is guaranteed only relative to a single POSTING thread.
+//   Concurrent post()/try_post()/try_post_essential() calls from two different
+//   threads race for the internal queue lock; their relative arrival order in
+//   the queue (and therefore processing order) is undefined. This is why
+//   icamera_provider.h requires a Provider to invoke IProviderCallbacks from a
+//   single serialized callback context -- CoreThread cannot recover a
+//   Provider's real event order once two threads have posted concurrently.
 //
 // Determinism invariants:
-// - Tasks are executed in FIFO order.
+// - Essential tasks are drained before command tasks, which are drained before
+//   ordinary tasks; each queue preserves FIFO order. Ordinary work is drained in
+//   single-task deterministic slices so command work posted during provider/frame
+//   flow can be observed before the next ordinary task.
 // - There is no implicit background work; all work is explicit via post() or hook ticks.
 // - Hooks are invoked only on the core thread.
 //
@@ -33,12 +43,17 @@ namespace cambang {
 //
 // Mailbox hardening (Build slice C):
 // - The posted-task queue is bounded.
-// - try_post() is best-effort; it returns false if the queue is full.
+// - try_post() is best-effort; it returns QueueFull if bounded pending work is full.
 // - post() is best-effort and drops on overflow (accounted).
+// - try_post_command() uses the bounded command lane for Core-owned public/request
+//   work that must not sit behind frame/provider ordinary work.
+// - try_post_essential() uses a separate unbounded-by-kMaxPendingTasks queue for
+//   lifecycle/fact delivery that must not be lost merely because ordinary work is full.
 class CoreThread final {
 public:
-  // NOTE: std::function may allocate; acceptable for scaffolding.
-  // If/when this becomes a hot path, replace with a fixed-capacity mailbox payload.
+  // std::function construction may allocate. Public/noexcept command adapters
+  // must construct and enqueue Tasks inside an exception-to-status boundary;
+  // the mailbox can report AllocFail only after a Task reached try_post*().
   using Task = std::function<void()>;
 
   enum class PostResult : uint8_t {
@@ -50,6 +65,8 @@ public:
 
   struct Stats {
     uint64_t tasks_enqueued = 0;
+    uint64_t essential_tasks_enqueued = 0;
+    uint64_t command_tasks_enqueued = 0;
     uint64_t tasks_dropped_full = 0;
     uint64_t tasks_dropped_closed = 0;
     uint64_t tasks_dropped_allocfail = 0;
@@ -86,7 +103,21 @@ public:
   // Stop and join the core thread.
   // - safe to call multiple times
   // - guarantees the core thread has exited before returning
+  // - EXCEPTION: after abandon_wedged_thread() the join is skipped (the
+  //   thread was detached because it provably cannot be joined); see below.
   void stop();
+
+  // Terminal abandonment for a wedged core thread (a provider call that
+  // violated the prompt/bounded contract and never returned). Closes task
+  // admission, detaches the underlying std::thread, and marks the loop
+  // not-running so stop()/~CoreThread() cannot block forever on a join that
+  // would never complete. The thread and everything it references (core
+  // state, the provider) are deliberately leaked for the remainder of the
+  // process; callers must not destroy objects the wedged thread may still
+  // touch. This is a one-way door used only by CoreRuntime's
+  // core-thread-failed policy (docs/provider_implementation_brief.md,
+  // "When a provider violates promptness").
+  void abandon_wedged_thread() noexcept;
 
   // Request the core loop to stop (asynchronously) without joining.
   // Closes task admission once requested.
@@ -108,7 +139,20 @@ public:
   bool is_running() const { return running_.load(std::memory_order_acquire); }
 
   // Debug helper: returns true if called from the core thread.
-  bool is_core_thread() const noexcept { return std::this_thread::get_id() == core_tid_; }
+  bool is_core_thread() const noexcept {
+    return std::this_thread::get_id() == core_tid_.load(std::memory_order_acquire);
+  }
+
+  // Liveness primitive: nonzero (steady_clock ns since an arbitrary
+  // process-wide epoch) while a posted task or the timer-tick hook is
+  // currently executing inside thread_main(); zero when idle. Readable from
+  // any thread. This is mechanism only -- no threshold, logging, or abort
+  // policy lives here. See CoreRuntime::check_core_thread_liveness() for the
+  // policy layer that consumes it (docs/dev/current_tranche.md, Step 2:
+  // enforce the provider prompt/bounded contract).
+  uint64_t current_task_started_ns() const noexcept {
+    return current_task_started_ns_.load(std::memory_order_acquire);
+  }
 
   // Bounded mailbox capacity (number of pending tasks).
   static constexpr size_t kMaxPendingTasks = 1024;
@@ -123,14 +167,36 @@ public:
   // and have a bounded fallback path.
   void post(Task task);
 
-  // Best-effort post; returns a reason on failure.
+  // Best-effort ordinary post; returns a reason on failure.
   // - thread-safe
   // - does not block
   //
   // IMPORTANT:
-  // Use this for any pattern that would otherwise block waiting on completion.
-  // If enqueue fails (QueueFull/Closed/AllocFail), the task will never run.
+  // Use this for droppable/ordinary work. If enqueue fails
+  // (QueueFull/Closed/AllocFail), the task will never run.
   PostResult try_post(Task task);
+
+  // Best-effort command post; returns a reason on failure.
+  // - thread-safe
+  // - does not block
+  // - bounded together with ordinary work
+  // - drained after essential facts and before ordinary frame/provider work
+  //
+  // Use for Core-owned public/request command admission. This keeps posted
+  // commands from sitting behind an ordinary provider-frame backlog while
+  // preserving FIFO order within the command lane.
+  PostResult try_post_command(Task task);
+
+  // Essential post; returns a reason on failure.
+  // - thread-safe
+  // - not subject to kMaxPendingTasks ordinary queue-full rejection
+  // - drained before ordinary tasks
+  //
+  // Use only for non-lossy core facts (for example provider lifecycle, native,
+  // still-capture image facts, terminal capture, topology, and error truth).
+  // Repeating stream frame delivery must stay on try_post() so pressure can drop
+  // latest-state work and release provider payloads promptly.
+  PostResult try_post_essential(Task task);
 
   // Accounting-only helper for external lifecycle gating layers.
   // Increments the Closed drop counter and returns PostResult::Closed.
@@ -141,6 +207,11 @@ public:
   }
 
   Stats stats_copy() const noexcept;
+
+  // Thread-safe scheduler visibility for CoreRuntime timer-hook fairness.
+  // Returns true when command-lane work is queued but not yet drained into the
+  // current CoreThread pump.
+  bool has_pending_command_tasks() const;
 
   // Request an immediate timer tick (wakes the core thread promptly).
   // - thread-safe
@@ -159,25 +230,42 @@ public:
 private:
   void thread_main();
 
-  // Drain tasks into a local queue; mu_ must be held.
-  void drain_tasks_locked(std::deque<Task>& local);
+  // Drain tasks into local queues; mu_ must be held.
+  void drain_tasks_locked(std::deque<Task>& essential_local,
+                          std::deque<Task>& command_local,
+                          std::deque<Task>& ordinary_local);
+
+  // Mark/clear current_task_started_ns_ around each run_guarded(...) call in
+  // thread_main(). Called only from the core thread; current_task_started_ns_
+  // itself is atomic because it is read from other threads.
+  void mark_task_start_() noexcept;
+  void mark_task_end_() noexcept;
 
   // Synchronization
   mutable std::mutex mu_;
   std::condition_variable cv_;
 
   std::thread thread_;
-  std::thread::id core_tid_{};
+  // is_core_thread() is called from any thread without holding mu_; this must
+  // stay an atomic so its cross-thread read/write pair is not a data race.
+  std::atomic<std::thread::id> core_tid_{};
   IHooks* hooks_ = nullptr; // non-owning; must outlive stop()
 
-  // Work queue (protected by mu_).
+  // Work queues (protected by mu_).
+  std::deque<Task> essential_tasks_;
+  std::deque<Task> command_tasks_;
   std::deque<Task> tasks_;
 
   // Post accounting
   std::atomic<uint64_t> tasks_enqueued_{0};
+  std::atomic<uint64_t> essential_tasks_enqueued_{0};
+  std::atomic<uint64_t> command_tasks_enqueued_{0};
   std::atomic<uint64_t> tasks_dropped_full_{0};
   std::atomic<uint64_t> tasks_dropped_closed_{0};
   std::atomic<uint64_t> tasks_dropped_allocfail_{0};
+
+  // Liveness primitive backing current_task_started_ns(). 0 == idle.
+  std::atomic<uint64_t> current_task_started_ns_{0};
 
   // Stop / running flags
   std::atomic<bool> running_{false};

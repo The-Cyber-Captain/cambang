@@ -29,6 +29,17 @@ Provider facts fall into four broad classes:
 
 Lifecycle, native-object, and error events must always preserve ordering.
 
+After strand delivery, CoreRuntime may classify queued provider facts before
+integration. Capture-critical facts (capture started/frame/completed/failed,
+including rig capture facts identified from core admission metadata) are above
+repeating stream frames. Repeating stream frames can be deferred behind pending
+command/request work and can be passed by capture-critical facts. This does not
+change strand delivery, public API, or the non-lossy treatment of lifecycle,
+native-object, error, or unknown facts. Repeating stream frames remain
+latest-state work and may be coalesced after strand delivery only with a newer
+same-stream/session frame before a non-lossy barrier; capture frames are never
+coalesced.
+
 Topology change is not a separate event class. It is an effect reflected by
 lifecycle and native-object truth, and later by snapshot `topology_version`.
 
@@ -46,6 +57,11 @@ Providers must never drop lifecycle, native-object, or error events.
 ## Synthetic and Stub Providers
 
 SyntheticProvider and StubProvider emulate platform callbacks but still deliver events through the same strand model so that runtime behaviour matches real providers.
+
+Strand startup is transactional. Provider initialization succeeds only after
+the strand worker thread has been constructed. If worker construction fails,
+the strand remains closed and not running, its callback pointer is cleared, and
+provider initialization returns failure without publishing lifecycle facts.
 
 ## Non‑Goals
 

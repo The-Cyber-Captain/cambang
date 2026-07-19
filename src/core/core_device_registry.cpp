@@ -2,7 +2,24 @@
 
 #include "core/core_device_registry.h"
 
+#include <limits>
+
 namespace cambang {
+
+namespace {
+bool same_retained_plan(CoreRetainedProductionPlan a,
+                        CoreRetainedProductionPlan b) noexcept {
+  return a.valid == b.valid && (!a.valid || a.posture == b.posture);
+}
+} // namespace
+
+uint64_t CoreDeviceRegistry::allocate_capture_access_posture_epoch() noexcept {
+  const uint64_t epoch = next_capture_access_posture_epoch_;
+  if (next_capture_access_posture_epoch_ != std::numeric_limits<uint64_t>::max()) {
+    ++next_capture_access_posture_epoch_;
+  }
+  return epoch == 0 ? 1 : epoch;
+}
 
 bool CoreDeviceRegistry::note_device_identity(uint64_t device_instance_id, const std::string& hardware_id) {
   if (device_instance_id == 0 || hardware_id.empty()) {
@@ -41,6 +58,7 @@ bool CoreDeviceRegistry::retain_capture_profile(uint64_t device_instance_id,
   rec.capture_height = height;
   rec.capture_format = format;
   rec.capture_profile_version = capture_profile_version;
+  rec.capture_access_posture_epoch = allocate_capture_access_posture_epoch();
   return true;
 }
 
@@ -51,6 +69,72 @@ bool CoreDeviceRegistry::set_capture_picture(uint64_t device_instance_id, const 
   auto& rec = devices_[device_instance_id];
   rec.device_instance_id = device_instance_id;
   rec.capture_picture = picture;
+  rec.capture_access_posture_epoch = allocate_capture_access_posture_epoch();
+  return true;
+}
+
+bool CoreDeviceRegistry::set_backing_capabilities(
+    uint64_t device_instance_id,
+    ProducerBackingCapabilities runtime_backing_capabilities,
+    ProducerBackingCapabilities parent_context_backing_capabilities) {
+  if (device_instance_id == 0) {
+    return false;
+  }
+  auto it = devices_.find(device_instance_id);
+  if (it == devices_.end()) {
+    return false;
+  }
+  it->second.runtime_backing_capabilities = runtime_backing_capabilities;
+  it->second.parent_context_backing_capabilities =
+      parent_context_backing_capabilities;
+  return true;
+}
+
+bool CoreDeviceRegistry::set_requested_retained_plan(
+    uint64_t device_instance_id,
+    CoreRetainedProductionPlan requested_retained_plan,
+    bool bump_capture_access_posture_epoch) {
+  if (device_instance_id == 0) {
+    return false;
+  }
+  auto it = devices_.find(device_instance_id);
+  if (it == devices_.end()) {
+    return false;
+  }
+  auto& rec = it->second;
+  const bool changed = !same_retained_plan(rec.requested_retained_plan,
+                                           requested_retained_plan);
+  rec.requested_retained_plan = requested_retained_plan;
+  if ((changed && bump_capture_access_posture_epoch) ||
+      rec.capture_access_posture_epoch == 0) {
+    rec.capture_access_posture_epoch = allocate_capture_access_posture_epoch();
+  }
+  return true;
+}
+
+bool CoreDeviceRegistry::set_steady_retained_plan(
+    uint64_t device_instance_id,
+    CoreRetainedProductionPlan steady_retained_plan) {
+  if (device_instance_id == 0) {
+    return false;
+  }
+  auto it = devices_.find(device_instance_id);
+  if (it == devices_.end()) {
+    return false;
+  }
+  it->second.steady_retained_plan = steady_retained_plan;
+  return true;
+}
+
+bool CoreDeviceRegistry::clear_steady_retained_plan(uint64_t device_instance_id) {
+  if (device_instance_id == 0) {
+    return false;
+  }
+  auto it = devices_.find(device_instance_id);
+  if (it == devices_.end()) {
+    return false;
+  }
+  it->second.steady_retained_plan = CoreRetainedProductionPlan{};
   return true;
 }
 
@@ -64,6 +148,7 @@ bool CoreDeviceRegistry::set_capture_still_image_bundle(uint64_t device_instance
   rec.device_instance_id = device_instance_id;
   rec.capture_still_image_bundle = sequence;
   rec.capture_profile_version = capture_profile_version;
+  rec.capture_access_posture_epoch = allocate_capture_access_posture_epoch();
   return true;
 }
 
@@ -151,6 +236,9 @@ bool CoreDeviceRegistry::on_device_opened(uint64_t device_instance_id) {
   auto& rec = devices_[device_instance_id];
   rec.device_instance_id = device_instance_id;
   rec.open = true;
+  if (rec.capture_access_posture_epoch == 0) {
+    rec.capture_access_posture_epoch = allocate_capture_access_posture_epoch();
+  }
   rec.warm_deadline_active = false;
   rec.warm_deadline_ns = 0;
   rec.warm_expired_close_requested = false;

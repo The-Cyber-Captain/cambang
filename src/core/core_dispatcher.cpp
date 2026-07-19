@@ -1,26 +1,22 @@
 ﻿// src/core/core_dispatcher.cpp
-
 #include "core/core_dispatcher.h"
 #include "core/resource_aggregate_telemetry.h"
 
-#include <cstdlib>
+#include <chrono>
 #include <variant>
 
 namespace cambang {
 
 namespace {
-uint64_t frame_ts_to_core_ns(const CaptureTimestamp& ts) {
-  if (ts.tick_ns == 0) {
-    return 0;
-  }
-  switch (ts.domain) {
-    case CaptureTimestampDomain::CORE_MONOTONIC:
-    case CaptureTimestampDomain::PROVIDER_MONOTONIC:
-      return static_cast<uint64_t>(ts.value) * static_cast<uint64_t>(ts.tick_ns);
-    default:
-      return 0;
-  }
+
+// Fallback monotonic timestamp source when no now_ns_ override is injected.
+// Feeds ingest_steady_ns (CoreCaptureLifecycleIngressEvent) and
+// CoreStreamRegistry::on_frame_received()'s integrated_ts_ns; not diagnostic.
+uint64_t dispatcher_monotonic_now_ns() {
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
 }
+
 } // namespace
 
 
@@ -53,6 +49,17 @@ void CoreDispatcher::dispatch(ProviderToCoreCommand&& cmd) {
     if (devices_) {
       devices_->on_device_closed(p.device_instance_id);
     }
+    if (provider_camera_fact_state_) {
+      provider_camera_fact_state_->erase_device(p.device_instance_id);
+    }
+    // Retention (ledger #52) deliberately does NOT hook device close: a
+    // caller may legitimately report a retained-to-image access observation
+    // for a capture on an already-closed device (Core's own
+    // capture_retained_plan_evaluators_ orphan-retention mechanism already
+    // keeps evaluator state alive across close for exactly this reason -- see
+    // try_close_device()'s retain_capture_orphans handling). Capture
+    // assembly/result retirement is time-based only; see
+    // CoreCaptureAssemblyRegistry::retire_terminal_older_than()'s doc comment.
     relevant_state_changed_ = true;
     break;
   }
@@ -84,7 +91,7 @@ void CoreDispatcher::dispatch(ProviderToCoreCommand&& cmd) {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderStreamStarted>(cmd.payload);
     if (streams_) {
-      streams_->on_stream_started(p.stream_id);
+      streams_->on_provider_stream_started(p.stream_id);
     }
     relevant_state_changed_ = true;
     break;
@@ -94,7 +101,7 @@ void CoreDispatcher::dispatch(ProviderToCoreCommand&& cmd) {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderStreamStopped>(cmd.payload);
     if (streams_) {
-      streams_->on_stream_stopped(p.stream_id, p.error_code);
+      streams_->on_provider_stream_stopped(p.stream_id, p.error_code);
     }
     relevant_state_changed_ = true;
     break;
@@ -196,6 +203,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
 }
 
   case ProviderToCoreCommandType::PROVIDER_CAPTURE_STARTED: {
+    const uint64_t dispatch_begin_ns = dispatcher_monotonic_now_ns();
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderCaptureStarted>(cmd.payload);
     bool state_changed = false;
@@ -224,21 +232,47 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
                                                                 capture_format,
                                                                 capture_profile_version,
                                                                 capture_still_image_bundle);
+      if (capture_lifecycle_ingress_sink_) {
+        const uint64_t acquisition_session_id =
+            acquisition_sessions_->resolve_session_id_for_capture(
+                p.device_instance_id, p.capture_id, 0);
+        capture_lifecycle_ingress_sink_(CoreCaptureLifecycleIngressEvent{
+            CoreCaptureLifecycleIngressEvent::Kind::Started,
+            p.capture_id,
+            p.device_instance_id,
+            acquisition_session_id,
+            dispatch_begin_ns});
+      }
     }
     relevant_state_changed_ = relevant_state_changed_ || state_changed;
     break;
   }
 
   case ProviderToCoreCommandType::PROVIDER_CAPTURE_COMPLETED: {
+    const uint64_t dispatch_begin_ns = dispatcher_monotonic_now_ns();
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderCaptureCompleted>(cmd.payload);
     bool state_changed = false;
     if (acquisition_sessions_) {
+      const uint64_t acquisition_session_id =
+          acquisition_sessions_->resolve_session_id_for_capture(
+              p.device_instance_id, p.capture_id, 0);
       const uint64_t completed_ns = now_ns_ ? now_ns_() : 0;
       state_changed = acquisition_sessions_->on_capture_completed(
           p.device_instance_id, p.capture_id, completed_ns);
+      if (capture_assembly_registry_) {
+        capture_assembly_registry_->mark_capture_completed(p.capture_id, p.device_instance_id);
+      }
+      if (capture_lifecycle_ingress_sink_) {
+        capture_lifecycle_ingress_sink_(CoreCaptureLifecycleIngressEvent{
+            CoreCaptureLifecycleIngressEvent::Kind::Completed,
+            p.capture_id,
+            p.device_instance_id,
+            acquisition_session_id,
+            dispatch_begin_ns});
+      }
     }
-    if (capture_assembly_registry_) {
+    if (!acquisition_sessions_ && capture_assembly_registry_) {
       capture_assembly_registry_->mark_capture_completed(p.capture_id, p.device_instance_id);
     }
     relevant_state_changed_ = relevant_state_changed_ || state_changed;
@@ -246,18 +280,61 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
   }
 
   case ProviderToCoreCommandType::PROVIDER_CAPTURE_FAILED: {
+    const uint64_t dispatch_begin_ns = dispatcher_monotonic_now_ns();
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderCaptureFailed>(cmd.payload);
     bool state_changed = false;
     if (acquisition_sessions_) {
+      const uint64_t acquisition_session_id =
+          acquisition_sessions_->resolve_session_id_for_capture(
+              p.device_instance_id, p.capture_id, 0);
       const uint64_t failed_ns = now_ns_ ? now_ns_() : 0;
       state_changed = acquisition_sessions_->on_capture_failed(
           p.device_instance_id, p.capture_id, p.error_code, failed_ns);
+      if (capture_lifecycle_ingress_sink_) {
+        capture_lifecycle_ingress_sink_(CoreCaptureLifecycleIngressEvent{
+            CoreCaptureLifecycleIngressEvent::Kind::Failed,
+            p.capture_id,
+            p.device_instance_id,
+            acquisition_session_id,
+            dispatch_begin_ns});
+      }
     }
     if (capture_assembly_registry_) {
       capture_assembly_registry_->mark_capture_failed(p.capture_id, p.device_instance_id, p.error_code);
     }
     relevant_state_changed_ = relevant_state_changed_ || state_changed;
+    break;
+  }
+
+  case ProviderToCoreCommandType::PROVIDER_CAMERA_STATIC_FACTS: {
+    stats_.commands_handled++;
+    const auto& p = std::get<CmdProviderCameraStaticFacts>(cmd.payload);
+    if (devices_) {
+      const CoreDeviceRegistry::DeviceRecord* device = devices_->find(p.device_instance_id);
+      if (device != nullptr && device->open && provider_camera_fact_state_ &&
+          provider_camera_fact_state_->replace_static(p.device_instance_id, p.facts)) {
+        relevant_state_changed_ = true;
+      }
+    }
+    break;
+  }
+
+  case ProviderToCoreCommandType::PROVIDER_CAPTURE_IMAGE_FACTS: {
+    stats_.commands_handled++;
+    const auto& p = std::get<CmdProviderCaptureImageFacts>(cmd.payload);
+    if (devices_ && capture_assembly_registry_ && provider_camera_fact_state_) {
+      const CoreDeviceRegistry::DeviceRecord* device = devices_->find(p.device_instance_id);
+      if (device != nullptr && device->open &&
+          capture_assembly_registry_->has_admitted_capture_member(
+              p.capture_id, p.device_instance_id, p.image_member_index) &&
+          provider_camera_fact_state_->replace_capture_image(
+              ProviderCameraFactState::CaptureImageKey{
+                  p.capture_id, p.device_instance_id, p.image_member_index},
+              p.facts)) {
+        relevant_state_changed_ = true;
+      }
+    }
     break;
   }
 
@@ -273,17 +350,65 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
     bool retained_for_result = false;
     uint64_t integrated_ts_ns = 0;
     bool has_stream_record = (sid == 0);
+    uint64_t stream_access_posture_epoch = 0;
+    uint64_t capture_access_posture_epoch = 0;
+    CoreRetainedProductionPlan stream_requested_retained_plan{};
+    CoreRetainedProductionPlan capture_requested_retained_plan{};
     if (streams_) {
-      integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
+      integrated_ts_ns = now_ns_ ? now_ns_() : dispatcher_monotonic_now_ns();
       if (!streams_->on_frame_received(sid, integrated_ts_ns)) {
         stats_.frames_unknown_stream++;
       }
       if (const CoreStreamRegistry::StreamRecord* stream_rec = streams_->find(sid); stream_rec != nullptr) {
         stream_intent = stream_rec->intent;
+        stream_access_posture_epoch = stream_rec->access_posture_epoch;
+        stream_requested_retained_plan = stream_rec->requested_retained_plan;
         has_stream_record = true;
       }
     } else {
-      integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
+      integrated_ts_ns = now_ns_ ? now_ns_() : dispatcher_monotonic_now_ns();
+    }
+    uint64_t resolved_capture_session_id = 0;
+    if (acquisition_sessions_ && p.frame.device_instance_id != 0 &&
+        p.frame.capture_id != 0) {
+      resolved_capture_session_id =
+          acquisition_sessions_->resolve_session_id_for_capture(
+              p.frame.device_instance_id,
+              p.frame.capture_id,
+              p.frame.acquisition_session_id);
+      if (resolved_capture_session_id != 0) {
+        if (const auto* session_rec =
+                acquisition_sessions_->find(resolved_capture_session_id);
+            session_rec != nullptr) {
+          capture_access_posture_epoch = session_rec->capture_access_posture_epoch;
+          capture_requested_retained_plan = session_rec->requested_retained_plan;
+        }
+      }
+    }
+    if (stream_requested_retained_plan.valid == false &&
+        p.frame.stream_id != 0 &&
+        p.frame.requested_retained_plan.valid) {
+      stream_requested_retained_plan = p.frame.requested_retained_plan;
+    }
+    if (p.frame.capture_id != 0 &&
+        p.frame.requested_retained_plan.valid) {
+      // Capture frames carry the exact core-selected posture that produced the
+      // frame. Preserve that per-capture attribution even if the owning
+      // device/session requested plan has already advanced for a later
+      // evaluation candidate while this capture is still in flight.
+      capture_requested_retained_plan = p.frame.requested_retained_plan;
+    } else if (capture_requested_retained_plan.valid == false &&
+        devices_ && p.frame.device_instance_id != 0) {
+      if (const CoreDeviceRegistry::DeviceRecord* device_rec = devices_->find(p.frame.device_instance_id);
+          device_rec != nullptr) {
+        capture_access_posture_epoch = device_rec->capture_access_posture_epoch;
+        capture_requested_retained_plan = device_rec->requested_retained_plan;
+      }
+    }
+    if (capture_requested_retained_plan.valid == false &&
+        p.frame.capture_id != 0 &&
+        p.frame.requested_retained_plan.valid) {
+      capture_requested_retained_plan = p.frame.requested_retained_plan;
     }
     const bool is_additional_bracket =
         p.frame.capture_image.routing == CaptureImageRouting::ADDITIONAL_BRACKET;
@@ -294,7 +419,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
     if (result_store_) {
       const bool lifecycle_allows_retention =
           result_retention_allowed_ ? result_retention_allowed_() : true;
-      if (result_routing_enabled_ && lifecycle_allows_retention && has_stream_record) {
+      if (lifecycle_allows_retention && has_stream_record) {
         if (is_additional_bracket) {
           // This tranche only accepts still-capture-only bracket frames.
           // Reject malformed/unsupported bracket routes deterministically.
@@ -307,14 +432,24 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
           image_member.applied_exposure_compensation_milli_ev = frame_member_applied_ev;
           image_member.has_realized_exposure_compensation_milli_ev = frame_member_has_realized_ev;
           image_member.realized_exposure_compensation_milli_ev = frame_member_realized_ev;
-          image_member.capture_timestamp_ns = integrated_ts_ns;
-          if (CoreResultStore::try_build_capture_image_member_data_from_frame(p.frame, image_member.payload)) {
+          if (CoreResultStore::try_build_capture_image_member_data_from_frame(
+                  p.frame, image_member, capture_requested_retained_plan)) {
             retained_for_result = result_store_->append_additional_capture_image(
-                p.frame.capture_id, p.frame.device_instance_id, std::move(image_member));
+                p.frame.capture_id,
+                p.frame.device_instance_id,
+                std::move(image_member),
+                capture_access_posture_epoch,
+                capture_requested_retained_plan);
           }
           }
         } else {
-          retained_for_result = result_store_->retain_frame(p.frame, stream_intent, integrated_ts_ns);
+          retained_for_result = result_store_->retain_frame(
+              p.frame,
+              stream_intent,
+              stream_access_posture_epoch,
+              capture_access_posture_epoch,
+              stream_requested_retained_plan,
+              capture_requested_retained_plan);
         }
       }
     }

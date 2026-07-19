@@ -85,20 +85,74 @@ deadline expires (timed wake) - shutdown is requested (notify)
 
 On each wake, core processes in the following order:
 
-1.  **Drain provider events** (full drain unless explicitly documented otherwise)
+1.  **Drain provider events** (bounded to
+    `kMaxProviderFactsPerCoreTurn = 64` per core-loop turn when no
+    commands are pending, or
+    `kMaxProviderFactsBeforeRequestWhenRequestsPending = 1` when queued
+    commands are waiting)
 2.  **Drain commands** (bounded or full drain; v1 default is full drain)
 3.  **Process due timers** (all deadlines ≤ now)
 4.  **Publish snapshot if dirty** (exactly once per loop iteration)
 
 This ordering is fixed to ensure: - "what happened" (provider events) is
-integrated before "what is requested" (commands) - timers are honored
-deterministically - snapshot publication reflects converged state
+integrated in deterministic FIFO slices before "what is requested" (commands) -
+timers are honored deterministically - snapshot publication reflects the
+current retained Core truth after the processed slice and command turn
 
 ### 3.3 Batching and fairness
 
-To avoid starvation under pathological loads, core may cap drains per
-iteration (implementation detail). Any cap must preserve determinism and
-should be documented as a constant.
+Core caps provider-event drains at `kMaxProviderFactsPerCoreTurn = 64` per
+iteration when no Core commands are pending. If queued commands are already
+waiting, core uses the smaller request-aware slice
+`kMaxProviderFactsBeforeRequestWhenRequestsPending = 1` before servicing the
+command queue. If provider events remain after either bounded slice, core
+requests another loop turn and continues from the next queued event.
+Provider-event FIFO ordering is preserved, events are not dropped by this
+fairness slice, and pending Core commands receive prompt service opportunities
+even under continuous provider-event production. This implementation detail
+supports the documented capture-over-stream arbitration policy without changing
+provider or Godot APIs.
+
+
+### 3.4 CoreThread ingress lanes
+
+CoreThread separates posted work into three internal lanes before invoking the
+CoreRuntime loop hook:
+
+1. **Essential facts** for non-lossy lifecycle/native/error/capture-terminal
+   delivery.
+2. **Command work** for Core-owned public/request admission.
+3. **Ordinary work** for droppable or lower-priority posted work such as frame
+   ingress transport.
+
+Essential tasks drain before command tasks, and command tasks drain before
+ordinary tasks. FIFO order is preserved within each lane. Ordinary work is
+drained in single-task slices of `kMaxOrdinaryTasksPerCoreThreadTurn = 1`, so
+command-lane work posted during ordinary provider/frame transport is re-observed
+before another ordinary task can run. Timer ticks remain coalesced as a pending
+flag; when command-lane work appears during a pump, CoreThread may defer one
+requested timer tick once so command work gets a prompt service turn, then the
+coalesced timer tick continues deterministically. While CoreRuntime is executing
+a timer tick, provider-fact integration also checks for newly queued command-lane
+work between facts and can yield the timer hook with a continuation request so
+that command admission can be observed between bounded timer/provider-fact
+slices.
+
+Inside the CoreRuntime provider-fact queue, capture-critical facts are classified
+separately from repeating stream frames. Repeating stream frames are
+lower-priority/latest-state integration work: they can remain queued while
+pending command/request work is admitted, and a capture-critical fact may pass
+only a prefix of repeating stream-frame facts. Unknown, lifecycle,
+native-object, error, and other non-lossy stream facts remain conservative; they
+are not dropped or reordered behind stream frames by this integration rule.
+Repeating stream frames may also be coalesced before expensive dispatch only
+when a newer queued frame for the same stream/session supersedes the older frame
+before any non-lossy barrier; stream received/dropped counters and
+framebuffer lease telemetry are updated before the stale frame is released.
+The stale frame is counted as received and dropped, not delivered: Core releases
+it before sink invocation.
+The same pre-sink accounting rule applies when active capture preemption
+suppresses a repeating stream frame before sink handoff.
 
 ------------------------------------------------------------------------
 
@@ -113,6 +167,28 @@ arm/disarm rig - trigger rig capture - apply spec patches
 (`ApplyMode` handled by core)
 
 Commands are immutable message objects; core owns command execution.
+
+#### Synchronous command completion
+
+Godot-facing mutation adapters that need an immediate status do not equate
+mailbox admission with command success. They wait until Core has executed the
+command and return the resulting Core/provider status.
+
+The wait has an explicit side-effect boundary:
+
+- while a command is still queued, the caller may cancel it after the
+  two-second admission wait; a cancelled command is skipped when later dequeued
+  and cannot mutate provider or Core state;
+- once Core has begun the command, the caller waits for its actual result rather
+  than returning a timeout status while a live mutation continues;
+- provider calls made in that running phase remain subject to the prompt,
+  bounded, non-reentrant contract in `provider_architecture.md` section 8.1.
+
+Allocation or task-envelope construction failure is converted to the existing
+operation failure status and must not escape a Godot or core-thread boundary.
+This rule applies to stream/device lifecycle, stream creation, mutable picture
+and still-profile configuration, warm hold, capture submission, and rig
+mutation/submission adapters.
 
 Current public Godot-facing trigger/result surface is object-oriented:
 - device capture via `CamBANGDevice.trigger_capture() -> Error`, then
@@ -142,6 +218,12 @@ context.
 Scenario execution note (current): scenarios stage provider/world/topology/config
 state. Triggered capture remains API/GDScript-driven and is not modeled as a
 scenario timeline capture action.
+
+Provider still-capture admission is distinct from payload production: Core waits
+for provider acceptance/rejection, while accepted providers report later
+started/frame/completed/failed facts through the provider event path. Rig capture
+admission materializes all participants under one capture id and submits them as
+one grouped provider submission where supported.
 
 ------------------------------------------------------------------------
 
@@ -332,9 +414,10 @@ The Godot bridge reads these markers once per tick and decides whether to emit.
 ### 9.3 Publish time vs capture time
 
 Snapshot `timestamp_ns` is core publish time (monotonic, generation-relative).
-Per-frame capture timestamps are separate metadata carried by provider events and must
-use a provider-agnostic time domain representation (see `provider_architecture.md`).
-Core must not assume capture time is wall-clock.
+Per-frame Image Acquisition Timing is optional provider-authored metadata carried on
+the accepted `FrameView` in its declared source-neutral clock domain (see
+`provider_architecture.md`). Core must not use it for identity, ordering, or
+chronology.
 
 ### 9.4 `gen`, `version`, and `topology_version` bookkeeping
 
@@ -572,12 +655,12 @@ The smoke executable validates:
 - No frame leaks across repeated start/stop cycles
 
 This validation is platform-independent and must remain independent of
-platform-backed providers. Stub-backed stress/provider paths require a
-`provider=stub` smoke build.
+platform-backed providers. Stub-backed stress/provider paths are part of the
+host-native `maintainer_tools` build family.
 
 ### 13.2 Platform integration validation
 
-Platform providers (e.g., Windows Media Foundation) are validated separately under real platform-backed conditions to ensure:
+Platform providers are validated separately under real platform-backed conditions. Platform validation should ensure:
 - Correct threading integration
 - Correct callback serialization
 - No deadlocks under real API pressure

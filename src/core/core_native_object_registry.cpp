@@ -14,6 +14,9 @@ void CoreNativeObjectRegistry::on_native_object_created(uint64_t native_id,
                                                        uint32_t buffers_in_use,
                                                        uint64_t creation_gen,
                                                        uint64_t created_ns) {
+  if (native_id == 0) {
+    return;
+  }
   Record& r = records_[native_id];
   r.native_id = native_id;
   r.type = type;
@@ -42,6 +45,9 @@ void CoreNativeObjectRegistry::on_native_object_created(uint64_t native_id,
 void CoreNativeObjectRegistry::on_native_object_destroyed(uint64_t native_id,
                                                           uint64_t destroyed_ns,
                                                           uint64_t destroyed_integration_ns) {
+  if (native_id == 0) {
+    return;
+  }
   auto it = records_.find(native_id);
   if (it == records_.end()) {
     // Truth surface should reflect reality, including orphan destroys.

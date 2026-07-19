@@ -1,5 +1,7 @@
 #include "core/provider_callback_ingress.h"
 
+#include <chrono>
+#include <cstdio>
 #include <utility>
 
 #include "imaging/api/timeline_teardown_trace.h"
@@ -41,11 +43,13 @@ void ProviderCallbackIngress::on_frame_ingress_dispatched_(uint64_t stream_id) {
 ProviderCallbackIngress::ProviderCallbackIngress(CoreThread* core_thread,
                                                  std::function<void(ProviderToCoreCommand&&)> sink,
                                                  std::function<uint64_t()> core_monotonic_now_ns,
-                                                 std::function<bool(uint64_t)> is_stream_display_demand_active)
+                                                 std::function<bool(uint64_t)> is_stream_display_demand_active,
+                                                 std::function<uint64_t()> applying_stream_retained_plan_for_stream_id)
     : core_thread_(core_thread),
       sink_(std::move(sink)),
       core_monotonic_now_ns_(std::move(core_monotonic_now_ns)),
-      is_stream_display_demand_active_(std::move(is_stream_display_demand_active)) {}
+      is_stream_display_demand_active_(std::move(is_stream_display_demand_active)),
+      applying_stream_retained_plan_for_stream_id_(std::move(applying_stream_retained_plan_for_stream_id)) {}
 
 uint64_t ProviderCallbackIngress::allocate_native_id(NativeObjectType /*type*/) {
   // Core-issued, globally unique for this process/session.
@@ -73,6 +77,9 @@ ProviderCallbackIngress::Stats ProviderCallbackIngress::stats_copy() const noexc
   s.commands_dropped_closed = commands_dropped_closed_.load(std::memory_order_relaxed);
   s.commands_dropped_allocfail = commands_dropped_allocfail_.load(std::memory_order_relaxed);
 
+  s.non_frame_rejected_closed = non_frame_rejected_closed_.load(std::memory_order_relaxed);
+  s.non_frame_rejected_allocfail = non_frame_rejected_allocfail_.load(std::memory_order_relaxed);
+
   s.frames_dropped_full = frames_dropped_full_.load(std::memory_order_relaxed);
   s.frames_dropped_closed = frames_dropped_closed_.load(std::memory_order_relaxed);
   s.frames_dropped_allocfail = frames_dropped_allocfail_.load(std::memory_order_relaxed);
@@ -92,34 +99,143 @@ uint32_t ProviderCallbackIngress::ingress_depth_for_stream(uint64_t stream_id) c
   return (it != stream_ingress_depth_.end()) ? it->second : 0;
 }
 
+bool ProviderCallbackIngress::is_frame_command_(ProviderToCoreCommandType type) noexcept {
+  return type == ProviderToCoreCommandType::PROVIDER_FRAME;
+}
+
 void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
   // Transport only: package command into a posted task.
   // Note: This uses std::function internally (CoreThread::Task), which may allocate.
   // That is acceptable for scaffolding; later we can replace with a fixed-capacity provider_to_core_commands queue.
-  if (!core_thread_) {
-    return;
-  }
-
   const ProviderToCoreCommandType type = cmd.type;
+  uint64_t trace_capture_id = 0;
+  uint64_t trace_device_id = 0;
+  uint64_t trace_acquisition_session_id = 0;
+  uint32_t trace_member_index = 0;
+  if (type == ProviderToCoreCommandType::PROVIDER_CAPTURE_STARTED) {
+    const auto& p = std::get<CmdProviderCaptureStarted>(cmd.payload);
+    trace_capture_id = p.capture_id;
+    trace_device_id = p.device_instance_id;
+  } else if (type == ProviderToCoreCommandType::PROVIDER_CAPTURE_COMPLETED) {
+    const auto& p = std::get<CmdProviderCaptureCompleted>(cmd.payload);
+    trace_capture_id = p.capture_id;
+    trace_device_id = p.device_instance_id;
+  } else if (type == ProviderToCoreCommandType::PROVIDER_CAPTURE_FAILED) {
+    const auto& p = std::get<CmdProviderCaptureFailed>(cmd.payload);
+    trace_capture_id = p.capture_id;
+    trace_device_id = p.device_instance_id;
+  }
   uint64_t frame_stream_id = 0;
+  bool is_capture_critical_frame = false;
 
   // Preserve a copy of the frame for the failure-to-enqueue path. We must not rely on
   // moved-from ProviderToCoreCommand contents after constructing the posted lambda.
   FrameView fail_frame;
   bool has_fail_frame = false;
-  if (type == ProviderToCoreCommandType::PROVIDER_FRAME) {
+  if (is_frame_command_(type)) {
     auto& frame_payload = std::get<CmdProviderFrame>(cmd.payload);
     fail_frame = frame_payload.frame;
     frame_stream_id = frame_payload.frame.stream_id;
+    trace_capture_id = frame_payload.frame.capture_id;
+    trace_device_id = frame_payload.frame.device_instance_id;
+    trace_acquisition_session_id = frame_payload.frame.acquisition_session_id;
+    trace_member_index = frame_payload.frame.capture_image.image_member_index;
+    is_capture_critical_frame = frame_payload.frame.capture_id != 0;
     has_fail_frame = true;
     global_resource_aggregate_telemetry().lease_created(make_framebuffer_lease_scoped_resource_telemetry_key(
         frame_payload.frame.stream_id,
         frame_payload.frame.acquisition_session_id));
   }
 
+  auto account_command_drop = [this, type](CoreThread::PostResult rr) {
+    switch (rr) {
+      case CoreThread::PostResult::QueueFull:
+        commands_dropped_full_.fetch_add(1, std::memory_order_relaxed);
+        break;
+      case CoreThread::PostResult::Closed:
+        commands_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
+        if (!is_frame_command_(type)) {
+          non_frame_rejected_closed_.fetch_add(1, std::memory_order_relaxed);
+        }
+        break;
+      case CoreThread::PostResult::AllocFail:
+        commands_dropped_allocfail_.fetch_add(1, std::memory_order_relaxed);
+        if (!is_frame_command_(type)) {
+          non_frame_rejected_allocfail_.fetch_add(1, std::memory_order_relaxed);
+        }
+        break;
+      case CoreThread::PostResult::Enqueued:
+        break;
+    }
+  };
+
+  auto release_dropped_frame = [](FrameView& frame) {
+    frame.release_now();
+    global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
+        frame.stream_id,
+        frame.acquisition_session_id));
+    frame.release = nullptr;
+    frame.release_user = nullptr;
+  };
+
+  auto account_frame_drop_and_release = [this, release_dropped_frame](CoreThread::PostResult rr, FrameView& frame) {
+    switch (rr) {
+      case CoreThread::PostResult::QueueFull:
+        frames_dropped_full_.fetch_add(1, std::memory_order_relaxed);
+        release_dropped_frame(frame);
+        frames_released_on_drop_full_.fetch_add(1, std::memory_order_relaxed);
+        break;
+      case CoreThread::PostResult::Closed:
+        frames_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
+        release_dropped_frame(frame);
+        frames_released_on_drop_closed_.fetch_add(1, std::memory_order_relaxed);
+        break;
+      case CoreThread::PostResult::AllocFail:
+        frames_dropped_allocfail_.fetch_add(1, std::memory_order_relaxed);
+        release_dropped_frame(frame);
+        frames_released_on_drop_allocfail_.fetch_add(1, std::memory_order_relaxed);
+        break;
+      case CoreThread::PostResult::Enqueued:
+        break;
+    }
+  };
+
+  auto account_post_failure = [&](CoreThread::PostResult r) {
+    // Failure path: command never entered the core thread.
+    // Repeating stream frames remain pressure-droppable on the ordinary bounded
+    // queue. Non-frame provider facts and still-capture frames use CoreThread's
+    // essential queue, so QueueFull is not an expected failure reason for
+    // lifecycle/native/error/capture-terminal truth or exact capture image facts.
+    account_command_drop(r);
+
+    if (has_fail_frame) {
+      on_frame_ingress_failed_(frame_stream_id);
+      account_frame_drop_and_release(r, fail_frame);
+    }
+  };
+
+  if (!core_thread_) {
+    account_post_failure(CoreThread::PostResult::Closed);
+    return;
+  }
+
   // NOTE: sink_ is copied into the posted lambda. This keeps ingress transport-pure
   // and avoids coupling to any specific dispatcher type.
-  const CoreThread::PostResult r = core_thread_->try_post([this, c = std::move(cmd), sink = sink_, frame_stream_id]() mutable {
+  auto task = [this,
+               c = std::move(cmd),
+               sink = sink_,
+               frame_stream_id,
+               release_dropped_frame,
+               trace_capture_id,
+               trace_device_id,
+               trace_acquisition_session_id,
+               trace_member_index,
+               trace_type = type]() mutable {
+    (void)trace_capture_id;
+    (void)trace_device_id;
+    (void)trace_acquisition_session_id;
+    (void)trace_member_index;
+    (void)trace_type;
     if (c.type == ProviderToCoreCommandType::PROVIDER_FRAME) {
       on_frame_ingress_dispatched_(frame_stream_id);
     }
@@ -129,80 +245,23 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
     }
 
     // Defensive fallback (should not be used in normal wiring):
-    // Ensure release-on-drop semantics are upheld even if no sink is bound.
+    // Ensure release-on-drop semantics and framebuffer lease telemetry are upheld
+    // even if no sink is bound. Ingress depth was already decremented above.
     if (c.type == ProviderToCoreCommandType::PROVIDER_FRAME) {
       auto& p = std::get<CmdProviderFrame>(c.payload);
-      p.frame.release_now();
-      p.frame.release = nullptr;
-      p.frame.release_user = nullptr;
+      release_dropped_frame(p.frame);
     }
-  });
+  };
+
+  const CoreThread::PostResult r = (is_frame_command_(type) && !is_capture_critical_frame)
+      ? core_thread_->try_post(std::move(task))
+      : core_thread_->try_post_essential(std::move(task));
 
   if (r == CoreThread::PostResult::Enqueued) {
     return;
   }
 
-  auto account_command_drop = [this](CoreThread::PostResult rr) {
-    switch (rr) {
-      case CoreThread::PostResult::QueueFull:
-        commands_dropped_full_.fetch_add(1, std::memory_order_relaxed);
-        break;
-      case CoreThread::PostResult::Closed:
-        commands_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
-        break;
-      case CoreThread::PostResult::AllocFail:
-        commands_dropped_allocfail_.fetch_add(1, std::memory_order_relaxed);
-        break;
-      case CoreThread::PostResult::Enqueued:
-        break;
-    }
-  };
-
-  auto account_frame_drop_and_release = [this](CoreThread::PostResult rr, FrameView& frame) {
-    switch (rr) {
-      case CoreThread::PostResult::QueueFull:
-        frames_dropped_full_.fetch_add(1, std::memory_order_relaxed);
-        frame.release_now();
-        global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
-            frame.stream_id,
-            frame.acquisition_session_id));
-        frame.release = nullptr;
-        frame.release_user = nullptr;
-        frames_released_on_drop_full_.fetch_add(1, std::memory_order_relaxed);
-        break;
-      case CoreThread::PostResult::Closed:
-        frames_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
-        frame.release_now();
-        global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
-            frame.stream_id,
-            frame.acquisition_session_id));
-        frame.release = nullptr;
-        frame.release_user = nullptr;
-        frames_released_on_drop_closed_.fetch_add(1, std::memory_order_relaxed);
-        break;
-      case CoreThread::PostResult::AllocFail:
-        frames_dropped_allocfail_.fetch_add(1, std::memory_order_relaxed);
-        frame.release_now();
-        global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
-            frame.stream_id,
-            frame.acquisition_session_id));
-        frame.release = nullptr;
-        frame.release_user = nullptr;
-        frames_released_on_drop_allocfail_.fetch_add(1, std::memory_order_relaxed);
-        break;
-      case CoreThread::PostResult::Enqueued:
-        break;
-    }
-  };
-
-  // Failure path: command never entered the core thread.
-  // Best-effort enqueue; otherwise drop-with-accounting.
-  account_command_drop(r);
-
-  if (has_fail_frame) {
-    on_frame_ingress_failed_(frame_stream_id);
-    account_frame_drop_and_release(r, fail_frame);
-  }
+  account_post_failure(r);
 }
 
 void ProviderCallbackIngress::on_device_opened(uint64_t device_instance_id) {
@@ -275,7 +334,44 @@ void ProviderCallbackIngress::on_capture_failed(uint64_t capture_id,
   post_command(std::move(cmd));
 }
 
+void ProviderCallbackIngress::on_camera_static_facts(
+    uint64_t device_instance_id, ProviderCameraFacts facts) {
+  ProviderToCoreCommand cmd;
+  cmd.type = ProviderToCoreCommandType::PROVIDER_CAMERA_STATIC_FACTS;
+  cmd.payload = CmdProviderCameraStaticFacts{device_instance_id, std::move(facts)};
+  post_command(std::move(cmd));
+}
+
+void ProviderCallbackIngress::on_capture_image_facts(
+    uint64_t capture_id,
+    uint64_t device_instance_id,
+    uint32_t image_member_index,
+    ProviderCaptureImageFacts facts) {
+  ProviderToCoreCommand cmd;
+  cmd.type = ProviderToCoreCommandType::PROVIDER_CAPTURE_IMAGE_FACTS;
+  cmd.payload = CmdProviderCaptureImageFacts{
+      capture_id, device_instance_id, image_member_index, std::move(facts)};
+  post_command(std::move(cmd));
+}
+
 void ProviderCallbackIngress::on_frame(const FrameView& frame) {
+  // Contract tripwire: icamera_provider.h's update_stream_retained_production_plan()
+  // requires providers not emit a frame synchronously from that call. That call
+  // always executes on the core thread; a correctly-implemented provider only
+  // ever reaches on_frame() asynchronously via CBProviderStrand's own thread,
+  // never same-thread/same-callstack. If on_frame() is somehow reached from the
+  // core thread itself while that call is in flight for this stream, it can only
+  // be a synchronous, reentrant delivery -- a genuine contract violation.
+  if (core_thread_ && core_thread_->is_core_thread() &&
+      applying_stream_retained_plan_for_stream_id_ &&
+      applying_stream_retained_plan_for_stream_id_() == frame.stream_id &&
+      frame.stream_id != 0) {
+    std::fprintf(stderr,
+                 "[CamBANG][ContractViolation] provider delivered a frame synchronously "
+                 "from within update_stream_retained_production_plan() for stream_id=%llu; "
+                 "this violates the icamera_provider.h contract.\n",
+                 static_cast<unsigned long long>(frame.stream_id));
+  }
   // FrameView is a provider-owned view. Ownership is returned to the provider only when
   // core calls frame.release_now(). The core dispatcher MUST ensure release-on-drop.
   ProviderToCoreCommand cmd;

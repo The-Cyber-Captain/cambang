@@ -5,12 +5,60 @@
 #include <string>
 #include <vector>
 
+#include "core/camera_fact_types.h"
 #include "provider_contract_datatypes.h"
 
 namespace cambang {
 
-// Provider→core callback sink.
-// Provider MUST invoke these on a single serialized callback context.
+// Default for ICameraProvider::capture_admission_watchdog_timeout_ns() (30s).
+// Deliberately generous; see that method's doc comment.
+inline constexpr uint64_t kDefaultCaptureAdmissionWatchdogTimeoutNs =
+    30ull * 1000ull * 1000ull * 1000ull;
+
+// Provider->core callback sink.
+//
+// ============================================================================
+// CONTRACT (non-negotiable): Provider MUST invoke every method on this
+// interface from a single serialized callback context -- i.e. never call two
+// IProviderCallbacks methods concurrently from two different threads, and
+// always preserve the Provider's own real event order for calls whose
+// relative order matters (e.g. on_capture_started() before the matching
+// on_capture_completed()/on_capture_failed(), or on_device_opened() before
+// any on_frame()/on_capture_*() for that device).
+//
+// WHY THIS IS LOAD-BEARING, NOT A SUGGESTION:
+// Every method below is individually thread-safe at the transport layer
+// (ProviderCallbackIngress marshals each call into a self-contained posted
+// command; nothing here will crash or corrupt if called from multiple
+// threads). But CoreThread's posted-task queues are FIFO only relative to a
+// single POSTING thread -- concurrent posts from two different provider
+// threads race for CoreThread's internal queue lock, and the relative order
+// they land in the queue (and therefore the order Core processes them) is
+// UNDEFINED. Core has no mechanism to detect or repair a misordering after
+// the fact.
+//
+// CONCRETE FAILURE THIS CAUSES: suppose a real hardware SDK delivers
+// completion notifications on one internal thread and streamed frames on a
+// separate capture thread (extremely common: Camera2, V4L2, DirectShow, and
+// most vendor SDKs all do this). If the Provider wires both straight through
+// to IProviderCallbacks without first funneling them through its own single
+// serialized dispatch queue, on_capture_completed() can race ahead of the
+// on_capture_started() (or the frame delivery) it depends on. Core will then
+// process a terminal capture fact for a capture it never saw admitted --
+// this will not crash, will not log an error, and will not be caught by the
+// existing synthetic-only test suite (SyntheticProvider disciplines itself
+// through its own single-threaded CBProviderStrand delivery and therefore
+// never exercises this path). It will only surface as silent, hard-to-
+// reproduce state corruption under real hardware timing.
+//
+// WHAT PROVIDERS MUST DO: if your underlying SDK/driver delivers callbacks
+// from more than one thread, you must serialize them yourself (e.g. through
+// your own single-consumer strand/dispatch queue, the same pattern
+// CBProviderStrand implements for the synthetic provider) BEFORE calling into
+// any IProviderCallbacks method. "Serialized" means logically serialized
+// (one call fully completes before the next begins, in your own real event
+// order) -- it does not have to be the same OS thread ID for every call.
+// ============================================================================
 class IProviderCallbacks {
 public:
   virtual ~IProviderCallbacks() = default;
@@ -52,6 +100,23 @@ public:
   virtual void on_capture_started(uint64_t capture_id, uint64_t device_instance_id) = 0;
   virtual void on_capture_completed(uint64_t capture_id, uint64_t device_instance_id) = 0;
   virtual void on_capture_failed(uint64_t capture_id, uint64_t device_instance_id, ProviderError error) = 0;
+
+  // Optional source-neutral fact ingress. Providers may report facts after
+  // the corresponding device/capture identity has become known to Core.
+  virtual void on_camera_static_facts(uint64_t device_instance_id,
+                                      ProviderCameraFacts facts) {
+    (void)device_instance_id;
+    (void)facts;
+  }
+  virtual void on_capture_image_facts(uint64_t capture_id,
+                                      uint64_t device_instance_id,
+                                      uint32_t image_member_index,
+                                      ProviderCaptureImageFacts facts) {
+    (void)capture_id;
+    (void)device_instance_id;
+    (void)image_member_index;
+    (void)facts;
+  }
 
   // ---- Frame delivery ----
   virtual void on_frame(const FrameView& frame) = 0;
@@ -121,6 +186,53 @@ public:
     return ProducerBackingCapabilities{false, false};
   }
 
+  // Internal parent-context capability truth used by parent-scoped backing-plan
+  // evaluation.
+  // These default to the provider/runtime envelope above; providers that can
+  // narrow a specific owning context without changing the truthful outer
+  // envelope should override them.
+  virtual ProducerBackingCapabilities stream_parent_context_backing_capabilities(
+      uint64_t device_instance_id,
+      uint64_t stream_id,
+      StreamIntent intent,
+      const CaptureProfile& profile,
+      const PictureConfig& picture) noexcept {
+    (void)device_instance_id;
+    (void)stream_id;
+    (void)intent;
+    return stream_backing_capabilities(profile, picture);
+  }
+
+  virtual ProducerBackingCapabilities capture_parent_context_backing_capabilities(
+      uint64_t device_instance_id,
+      const CaptureRequest& req) noexcept {
+    (void)device_instance_id;
+    return capture_backing_capabilities(req);
+  }
+
+  // Small bounded delay before a newly realized or newly switched backing-plan
+  // measurement is treated as representative for this provider/runtime.
+  virtual uint64_t stream_backing_plan_evaluation_settle_delay_ns() const noexcept {
+    return 0;
+  }
+
+  virtual uint64_t capture_backing_plan_evaluation_settle_delay_ns() const noexcept {
+    return 0;
+  }
+
+  // Worst-case time Core should wait, after a trigger_capture()/
+  // trigger_capture_submission() admission, for that device's terminal
+  // capture fact (on_capture_completed/on_capture_failed) to arrive before
+  // Core's own capture-admission watchdog declares it timed out
+  // (ProviderError::ERR_TIMEOUT). The default is deliberately generous: Core
+  // cannot know a specific provider's real latency, and a timeout that is too
+  // short would produce a false-positive failure for hardware that is simply
+  // still working -- worse than staying silently pending. Only override this
+  // with a value backed by real measured worst-case latency, never a guess.
+  virtual uint64_t capture_admission_watchdog_timeout_ns() const noexcept {
+    return kDefaultCaptureAdmissionWatchdogTimeoutNs;
+  }
+
   // Core supplies callback sink. Provider retains only a raw pointer (no ownership).
   // Provider MUST call callbacks on a single serialized callback context.
   virtual ProviderResult initialize(IProviderCallbacks* callbacks) = 0;
@@ -149,6 +261,18 @@ public:
       const PictureConfig& picture) = 0;
   virtual ProviderResult stop_stream(uint64_t stream_id) = 0;
 
+  // Narrow internal seam for Core-owned parent-scoped backing-plan evaluation.
+  // A successful return commits the requested retained-production plan for
+  // subsequent frames from this created stream; providers must not emit a frame
+  // synchronously from this call.
+  virtual ProviderResult update_stream_retained_production_plan(
+      uint64_t stream_id,
+      CoreRetainedProductionPlan requested_retained_plan) {
+    (void)stream_id;
+    (void)requested_retained_plan;
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+
   // Stream-scoped picture update path.
   // Providers that do not support this must return ERR_NOT_SUPPORTED.
   virtual ProviderResult set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) = 0;
@@ -156,8 +280,57 @@ public:
   // Providers that do not support this must return ERR_NOT_SUPPORTED.
   virtual ProviderResult set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) = 0;
 
-  // Trigger a still capture for a device instance (device capture or rig capture).
+  // Optional explicit priming seam for still-capture parents.
+  // A successful return means the provider has synchronized any provider-owned
+  // primed acquisition-session seam for this device/request shape so Core can
+  // avoid paying first-use session realization cost at trigger time.
+  //
+  // The operation must be idempotent for repeated equivalent requests and must
+  // not fabricate capture-completed truth. Providers that cannot support this
+  // safely should return ERR_NOT_SUPPORTED.
+  virtual ProviderResult sync_capture_parent_priming(const CaptureRequest& req) {
+    (void)req;
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+
+  // Optional release of provider-owned capture-parent priming for a device.
+  // Providers that implement sync_capture_parent_priming() should make this
+  // idempotent and safe even when no primed seam is currently held.
+  virtual ProviderResult release_capture_parent_priming(uint64_t device_instance_id) {
+    (void)device_instance_id;
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+
+  // Trigger a still capture for a device instance. A successful return is
+  // admission/ownership transfer: the provider will later report terminal
+  // capture success or failure through the provider callback/strand path.
   virtual ProviderResult trigger_capture(const CaptureRequest& req) = 0;
+
+  // Trigger a grouped still-capture submission. Providers that do not override
+  // this retain legacy per-device submission behaviour; providers with
+  // coordinated multi-device capture support should override it so all member
+  // device work is accepted as one provider submission.
+  //
+  // This default is NOT atomic: it admits devices one at a time via
+  // trigger_capture(), each of which is itself an admission/ownership
+  // transfer. On a mid-loop failure it attempts a best-effort abort_capture()
+  // of the already-admitted prefix before returning, but since abort_capture()
+  // is itself best-effort/platform-dependent (may deterministically return
+  // ERR_NOT_SUPPORTED), that rollback is not guaranteed. Callers must not
+  // treat a failure return here as proof that no device was admitted.
+  virtual ProviderResult trigger_capture_submission(const CaptureSubmission& submission) {
+    if (submission.capture_id == 0 || submission.device_requests.empty()) {
+      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+    }
+    for (const CaptureRequest& req : submission.device_requests) {
+      const ProviderResult pr = trigger_capture(req);
+      if (!pr.ok()) {
+        (void)abort_capture(submission.capture_id);
+        return pr;
+      }
+    }
+    return ProviderResult::success();
+  }
 
   // Best-effort abort for an in-flight capture (platform-dependent).
   // Providers that cannot abort should return ERR_NOT_SUPPORTED deterministically.

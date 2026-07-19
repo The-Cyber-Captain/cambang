@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "devices": [
+    { "key": "cam0", "endpoint_index": 0 }
+  ],
+  "streams": [
+    {
+      "key": "cam0_preview_probe",
+      "device_key": "cam0",
+      "intent": "PREVIEW",
+      "capture_profile": {
+        "width": 1280,
+        "height": 720,
+        "format_fourcc": 1094862674,
+        "target_fps_min": 30,
+        "target_fps_max": 30
+      }
+    },
+    {
+      "key": "cam0_preview_final",
+      "device_key": "cam0",
+      "intent": "PREVIEW",
+      "capture_profile": {
+        "width": 1280,
+        "height": 720,
+        "format_fourcc": 1094862674,
+        "target_fps_min": 30,
+        "target_fps_max": 30
+      }
+    }
+  ],
+  "timeline": [
+    { "at_ns": 0, "type": "OpenDevice", "device_key": "cam0" },
+    {
+      "at_ns": 0,
+      "type": "UpdateCapturePicture",
+      "device_key": "cam0",
+      "picture": {
+        "preset": "checker",
+        "seed": 6801,
+        "generator_fps_num": 30,
+        "generator_fps_den": 1,
+        "overlay_frame_index_offsets": false,
+        "overlay_moving_bar": false,
+        "solid_r": 0,
+        "solid_g": 0,
+        "solid_b": 0,
+        "solid_a": 255,
+        "checker_size_px": 24
+      }
+    },
+    { "at_ns": 300000000, "type": "CloseDevice", "device_key": "cam0" },
+    { "at_ns": 600000000, "type": "OpenDevice", "device_key": "cam0" },
+    {
+      "at_ns": 600000000,
+      "type": "UpdateCapturePicture",
+      "device_key": "cam0",
+      "picture": {
+        "preset": "checker",
+        "seed": 6801,
+        "generator_fps_num": 30,
+        "generator_fps_den": 1,
+        "overlay_frame_index_offsets": false,
+        "overlay_moving_bar": false,
+        "solid_r": 0,
+        "solid_g": 0,
+        "solid_b": 0,
+        "solid_a": 255,
+        "checker_size_px": 24
+      }
+    },
+    { "at_ns": 900000000, "type": "CreateStream", "stream_key": "cam0_preview_probe" },
+    {
+      "at_ns": 900000000,
+      "type": "UpdateStreamPicture",
+      "stream_key": "cam0_preview_probe",
+      "picture": {
+        "preset": "checker",
+        "seed": 6811,
+        "generator_fps_num": 30,
+        "generator_fps_den": 1,
+        "overlay_frame_index_offsets": false,
+        "overlay_moving_bar": false,
+        "solid_r": 0,
+        "solid_g": 0,
+        "solid_b": 0,
+        "solid_a": 255,
+        "checker_size_px": 20
+      }
+    },
+    { "at_ns": 1200000000, "type": "StartStream", "stream_key": "cam0_preview_probe" },
+    { "at_ns": 1500000000, "type": "StopStream", "stream_key": "cam0_preview_probe" },
+    { "at_ns": 1500000001, "type": "DestroyStream", "stream_key": "cam0_preview_probe" },
+    { "at_ns": 1500000002, "type": "CloseDevice", "device_key": "cam0" },
+    { "at_ns": 1800000000, "type": "OpenDevice", "device_key": "cam0" },
+    {
+      "at_ns": 1800000000,
+      "type": "UpdateCapturePicture",
+      "device_key": "cam0",
+      "picture": {
+        "preset": "checker",
+        "seed": 6801,
+        "generator_fps_num": 30,
+        "generator_fps_den": 1,
+        "overlay_frame_index_offsets": false,
+        "overlay_moving_bar": false,
+        "solid_r": 0,
+        "solid_g": 0,
+        "solid_b": 0,
+        "solid_a": 255,
+        "checker_size_px": 24
+      }
+    },
+    { "at_ns": 2100000000, "type": "CreateStream", "stream_key": "cam0_preview_final" },
+    {
+      "at_ns": 2100000000,
+      "type": "UpdateStreamPicture",
+      "stream_key": "cam0_preview_final",
+      "picture": {
+        "preset": "checker",
+        "seed": 6811,
+        "generator_fps_num": 30,
+        "generator_fps_den": 1,
+        "overlay_frame_index_offsets": false,
+        "overlay_moving_bar": false,
+        "solid_r": 0,
+        "solid_g": 0,
+        "solid_b": 0,
+        "solid_a": 255,
+        "checker_size_px": 20
+      }
+    },
+    { "at_ns": 2400000000, "type": "StartStream", "stream_key": "cam0_preview_final" }
+  ]
+}

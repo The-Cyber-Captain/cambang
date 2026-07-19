@@ -1,0 +1,21 @@
+# Advisory static-analysis configuration (docs/dev/static_analysis.md).
+# Posture: baseline/advisory only -- findings are audit leads, never gates.
+# WarningsAsErrors stays empty by policy; noisy-check scoping happens only
+# after a dated baseline exists (docs/dev/audit_baselines/).
+Checks: >
+  -*,
+  bugprone-*,
+  clang-analyzer-*,
+  cppcoreguidelines-*,
+  performance-*,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-make-unique,
+  modernize-use-emplace,
+  readability-redundant-member-init,
+  readability-delete-null-pointer,
+  readability-qualified-auto
+
+WarningsAsErrors: ''
+
+HeaderFilterRegex: 'src/.*'

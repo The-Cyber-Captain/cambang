@@ -1,6 +1,6 @@
 extends Control
 
-const TOTAL_TIMEOUT_MS := 12000
+const TOTAL_TIMEOUT_MS := 24000
 const RESULT_SET_TIMEOUT_MS := 5000
 const SCENARIO_PATH := "res://scenarios/rig_capture_result_basic.json"
 
@@ -10,6 +10,8 @@ const DEVICE_C := "DeviceC"
 const DEVICE_D := "DeviceD"
 const DEVICE_E := "DeviceE"
 const DEVICE_F := "DeviceF"
+
+const RIG_A_CAMERA_DESCRIPTION_JSON := "{\"schema_version\":2,\"cameras\":[{\"camera_id\":\"synthetic:0\"},{\"camera_id\":\"synthetic:4\"}],\"concurrent_camera_support\":{\"supported\":true,\"camera_id_combinations\":[[\"synthetic:0\",\"synthetic:4\"]]}}"
 
 @onready var _status_label: RichTextLabel = $RootMargin/VBoxContainer/MainColumn/StatusLabel
 
@@ -24,6 +26,12 @@ var _rig_a_id := 0
 var _rig_a_members: Array[int] = []
 var _excluded_device_ids: Array[int] = []
 var _rig_a_capture_ready := false
+# Negative phase: the first session deliberately starts WITHOUT ingesting the
+# camera-concurrency truth, so the multi-device rig admission gate must reject
+# the trigger with ERR_UNCONFIGURED (a permanent configuration gap), not a
+# transient-looking code. The positive phase then restarts with the truth
+# ingested and runs the original verification unchanged.
+var _negative_phase_complete := false
 
 func _ready() -> void:
 	_status_label.clear()
@@ -31,26 +39,30 @@ func _ready() -> void:
 	set_process(true)
 
 	CamBANGServer.stop()
+
+	var start_err := _start_runtime_and_scenario()
+	_require(start_err == OK, "step %d FAIL: negative-phase start rejected (%d)" % [_step, start_err])
+	_step_ok("negative-phase synthetic runtime started (no camera description ingested)")
+
+	_append_status("RUN: rig_capture_result_set_verification")
+
+
+func _start_runtime_and_scenario() -> Error:
 	var start_err := CamBANGServer.start(
 		CamBANGServer.PROVIDER_KIND_SYNTHETIC,
 		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
 		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME,
 		CamBANGServer.TIMELINE_RECONCILIATION_COMPLETION_GATED
 	)
-	_require(start_err == OK, "step %d FAIL: synthetic timeline start rejected (%d)" % [_step, start_err])
-	_step_ok("bootstrap synthetic runtime started")
-
+	if start_err != OK:
+		return start_err
 	var scenario_text: String = FileAccess.get_file_as_string(SCENARIO_PATH)
 	_require(scenario_text != "", "step %d FAIL: scenario missing at %s" % [_step, SCENARIO_PATH])
 	var stage_err := CamBANGServer.load_external_scenario(scenario_text)
 	_require(stage_err == OK, "step %d FAIL: unable to load external scenario" % _step)
-	_step_ok("bootstrap scenario staged (rig_capture_result_basic)")
-
 	var scenario_start_err := CamBANGServer.start_scenario()
 	_require(scenario_start_err == OK, "step %d FAIL: unable to start staged scenario" % _step)
-	_step_ok("bootstrap scenario started")
-
-	_append_status("RUN: rig_capture_result_set_verification")
+	return OK
 
 
 func _process(_delta: float) -> void:
@@ -69,10 +81,11 @@ func _process(_delta: float) -> void:
 				for member_id in _rig_a_members:
 					if by_id.has(member_id):
 						var d: Dictionary = by_id[member_id]
+						var still: Dictionary = d.get("capture_profile", {}).get("still", {})
 						diag_lines.append("id=%d hw=%s w=%d h=%d fmt=%d cpv=%d" % [
 							int(member_id), str(d.get("hardware_id", "")),
-							int(d.get("capture_width", 0)), int(d.get("capture_height", 0)),
-							int(d.get("capture_format", 0)), int(d.get("capture_profile_version", 0))
+							int(still.get("width", 0)), int(still.get("height", 0)),
+							int(still.get("format", 0)), int(still.get("version", 0))
 						])
 			_fail("step %d FAIL: capture readiness timeout for Rig A members: %s" % [_step, "; ".join(diag_lines)])
 			return
@@ -85,6 +98,10 @@ func _process(_delta: float) -> void:
 
 	if not _rig_a_capture_ready:
 		_try_latch_rig_a_capture_readiness()
+		return
+
+	if not _negative_phase_complete:
+		_run_negative_phase_and_restart()
 		return
 
 	if not _rig_a_capture_requested:
@@ -200,10 +217,11 @@ func _try_latch_rig_a_capture_readiness() -> void:
 		var d: Dictionary = by_id[member_id]
 		var phase := str(d.get("phase", ""))
 		if phase != "LIVE":
+			var still: Dictionary = d.get("capture_profile", {}).get("still", {})
 			pending.append("id=%d hw=%s phase=%s mode=%s w=%d h=%d fmt=%d cpv=%d" % [
 				int(member_id), str(d.get("hardware_id", "")), phase, str(d.get("mode", "")),
-				int(d.get("capture_width", 0)), int(d.get("capture_height", 0)),
-				int(d.get("capture_format", 0)), int(d.get("capture_profile_version", 0))
+				int(still.get("width", 0)), int(still.get("height", 0)),
+				int(still.get("format", 0)), int(still.get("version", 0))
 			])
 
 	if not pending.is_empty():
@@ -211,6 +229,39 @@ func _try_latch_rig_a_capture_readiness() -> void:
 
 	_rig_a_capture_ready = true
 	_step_ok("Rig A member devices are LIVE and capture-admissible")
+
+
+func _run_negative_phase_and_restart() -> void:
+	var rig = CamBANGServer.get_rig(_rig_a_id)
+	_require(rig != null, "step %d FAIL: negative-phase get_rig() returned null" % _step)
+	if _done:
+		return
+	var capture_err := int(rig.trigger_capture())
+	_require(capture_err == ERR_UNCONFIGURED,
+		"step %d FAIL: rig.trigger_capture() without ingested camera-concurrency truth must return ERR_UNCONFIGURED (%d), got %d" % [
+			_step, ERR_UNCONFIGURED, capture_err])
+	if _done:
+		return
+	_step_ok("trigger without camera-concurrency truth rejected with ERR_UNCONFIGURED")
+
+	# Restart into the positive phase with the truth ingested. Rig/device
+	# instance ids belong to the finished session's generation, so all latched
+	# state is reset and re-derived from the new session's snapshots.
+	CamBANGServer.stop()
+	var ingest_err := CamBANGServer.ingest_camera_description(RIG_A_CAMERA_DESCRIPTION_JSON)
+	_require(ingest_err == OK, "step %d FAIL: ingest_camera_description rejected (%d)" % [_step, ingest_err])
+	_step_ok("Rig A camera concurrency description ingested")
+
+	var start_err := _start_runtime_and_scenario()
+	_require(start_err == OK, "step %d FAIL: positive-phase start rejected (%d)" % [_step, start_err])
+	if _done:
+		return
+	_rig_a_id = 0
+	_rig_a_members = []
+	_rig_a_capture_ready = false
+	_excluded_device_ids = []
+	_negative_phase_complete = true
+	_step_ok("positive-phase synthetic runtime restarted with ingested truth")
 
 
 func _trigger_rig_a_capture() -> void:
@@ -234,10 +285,11 @@ func _trigger_rig_a_capture() -> void:
 			for member_id in _rig_a_members:
 				if by_id.has(member_id):
 					var d: Dictionary = by_id[member_id]
+					var still: Dictionary = d.get("capture_profile", {}).get("still", {})
 					diag_lines.append("id=%d hw=%s w=%d h=%d fmt=%d cpv=%d" % [
 						int(member_id), str(d.get("hardware_id", "")),
-						int(d.get("capture_width", 0)), int(d.get("capture_height", 0)),
-						int(d.get("capture_format", 0)), int(d.get("capture_profile_version", 0))
+						int(still.get("width", 0)), int(still.get("height", 0)),
+						int(still.get("format", 0)), int(still.get("version", 0))
 					])
 				else:
 					diag_lines.append("id=%d missing-device-row" % int(member_id))
@@ -252,16 +304,18 @@ func _trigger_rig_a_capture() -> void:
 func _try_verify_capture_result_set() -> void:
 	if _rig_a == null:
 		return
-	var result_set = _rig_a.get_result()
-	if result_set == null or result_set.is_empty():
+	# CamBANGRig.get_result() returns a plain Array[CamBANGCaptureResult]
+	# (no dedicated CaptureResultSet wrapper class -- see
+	# docs/architecture/pixel_payload_and_result_contract.md 10.6.3).
+	var results: Array = _rig_a.get_result()
+	if results.is_empty():
 		return
 
-	_require(result_set.get_class() == "CamBANGCaptureResultSet", "step %d FAIL: result set must be CamBANGCaptureResultSet" % _step)
-	_require(int(result_set.size()) == _rig_a_members.size(), "step %d FAIL: result set size mismatch" % _step)
+	_require(int(results.size()) == _rig_a_members.size(), "step %d FAIL: result set size mismatch" % _step)
 	_step_ok("capture result set materialized for selected rig")
 
 	var actual_ids: Array[int] = []
-	for result in result_set.get_results():
+	for result in results:
 		_require(result != null, "step %d FAIL: null capture result in result set" % _step)
 		actual_ids.append(int(result.get_device_instance_id()))
 
@@ -273,7 +327,7 @@ func _try_verify_capture_result_set() -> void:
 	_step_ok("result-set membership matches Rig A only; RigB/RigC/standalone excluded")
 
 	_append_status("PASS: rig capture result set verification complete")
-	_cleanup_and_quit(0)
+	_cleanup_and_quit(0, "rig_capture_result_set_verified")
 
 
 func _sorted_ids(input_ids: Array) -> Array[int]:
@@ -305,13 +359,18 @@ func _append_status(message: String) -> void:
 func _fail(message: String) -> void:
 	push_error(message)
 	_append_status(message)
-	_cleanup_and_quit(1)
+	_cleanup_and_quit(1, "verification_failed")
 
 
-func _cleanup_and_quit(code: int) -> void:
+func _cleanup_and_quit(code: int, reason: String) -> void:
 	if _done:
 		return
 	_done = true
+	print("[CamBANG][HarnessVerdict] scene=rig_capture_result_set_verification status=%s exit_code=%d reason=%s" % [
+		"ok" if code == 0 else "fail",
+		code,
+		reason,
+	])
 	await get_tree().create_timer(10.0).timeout
 
 	CamBANGServer.stop()

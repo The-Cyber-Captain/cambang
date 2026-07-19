@@ -1,10 +1,12 @@
 extends Node
 
 const MAX_FRAMES := 180
-const QUIT_FLUSH_FRAMES := 2
+const SCENE_LABEL := "66_public_lifecycle_verify"
+#const FOURCC_RGBA := 1094862674
 
 var _done := false
 var _quit_requested := false
+var _terminal_verdict_emitted := false
 var _handle_a = null
 var _handle_b = null
 var _stream = null
@@ -26,7 +28,7 @@ func _ready() -> void:
 
 	var start_err := CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC)
 	if start_err != OK:
-		_fail("FAIL: start(SYNTHETIC) rejected")
+		_error("ERROR: start(SYNTHETIC) rejected", "runtime_start_rejected")
 		return
 
 
@@ -182,9 +184,23 @@ func _ready() -> void:
 		_fail(warm_fail_message)
 		return
 
-	_stream = _handle_a.create_stream()
+	if _handle_a.create_stream({"intent": "NOT_A_STREAM_INTENT"}) != null:
+		_fail("FAIL: create_stream() with invalid Stream Definition intent must return null")
+		return
+	if int(CamBANGStream.INTENT_VIEWFINDER) != 1:
+		_fail("FAIL: CamBANGStream.INTENT_VIEWFINDER constant must be 1")
+		return
+	_stream = _handle_a.create_stream({
+		"intent": CamBANGStream.INTENT_VIEWFINDER,
+		"profile": {
+			"width": 640,
+			"height": 360,
+			"format_fourcc": CamBANGServer.PIXEL_FORMAT_RGBA,
+			"target_fps": 15,
+		},
+	})
 	if _stream == null:
-		_fail("FAIL: create_stream() must return a non-null CamBANGStream handle for engaged endpoint")
+		_fail("FAIL: create_stream(definition) must return a non-null CamBANGStream handle for engaged endpoint")
 		return
 	if not _stream.has_method("get_stream_id") or not _stream.has_method("get_device_instance_id") or not _stream.has_method("get_hardware_id") or not _stream.has_method("is_valid_stream_handle"):
 		_fail("FAIL: CamBANGStream handle missing required identity methods")
@@ -200,6 +216,22 @@ func _ready() -> void:
 		return
 	if not bool(_stream.is_valid_stream_handle()):
 		_fail("FAIL: CamBANGStream.is_valid_stream_handle() must return true")
+		return
+	var stream_state := await _wait_for_stream_state(int(_stream.get_stream_id()))
+	if stream_state.is_empty():
+		_fail("FAIL: snapshot must expose stream created from Stream Definition")
+		return
+	if str(stream_state.get("intent", "")) != "VIEWFINDER":
+		_fail("FAIL: Stream Definition intent must apply as VIEWFINDER; got %s" % str(stream_state.get("intent", "")))
+		return
+	if int(stream_state.get("width", -1)) != 640 or int(stream_state.get("height", -1)) != 360:
+		_fail("FAIL: Stream Definition profile dimensions must apply; got %sx%s" % [str(stream_state.get("width", "?")), str(stream_state.get("height", "?"))])
+		return
+	if int(stream_state.get("format", -1)) != CamBANGServer.PIXEL_FORMAT_RGBA:
+		_fail("FAIL: Stream Definition format_fourcc must apply")
+		return
+	if int(stream_state.get("target_fps_min", -1)) != 15 or int(stream_state.get("target_fps_max", -1)) != 15:
+		_fail("FAIL: Stream Definition target_fps must apply to min/max")
 		return
 	if _stream.start() != OK:
 		_fail("FAIL: CamBANGStream.start() must return OK")
@@ -244,13 +276,26 @@ func _ready() -> void:
 	_ok("OK: godot public lifecycle verify PASS")
 
 
+func _wait_for_stream_state(stream_id: int) -> Dictionary:
+	for _i in range(MAX_FRAMES):
+		var snap = CamBANGServer.get_state_snapshot()
+		if typeof(snap) == TYPE_DICTIONARY:
+			var streams = snap.get("streams", [])
+			if typeof(streams) == TYPE_ARRAY:
+				for stream_state in streams:
+					if typeof(stream_state) == TYPE_DICTIONARY and int(stream_state.get("stream_id", -1)) == stream_id:
+						return stream_state
+		await get_tree().process_frame
+	return {}
+
+
 func _wait_for_baseline() -> bool:
 	for _i in range(MAX_FRAMES):
 		var snap = CamBANGServer.get_state_snapshot()
 		if typeof(snap) == TYPE_DICTIONARY and int(snap.get("version", -1)) == 0 and int(snap.get("topology_version", -1)) == 0:
 			return true
 		await get_tree().process_frame
-	_fail("FAIL: timed out waiting for initial baseline before lifecycle command use")
+	_fail("FAIL: timed out waiting for initial baseline before lifecycle command use", "timeout")
 	return false
 
 
@@ -258,17 +303,41 @@ func _ok(msg: String) -> void:
 	if _done:
 		return
 	_done = true
+	_emit_harness_verdict("ok", 0, "pass")
 	print(msg)
 	_cleanup_and_quit(0)
 
 
-func _fail(msg: String) -> void:
+func _fail(msg: String, reason: String = "assertion_failed") -> void:
 	if _done:
 		return
 	_done = true
+	_emit_harness_verdict("fail", 1, reason)
 	push_error(msg)
 	print(msg)
 	_cleanup_and_quit(1)
+
+
+func _error(msg: String, reason: String) -> void:
+	if _done:
+		return
+	_done = true
+	_emit_harness_verdict("error", 1, reason)
+	push_error(msg)
+	print(msg)
+	_cleanup_and_quit(1)
+
+
+func _emit_harness_verdict(status: String, exit_code: int, reason: String) -> void:
+	if _terminal_verdict_emitted:
+		return
+	_terminal_verdict_emitted = true
+	print("[CamBANG][HarnessVerdict] scene=%s status=%s exit_code=%d reason=%s" % [
+		SCENE_LABEL,
+		status,
+		exit_code,
+		reason,
+	])
 
 
 func _cleanup_and_quit(code: int) -> void:
@@ -279,16 +348,10 @@ func _cleanup_and_quit(code: int) -> void:
 	_endpoints = []
 	if CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.disconnect(_on_state_published)
-	CamBANGServer.stop()
 	if not _quit_requested:
 		_quit_requested = true
-		call_deferred("_quit_next_frame", code)
+		CamBANGServer.stop_and_quit(code)
 
-
-func _quit_next_frame(code: int) -> void:
-	for _i in range(QUIT_FLUSH_FRAMES):
-		await get_tree().process_frame
-	get_tree().quit(code)
 
 
 func _on_state_published(_gen: int, _version: int, _topology_version: int) -> void:

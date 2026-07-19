@@ -24,6 +24,8 @@ const char* destroy_status_cstr(TryDestroyStreamStatus s) {
     case TryDestroyStreamStatus::OK: return "OK";
     case TryDestroyStreamStatus::InvalidArgument: return "INVALID_ARGUMENT";
     case TryDestroyStreamStatus::Busy: return "BUSY";
+    case TryDestroyStreamStatus::Started: return "STARTED";
+    case TryDestroyStreamStatus::ProviderRejected: return "PROVIDER_REJECTED";
   }
   return "UNKNOWN";
 }
@@ -33,6 +35,7 @@ const char* close_status_cstr(TryCloseDeviceStatus s) {
     case TryCloseDeviceStatus::OK: return "OK";
     case TryCloseDeviceStatus::InvalidArgument: return "INVALID_ARGUMENT";
     case TryCloseDeviceStatus::Busy: return "BUSY";
+    case TryCloseDeviceStatus::ProviderRejected: return "PROVIDER_REJECTED";
   }
   return "UNKNOWN";
 }
@@ -57,7 +60,7 @@ void dispatch_timeline_request_to_core(const SyntheticScheduledEvent& ev, CoreRu
       (void)runtime.try_create_stream(
           ev.stream_id,
           ev.device_instance_id,
-          StreamIntent::PREVIEW,
+          ev.stream_intent,
           nullptr,
           nullptr,
           0);

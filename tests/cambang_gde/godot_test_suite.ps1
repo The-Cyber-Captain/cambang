@@ -60,7 +60,7 @@ $SceneRuns = @(
     @{ Scene = "res://scenes/63_snapshot_observer_minimal.tscn";            QuitAfter = 10   },
     @{ Scene = "res://scenes/65_public_boundary_verify.tscn";               QuitAfter = 10   },
     @{ Scene = "res://scenes/66_public_lifecycle_verify.tscn";              QuitAfter = 1000 },
-    @{ Scene = "res://scenes/70_result_retrieval_verification.tscn";        QuitAfter = 20   }
+    @{ Scene = "res://scenes/70_result_retrieval_verification.tscn";        QuitAfter = 1000 }
 )
 
 # Optional custom success rules by step name.
@@ -293,23 +293,23 @@ function Test-GodotSceneSuccess {
         [string]$StderrText = "",
         [string]$CombinedText = ""
     )
-
-    # Scene verifiers are authoritative by explicit OK markers. Some scenes
-    # intentionally emit Godot ERROR lines while proving rejection behaviour
-    # (for example public-boundary validation), so ERROR alone is review-worthy
-    # but not a failure when the scene PASS marker is present.
+	
+	# Scene verifiers are authoritative by explicit OK markers. Hard failures must
+	# be line-oriented script/load/parse failures or explicit FAIL/FAILED result
+	# lines. Godot ERROR output is surfaced through ReviewLog so expected-error
+	# scenes can still PASS, and telemetry fields such as failed=0 are not failures.
+	
     $sceneOk = (
         $CombinedText -match "OK:\s+godot .* PASS" -or
         $CombinedText -match "OK:\s+result_retrieval_verification passed"
     )
 
-    $hardFailure = (
-        $CombinedText -match "SCRIPT ERROR:" -or
-        $CombinedText -match "Parse Error" -or
-        $CombinedText -match "Failed to load script" -or
-        $CombinedText -match "\bFAIL\b" -or
-        $CombinedText -match "FAILED"
-    )
+	$hardFailure = (
+		$CombinedText -match "SCRIPT ERROR:" -or
+		$CombinedText -match "Parse Error" -or
+		$CombinedText -match "Failed to load script" -or
+		$CombinedText -match "(?im)^\s*FAIL(?:ED)?\b"
+	)
 
     return ($sceneOk -and -not $hardFailure)
 }

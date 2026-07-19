@@ -25,7 +25,7 @@ is covered by dedicated Godot scene checks.
 #include <vector>
 
 #if !defined(CAMBANG_INTERNAL_SMOKE)
-  #error "phase3_snapshot_verify: build with -DCAMBANG_INTERNAL_SMOKE=1 (via SCons: smoke=1)."
+  #error "phase3_snapshot_verify: build through the repo SCons maintainer_tools alias so CAMBANG_INTERNAL_SMOKE=1 is defined."
 #endif
 
 #include "core/core_dispatcher.h"
@@ -58,6 +58,15 @@ static bool wait_until(const std::function<bool()>& pred, int max_iters = 500, i
 
 static std::shared_ptr<const CamBANGStateSnapshot> snapshot_copy(StateSnapshotBuffer& buf) {
   return buf.snapshot_copy();
+}
+
+static bool require_retention_enqueued(CoreThread::PostResult result, const char* label) {
+  if (result == CoreThread::PostResult::Enqueued) {
+    return true;
+  }
+  std::cerr << "FAIL: " << label << " admission failed: "
+            << static_cast<int>(result) << "\n";
+  return false;
 }
 
 static bool contains_u64(const std::vector<uint64_t>& v, uint64_t x) {
@@ -173,6 +182,7 @@ struct OwnedFrame {
                  uint32_t height,
                  uint32_t format,
                  size_t size_bytes,
+                 int64_t acquisition_mark,
                  uint32_t stride_bytes = 0) {
     FrameView frame{};
     frame.stream_id = stream_id;
@@ -180,12 +190,19 @@ struct OwnedFrame {
     frame.width = width;
     frame.height = height;
     frame.format_fourcc = format;
-    frame.capture_timestamp.domain = CaptureTimestampDomain::CORE_MONOTONIC;
-    frame.capture_timestamp.value = 123;
-    frame.capture_timestamp.tick_ns = 1;
     frame.data = bytes.data();
     frame.size_bytes = size_bytes;
     frame.stride_bytes = stride_bytes;
+    // Deliberately use a provider clock value that cannot be confused with the
+    // injected Core receipt clock used by last_frame_ts_ns below.
+    const auto tick_period = *TickPeriod::create(1001, 300);
+    const auto timing = *ImageAcquisitionTiming::create(
+        acquisition_mark,
+        tick_period,
+        ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+        ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
+        ImageAcquisitionComparability::SAME_PROVIDER);
+    frame.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{timing, FactOrigin::DERIVED};
     frame.release = &OwnedFrame::release_fn;
     frame.release_user = &releases;
     return frame;
@@ -217,7 +234,7 @@ static int test_visibility_diagnostics_snapshot_truth() {
   req.profile_version = 1;
   if (!streams.declare_stream_effective(req) ||
       !streams.on_stream_created(req.stream_id) ||
-      !streams.on_stream_started(req.stream_id)) {
+      !streams.on_provider_stream_started(req.stream_id)) {
     std::cerr << "FAIL: visibility diagnostics setup failed\n";
     return 1;
   }
@@ -240,7 +257,7 @@ static int test_visibility_diagnostics_snapshot_truth() {
       10, 20, 30, 40,
       50, 60, 70, 80,
   };
-  dispatch_frame(rgba.view(req.stream_id, req.device_instance_id, 2, 1, FOURCC_RGBA, rgba.bytes.size()));
+  dispatch_frame(rgba.view(req.stream_id, req.device_instance_id, 2, 1, FOURCC_RGBA, rgba.bytes.size(), 123));
   if (rgba.releases != 1) {
     std::cerr << "FAIL: RGBA frame not released exactly once\n";
     return 1;
@@ -260,12 +277,17 @@ static int test_visibility_diagnostics_snapshot_truth() {
     return 1;
   }
   if (rgba_stream->frames_received != 1 || rgba_stream->frames_delivered != 1 ||
-      rgba_stream->frames_dropped != 0 || rgba_stream->last_frame_ts_ns != 123) {
-    std::cerr << "FAIL: RGBA existing counters changed semantics received="
+      rgba_stream->frames_dropped != 0) {
+    std::cerr << "FAIL: RGBA frame accounting mismatch received="
               << rgba_stream->frames_received
               << " delivered=" << rgba_stream->frames_delivered
-              << " dropped=" << rgba_stream->frames_dropped
-              << " ts=" << rgba_stream->last_frame_ts_ns << "\n";
+              << " dropped=" << rgba_stream->frames_dropped << "\n";
+    return 1;
+  }
+  if (rgba_stream->last_frame_ts_ns != 1000) {
+    std::cerr << "FAIL: RGBA snapshot receipt chronology mismatch expected_core_ns=1000"
+              << " actual_ns=" << rgba_stream->last_frame_ts_ns
+              << " provider_acquisition_mark=123\n";
     return 1;
   }
   if (rgba_stream->profile_version != req.profile_version ||
@@ -283,7 +305,7 @@ static int test_visibility_diagnostics_snapshot_truth() {
       1, 2, 3, 4,
       5, 6, 7, 8,
   };
-  dispatch_frame(bgra.view(req.stream_id, req.device_instance_id, 2, 1, FOURCC_BGRA, bgra.bytes.size()));
+  dispatch_frame(bgra.view(req.stream_id, req.device_instance_id, 2, 1, FOURCC_BGRA, bgra.bytes.size(), 456));
   auto bgra_snapshot = builder.build(in, 0, 1, 0, 11);
   const auto* bgra_stream = find_stream(bgra_snapshot, req.stream_id);
   if (!bgra_stream ||
@@ -292,15 +314,29 @@ static int test_visibility_diagnostics_snapshot_truth() {
     std::cerr << "FAIL: BGRA visibility counters incorrect\n";
     return 1;
   }
+  if (bgra_stream->frames_received != 2 || bgra_stream->frames_delivered != 2 ||
+      bgra_stream->frames_dropped != 0) {
+    std::cerr << "FAIL: BGRA frame accounting mismatch received=" << bgra_stream->frames_received
+              << " delivered=" << bgra_stream->frames_delivered
+              << " dropped=" << bgra_stream->frames_dropped << "\n";
+    return 1;
+  }
+  if (bgra_stream->last_frame_ts_ns != 1001) {
+    std::cerr << "FAIL: BGRA snapshot receipt chronology mismatch expected_core_ns=1001"
+              << " actual_ns=" << bgra_stream->last_frame_ts_ns
+              << " provider_acquisition_mark=456\n";
+    return 1;
+  }
 
   OwnedFrame unsupported;
   unsupported.bytes = {0, 1, 2, 3};
   dispatch_frame(unsupported.view(req.stream_id,
                                   req.device_instance_id,
-                                  1,
-                                  1,
-                                  make_fourcc('N', 'V', '1', '2'),
-                                  unsupported.bytes.size()));
+                                   1,
+                                   1,
+                                   make_fourcc('N', 'V', '1', '2'),
+                                   unsupported.bytes.size(),
+                                   789));
   auto unsupported_snapshot = builder.build(in, 0, 2, 0, 12);
   const auto* unsupported_stream = find_stream(unsupported_snapshot, req.stream_id);
   if (!unsupported_stream ||
@@ -309,16 +345,44 @@ static int test_visibility_diagnostics_snapshot_truth() {
     std::cerr << "FAIL: unsupported visibility counters incorrect\n";
     return 1;
   }
+  if (unsupported_stream->frames_received != 3 || unsupported_stream->frames_delivered != 3 ||
+      unsupported_stream->frames_dropped != 0) {
+    std::cerr << "FAIL: unsupported-format frame accounting mismatch received="
+              << unsupported_stream->frames_received
+              << " delivered=" << unsupported_stream->frames_delivered
+              << " dropped=" << unsupported_stream->frames_dropped << "\n";
+    return 1;
+  }
+  if (unsupported_stream->last_frame_ts_ns != 1002) {
+    std::cerr << "FAIL: unsupported-format receipt chronology mismatch expected_core_ns=1002"
+              << " actual_ns=" << unsupported_stream->last_frame_ts_ns
+              << " provider_acquisition_mark=789\n";
+    return 1;
+  }
 
   OwnedFrame invalid;
   invalid.bytes = {1, 2, 3};
-  dispatch_frame(invalid.view(req.stream_id, req.device_instance_id, 2, 1, FOURCC_RGBA, invalid.bytes.size()));
+  dispatch_frame(invalid.view(req.stream_id, req.device_instance_id, 2, 1, FOURCC_RGBA, invalid.bytes.size(), 999));
   auto invalid_snapshot = builder.build(in, 0, 3, 0, 13);
   const auto* invalid_stream = find_stream(invalid_snapshot, req.stream_id);
   if (!invalid_stream ||
       invalid_stream->visibility_frames_rejected_invalid != 1 ||
       invalid_stream->visibility_last_path != CBVisibilityLastPath::REJECTED_INVALID) {
     std::cerr << "FAIL: invalid visibility counters incorrect\n";
+    return 1;
+  }
+  if (invalid_stream->frames_received != 4 || invalid_stream->frames_delivered != 4 ||
+      invalid_stream->frames_dropped != 0) {
+    std::cerr << "FAIL: invalid-format frame accounting mismatch received="
+              << invalid_stream->frames_received
+              << " delivered=" << invalid_stream->frames_delivered
+              << " dropped=" << invalid_stream->frames_dropped << "\n";
+    return 1;
+  }
+  if (invalid_stream->last_frame_ts_ns != 1003) {
+    std::cerr << "FAIL: invalid-format receipt chronology mismatch expected_core_ns=1003"
+              << " actual_ns=" << invalid_stream->last_frame_ts_ns
+              << " provider_acquisition_mark=999\n";
     return 1;
   }
 
@@ -328,10 +392,24 @@ static int test_visibility_diagnostics_snapshot_truth() {
       9, 9, 9, 9,
       9, 9, 9, 9,
   };
-  dispatch_frame(extra_rgba.view(req.stream_id, req.device_instance_id, 2, 1, FOURCC_RGBA, extra_rgba.bytes.size()));
+  dispatch_frame(extra_rgba.view(
+      req.stream_id, req.device_instance_id, 2, 1, FOURCC_RGBA, extra_rgba.bytes.size(), 1'234));
   const uint64_t topo_after = builder.compute_topology_signature(in);
   if (topo_before != topo_after) {
     std::cerr << "FAIL: visibility-only updates changed topology signature\n";
+    return 1;
+  }
+  auto final_snapshot = builder.build(in, 0, 4, 0, 14);
+  const auto* final_stream = find_stream(final_snapshot, req.stream_id);
+  if (!final_stream || final_stream->frames_received != 5 || final_stream->frames_delivered != 5 ||
+      final_stream->frames_dropped != 0) {
+    std::cerr << "FAIL: final RGBA frame accounting mismatch\n";
+    return 1;
+  }
+  if (final_stream->last_frame_ts_ns != 1004) {
+    std::cerr << "FAIL: successive accepted-frame receipt chronology mismatch expected_core_ns=1004"
+              << " actual_ns=" << final_stream->last_frame_ts_ns
+              << " provider_acquisition_mark=1234\n";
     return 1;
   }
   if (!dispatcher.consume_relevant_state_changed()) {
@@ -344,7 +422,7 @@ static int test_visibility_diagnostics_snapshot_truth() {
 
 static int test_capture_cohort_registry_basics() {
   CoreCaptureCohortRegistry cohorts;
-  if (cohorts.contains(77) || cohorts.find(77) != nullptr) {
+  if (cohorts.contains(77) || cohorts.find(77).has_value()) {
     std::cerr << "FAIL: fresh cohort registry unexpectedly non-empty\n";
     return 1;
   }
@@ -357,7 +435,7 @@ static int test_capture_cohort_registry_basics() {
     std::cerr << "FAIL: cohort insert rejected valid record\n";
     return 1;
   }
-  const auto* found = cohorts.find(77);
+  auto found = cohorts.find(77);
   if (!found || found->state != CoreCaptureCohortRegistry::CohortState::OPEN ||
       found->failure_phase != CoreCaptureCohortRegistry::CohortFailurePhase::NONE ||
       found->failed_device_instance_id != 0 || found->has_failure_error_code) {
@@ -397,7 +475,7 @@ static int test_capture_cohort_registry_basics() {
     return 1;
   }
   cohorts.clear();
-  if (cohorts.contains(77) || cohorts.find(77) != nullptr) {
+  if (cohorts.contains(77) || cohorts.find(77).has_value()) {
     std::cerr << "FAIL: clear() did not remove cohort\n";
     return 1;
   }
@@ -428,7 +506,12 @@ static int test_still_capture_profile_visibility_audit_truth() {
     return 1;
   }
 
-  rt.retain_device_identity(kAuditDeviceId, "audit-device");
+  if (!require_retention_enqueued(
+          rt.retain_device_identity(kAuditDeviceId, "audit-device"),
+          "retain_device_identity")) {
+    rt.stop();
+    return 1;
+  }
   rt.provider_callbacks()->on_device_opened(kAuditDeviceId);
 
   if (!wait_until([&]() {
@@ -449,7 +532,12 @@ static int test_still_capture_profile_visibility_audit_truth() {
   const uint64_t topo_after_device = device_base->topology_version;
   const uint64_t version_after_device = device_base->version;
 
-  rt.retain_device_capture_profile(kAuditDeviceId, 4032, 3024, kJpeg, 7);
+  if (!require_retention_enqueued(
+          rt.retain_device_capture_profile(kAuditDeviceId, 4032, 3024, kJpeg, 7),
+          "retain_device_capture_profile initial")) {
+    rt.stop();
+    return 1;
+  }
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
         const auto* device = s ? find_device(*s, kAuditDeviceId) : nullptr;
@@ -476,7 +564,12 @@ static int test_still_capture_profile_visibility_audit_truth() {
     return 1;
   }
 
-  rt.retain_device_capture_profile(kAuditDeviceId, 1920, 1080, kRaw, 8);
+  if (!require_retention_enqueued(
+          rt.retain_device_capture_profile(kAuditDeviceId, 1920, 1080, kRaw, 8),
+          "retain_device_capture_profile update")) {
+    rt.stop();
+    return 1;
+  }
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
         const auto* device = s ? find_device(*s, kAuditDeviceId) : nullptr;
@@ -499,7 +592,12 @@ static int test_still_capture_profile_visibility_audit_truth() {
     return 1;
   }
 
-  rt.retain_rig_capture_profile(kAuditRigId, 6000, 4000, kJpeg, 3);
+  if (!require_retention_enqueued(
+          rt.retain_rig_capture_profile(kAuditRigId, 6000, 4000, kJpeg, 3),
+          "retain_rig_capture_profile initial")) {
+    rt.stop();
+    return 1;
+  }
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
         const auto* rig = s ? find_rig(*s, kAuditRigId) : nullptr;
@@ -521,7 +619,12 @@ static int test_still_capture_profile_visibility_audit_truth() {
   }
   const uint64_t topo_after_rig = rig_profile->topology_version;
 
-  rt.retain_rig_capture_profile(kAuditRigId, 3000, 2000, kRaw, 4);
+  if (!require_retention_enqueued(
+          rt.retain_rig_capture_profile(kAuditRigId, 3000, 2000, kRaw, 4),
+          "retain_rig_capture_profile update")) {
+    rt.stop();
+    return 1;
+  }
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
         const auto* rig = s ? find_rig(*s, kAuditRigId) : nullptr;
@@ -1006,6 +1109,14 @@ static int test_no_sink_delivered_vs_dropped_accounting() {
     (*p)++;
   };
   frame.release_user = &releases;
+  const auto no_sink_tick_period = *TickPeriod::create(7, 3);
+  const auto no_sink_timing = *ImageAcquisitionTiming::create(
+      77'777,
+      no_sink_tick_period,
+      ImageAcquisitionClockDomain::DOMAIN_OPAQUE,
+      ImageAcquisitionReferenceEvent::FRAME_AVAILABLE,
+      ImageAcquisitionComparability::SAME_IMAGE_ONLY);
+  frame.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{no_sink_timing, FactOrigin::DERIVED};
 
   ProviderToCoreCommand cmd{};
   cmd.type = ProviderToCoreCommandType::PROVIDER_FRAME;
@@ -1026,6 +1137,12 @@ static int test_no_sink_delivered_vs_dropped_accounting() {
     std::cerr << "FAIL: no-sink accounting mismatch received=" << rec->frames_received
               << " released=" << rec->frames_released
               << " dropped=" << rec->frames_dropped << "\n";
+    return 1;
+  }
+  if (rec->last_frame_ts_ns != 1000) {
+    std::cerr << "FAIL: no-sink dropped-frame receipt chronology mismatch expected_core_ns=1000"
+              << " actual_ns=" << rec->last_frame_ts_ns
+              << " provider_acquisition_mark=77777\n";
     return 1;
   }
 
@@ -1221,9 +1338,6 @@ static int test_scoped_resource_telemetry_runtime_framebuffer_lease_integration(
   frame.width = 1;
   frame.height = 1;
   frame.format_fourcc = FOURCC_RGBA;
-  frame.capture_timestamp.domain = CaptureTimestampDomain::CORE_MONOTONIC;
-  frame.capture_timestamp.value = 777;
-  frame.capture_timestamp.tick_ns = 1;
   frame.data = bytes.data();
   frame.size_bytes = bytes.size();
   frame.stride_bytes = 4;
@@ -1304,6 +1418,6 @@ int main() {
   if (int r = test_visibility_diagnostics_snapshot_truth()) return r;
   if (int r = test_still_capture_profile_visibility_audit_truth()) return r;
 
-  std::cout << "OK: phase3_snapshot_verify passed\n";
+  std::cout << "PASS phase3_snapshot_verify\n";
   return 0;
 }

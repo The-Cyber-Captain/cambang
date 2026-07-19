@@ -31,6 +31,9 @@ public:
     uint64_t commands_dropped_closed = 0;
     uint64_t commands_dropped_allocfail = 0;
 
+    uint64_t non_frame_rejected_closed = 0;
+    uint64_t non_frame_rejected_allocfail = 0;
+
     uint64_t frames_dropped_full = 0;
     uint64_t frames_dropped_closed = 0;
     uint64_t frames_dropped_allocfail = 0;
@@ -45,7 +48,8 @@ public:
   ProviderCallbackIngress(CoreThread* core_thread,
                           std::function<void(ProviderToCoreCommand&&)> sink,
                           std::function<uint64_t()> core_monotonic_now_ns,
-                          std::function<bool(uint64_t)> is_stream_display_demand_active);
+                          std::function<bool(uint64_t)> is_stream_display_demand_active,
+                          std::function<uint64_t()> applying_stream_retained_plan_for_stream_id = nullptr);
   ~ProviderCallbackIngress() override = default;
 
   ProviderCallbackIngress(const ProviderCallbackIngress&) = delete;
@@ -71,6 +75,12 @@ public:
   void on_capture_started(uint64_t capture_id, uint64_t device_instance_id) override;
   void on_capture_completed(uint64_t capture_id, uint64_t device_instance_id) override;
   void on_capture_failed(uint64_t capture_id, uint64_t device_instance_id, ProviderError error) override;
+  void on_camera_static_facts(uint64_t device_instance_id,
+                              ProviderCameraFacts facts) override;
+  void on_capture_image_facts(uint64_t capture_id,
+                              uint64_t device_instance_id,
+                              uint32_t image_member_index,
+                              ProviderCaptureImageFacts facts) override;
 
   void on_frame(const FrameView& frame) override;
 
@@ -85,18 +95,24 @@ private:
   void on_frame_ingress_failed_(uint64_t stream_id);
   void on_frame_ingress_dispatched_(uint64_t stream_id);
 
+  static bool is_frame_command_(ProviderToCoreCommandType type) noexcept;
+
   void post_command(ProviderToCoreCommand cmd);
 
   CoreThread* core_thread_ = nullptr; // non-owning
   std::function<void(ProviderToCoreCommand&&)> sink_;
   std::function<uint64_t()> core_monotonic_now_ns_;
   std::function<bool(uint64_t)> is_stream_display_demand_active_;
+  std::function<uint64_t()> applying_stream_retained_plan_for_stream_id_;
 
   std::atomic<uint64_t> native_id_seq_{1};
 
   std::atomic<uint64_t> commands_dropped_full_{0};
   std::atomic<uint64_t> commands_dropped_closed_{0};
   std::atomic<uint64_t> commands_dropped_allocfail_{0};
+
+  std::atomic<uint64_t> non_frame_rejected_closed_{0};
+  std::atomic<uint64_t> non_frame_rejected_allocfail_{0};
 
   std::atomic<uint64_t> frames_dropped_full_{0};
   std::atomic<uint64_t> frames_dropped_closed_{0};

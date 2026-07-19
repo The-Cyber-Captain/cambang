@@ -83,6 +83,42 @@ classification when a descendant survives beyond its controlling AcquisitionSess
   summary, full member tokens as `bundle=[...]` in detail).
 - Rig rows retain summary capture posture counters (`capture_w`, `capture_h`) and
   are not coupled to Device-vs-AcquisitionSession demotion policy.
+- Stream `fmt` and capture-profile `capture_fmt` counters may render a concise
+  token for known raw pixel-buffer formats (`RGBA`, `BGRA`) rather than the raw
+  integer value. This is a presentation-layer abbreviation of the same snapshot
+  format code, not a different format namespace.
+
+## Label / badge / counter split (current implementation)
+
+- Stream `intent` is surfaced in the stream row label, for example
+  `stream/<id> PREVIEW` or `stream/<id> VIEWFINDER`.
+- Device `engaged` is surfaced as a dedicated badge:
+  - `ENGAGED`
+  - `NOT ENGAGED`
+- Device, stream, and rig operational modes remain badge-backed state
+  classification, not label text or info-line prose.
+- Device-mode `ERROR` is rendered as `ERROR (MODE)` to distinguish mode-state
+  truth from separate error-code counters.
+
+## Device mode badge roles (current implementation)
+
+- `IDLE` -> `neutral`
+- `STREAMING` -> `success`
+- `CAPTURING` -> `info`
+- `ERROR` -> `error`
+
+`CAPTURING` has higher presentation priority than steady device streaming/idle
+state while a capture is in flight. Because observable publication is
+tick-bounded and coalesced, very short captures may still transition through
+`CAPTURING` internally without yielding a visibly published intermediate panel
+state.
+
+## Stream mode badge roles (current implementation)
+
+- `STOPPED` -> `neutral`
+- `FLOWING` -> `success`
+- `STARVED` -> `warning`
+- `ERROR` -> `error`
 
 ## Hierarchy expansion vs detail visibility
 

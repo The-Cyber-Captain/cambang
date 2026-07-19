@@ -1,12 +1,13 @@
 extends Node
 
-const QUIT_FLUSH_FRAMES := 2
 const TIMEOUT_MS := 7000
 const FIRST_PUBLISH_TIMEOUT_MS := 2000
 const OBSERVATION_WINDOW_MS := 1800
+const SCENE_LABEL := "62_snapshot_polling_immutability_abuse"
 
 var _done := false
 var _quit_requested := false
+var _terminal_verdict_emitted := false
 var _timer: Timer
 var _first_publish_timer: Timer
 var _observation_timer: Timer
@@ -30,15 +31,15 @@ func _ready() -> void:
 		CamBANGServer.TIMELINE_RECONCILIATION_COMPLETION_GATED
 	)
 	if start_err != OK:
-		_fail("FAIL: synthetic timeline start rejected with error %d" % start_err)
+		_error("ERROR: synthetic timeline start rejected with error %d" % start_err, "runtime_start_rejected")
 		return
 	var stage_err := CamBANGServer.select_builtin_scenario("publication_coalescing")
 	if stage_err != OK:
-		_fail("FAIL: unable to stage publication_coalescing scenario")
+		_error("ERROR: unable to stage publication_coalescing scenario", "scenario_stage_rejected")
 		return
 	var scenario_start_err := CamBANGServer.start_scenario()
 	if scenario_start_err != OK:
-		_fail("FAIL: unable to start publication_coalescing scenario")
+		_error("ERROR: unable to start publication_coalescing scenario", "scenario_start_rejected")
 		return
 	print("RUN: godot snapshot polling/immutability abuse")
 
@@ -90,7 +91,7 @@ func _process(_delta: float) -> void:
 
 
 func _on_timeout() -> void:
-	_fail("FAIL: snapshot polling/immutability abuse timed out before reaching deterministic completion")
+	_fail("FAIL: snapshot polling/immutability abuse timed out before reaching deterministic completion", "timeout")
 
 
 func _on_first_publish_timeout() -> void:
@@ -98,7 +99,7 @@ func _on_first_publish_timeout() -> void:
 		return
 	if _first_publish_observed:
 		return
-	_fail("FAIL: no state_published callback observed during startup window")
+	_fail("FAIL: no state_published callback observed during startup window", "timeout")
 
 
 func _on_observation_timeout() -> void:
@@ -162,17 +163,41 @@ func _ok(msg: String) -> void:
 	if _done:
 		return
 	_done = true
+	_emit_harness_verdict("ok", 0, "pass")
 	print(msg)
 	_cleanup_and_quit(0)
 
 
-func _fail(msg: String) -> void:
+func _fail(msg: String, reason: String = "assertion_failed") -> void:
 	if _done:
 		return
 	_done = true
+	_emit_harness_verdict("fail", 1, reason)
 	push_error(msg)
 	print(msg)
 	_cleanup_and_quit(1)
+
+
+func _error(msg: String, reason: String) -> void:
+	if _done:
+		return
+	_done = true
+	_emit_harness_verdict("error", 1, reason)
+	push_error(msg)
+	print(msg)
+	_cleanup_and_quit(1)
+
+
+func _emit_harness_verdict(status: String, exit_code: int, reason: String) -> void:
+	if _terminal_verdict_emitted:
+		return
+	_terminal_verdict_emitted = true
+	print("[CamBANG][HarnessVerdict] scene=%s status=%s exit_code=%d reason=%s" % [
+		SCENE_LABEL,
+		status,
+		exit_code,
+		reason,
+	])
 
 
 func _cleanup_and_quit(code: int) -> void:
@@ -185,14 +210,6 @@ func _cleanup_and_quit(code: int) -> void:
 		_observation_timer.stop()
 	if CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.disconnect(_on_state_published)
-	CamBANGServer.stop()
 	if not _quit_requested:
 		_quit_requested = true
-		call_deferred("_quit_next_frame", code)
-
-
-func _quit_next_frame(code: int) -> void:
-	for _i in range(QUIT_FLUSH_FRAMES):
-		await get_tree().process_frame
-	print("INFO: quit requested code=%d" % code)
-	get_tree().quit(code)
+		CamBANGServer.stop_and_quit(code)

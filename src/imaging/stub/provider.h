@@ -10,6 +10,7 @@
 #include "pixels/pattern/cpu_packed_pattern_renderer.h"
 
 #include "imaging/api/icamera_provider.h"
+#include "imaging/api/provider_access_status.h"
 #include "imaging/api/provider_strand.h"
 
 namespace cambang {
@@ -18,6 +19,8 @@ class StubProvider final : public ICameraProvider {
 public:
   StubProvider() = default;
   ~StubProvider() override = default;
+
+  static ProviderAccessStatus check_access_readiness() noexcept;
 
   const char* provider_name() const override;
   ProviderKind provider_kind() const noexcept override { return ProviderKind::platform_backed; }
@@ -28,6 +31,13 @@ public:
   bool supports_stream_picture_updates() const noexcept override { return true; }
   bool supports_capture_picture_updates() const noexcept override { return true; }
   bool supports_multi_image_still_sequence() const noexcept override { return false; }
+  uint64_t stream_backing_plan_evaluation_settle_delay_ns() const noexcept override { return 0; }
+  uint64_t capture_backing_plan_evaluation_settle_delay_ns() const noexcept override { return 0; }
+  ProducerBackingCapabilities stream_backing_capabilities(
+      const CaptureProfile& profile,
+      const PictureConfig& picture) const noexcept override;
+  ProducerBackingCapabilities capture_backing_capabilities(
+      const CaptureRequest& req) const noexcept override;
 
 // Test instrumentation (thread-safe).
 uint64_t frames_emitted() const noexcept { return frames_emitted_.load(std::memory_order_relaxed); }
@@ -66,9 +76,14 @@ uint64_t frames_released() const noexcept { return frames_released_.load(std::me
       const CaptureProfile& profile,
       const PictureConfig& picture) override;
   ProviderResult stop_stream(uint64_t stream_id) override;
+  ProviderResult update_stream_retained_production_plan(
+      uint64_t stream_id,
+      CoreRetainedProductionPlan requested_retained_plan) override;
 
   ProviderResult set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) override;
   ProviderResult set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) override;
+  ProviderResult sync_capture_parent_priming(const CaptureRequest& req) override;
+  ProviderResult release_capture_parent_priming(uint64_t device_instance_id) override;
 
   ProviderResult trigger_capture(const CaptureRequest& req) override;
   ProviderResult abort_capture(uint64_t capture_id) override;
@@ -95,6 +110,7 @@ private:
     uint64_t stream_id = 0;
     uint64_t native_id = 0;
     uint64_t acquisition_session_native_id = 0;
+    bool acquisition_session_primed = false;
     PictureConfig capture_picture{};
   };
 

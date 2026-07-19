@@ -1,9 +1,41 @@
 #include "core/core_thread.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <exception>
 #include <utility>
 
 namespace cambang {
+
+namespace {
+
+// Stage A.3 fairness bound: ordinary provider/frame ingress remains FIFO and
+// non-dropping, but CoreThread takes it in single-task slices so command-lane
+// work posted while ordinary work is flowing is observed before another
+// ordinary task runs.
+constexpr size_t kMaxOrdinaryTasksPerCoreThreadTurn = 1;
+
+bool bounded_core_thread_work_full(size_t command_size, size_t ordinary_size) noexcept {
+  return command_size + ordinary_size >= CoreThread::kMaxPendingTasks;
+}
+
+// The core thread is the sole owner of core state; an uncaught exception
+// escaping its entry function is UB and terminates the whole process. Every
+// unit of dispatched work (posted tasks, timer hook) must therefore run
+// inside this boundary rather than being invoked directly.
+template <typename Fn>
+void run_guarded(const char* label, Fn&& fn) noexcept {
+  try {
+    fn();
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "[CamBANG][CoreThread] uncaught exception in %s: %s\n", label, e.what());
+  } catch (...) {
+    std::fprintf(stderr, "[CamBANG][CoreThread] uncaught non-standard exception in %s\n", label);
+  }
+}
+
+} // namespace
 
 CoreThread::~CoreThread() {
   // Destructor enforces deterministic shutdown.
@@ -31,16 +63,34 @@ bool CoreThread::start(IHooks* hooks) {
     timer_tick_requested_ = false;
     has_deadline_ = false;
     deadline_ns_ = 0;
+    essential_tasks_.clear();
+    command_tasks_.clear();
     tasks_.clear();
   }
 
   // Reset accounting
   tasks_enqueued_.store(0, std::memory_order_relaxed);
+  essential_tasks_enqueued_.store(0, std::memory_order_relaxed);
+  command_tasks_enqueued_.store(0, std::memory_order_relaxed);
   tasks_dropped_full_.store(0, std::memory_order_relaxed);
   tasks_dropped_closed_.store(0, std::memory_order_relaxed);
   tasks_dropped_allocfail_.store(0, std::memory_order_relaxed);
 
-  thread_ = std::thread(&CoreThread::thread_main, this);
+  try {
+    thread_ = std::thread(&CoreThread::thread_main, this);
+  } catch (...) {
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      hooks_ = nullptr;
+      stop_requested_ = false;
+      stop_when_idle_ = false;
+      essential_tasks_.clear();
+      command_tasks_.clear();
+      tasks_.clear();
+    }
+    running_.store(false, std::memory_order_release);
+    return false;
+  }
   return true;
 }
 
@@ -89,7 +139,27 @@ void CoreThread::join() {
   if (thread_.joinable()) {
     thread_.join();
   }
-  core_tid_ = std::thread::id{};
+  core_tid_.store(std::thread::id{}, std::memory_order_release);
+  running_.store(false, std::memory_order_release);
+}
+
+void CoreThread::abandon_wedged_thread() noexcept {
+  if (!running_.load(std::memory_order_acquire)) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    stop_requested_ = true;
+  }
+  cv_.notify_all();
+  // The wedged thread cannot be joined (it is blocked inside a provider call
+  // that never returns). Detach so stop()/the destructor cannot hang; the
+  // thread, its stack, and everything it references leak for the remainder
+  // of the process by design.
+  if (thread_.joinable()) {
+    thread_.detach();
+  }
+  core_tid_.store(std::thread::id{}, std::memory_order_release);
   running_.store(false, std::memory_order_release);
 }
 
@@ -118,7 +188,7 @@ CoreThread::PostResult CoreThread::try_post(Task task) {
       return PostResult::Closed;
     }
 
-    if (tasks_.size() >= kMaxPendingTasks) {
+    if (bounded_core_thread_work_full(command_tasks_.size(), tasks_.size())) {
       tasks_dropped_full_.fetch_add(1, std::memory_order_relaxed);
       return PostResult::QueueFull;
     }
@@ -137,13 +207,96 @@ CoreThread::PostResult CoreThread::try_post(Task task) {
   return PostResult::Enqueued;
 }
 
+
+CoreThread::PostResult CoreThread::try_post_command(Task task) {
+  // Command ingress point. This queue is bounded together with ordinary work,
+  // but drains before ordinary provider/frame work so public Core commands get
+  // a prompt service opportunity under sustained provider production.
+  if (!task) {
+    return PostResult::Enqueued;
+  }
+
+  if (!running_.load(std::memory_order_acquire)) {
+    tasks_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
+    return PostResult::Closed;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (stop_requested_) {
+      tasks_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
+      return PostResult::Closed;
+    }
+
+    if (bounded_core_thread_work_full(command_tasks_.size(), tasks_.size())) {
+      tasks_dropped_full_.fetch_add(1, std::memory_order_relaxed);
+      return PostResult::QueueFull;
+    }
+
+    try {
+      command_tasks_.push_back(std::move(task));
+    } catch (...) {
+      tasks_dropped_allocfail_.fetch_add(1, std::memory_order_relaxed);
+      return PostResult::AllocFail;
+    }
+  }
+
+  tasks_enqueued_.fetch_add(1, std::memory_order_relaxed);
+  command_tasks_enqueued_.fetch_add(1, std::memory_order_relaxed);
+  cv_.notify_one();
+  return PostResult::Enqueued;
+}
+
+
+CoreThread::PostResult CoreThread::try_post_essential(Task task) {
+  // Essential ingress point.
+  // This queue is intentionally separate from the ordinary bounded queue so
+  // lifecycle/native/error/capture-terminal facts are not dropped only because
+  // ordinary frame/request work is saturated.
+  if (!task) {
+    return PostResult::Enqueued;
+  }
+
+  if (!running_.load(std::memory_order_acquire)) {
+    tasks_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
+    return PostResult::Closed;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (stop_requested_) {
+      tasks_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
+      return PostResult::Closed;
+    }
+
+    try {
+      essential_tasks_.push_back(std::move(task));
+    } catch (...) {
+      tasks_dropped_allocfail_.fetch_add(1, std::memory_order_relaxed);
+      return PostResult::AllocFail;
+    }
+  }
+
+  tasks_enqueued_.fetch_add(1, std::memory_order_relaxed);
+  essential_tasks_enqueued_.fetch_add(1, std::memory_order_relaxed);
+  cv_.notify_one();
+  return PostResult::Enqueued;
+}
+
 CoreThread::Stats CoreThread::stats_copy() const noexcept {
   Stats s;
   s.tasks_enqueued = tasks_enqueued_.load(std::memory_order_relaxed);
+  s.essential_tasks_enqueued = essential_tasks_enqueued_.load(std::memory_order_relaxed);
+  s.command_tasks_enqueued = command_tasks_enqueued_.load(std::memory_order_relaxed);
   s.tasks_dropped_full = tasks_dropped_full_.load(std::memory_order_relaxed);
   s.tasks_dropped_closed = tasks_dropped_closed_.load(std::memory_order_relaxed);
   s.tasks_dropped_allocfail = tasks_dropped_allocfail_.load(std::memory_order_relaxed);
   return s;
+}
+
+bool CoreThread::has_pending_command_tasks() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return !command_tasks_.empty();
 }
 
 void CoreThread::request_timer_tick() {
@@ -179,25 +332,57 @@ void CoreThread::clear_timer_deadline() {
   cv_.notify_one();
 }
 
-void CoreThread::drain_tasks_locked(std::deque<Task>& local) {
-  // Moves all pending tasks into a local queue.
+void CoreThread::drain_tasks_locked(std::deque<Task>& essential_local,
+                                     std::deque<Task>& command_local,
+                                     std::deque<Task>& ordinary_local) {
+  // Moves all pending tasks into local queues.
   // Guarantees:
   // - Tasks execute outside the mutex.
-  // - FIFO order is preserved.
-  local.clear();
-  local.swap(tasks_);
+  // - FIFO order is preserved within each queue.
+  // - Essential tasks are made available before command tasks.
+  // - Command tasks are made available before ordinary tasks.
+  // - Ordinary work is drained in a bounded FIFO slice. Remaining ordinary work
+  //   stays queued for the next pump so newly posted command work can be observed
+  //   before another ordinary slice runs.
+  essential_local.clear();
+  command_local.clear();
+  ordinary_local.clear();
+  essential_local.swap(essential_tasks_);
+  command_local.swap(command_tasks_);
+  const size_t ordinary_to_drain = std::min(tasks_.size(), kMaxOrdinaryTasksPerCoreThreadTurn);
+  for (size_t i = 0; i < ordinary_to_drain; ++i) {
+    ordinary_local.push_back(std::move(tasks_.front()));
+    tasks_.pop_front();
+  }
+}
+
+void CoreThread::mark_task_start_() noexcept {
+  const uint64_t now_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+  current_task_started_ns_.store(now_ns, std::memory_order_release);
+}
+
+void CoreThread::mark_task_end_() noexcept {
+  current_task_started_ns_.store(0, std::memory_order_release);
 }
 
 void CoreThread::thread_main() {
-  core_tid_ = std::this_thread::get_id();
+  core_tid_.store(std::this_thread::get_id(), std::memory_order_release);
   // From this point onward, execution is exclusively on the core thread.
   // No other thread may mutate core state.
 
   if (hooks_) {
-    hooks_->on_core_start();
+    mark_task_start_();
+    run_guarded("on_core_start", [this]() { hooks_->on_core_start(); });
+    mark_task_end_();
   }
 
-  std::deque<Task> local;
+  std::deque<Task> essential_local;
+  std::deque<Task> command_local;
+  std::deque<Task> ordinary_local;
+  bool timer_tick_deferred_for_command = false;
 
   for (;;) {
     bool do_timer_tick = false;
@@ -210,7 +395,8 @@ void CoreThread::thread_main() {
       const uint64_t deadline_ns = deadline_ns_;
 
       auto predicate = [&]() {
-        return stop_requested_ || stop_when_idle_ || !tasks_.empty() || timer_tick_requested_;
+        return stop_requested_ || stop_when_idle_ || !essential_tasks_.empty() ||
+               !command_tasks_.empty() || !tasks_.empty() || timer_tick_requested_;
       };
 
       if (!has_deadline) {
@@ -233,7 +419,8 @@ void CoreThread::thread_main() {
 
       // If a stop-when-idle request is pending and there is no work to drain,
       // convert it into a definitive stop. This closes task admission deterministically.
-      if (stop_when_idle_ && tasks_.empty() && !timer_tick_requested_) {
+      if (stop_when_idle_ && essential_tasks_.empty() && command_tasks_.empty() &&
+          tasks_.empty() && !timer_tick_requested_) {
         stop_requested_ = true;
       }
 
@@ -245,30 +432,82 @@ void CoreThread::thread_main() {
       }
 
       // Drain tasks while holding mutex, execute outside.
-      drain_tasks_locked(local);
+      drain_tasks_locked(essential_local, command_local, ordinary_local);
     }
 
     // Execute all tasks serially.
     // Determinism guarantee:
     // - No two tasks execute concurrently.
-    // - Execution order matches FIFO post() order.
-    for (auto& task : local) {
-      task();
+    // - Essential FIFO tasks execute before command FIFO tasks drained in the same pump.
+    // - Command FIFO tasks execute before ordinary FIFO tasks drained in the same pump.
+    for (size_t i = 0; i < essential_local.size(); ++i) {
+      mark_task_start_();
+      run_guarded("essential_task", essential_local[i]);
+      mark_task_end_();
     }
-    local.clear();
+    essential_local.clear();
+
+    for (size_t i = 0; i < command_local.size(); ++i) {
+      mark_task_start_();
+      run_guarded("command_task", command_local[i]);
+      mark_task_end_();
+    }
+    command_local.clear();
+
+    for (size_t i = 0; i < ordinary_local.size(); ++i) {
+      mark_task_start_();
+      run_guarded("ordinary_task", ordinary_local[i]);
+      mark_task_end_();
+    }
+    ordinary_local.clear();
 
     if (do_timer_tick && hooks_) {
-      // Timer tick runs strictly on the core thread.
-      hooks_->on_core_timer_tick();
+      bool defer_timer_for_command = false;
+      if (!stopping && !timer_tick_deferred_for_command) {
+        std::lock_guard<std::mutex> lock(mu_);
+        defer_timer_for_command = !command_tasks_.empty();
+        if (defer_timer_for_command) {
+          // Preserve the coalesced tick and give command-lane work posted while
+          // this pump was executing a prompt service turn before timer work.
+          timer_tick_requested_ = true;
+        }
+      }
+
+      if (defer_timer_for_command) {
+        timer_tick_deferred_for_command = true;
+      } else {
+        // Timer tick runs strictly on the core thread. This is the path that
+        // reaches CoreRuntime's shutdown-phase pump, which calls
+        // prov->shutdown() -- exactly the kind of provider call the liveness
+        // primitive exists to catch if it never returns.
+        mark_task_start_();
+        run_guarded("on_core_timer_tick", [this]() { hooks_->on_core_timer_tick(); });
+        mark_task_end_();
+        timer_tick_deferred_for_command = false;
+      }
     }
 
     if (stopping) {
-      break;
+      // A drained task may request a timer tick while stop is already pending
+      // (for example, a provider ingress task accepted before closure can enqueue
+      // CoreRuntime facts and ask the hook to pump them). Do not strand that
+      // accepted work solely because the stop flag was observed before the task ran.
+      bool has_deferred_work = false;
+      {
+        std::lock_guard<std::mutex> lock(mu_);
+        has_deferred_work = (!do_timer_tick && timer_tick_requested_) ||
+                            !essential_tasks_.empty() || !command_tasks_.empty() || !tasks_.empty();
+      }
+      if (!has_deferred_work) {
+        break;
+      }
     }
   }
 
   if (hooks_) {
-    hooks_->on_core_stop();
+    mark_task_start_();
+    run_guarded("on_core_stop", [this]() { hooks_->on_core_stop(); });
+    mark_task_end_();
   }
 }
 

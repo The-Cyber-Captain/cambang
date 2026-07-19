@@ -31,6 +31,7 @@ struct SyntheticGpuBackingRuntimeOps final {
       uint32_t height,
       uint32_t stride_bytes) noexcept = nullptr;
   void (*release_stream_live_gpu_backing)(std::shared_ptr<void>& backing) noexcept = nullptr;
+  bool (*can_materialize_to_image)(const std::shared_ptr<void>& backing) noexcept = nullptr;
   bool (*take_update_timing_stats)(
       uint64_t& upload_copy_calls,
       uint64_t& upload_copy_total_ns,
@@ -49,6 +50,10 @@ struct SyntheticGpuBackingRuntimeOps final {
       uint64_t& texture_update_skipped) noexcept = nullptr;
 };
 
+// The table is non-owning and must remain alive until a matching clear has
+// returned. Installation safely drains a different active table before
+// publishing the replacement. Clear closes admission first, then waits for
+// every call already admitted through this seam to return.
 void set_synthetic_gpu_backing_runtime_ops(const SyntheticGpuBackingRuntimeOps* ops) noexcept;
 void clear_synthetic_gpu_backing_runtime_ops() noexcept;
 
@@ -78,6 +83,7 @@ bool synthetic_gpu_backing_update_stream_live_gpu_backing_rgba8(
     uint32_t height,
     uint32_t stride_bytes) noexcept;
 void synthetic_gpu_backing_release_stream_live_gpu_backing(std::shared_ptr<void>& backing) noexcept;
+bool synthetic_gpu_backing_can_materialize_to_image(const std::shared_ptr<void>& backing) noexcept;
 bool synthetic_gpu_backing_take_update_timing_stats(
     uint64_t& upload_copy_calls,
     uint64_t& upload_copy_total_ns,

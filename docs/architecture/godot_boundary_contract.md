@@ -22,6 +22,46 @@ signal state_published(gen, version, topology_version)
 
 Other Godot-facing APIs may exist for object access, scenario/dev control, provider configuration, or result retrieval. They are outside the scope of this document unless explicitly tied to snapshot visibility, generation boundaries, or tick-bounded publication semantics. New Godot-facing API surface must still be added deliberately and documented at the appropriate boundary; this clarification must not be read as permission for ad-hoc public API growth.
 
+Stopped-time imaging-subsystem truth ingestion is a narrow public-boundary
+exception:
+
+```
+CamBANGServer.ingest_camera_description(String json_text) -> Error
+```
+
+This method accepts caller-supplied JSON text only; CamBANG performs no
+filesystem access on the caller's behalf. It accepts the complete supported ADC
+v2 camera-description document, including optional concurrency truth projected
+into retained `ImagingSpec`. Ingestion is stopped-time and transactional:
+accepted input becomes configured truth for the next generation,
+active-generation ingestion returns `ERR_BUSY`, and any parse/validation
+failure leaves the previously configured truth unchanged. Legacy ADC v1
+concurrency-only documents are not accepted through this public surface.
+
+Completed `CamBANGCaptureResult` objects expose resolved still-camera facts
+through optional `get_image_member(index).camera_facts`, and
+`CamBANGStreamResult` exposes stream-frame facts through `get_camera_facts()`.
+These surfaces include optional `acquisition_timing` with direct Godot `int`
+values for `acquisition_mark`, `tick_period_numerator_ns`, and
+`tick_period_denominator`, plus `get_capture_datetime_unix_nanoseconds()`,
+`has_geolocation()`, and `get_geolocation()`. This does not add a camera-fact
+wrapper class or any legacy scalar capture-timestamp alias.
+
+Capture geolocation is configured independently through:
+
+```
+CamBANGServer.set_capture_geolocation(Dictionary geolocation) -> Error
+```
+
+It accepts an empty dictionary to clear the configured value. A non-empty
+dictionary requires finite WGS 84 geodetic `latitude_degrees` in `[-90, 90]`
+and `longitude_degrees` in `[-180, 180]`, with optional finite WGS 84
+ellipsoidal `altitude_meters` in metres. Invalid input is rejected
+transactionally without changing the prior value. The setter is valid while
+stopped or running and changes only the value sampled by future successful
+capture admissions; existing admitted captures and completed results remain
+unchanged.
+
 Boundary lifecycle note: Godot/CamBANGServer may own provider storage and release
 that storage after a run, but once the provider is attached and the runtime is
 running, attached-provider shutdown belongs to `CoreRuntime::stop()`. Godot must
@@ -47,7 +87,18 @@ get_state_snapshot() == NIL
 
 No runtime state should be assumed during this period. Public runtime-effect surfaces are not commandable until the generation baseline is observed at the Godot boundary. During the pre-baseline window, mutating runtime commands fail visibly (for example `ERR_BUSY` or `ERR_UNAVAILABLE`, according to the method convention), runtime object lookups such as `get_device(instance_id)` return no object, result lookups return no result, and runtime-effect commands are neither queued for later nor reported as successful while dropped.
 
-Provider discovery is a narrow startup-safe exception because it observes provider endpoint identity rather than mutating runtime/core state. After `start()` has been accepted and provider storage exists, `enumerate_devices()` and `get_device_for_hardware_id(...)` may be used before the first baseline publish. A returned `CamBANGDevice` is only a hardware-id endpoint handle in this window; it is not runtime instance truth, and `get_device(instance_id)` remains baseline/current-generation gated.
+Provider discovery is a narrow startup-safe exception because it observes
+provider endpoint identity rather than mutating runtime/core state. After
+`start()` has been accepted and provider storage exists, `enumerate_devices()`
+and `get_device_for_hardware_id(...)` may be used before the first baseline
+publish. A returned `CamBANGDevice` can be a **hardware-id endpoint handle**: an
+object representing the endpoint selected by hardware ID. That handle does not
+necessarily imply that a live runtime **device-instance object** has been
+resolved, or that a current `device_instance_id` exists. These identities are
+not interchangeable for all operations. Runtime operations that require a live
+resolved device instance, including device-triggered capture, depend on the
+runtime-instance seam rather than endpoint-handle identity alone;
+`get_device(instance_id)` therefore remains baseline/current-generation gated.
 
 Endpoint startup intent is also narrow and hardware-id scoped. During the pre-baseline startup window, endpoint-handle `engage()`, `set_still_capture_profile(...)`, and `set_warm_policy(...)` may be accepted as startup intent. Those calls do not execute core/provider runtime effects before baseline: the clean `state_published(gen, 0, 0)` snapshot is emitted and latch-visible first, and accepted endpoint intents are applied only afterward, so their observable device/profile/warm-policy effects appear in later snapshots (normally `version >= 1`). Multiple pre-baseline profile or warm-policy calls for the same endpoint/session are deterministic last-write-wins. Accepted endpoint startup intent either applies after baseline or fails visibly; it is not retained indefinitely. Stream creation, capture triggering, result lookup, rig capture, timeline advancement, and commands that depend on runtime instance lineage are not part of this exception.
 

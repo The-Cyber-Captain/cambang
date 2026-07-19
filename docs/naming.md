@@ -37,6 +37,46 @@ maintainer-authored validation procedures.
 
 ------------------------------------------------------------------------
 
+## 0.1 Terminology guardrail: Backing Plan evaluation
+
+Use **Backing Plan** for the internal parent-scoped production/retention plan
+that states which backing forms CamBANG intends to retain for image-bearing
+work. A Backing Plan belongs to a **Native Payload Support Parent**. It is not
+a provider-capability surface, format-negotiation surface, route table, or
+per-call route-economics mechanism.
+
+Use **Native Payload Support Parent** for the owner of parent-scoped Backing
+Plan evaluation:
+
+- `Stream` for stream-originated payload/backing work
+- `AcquisitionSession` for capture-originated payload/backing work
+
+Use **Requested Plan** for the currently applied or probed Backing Plan during
+an evaluation epoch.
+
+Use **Steady Plan** for the settled winning Backing Plan for that parent.
+
+Use **Backing State** for the concrete backing state actually associated with a
+retained result or capture member.
+
+Use **Operation Support** for operation-level support on that retained
+artifact/member, expressed with `ResultCapability` for operations such as
+`display_view`, `to_image`, and `encoded_bytes`.
+
+Use **Access Evidence** for timing/measurement evidence gathered from real
+public retained-result operations. This evidence can refine supported non-ready
+Operation Support and inform bounded parent-scoped Backing Plan evaluation, but
+it is not snapshot truth.
+
+Older source identifiers may still carry the earlier retained-family names
+during migration, but canonical prose should use the terms above.
+
+Use **primary backing** for the principal retained representation that determines
+`payload_kind`. Use **sidecar backing** for an associated retained representation
+that may support an operation without changing the primary payload kind.
+
+------------------------------------------------------------------------
+
 ## 1. Godot-facing API objects
 
 ### CamBANG prefix rule (normative)
@@ -75,6 +115,12 @@ Observable boundary contract:
 - `CamBANGServer.stop()`
 - `CamBANGServer.get_rig(rig_id)`
 - `CamBANGServer.get_state_snapshot()`
+- `CamBANGServer.ingest_camera_description(String json_text) -> Error` for
+  stopped-time full replacement of caller-supplied ADC v2 camera-description
+  JSON; it performs no filesystem access and leaves prior configured truth
+  unchanged on failure
+- `CamBANGServer.get_provider_support()` for stopped-time, read-only provider
+  support/startup introspection from compiled build capability metadata
 - advanced/dev/scenario explicit-ID result lookups:
   - `CamBANGServer.get_capture_result_by_id(capture_id, device_instance_id)`
   - `CamBANGServer.get_capture_result_set_by_id(capture_id)`
@@ -88,6 +134,11 @@ The full behavioural contract for the Godot-facing runtime boundary
 (start semantics, restart generation rules, snapshot visibility, and
 tick-bounded publication) is documented in:
 `docs/architecture/godot_boundary_contract.md`.
+
+`CamBANGServer.set_capture_geolocation(Dictionary geolocation) -> Error`
+configures the optional capture-admission geolocation for later successful
+captures. It accepts `{}` to clear; validation and lifecycle semantics are
+defined by `docs/architecture/godot_boundary_contract.md`.
 
 Non-goal (current): no public `CamBANGServer.trigger_rig_capture(...)`
 entry point; rig capture is triggered via `CamBANGRig.trigger_capture() -> Error` and observed via `CamBANGRig.get_result()`.
@@ -117,6 +168,7 @@ Primary lifecycle controls:
 - `set_warm_policy(...)`
 - `set_still_capture_profile(profile)`
 - `get_instance_id()`
+- `create_stream(definition := {})`
 - `trigger_capture() -> Error`
 - `get_result()`
 
@@ -135,16 +187,29 @@ instance.
 
 Primary controls:
 
-- `start()` / `stop()`
+- `start()` / `stop()` / `destroy()`
 - `get_result()`
 
 Each device supports at most one active repeating stream at a time
 (i.e. a stream with `phase=LIVE` and `mode != STOPPED`).
 
-Streams are created with a `StreamIntent`:
+Streams are created with a creation-time **Stream Definition** supplied to
+`CamBANGDevice.create_stream(definition := {})`. The default/no-argument
+form creates a `PREVIEW` stream using the provider's `StreamTemplate`.
 
-- `PREVIEW`
-- `VIEWFINDER`
+A Stream Definition may contain:
+
+- `intent`: the `StreamIntent` (`PREVIEW` or `VIEWFINDER`)
+- `profile`: the Stream Capture Profile request fields to override from the
+  provider template. `format_fourcc` uses CamBANG FourCC-style pixel format
+  constants such as `CamBANGServer.PIXEL_FORMAT_RGBA` and
+  `CamBANGServer.PIXEL_FORMAT_BGRA`.
+
+`CamBANGStream` controls lifecycle (`start`, `stop`, `destroy`) for an already
+created runtime stream. It is not a mutable builder: the stream intent and
+structural Stream Capture Profile are fixed for that handle. Changing those
+creation-time properties means destroying the stream and creating a new stream
+with a different Stream Definition.
 
 `CamBANGStream` is a public/runtime-visible user-semantic object.
 It must not be conflated with every native/provider stream-like resource
@@ -170,6 +235,13 @@ Typical fields include:
 - Target FPS or FPS range (best-effort)
 - Optional buffering hints
 
+For Godot users, Stream Capture Profile fields are supplied inside a Stream
+Definition's `profile` dictionary at stream creation time. Current Godot keys
+are `width`, `height`, `format_fourcc`, `target_fps`, `target_fps_min`, and
+`target_fps_max`. `target_fps` is a convenience spelling that sets both min and
+max. Omitted profile fields are inherited from the provider `StreamTemplate`
+before the effective stream request reaches the provider.
+
 ### Still Capture Profile
 
 A profile used for triggered still capture (device-triggered or
@@ -181,6 +253,31 @@ rig-triggered). Typical fields include:
 - Optional processing hints
 
 Profiles define capture fidelity and intent, not hardware truth.
+
+### Pixel format constants
+
+Godot-facing profile dictionaries should use named CamBANG pixel-format
+constants for raw pixel-buffer formats rather than hard-coded FourCC integer
+literals.
+
+The public constant family is:
+
+- `CamBANGServer.PIXEL_FORMAT_RGBA`
+- `CamBANGServer.PIXEL_FORMAT_BGRA`
+
+`PIXEL_FORMAT_*` names are reserved for raw pixel-buffer layouts such as packed
+RGBA/BGRA and future raw displayable layouts such as NV12 or I420 if/when they
+are exposed.
+
+These constants are FourCC-style integer values because snapshot/profile schema
+fields store provider-agnostic CamBANG format codes as `uint32`. The public
+constant name should still prefer `PIXEL_FORMAT_*` over `FOURCC_*`, because the
+user-facing meaning is the pixel-buffer layout, not the encoding mechanism.
+
+Do not use `PIXEL_FORMAT_*` for encoded image formats, file/container formats,
+or RAW-domain still outputs. Future encoded or RAW still outputs require their
+own payload/result support and, if exposed publicly, should use a separate
+constant family rather than being added to `PIXEL_FORMAT_*`.
 
 ------------------------------------------------------------------------
 
@@ -195,11 +292,24 @@ Per-camera characteristics/capabilities (for example: sensor properties,
 intrinsic parameters if available, supported formats, etc.).
 `CameraSpec` is keyed by a camera's `hardware_id`.
 
+The canonical source-neutral camera-fact architecture and ADC v2 contract are
+documented in:
+
+- `docs/camera_fact_model.md`
+- `docs/adc_camera_description_v2.md`
+
 ### `ImagingSpec`
 
 Global imaging subsystem constraints/capabilities that apply across
 cameras (for example: concurrency/combination rules). `ImagingSpec` is
 not per-camera.
+
+`ImagingSpec` is the retained cross-camera / imaging-subsystem capability seam
+used for current operational truth that Core may need for admission and
+validation. It is not a result-fact surface, a runtime-posture surface, or a
+general metadata/calibration enrichment bucket.
+
+See `docs/architecture/imaging_spec_seam.md`.
 
 ### `RigConfig`
 
@@ -323,10 +433,10 @@ when the observable structure changes.
 When `gen` changes, both `version` and `topology_version` reset to zero for
 the new baseline.
 
-### Timestamp fields and time domains
+### Timing fields and time domains
 
-CamBANG uses multiple timestamp domains for different purposes. Field names must
-make the domain and units unambiguous.
+CamBANG uses several time domains for different purposes. Names must identify the
+semantic role and, for scalar values, the units.
 
 #### Snapshot publish time (schema v1)
 
@@ -334,15 +444,19 @@ make the domain and units unambiguous.
 - It is **generation-relative**.
 - It is **not wall-clock** and must not be interpreted as UNIX epoch time.
 
-#### Capture time (provider → core frame metadata)
+#### Image Acquisition Timing (provider → Core frame metadata)
 
-Providers must tag frames with a provider-agnostic capture timestamp representation:
+Use **Image Acquisition Timing** for provider-authored descriptive timing of an
+acquired image or stream frame. Its acquisition mark is interpreted only with
+its rational tick period, clock domain, reference event, and comparability
+scope. Do not collapse it into a generic `capture_timestamp` scalar.
+The canonical acquisition mark is a nonnegative signed 64-bit value, and the
+tick-period numerator in nanoseconds and denominator are positive signed 64-bit
+values. Zero is a valid acquisition mark; the period is retained in reduced
+form.
 
-- `CaptureTimestamp.value`
-- `CaptureTimestamp.tick_ns`
-- `CaptureTimestamp.domain`
-
-Capture timestamps describe image-capture time, not snapshot publication time.
+Image Acquisition Timing is not Capture Date-Time, snapshot publication time,
+Core chronology, retained-frame identity, backing identity, or freshness.
 
 ------------------------------------------------------------------------
 
@@ -511,11 +625,13 @@ debugging logs.
 - `SnapshotBuilder`: assembles `CamBANGStateSnapshot` from current core registries and aggregate telemetry
 - `IStateSnapshotPublisher` / `StateSnapshotBuffer`: provide the current snapshot publication boundary and latest-snapshot buffer
 
-### Timestamp conventions
+### Timing conventions
 
-- Use suffixes to encode units: `_ns`, `_ms`, `_us`, `_100ns`, etc.
-- Use `capture_` prefix for per-frame capture time and keep it distinct from snapshot publish time.
-- Do not use provider/platform prefixes (e.g. `mf_`, `camera2_`) outside provider code; translate to provider-agnostic `CaptureTimestamp` at the provider boundary.
+- Use suffixes to encode units for true scalar durations/instants: `_ns`, `_ms`, `_us`, `_100ns`, etc.
+- Use `acquisition_timing` for the complete provider-authored image-time fact; do not name its acquisition mark as a generic timestamp.
+- Keep Capture Date-Time, snapshot publication time, lifecycle/performance timing, and Image Acquisition Timing explicitly distinct.
+- Do not carry provider/platform type names outside provider code; translate backend timing into the source-neutral `ImageAcquisitionTiming` model at the provider boundary, including one checked conversion from unsigned or wider native counters where needed.
+- Use a Core-owned retained-frame identity for retained-frame equality/freshness; do not encode identity semantics in timing names.
 
 ------------------------------------------------------------------------
 
@@ -526,6 +642,11 @@ Public/runtime-visible image-bearing nouns remain:
 - **Stream Result**
 - **Capture Result**
 - **Capture Result Set**
+
+`Capture Result` is the sole current Godot result surface for rich still-camera
+facts and capture-admission context. It uses the existing member dictionary,
+not a `get_camera_facts()` method or a new fact-wrapper class; `Stream Result`
+remains metadata-light.
 
 These are distinct from:
 
@@ -550,5 +671,12 @@ support records does not redefine the Godot-facing result/object vocabulary.
 - **Detached**: a branch no longer attached to the active tree but still present due to teardown/retention.
 - **StreamIntent**: purpose of a repeating stream (`PREVIEW` or `VIEWFINDER`).
 - **Native Payload Support**: projection grouping concept for provider-owned native support entities whose lifetime/release matters for payload/backing truth.
+- **Native Payload Support Parent**: the parent owner of image-bearing Backing Plan evaluation (`Stream` or `AcquisitionSession`).
+- **Backing Plan**: the internal parent-scoped production/retention plan for retained backing forms.
+- **Requested Plan**: the currently applied or probed Backing Plan during evaluation.
+- **Steady Plan**: the settled winning Backing Plan for a parent.
+- **Backing State**: the concrete retained backing state on a result or capture member.
+- **Operation Support**: result-facing operation support expressed through `ResultCapability`.
+- **Access Evidence**: measured evidence from real public retained-result operations.
 
 - Snapshot still-capture profile truth uses nested `capture_profile.still.{version,width,height,format,still_image_bundle}` on `DeviceState` and `AcquisitionSessionState` (latched per-session context truth).

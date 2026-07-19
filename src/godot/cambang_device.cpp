@@ -99,6 +99,22 @@ bool parse_still_image_bundle_dict(const godot::Dictionary& profile,
 
 namespace cambang {
 
+void CamBANGDevice::_register_with_server_() {
+  if (!server_) {
+    return;
+  }
+  server_->register_tracked_device_wrapper_(
+      static_cast<uint64_t>(godot::Object::get_instance_id()));
+}
+
+void CamBANGDevice::_set_live_from_server_(bool live) {
+  if (live_ == live) {
+    return;
+  }
+  live_ = live;
+  emit_signal("live_changed", live_);
+}
+
 uint64_t CamBANGDevice::get_instance_id() const {
   if (!hardware_id_.is_empty() && server_) {
     return server_->resolve_endpoint_instance_id(hardware_id_);
@@ -130,7 +146,7 @@ godot::Error CamBANGDevice::disengage() {
   return err;
 }
 
-godot::Ref<CamBANGStream> CamBANGDevice::create_stream() {
+godot::Ref<CamBANGStream> CamBANGDevice::create_stream(const godot::Variant& definition) {
   if (!server_ || hardware_id_.is_empty()) {
     return godot::Ref<CamBANGStream>();
   }
@@ -138,7 +154,7 @@ godot::Ref<CamBANGStream> CamBANGDevice::create_stream() {
   if (device_instance_id == 0) {
     return godot::Ref<CamBANGStream>();
   }
-  return server_->create_stream_for_endpoint_hardware_id(hardware_id_);
+  return server_->create_stream_for_endpoint_hardware_id(hardware_id_, definition);
 }
 
 godot::Error CamBANGDevice::trigger_capture() {
@@ -149,9 +165,11 @@ godot::Error CamBANGDevice::trigger_capture() {
   if (!server_->is_running()) {
     return godot::ERR_UNAVAILABLE;
   }
-  const uint64_t capture_id = server_->trigger_device_capture(device_instance_id);
-  if (capture_id == 0) {
-    return godot::ERR_BUSY;
+  uint64_t capture_id = 0;
+  const godot::Error trigger_error =
+      server_->trigger_device_capture(device_instance_id, capture_id);
+  if (trigger_error != godot::OK) {
+    return trigger_error;
   }
   current_capture_id_ = capture_id;
   return godot::OK;
@@ -160,10 +178,17 @@ godot::Error CamBANGDevice::trigger_capture() {
 
 godot::Ref<CamBANGCaptureResult> CamBANGDevice::get_result() const {
   const uint64_t device_instance_id = get_instance_id();
-  if (!server_ || device_instance_id == 0 || current_capture_id_ == 0 || !server_->is_running()) {
+  if (!server_ || device_instance_id == 0 || !server_->is_running()) {
     return godot::Ref<CamBANGCaptureResult>();
   }
-  return server_->get_capture_result_by_id(current_capture_id_, device_instance_id);
+  uint64_t capture_id = current_capture_id_;
+  if (capture_id == 0) {
+    capture_id = server_->get_latest_capture_id_for_device(device_instance_id);
+  }
+  if (capture_id == 0) {
+    return godot::Ref<CamBANGCaptureResult>();
+  }
+  return server_->get_capture_result_by_id(capture_id, device_instance_id);
 }
 
 godot::Error CamBANGDevice::set_warm_policy(const godot::Dictionary& policy) {
@@ -256,15 +281,23 @@ void CamBANGDevice::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_instance_id"), &CamBANGDevice::get_instance_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_hardware_id"), &CamBANGDevice::get_hardware_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_display_name"), &CamBANGDevice::get_display_name);
+  godot::ClassDB::bind_method(godot::D_METHOD("is_live"), &CamBANGDevice::is_live);
   godot::ClassDB::bind_method(godot::D_METHOD("is_endpoint_handle"), &CamBANGDevice::is_endpoint_handle);
   godot::ClassDB::bind_method(godot::D_METHOD("engage"), &CamBANGDevice::engage);
   godot::ClassDB::bind_method(godot::D_METHOD("disengage"), &CamBANGDevice::disengage);
-  godot::ClassDB::bind_method(godot::D_METHOD("create_stream"), &CamBANGDevice::create_stream);
+  godot::ClassDB::bind_method(
+      godot::D_METHOD("create_stream", "definition"),
+      &CamBANGDevice::create_stream,
+      DEFVAL(godot::Variant()));
   godot::ClassDB::bind_method(godot::D_METHOD("trigger_capture"), &CamBANGDevice::trigger_capture);
   godot::ClassDB::bind_method(godot::D_METHOD("get_result"), &CamBANGDevice::get_result);
   godot::ClassDB::bind_method(godot::D_METHOD("set_warm_policy", "policy"), &CamBANGDevice::set_warm_policy);
   godot::ClassDB::bind_method(godot::D_METHOD("set_still_capture_profile", "profile"), &CamBANGDevice::set_still_capture_profile);
   godot::ClassDB::bind_method(godot::D_METHOD("get_still_capture_profile"), &CamBANGDevice::get_still_capture_profile);
+  ADD_PROPERTY(godot::PropertyInfo(godot::Variant::BOOL, "live"), "", "is_live");
+  ADD_SIGNAL(godot::MethodInfo(
+      "live_changed",
+      godot::PropertyInfo(godot::Variant::BOOL, "live")));
 }
 
 } // namespace cambang

@@ -35,10 +35,10 @@ public:
   uint32_t get_height() const;
   uint32_t get_format() const;
   int get_payload_kind() const;
-  uint64_t get_capture_timestamp() const;
   uint64_t get_stream_id() const;
   uint64_t get_device_instance_id() const;
   int get_intent() const;
+  godot::Dictionary get_camera_facts() const;
 
   bool has_image_properties() const;
   bool has_capture_attributes() const;
@@ -63,7 +63,13 @@ public:
   godot::Ref<godot::Image> to_image() const;
 
   static void refresh_live_stream_cpu_display_views(const CoreRuntime& runtime);
+  static void remove_live_stream_cpu_display_view(uint64_t stream_id);
   static void clear_live_stream_cpu_display_views();
+  static godot::Dictionary get_live_stream_cpu_display_metrics_snapshot();
+  static godot::Variant calibrate_display_view_for_retained_access(const SharedStreamResultData& data);
+  static godot::Ref<godot::Image> calibrate_to_image_for_retained_access(const SharedStreamResultData& data);
+  static godot::Ref<godot::Image> calibrate_to_image_cpu_payload_for_retained_access(const SharedStreamResultData& data);
+  static godot::Ref<godot::Image> calibrate_to_image_gpu_materializer_for_retained_access(const SharedStreamResultData& data);
 
   static void _bind_methods();
 

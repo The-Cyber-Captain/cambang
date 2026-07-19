@@ -1,6 +1,7 @@
 import json
 import os
 import shlex
+import tempfile
 from SCons.Action import Action
 
 _CPP_EXTS = (".c", ".cc", ".cpp", ".cxx", ".c++", ".mm", ".m")
@@ -27,6 +28,57 @@ def _is_cpp_source(path):
 
 def _is_object_file(path):
     return str(path).lower().endswith(_OBJ_EXTS)
+
+
+def _entry_identity(entry):
+    output = entry.get("output")
+    if output:
+        return ("output", _norm_path(output))
+    return ("legacy", _norm_path(entry["file"]), entry["command"])
+
+
+def _load_existing_entries(path):
+    if not os.path.exists(path):
+        return []
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not isinstance(data, list):
+        raise ValueError("compilation database root must be a JSON array")
+    for entry in data:
+        if not isinstance(entry, dict) or not all(key in entry for key in ("directory", "file", "command")):
+            raise ValueError("compilation database contains an invalid entry")
+    return data
+
+
+def _merge_entries(existing, captured):
+    merged = {}
+    for entry in existing:
+        merged[_entry_identity(entry)] = entry
+    for entry in captured:
+        # Databases written before output tracking used file+command identity.
+        # Drop an exact legacy equivalent when upgrading that entry in place.
+        merged.pop(("legacy", _norm_path(entry["file"]), entry["command"]), None)
+        merged[_entry_identity(entry)] = entry
+    result = list(merged.values())
+    result.sort(key=lambda e: (e["file"], e["command"], e.get("output", "")))
+    return result
+
+
+def _write_json_atomic(path, data):
+    out_dir = os.path.dirname(path) or "."
+    os.makedirs(out_dir, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=".compile_commands.", suffix=".tmp", dir=out_dir, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+            fh.write("\n")
+        os.replace(temp_path, path)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def _render_action(env, action, target, source):
@@ -96,35 +148,31 @@ def generate(env):
             "directory": directory,
             "file": src_abs,
             "command": cmd,
+            "output": _norm_path(tgt),
         })
         return None
 
     def write_compdb(target=None, source=None, env=None):
-        seen = set()
-        unique = []
-        for entry in entries:
-            key = (entry["file"], entry["command"])
-            if key in seen:
-                continue
-            seen.add(key)
-            unique.append(entry)
-
-        unique.sort(key=lambda e: (e["file"], e["command"]))
-
-        if not unique:
+        if not entries:
             if os.path.exists(out_path):
                 print(f"[compdb] no entries captured in this run; preserving existing {out_path}")
             else:
                 print(f"[compdb] no entries captured in this run; not writing empty database {out_path}")
             return None
 
-        out_dir = os.path.dirname(out_path) or "."
-        os.makedirs(out_dir, exist_ok=True)
-        with open(out_path, "w", encoding="utf-8") as fh:
-            json.dump(unique, fh, indent=2)
-            fh.write("\n")
+        try:
+            existing = _load_existing_entries(out_path)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"[compdb] ERROR: preserving unreadable existing database {out_path}: {exc}")
+            return None
 
-        print(f"[compdb] wrote {out_path} ({len(unique)} entries)")
+        unique = _merge_entries(existing, entries)
+        _write_json_atomic(out_path, unique)
+
+        print(
+            f"[compdb] wrote {out_path} ({len(unique)} entries; "
+            f"captured {len(entries)} in this run)"
+        )
         return None
 
     def wrap(varname):

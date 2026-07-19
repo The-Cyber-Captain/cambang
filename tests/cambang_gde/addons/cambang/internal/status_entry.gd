@@ -228,6 +228,7 @@ func _mode_family_max_display_label(raw_label: String) -> String:
 		"UNKNOWN",
 		"STREAMING",
 		"CAPTURING",
+		"ERROR (MODE)",
 		"TRIGGERING",
 		"COLLECTING",
 		"TEARING_DOWN"
@@ -950,6 +951,8 @@ func _badge_role_for_render(badge: CamBANGStatusPanel.BadgeModel, row_kind: Stri
 func _mode_badge_role_for_render(raw_label: String) -> String:
 	if not raw_label.begins_with("mode="):
 		return ""
+	# Mode badges are state classification, so their color role follows the
+	# operational state family rather than row identity/context.
 	var mode_label := raw_label.substr("mode=".length()).strip_edges().to_upper()
 	match mode_label:
 		"OFF", "IDLE", "STOPPED", "UNKNOWN":
@@ -1055,6 +1058,8 @@ func _badge_display_label(raw_label: String) -> String:
 		return _phase_badge_display_label(raw_label.substr("phase=".length()), false)
 	if raw_label.begins_with("native_phase="):
 		return _phase_badge_display_label(raw_label.substr("native_phase=".length()), true)
+	if raw_label.begins_with("mode="):
+		return _mode_badge_display_label(raw_label.substr("mode=".length()))
 	match raw_label:
 		"snapshot":
 			return "SNAPSHOT"
@@ -1088,8 +1093,21 @@ func _badge_display_label(raw_label: String) -> String:
 			return "RIG CONTEXT"
 		"info":
 			return "INFO"
+		"engaged":
+			return "ENGAGED"
+		"not-engaged":
+			return "NOT ENGAGED"
 		_:
 			return raw_label.replace("-", " ").replace("_", " ").to_upper()
+
+
+func _mode_badge_display_label(raw_mode_suffix: String) -> String:
+	var normalized := raw_mode_suffix.strip_edges().to_upper()
+	if normalized.is_empty():
+		return "UNKNOWN"
+	if normalized == "ERROR":
+		return "ERROR (MODE)"
+	return normalized
 
 
 func _phase_badge_display_label(raw_phase_suffix: String, is_native: bool) -> String:

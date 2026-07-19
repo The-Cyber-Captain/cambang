@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "devices": [
+    { "key": "BenchA", "endpoint_index": 0 },
+    { "key": "BenchB", "endpoint_index": 1 }
+  ],
+  "streams": [
+    {
+      "key": "BenchA_PREVIEW",
+      "device_key": "BenchA",
+      "intent": "PREVIEW",
+      "capture_profile": {
+        "width": 1280,
+        "height": 720,
+        "format_fourcc": "RGBA",
+        "target_fps_min": 30,
+        "target_fps_max": 30
+      }
+    },
+    {
+      "key": "BenchB_PREVIEW",
+      "device_key": "BenchB",
+      "intent": "PREVIEW",
+      "capture_profile": {
+        "width": 1280,
+        "height": 720,
+        "format_fourcc": "RGBA",
+        "target_fps_min": 30,
+        "target_fps_max": 30
+      }
+    }
+  ],
+  "rigs": [
+    { "key": "BenchRig", "rig_id": 870001, "members": ["BenchA", "BenchB"] }
+  ],
+  "timeline": [
+    { "at_ns": 0, "type": "OpenDevice", "device_key": "BenchA" },
+    { "at_ns": 0, "type": "OpenDevice", "device_key": "BenchB" },
+    {
+      "at_ns": 1,
+      "type": "UpdateCapturePicture",
+      "device_key": "BenchA",
+      "picture": {
+        "preset": "checker",
+        "seed": 87011,
+        "generator_fps_num": 30,
+        "generator_fps_den": 1,
+        "overlay_frame_index_offsets": true,
+        "overlay_moving_bar": false,
+        "solid_r": 16,
+        "solid_g": 40,
+        "solid_b": 96,
+        "solid_a": 255,
+        "checker_size_px": 18
+      }
+    },
+    {
+      "at_ns": 1,
+      "type": "UpdateCapturePicture",
+      "device_key": "BenchB",
+      "picture": {
+        "preset": "solid",
+        "seed": 87012,
+        "generator_fps_num": 30,
+        "generator_fps_den": 1,
+        "overlay_frame_index_offsets": true,
+        "overlay_moving_bar": false,
+        "solid_r": 92,
+        "solid_g": 44,
+        "solid_b": 152,
+        "solid_a": 255,
+        "checker_size_px": 16
+      }
+    },
+    { "at_ns": 250000000, "type": "CreateStream", "stream_key": "BenchA_PREVIEW" },
+    {
+      "at_ns": 250000000,
+      "type": "UpdateStreamPicture",
+      "stream_key": "BenchA_PREVIEW",
+      "picture": {
+        "preset": "checker",
+        "seed": 87021,
+        "generator_fps_num": 30,
+        "generator_fps_den": 1,
+        "overlay_frame_index_offsets": true,
+        "overlay_moving_bar": true,
+        "solid_r": 255,
+        "solid_g": 64,
+        "solid_b": 64,
+        "solid_a": 255,
+        "checker_size_px": 24
+      }
+    },
+    { "at_ns": 350000000, "type": "StartStream", "stream_key": "BenchA_PREVIEW" },
+    { "at_ns": 250000000, "type": "CreateStream", "stream_key": "BenchB_PREVIEW" },
+    {
+      "at_ns": 250000000,
+      "type": "UpdateStreamPicture",
+      "stream_key": "BenchB_PREVIEW",
+      "picture": {
+        "preset": "noise",
+        "seed": 87022,
+        "generator_fps_num": 30,
+        "generator_fps_den": 1,
+        "overlay_frame_index_offsets": true,
+        "overlay_moving_bar": true,
+        "solid_r": 64,
+        "solid_g": 160,
+        "solid_b": 255,
+        "solid_a": 255,
+        "checker_size_px": 20
+      }
+    },
+    { "at_ns": 350000000, "type": "StartStream", "stream_key": "BenchB_PREVIEW" }
+  ]
+}

@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <set>
 #include <map>
 
 #include "core/core_frame_sink.h"
@@ -32,6 +33,11 @@ public:
     uint64_t device_instance_id = 0;
     StreamIntent intent = StreamIntent::PREVIEW;
     uint64_t profile_version = 0;
+    uint64_t access_posture_epoch = 0;
+    CoreRetainedProductionPlan requested_retained_plan{};
+    CoreRetainedProductionPlan steady_retained_plan{};
+    ProducerBackingCapabilities runtime_backing_capabilities{};
+    ProducerBackingCapabilities parent_context_backing_capabilities{};
 
     CaptureProfile profile{};
     PictureConfig picture{};
@@ -40,11 +46,14 @@ public:
     bool started = false;
     bool stop_requested_by_core = false;
     StopOrigin last_stop_origin = StopOrigin::None;
+    uint32_t pending_core_start_facts = 0;
+    uint32_t pending_core_stop_facts = 0;
 
     uint64_t frames_received = 0;
     uint64_t frames_released = 0;
 
-    // Reserved for later flow control semantics; currently always 0.
+    // Frames released without presentation or retained result acceptance,
+    // including Stage C repeating stream-frame coalescing before expensive dispatch.
     uint64_t frames_dropped = 0;
     uint64_t last_frame_ts_ns = 0;
 
@@ -65,11 +74,14 @@ public:
   // Lifecycle
   // declare_stream_effective: called by core surfaces that create streams.
   // Providers must not apply implicit defaults; core stores effective config.
-  bool declare_stream_effective(const StreamRequest& effective);
+  bool declare_stream_effective(const StreamRequest& effective,
+                                CoreRetainedProductionPlan steady_retained_plan = {});
   bool on_stream_created(uint64_t stream_id);
   bool on_stream_destroyed(uint64_t stream_id);
-  bool on_stream_started(uint64_t stream_id);
-  bool on_stream_stopped(uint64_t stream_id, uint32_t error_code);
+  bool on_core_stream_started(uint64_t stream_id);
+  bool on_provider_stream_started(uint64_t stream_id);
+  bool on_core_stream_stopped(uint64_t stream_id, uint32_t error_code);
+  bool on_provider_stream_stopped(uint64_t stream_id, uint32_t error_code);
   bool mark_stop_requested_by_core(uint64_t stream_id);
 
   // Frame accounting (stream must exist).
@@ -80,6 +92,15 @@ public:
 
   // Mutable config updates (stream should exist).
   bool set_picture(uint64_t stream_id, const PictureConfig& picture);
+  bool set_backing_capabilities(uint64_t stream_id,
+                                ProducerBackingCapabilities runtime_backing_capabilities,
+                                ProducerBackingCapabilities parent_context_backing_capabilities);
+  bool set_requested_retained_plan(uint64_t stream_id,
+                                   CoreRetainedProductionPlan requested_retained_plan,
+                                   bool bump_access_posture_epoch = true);
+  bool set_steady_retained_plan(uint64_t stream_id,
+                                CoreRetainedProductionPlan steady_retained_plan);
+  bool clear_steady_retained_plan(uint64_t stream_id);
 
   // Best-effort cleanup for failed creations (core-thread-only).
   bool forget_stream(uint64_t stream_id);
@@ -93,9 +114,14 @@ public:
   // For future snapshot/publisher. Core-thread-only.
   const std::map<uint64_t, StreamRecord>& all() const noexcept { return streams_; }
   bool has_flowing_stream_for_device(uint64_t device_instance_id) const noexcept;
+  bool has_error_stream_for_device(uint64_t device_instance_id) const noexcept;
 
 private:
+  uint64_t allocate_access_posture_epoch() noexcept;
+
   std::map<uint64_t, StreamRecord> streams_; // key: stream_id
+  std::set<uint64_t> destroyed_stream_tombstones_;
+  uint64_t next_access_posture_epoch_ = 1;
 };
 
 } // namespace cambang

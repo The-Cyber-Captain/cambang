@@ -12,6 +12,7 @@
 #include "core/core_frame_sink.h"
 #include "core/core_capture_assembly_registry.h"
 #include "core/core_result_store.h"
+#include "core/provider_camera_fact_state.h"
 
 namespace cambang {
 
@@ -28,6 +29,20 @@ struct CoreDispatchStats final {
   uint64_t frames_released = 0;
 
   uint64_t frames_unknown_stream = 0;
+};
+
+struct CoreCaptureLifecycleIngressEvent final {
+  enum class Kind : uint8_t {
+    Started = 0,
+    Completed = 1,
+    Failed = 2,
+  };
+
+  Kind kind = Kind::Started;
+  uint64_t capture_id = 0;
+  uint64_t device_instance_id = 0;
+  uint64_t acquisition_session_id = 0;
+  uint64_t ingest_steady_ns = 0;
 };
 
 // CoreDispatcher is the core-thread-only consumer of ProviderToCoreCommand.
@@ -81,7 +96,13 @@ public:
   void set_capture_assembly_registry(CoreCaptureAssemblyRegistry* capture_assembly_registry) noexcept {
     capture_assembly_registry_ = capture_assembly_registry;
   }
-  void set_result_routing_enabled(bool enabled) noexcept { result_routing_enabled_ = enabled; }
+  void set_provider_camera_fact_state(ProviderCameraFactState* provider_camera_fact_state) noexcept {
+    provider_camera_fact_state_ = provider_camera_fact_state;
+  }
+  void set_capture_lifecycle_ingress_sink(
+      std::function<void(const CoreCaptureLifecycleIngressEvent&)> sink) {
+    capture_lifecycle_ingress_sink_ = std::move(sink);
+  }
 
 private:
   CoreStreamRegistry* streams_ = nullptr; // non-owning; core-thread-only
@@ -96,7 +117,9 @@ private:
   ICoreFrameSink* frame_sink_ = nullptr; // non-owning; core-thread-only
   CoreResultStore* result_store_ = nullptr; // non-owning; core-thread-only
   CoreCaptureAssemblyRegistry* capture_assembly_registry_ = nullptr; // non-owning; core-thread-only
-  bool result_routing_enabled_ = true;
+  ProviderCameraFactState* provider_camera_fact_state_ = nullptr; // non-owning; core-thread-only
+  std::function<void(const CoreCaptureLifecycleIngressEvent&)>
+      capture_lifecycle_ingress_sink_{};
   CoreDispatchStats stats_{};
 };
 

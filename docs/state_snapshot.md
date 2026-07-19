@@ -263,6 +263,15 @@ outputs remain a design possibility; they require matching
 Current implemented displayable still paths use packed pixel formats such
 as `FOURCC_RGBA` / `FOURCC_BGRA`.
 
+Godot-facing public APIs should expose these values through named pixel-format
+constants, for example `CamBANGServer.PIXEL_FORMAT_RGBA` and
+`CamBANGServer.PIXEL_FORMAT_BGRA`, rather than requiring users to write raw
+integer literals.
+
+The `PIXEL_FORMAT_*` public constant family denotes raw pixel-buffer layouts.
+It does not denote encoded image formats, file/container formats, or RAW-domain
+still outputs.
+
 ------------------------------------------------------------------------
 
 ## 5. Top-level schema (v1)
@@ -347,6 +356,10 @@ In particular:
 
 These fields report the specification version that Core currently
 retains as the **effective runtime specification**.
+
+For `imaging_spec_version`, that retained truth corresponds to the effective
+cross-camera / imaging-subsystem capability seam used by Core where current
+admission or validation depends on subsystem-wide operational truth.
 
 They do **not** represent:
 
@@ -667,8 +680,8 @@ StreamState {
 - `profile_version` is change lineage metadata for that applied profile and must
   not be used to infer configuration contents.
 - `frames_received` counts frames reported by the provider and integrated by core.
-- `frames_delivered` counts frames successfully handed to the core frame sink
-  (e.g., latest-frame mailbox in v1). This does not imply consumption by Godot.
+- `frames_delivered` counts frames successfully handed to an installed core
+  frame sink. This does not imply consumption by Godot.
 - `frames_dropped` counts frames dropped due to queue pressure or shutdown gating.
 - `queue_depth` reflects provider → core ingress buffering depth as observed
   by core at publish time.

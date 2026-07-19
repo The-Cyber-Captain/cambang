@@ -1,16 +1,20 @@
 extends Node
 
-const QUIT_FLUSH_FRAMES := 2
 const TIMEOUT_MS := 3000
+const SCENE_LABEL := "63_snapshot_observer_minimal"
 
 var _done := false
 var _quit_requested := false
+var _terminal_verdict_emitted := false
 var _timer: Timer
 
 
 func _ready() -> void:
 	CamBANGServer.stop()
-	CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)
+	var start_err := CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)
+	if start_err != OK:
+		_error("ERROR: synthetic timeline start rejected with error %d" % start_err, "runtime_start_rejected")
+		return
 
 	_timer = Timer.new()
 	_timer.one_shot = true
@@ -33,7 +37,7 @@ func _exit_tree() -> void:
 
 
 func _on_timeout() -> void:
-	_fail("FAIL: snapshot observer timed out waiting for baseline publish")
+	_fail("FAIL: snapshot observer timed out waiting for baseline publish", "timeout")
 
 
 func _on_state_published(gen: int, version: int, topology_version: int) -> void:
@@ -76,17 +80,41 @@ func _ok(msg: String) -> void:
 	if _done:
 		return
 	_done = true
+	_emit_harness_verdict("ok", 0, "pass")
 	print(msg)
 	_cleanup_and_quit(0)
 
 
-func _fail(msg: String) -> void:
+func _fail(msg: String, reason: String = "assertion_failed") -> void:
 	if _done:
 		return
 	_done = true
+	_emit_harness_verdict("fail", 1, reason)
 	push_error(msg)
 	print(msg)
 	_cleanup_and_quit(1)
+
+
+func _error(msg: String, reason: String) -> void:
+	if _done:
+		return
+	_done = true
+	_emit_harness_verdict("error", 1, reason)
+	push_error(msg)
+	print(msg)
+	_cleanup_and_quit(1)
+
+
+func _emit_harness_verdict(status: String, exit_code: int, reason: String) -> void:
+	if _terminal_verdict_emitted:
+		return
+	_terminal_verdict_emitted = true
+	print("[CamBANG][HarnessVerdict] scene=%s status=%s exit_code=%d reason=%s" % [
+		SCENE_LABEL,
+		status,
+		exit_code,
+		reason,
+	])
 
 
 func _cleanup_and_quit(code: int) -> void:
@@ -94,13 +122,6 @@ func _cleanup_and_quit(code: int) -> void:
 		_timer.stop()
 	if CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.disconnect(_on_state_published)
-	CamBANGServer.stop()
 	if not _quit_requested:
 		_quit_requested = true
-		call_deferred("_quit_next_frame", code)
-
-
-func _quit_next_frame(code: int) -> void:
-	for _i in range(QUIT_FLUSH_FRAMES):
-		await get_tree().process_frame
-	get_tree().quit(code)
+		CamBANGServer.stop_and_quit(code)

@@ -27,6 +27,7 @@ Non-Goals
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
 #include <future>
 #include <iostream>
 #include <set>
@@ -34,8 +35,13 @@ Non-Goals
 #include <thread>
 #include <vector>
 
+#if defined(_WIN32)
+#include <io.h>
+#include <ext/stdio_filebuf.h>
+#endif
+
 #if !defined(CAMBANG_INTERNAL_SMOKE)
-  #error "synthetic_timeline_verify: build with -DCAMBANG_INTERNAL_SMOKE=1 (via SCons: smoke=1)."
+  #error "synthetic_timeline_verify: build through the repo SCons maintainer_tools alias so CAMBANG_INTERNAL_SMOKE=1 is defined."
 #endif
 
 #include "core/core_runtime.h"
@@ -59,28 +65,180 @@ struct Options {
   bool dump_snapshots = false;
 };
 
+enum class ParseOptsResult {
+  Ok,
+  Help,
+  Error,
+};
+
+class QuietOutputCapture final {
+public:
+  QuietOutputCapture() = default;
+  QuietOutputCapture(const QuietOutputCapture&) = delete;
+  QuietOutputCapture& operator=(const QuietOutputCapture&) = delete;
+
+  bool begin() {
+#if !defined(_WIN32)
+    return false;
+#else
+    std::fflush(stdout);
+    std::fflush(stderr);
+    saved_stdout_fd_ = _dup(_fileno(stdout));
+    saved_stderr_fd_ = _dup(_fileno(stderr));
+    if (saved_stdout_fd_ < 0 || saved_stderr_fd_ < 0) {
+      restore_saved_fds_();
+      return false;
+    }
+    stdout_file_.reset(std::tmpfile());
+    stderr_file_.reset(std::tmpfile());
+    if (!stdout_file_ || !stderr_file_) {
+      end();
+      return false;
+    }
+    if (_dup2(_fileno(stdout_file_.get()), _fileno(stdout)) != 0 ||
+        _dup2(_fileno(stderr_file_.get()), _fileno(stderr)) != 0) {
+      end();
+      return false;
+    }
+    // The _dup2() redirection above is necessary and sufficient for raw C
+    // stdio (printf/fprintf(stdout|stderr, ...)) but is NOT sufficient for
+    // std::cout/std::cerr on this toolchain: empirically, sync_with_stdio's
+    // association with fd 1/2 does not track a _dup2() swap performed after
+    // process start -- writes through std::cout/std::cerr during the capture
+    // window were silently lost (or, worse, misrouted into the other
+    // stream's captured file) rather than ending up in stdout_file_/
+    // stderr_file_. Redirect cout/cerr explicitly at the streambuf level
+    // instead, bypassing whatever sync_with_stdio is (or isn't) doing.
+    stdout_filebuf_ = std::make_unique<__gnu_cxx::stdio_filebuf<char>>(stdout_file_.get(), std::ios::out);
+    stderr_filebuf_ = std::make_unique<__gnu_cxx::stdio_filebuf<char>>(stderr_file_.get(), std::ios::out);
+    saved_cout_buf_ = std::cout.rdbuf(stdout_filebuf_.get());
+    saved_cerr_buf_ = std::cerr.rdbuf(stderr_filebuf_.get());
+    active_ = true;
+    return true;
+#endif
+  }
+
+  void end() {
+    if (!active_) {
+      restore_saved_fds_();
+      stdout_file_.reset();
+      stderr_file_.reset();
+      return;
+    }
+#if defined(_WIN32)
+    // Flush and detach cout/cerr from the tmpfile-backed streambufs BEFORE
+    // touching the fds those buffers wrap, so no buffered C++-stream content
+    // is lost when the fds get redirected back to the real console below.
+    std::cout.flush();
+    std::cerr.flush();
+    if (saved_cout_buf_) {
+      std::cout.rdbuf(saved_cout_buf_);
+      saved_cout_buf_ = nullptr;
+    }
+    if (saved_cerr_buf_) {
+      std::cerr.rdbuf(saved_cerr_buf_);
+      saved_cerr_buf_ = nullptr;
+    }
+    stdout_filebuf_.reset();
+    stderr_filebuf_.reset();
+#endif
+    std::fflush(stdout);
+    std::fflush(stderr);
+#if defined(_WIN32)
+    if (saved_stdout_fd_ >= 0) {
+      (void)_dup2(saved_stdout_fd_, _fileno(stdout));
+    }
+    if (saved_stderr_fd_ >= 0) {
+      (void)_dup2(saved_stderr_fd_, _fileno(stderr));
+    }
+#endif
+    restore_saved_fds_();
+    active_ = false;
+  }
+
+  std::string captured_stdout() const { return read_file_(stdout_file_.get()); }
+  std::string captured_stderr() const { return read_file_(stderr_file_.get()); }
+
+  ~QuietOutputCapture() {
+    end();
+  }
+
+private:
+  struct FileCloser {
+    void operator()(FILE* f) const noexcept {
+      if (f) {
+        std::fclose(f);
+      }
+    }
+  };
+
+  static std::string read_file_(FILE* f) {
+    if (!f) {
+      return {};
+    }
+    std::fflush(f);
+    if (std::fseek(f, 0, SEEK_END) != 0) {
+      return {};
+    }
+    const long size = std::ftell(f);
+    if (size <= 0) {
+      std::rewind(f);
+      return {};
+    }
+    std::string out(static_cast<size_t>(size), '\0');
+    std::rewind(f);
+    const size_t read = std::fread(out.data(), 1, out.size(), f);
+    out.resize(read);
+    return out;
+  }
+
+  void restore_saved_fds_() noexcept {
+#if defined(_WIN32)
+    if (saved_stdout_fd_ >= 0) {
+      _close(saved_stdout_fd_);
+      saved_stdout_fd_ = -1;
+    }
+    if (saved_stderr_fd_ >= 0) {
+      _close(saved_stderr_fd_);
+      saved_stderr_fd_ = -1;
+    }
+#endif
+  }
+
+  bool active_ = false;
+  int saved_stdout_fd_ = -1;
+  int saved_stderr_fd_ = -1;
+  std::unique_ptr<FILE, FileCloser> stdout_file_{};
+  std::unique_ptr<FILE, FileCloser> stderr_file_{};
+#if defined(_WIN32)
+  std::unique_ptr<__gnu_cxx::stdio_filebuf<char>> stdout_filebuf_{};
+  std::unique_ptr<__gnu_cxx::stdio_filebuf<char>> stderr_filebuf_{};
+  std::streambuf* saved_cout_buf_ = nullptr;
+  std::streambuf* saved_cerr_buf_ = nullptr;
+#endif
+};
+
 static void usage(const char* argv0) {
   std::cerr
       << "Usage: " << argv0 << " [--verify_case=<name>] [--dump_snapshots]\n"
       << "Verification cases:\n"
       << "  basic_lifecycle\n"
       << "  invalid_sequence\n"
-      << "  catchup_stress\n"
+      << "  catchup_stress_uncapped\n"
       << "  one_active_stream_admission\n"
-      << "  staged_endpoint_span_inference\n"
-      << "Compatibility: --scenario=<name> is accepted as a legacy alias.\n";
+      << "  staged_endpoint_span_inference\n";
 }
 
 static bool starts_with(const std::string& s, const std::string& prefix) {
   return s.rfind(prefix, 0) == 0;
 }
 
-static bool parse_opts(int argc, char** argv, Options& opt) {
+static ParseOptsResult parse_opts(int argc, char** argv, Options& opt) {
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     if (a == "--help" || a == "-h") {
       usage(argv[0]);
-      return false;
+      return ParseOptsResult::Help;
     }
     if (a == "--dump_snapshots") {
       opt.dump_snapshots = true;
@@ -90,15 +248,24 @@ static bool parse_opts(int argc, char** argv, Options& opt) {
       opt.verify_case = a.substr(std::string("--verify_case=").size());
       continue;
     }
-    if (starts_with(a, "--scenario=")) {
-      opt.verify_case = a.substr(std::string("--scenario=").size());
-      continue;
-    }
     std::cerr << "Unknown arg: " << a << "\n";
     usage(argv[0]);
-    return false;
+    return ParseOptsResult::Error;
   }
-  return true;
+  return ParseOptsResult::Ok;
+}
+
+static bool is_known_verify_case(const std::string& verify_case) {
+  return verify_case == "basic_lifecycle" ||
+         verify_case == "invalid_sequence" ||
+         verify_case == "catchup_stress_uncapped" ||
+         verify_case == "one_active_stream_admission" ||
+         verify_case == "staged_endpoint_span_inference";
+}
+
+static bool catchup_uncapped_case_is_hermetic() {
+  const char* env = std::getenv("CAMBANG_DEV_SYNTH_CATCHUP_CAP");
+  return env == nullptr || env[0] == '\0';
 }
 
 static bool wait_until(const std::function<bool()>& pred, int max_iters = 400, int sleep_ms = 2) {
@@ -185,9 +352,31 @@ static bool stream_is_flowing(const CamBANGStateSnapshot& s, uint64_t stream_id)
   return false;
 }
 
+static bool stream_is_stopped(const CamBANGStateSnapshot& s, uint64_t stream_id) {
+  for (const auto& st : s.streams) {
+    if (st.stream_id == stream_id) {
+      return st.mode == CBStreamMode::STOPPED;
+    }
+  }
+  return false;
+}
+
 static bool stream_exists(const CamBANGStateSnapshot& s, uint64_t stream_id) {
   for (const auto& st : s.streams) {
     if (st.stream_id == stream_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool native_stream_has_phase(const CamBANGStateSnapshot& s,
+                                    uint64_t stream_id,
+                                    CBLifecyclePhase phase) {
+  for (const auto& native : s.native_objects) {
+    if (native.type == static_cast<uint32_t>(NativeObjectType::Stream) &&
+        native.owner_stream_id == stream_id &&
+        native.phase == phase) {
       return true;
     }
   }
@@ -244,71 +433,92 @@ static void tick_synthetic(CoreRuntime& rt, uint64_t dt_ns) {
 }
 
 static int run_basic_lifecycle(CoreRuntime& rt, StateSnapshotBuffer& buf, const Options& opt, uint64_t period) {
-  // Create + start (core-initiated).
-  {
-    const auto cs = rt.try_create_stream(kStreamId, kDeviceInstanceId, StreamIntent::PREVIEW, nullptr, nullptr, 1);
-    if (cs != TryCreateStreamStatus::OK) {
-      std::cerr << "FAIL: try_create_stream not enqueued\n";
-      return 1;
-    }
-    const auto ss = rt.try_start_stream(kStreamId);
-    if (ss != TryStartStreamStatus::OK) {
-      std::cerr << "FAIL: try_start_stream not enqueued\n";
-      return 1;
-    }
+  auto fail = [](const std::string& stage, const std::string& detail) -> int {
+    std::cerr << "basic_lifecycle FAIL [" << stage << "]: " << detail << "\n";
+    return 1;
+  };
+
+  // Submit create and start in their documented Core order.
+  const auto create_status =
+      rt.try_create_stream(kStreamId, kDeviceInstanceId, StreamIntent::PREVIEW, nullptr, nullptr, 1);
+  if (create_status != TryCreateStreamStatus::OK) {
+    return fail("create_submission", "try_create_stream was not accepted");
+  }
+  const auto start_status = rt.try_start_stream(kStreamId);
+  if (start_status != TryStartStreamStatus::OK) {
+    return fail("start_submission", "try_start_stream was not accepted");
   }
 
-  // Wait until canonical stream/session seams are visible.
+  // Do not begin frame work merely because structural rows have appeared. Wait
+  // for the complete observable start state that the following steps require:
+  // flowing Core stream truth, a live native Stream, and its session seam.
   if (!wait_for_pred(buf, [&](const CamBANGStateSnapshot& s) {
-        return stream_exists(s, kStreamId) &&
+        return stream_is_flowing(s, kStreamId) &&
+               native_stream_has_phase(s, kStreamId, CBLifecyclePhase::LIVE) &&
                has_acquisition_session_for_device(s, kDeviceInstanceId);
       }, opt.dump_snapshots)) {
-    std::cerr << "FAIL: stream/session seams not observed after start\n";
-    return 1;
+    return fail("start_convergence",
+                "FLOWING stream, LIVE native Stream, and AcquisitionSession were not observed together");
   }
 
-  // Emit 5 frames (virtual time ticks).
-  const uint64_t want_frames = 5;
-  for (uint64_t i = 0; i < want_frames; ++i) {
+  // Advance one frame period at a time and settle the corresponding Core-visible
+  // frame before submitting the next tick. Repeating frames are intentionally
+  // latest-state/lossy under pressure; this basic lifecycle case must not turn
+  // into an accidental burst/backpressure test.
+  constexpr uint64_t kFrameSteps = 5;
+  for (uint64_t step = 1; step <= kFrameSteps; ++step) {
+    const auto before = snapshot_copy(buf);
+    if (!before) {
+      return fail("frame_step", "snapshot disappeared before virtual-time advance");
+    }
+    const uint64_t target_frames = frames_received_for_stream(*before, kStreamId) + 1;
+
     tick_synthetic(rt, period);
     rt.request_publish();
-  }
 
-  if (!wait_for_frames(buf, kStreamId, want_frames, opt.dump_snapshots)) {
-    std::cerr << "FAIL: expected frames_received >= " << want_frames << "\n";
-    return 1;
-  }
-
-  // Stop + destroy.
-  {
-    const auto st = rt.try_stop_stream(kStreamId);
-    if (st != TryStopStreamStatus::OK) {
-      std::cerr << "FAIL: try_stop_stream not enqueued\n";
-      return 1;
-    }
-    const auto ds = rt.try_destroy_stream(kStreamId);
-    if (ds != TryDestroyStreamStatus::OK) {
-      std::cerr << "FAIL: try_destroy_stream not enqueued\n";
-      return 1;
+    if (!wait_for_frames(buf, kStreamId, target_frames, opt.dump_snapshots)) {
+      return fail("frame_step_" + std::to_string(step),
+                  "frame did not settle; expected frames_received >= " +
+                      std::to_string(target_frames));
     }
   }
 
-  // Assert stream/session seams are cleared after stop/destroy.
+  // Stop first and positively observe STOPPED truth before destroy. This keeps
+  // the verifier independent of command/provider acknowledgement interleaving.
+  const auto stop_status = rt.try_stop_stream(kStreamId);
+  if (stop_status != TryStopStreamStatus::OK) {
+    return fail("stop_submission", "try_stop_stream was not accepted");
+  }
+  if (!wait_for_pred(buf, [&](const CamBANGStateSnapshot& s) {
+        return stream_exists(s, kStreamId) && stream_is_stopped(s, kStreamId);
+      }, opt.dump_snapshots)) {
+    return fail("stop_convergence", "stream did not become observably STOPPED before destroy");
+  }
+
+  const auto destroy_status = rt.try_destroy_stream(kStreamId);
+  if (destroy_status != TryDestroyStreamStatus::OK) {
+    return fail("destroy_submission", "try_destroy_stream was not accepted after settled stop");
+  }
+
+  // Absence alone is ambiguous: it may mean either not-yet-integrated creation
+  // or completed teardown. Require positive retained terminal native truth.
+  // AcquisitionSession absence is deliberately not required because capture
+  // parent priming may truthfully retain that device-owned seam.
   if (!wait_for_pred(buf, [&](const CamBANGStateSnapshot& s) {
         return !stream_exists(s, kStreamId) &&
-               !has_acquisition_session_for_device(s, kDeviceInstanceId);
+               native_stream_has_phase(s, kStreamId, CBLifecyclePhase::DESTROYED);
       }, opt.dump_snapshots)) {
-    std::cerr << "FAIL: stream/session seams still visible after stop+destroy\n";
-    return 1;
+    return fail("destroy_convergence",
+                "Core stream row was not absent together with retained DESTROYED native Stream truth");
   }
 
-  // Assert native_ids are unique.
-  auto s = snapshot_copy(buf);
-  if (!s) {
-    std::cerr << "FAIL: no snapshot\n";
-    return 1;
+  const auto final_snapshot = snapshot_copy(buf);
+  if (!final_snapshot) {
+    return fail("final_snapshot", "no snapshot available after lifecycle convergence");
   }
-  if (!assert_unique_native_ids(*s)) return 1;
+  if (!assert_unique_native_ids(*final_snapshot)) {
+    return fail("native_identity", "native object identifiers were not unique");
+  }
 
   return 0;
 }
@@ -355,7 +565,7 @@ static int run_invalid_sequence(CoreRuntime& rt, StateSnapshotBuffer& buf, const
   return 0;
 }
 
-static int run_catchup_stress(CoreRuntime& rt, StateSnapshotBuffer& buf, const Options& opt, uint64_t period) {
+static int run_catchup_stress_uncapped(CoreRuntime& rt, StateSnapshotBuffer& buf, const Options& opt, uint64_t period) {
   {
     const auto cs = rt.try_create_stream(kStreamId, kDeviceInstanceId, StreamIntent::PREVIEW, nullptr, nullptr, 1);
     if (cs != TryCreateStreamStatus::OK) {
@@ -384,20 +594,47 @@ static int run_catchup_stress(CoreRuntime& rt, StateSnapshotBuffer& buf, const O
     return 1;
   }
 
-  // One big tick: catch-up pump.
-  tick_synthetic(rt, kOneSecNs);
-  rt.request_publish();
+  // Bounded multi-frame catch-up pump.
+  //
+  // This case proves that one host-side synthetic-time advance can emit a
+  // deterministic burst of due stream frames. It intentionally stays below the
+  // runtime queue-pressure threshold: a full one-second / 31-frame burst is a
+  // stress-pressure scenario and is not a stable exact-count verifier under the
+  // current dispatcher/backpressure model.
+  constexpr uint64_t kCatchupStressNs = 300'000'000ull;
+  tick_synthetic(rt, kCatchupStressNs);
 
-  // Expected frames in 1s with first frame at t=0: floor(1s/period)+1.
-  const uint64_t expected = (period == 0) ? 0 : (kOneSecNs / period) + 1;
-  if (!wait_until([&]() {
-        rt.request_publish();
-        auto s = snapshot_copy(buf);
-        if (!s) return false;
-        if (opt.dump_snapshots) dump_snapshot(*s);
-        return frames_received_for_stream(*s, kStreamId) >= expected;
-      }, 800, 2)) {
-    std::cerr << "FAIL: expected frames_received >= " << expected << " after catch-up tick\n";
+  // Expected frames in the bounded catch-up window with first frame at t=0:
+  // floor(window/period)+1. At 30fps and 300ms this is 10 frames, ending at
+  // timestamp 299999997ns.
+  const uint64_t expected = (period == 0) ? 0 : (kCatchupStressNs / period) + 1;
+  bool reached_expected = false;
+  uint64_t best_seen = 0;
+  for (int i = 0; i < 800; ++i) {
+    rt.request_publish();
+    // request_publish() is asynchronous; give the core thread one settle beat
+    // before reading the next snapshot so the exact-count verifier does not
+    // race partial post-catchup publications.
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    auto s = snapshot_copy(buf);
+    if (!s) {
+      continue;
+    }
+    if (opt.dump_snapshots) {
+      dump_snapshot(*s);
+    }
+    const uint64_t got_now = frames_received_for_stream(*s, kStreamId);
+    if (got_now > best_seen) {
+      best_seen = got_now;
+    }
+    if (got_now >= expected) {
+      reached_expected = true;
+      break;
+    }
+  }
+  if (!reached_expected) {
+    std::cerr << "FAIL: expected frames_received >= " << expected
+              << " after catch-up tick, best_seen=" << best_seen << "\n";
     return 1;
   }
 
@@ -529,16 +766,84 @@ static int run_staged_endpoint_span_inference_regression(SyntheticProvider& prov
 
 int main(int argc, char** argv) {
   Options opt;
-  if (!parse_opts(argc, argv, opt)) {
+  const ParseOptsResult parse_result = parse_opts(argc, argv, opt);
+  if (parse_result == ParseOptsResult::Help) {
+    return 0;
+  }
+  if (parse_result != ParseOptsResult::Ok) {
+    std::fprintf(stdout,
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=invalid_arguments\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
     return 2;
   }
+  if (opt.verify_case == "catchup_stress_uncapped" &&
+      !catchup_uncapped_case_is_hermetic()) {
+    std::cerr << "FAIL: verify_case=catchup_stress_uncapped requires "
+                 "CAMBANG_DEV_SYNTH_CATCHUP_CAP to be unset\n";
+    std::fprintf(stdout,
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=catchup_cap_env_set\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
+    return 1;
+  }
+  if (!is_known_verify_case(opt.verify_case)) {
+    std::cerr << "Unknown verification case: " << opt.verify_case << "\n";
+    usage(argv[0]);
+    std::fprintf(stdout,
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=unknown_verify_case\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
+    return 2;
+  }
+
+  QuietOutputCapture quiet_capture;
+  bool capture_active = !opt.dump_snapshots && quiet_capture.begin();
+  auto restore_quiet_capture = [&]() {
+    if (capture_active) {
+      quiet_capture.end();
+      capture_active = false;
+    }
+  };
+  auto replay_quiet_failure = [&]() {
+    const std::string captured_stdout = quiet_capture.captured_stdout();
+    const std::string captured_stderr = quiet_capture.captured_stderr();
+
+    if (!captured_stdout.empty()) {
+      std::fputs(captured_stdout.c_str(), stdout);
+      std::fflush(stdout);
+    }
+    if (!captured_stderr.empty()) {
+      std::fputs(captured_stderr.c_str(), stderr);
+      std::fflush(stderr);
+    }
+  };
 
   CoreRuntime rt;
   StateSnapshotBuffer buf;
   rt.set_snapshot_publisher(&buf);
 
   if (!rt.start()) {
+    restore_quiet_capture();
+    replay_quiet_failure();
     std::cerr << "FAIL: core runtime did not start\n";
+    std::fprintf(stdout,
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=core_runtime_start_failed\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
+    return 2;
+  }
+  if (!wait_until([&]() {
+        return rt.state_copy() == CoreRuntimeState::LIVE;
+      }, 200, 1)) {
+    restore_quiet_capture();
+    replay_quiet_failure();
+    std::cerr << "FAIL: core runtime did not become LIVE before verifier setup\n";
+    rt.stop();
+    std::fprintf(stdout,
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=core_runtime_not_live\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
     return 2;
   }
 
@@ -557,8 +862,14 @@ int main(int argc, char** argv) {
 
   SyntheticProvider prov(cfg);
   if (!prov.initialize(rt.provider_callbacks()).ok()) {
+    restore_quiet_capture();
+    replay_quiet_failure();
     std::cerr << "FAIL: synthetic provider initialize failed\n";
     rt.stop();
+    std::fprintf(stdout,
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=synthetic_provider_initialize_failed\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
     return 2;
   }
 
@@ -571,14 +882,38 @@ int main(int argc, char** argv) {
   // Open the first endpoint deterministically.
   std::vector<CameraEndpoint> eps;
   if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) {
+    restore_quiet_capture();
+    replay_quiet_failure();
     std::cerr << "FAIL: enumerate_endpoints failed\n";
     stop_attached_runtime();
+    std::fprintf(stdout,
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=enumerate_endpoints_failed\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
     return 2;
   }
-  rt.retain_device_identity(kDeviceInstanceId, eps[0].hardware_id);
+  const auto retain_identity = rt.retain_device_identity(kDeviceInstanceId, eps[0].hardware_id);
+  if (retain_identity != CoreThread::PostResult::Enqueued) {
+    restore_quiet_capture();
+    replay_quiet_failure();
+    std::cerr << "FAIL: retain_device_identity admission failed: "
+              << static_cast<int>(retain_identity) << "\n";
+    stop_attached_runtime();
+    std::fprintf(stdout,
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=retain_device_identity_failed\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
+    return 2;
+  }
   if (!prov.open_device(eps[0].hardware_id, kDeviceInstanceId, kRootId).ok()) {
+    restore_quiet_capture();
+    replay_quiet_failure();
     std::cerr << "FAIL: open_device failed\n";
     stop_attached_runtime();
+    std::fprintf(stdout,
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=open_device_failed\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
     return 2;
   }
 
@@ -588,8 +923,14 @@ int main(int argc, char** argv) {
 
   const uint64_t period = fps_period_ns(cfg.nominal.fps_num, cfg.nominal.fps_den);
   if (period == 0) {
+    restore_quiet_capture();
+    replay_quiet_failure();
     std::cerr << "FAIL: invalid fps period\n";
     stop_attached_runtime();
+    std::fprintf(stdout,
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=invalid_fps_period\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
     return 2;
   }
 
@@ -599,17 +940,12 @@ int main(int argc, char** argv) {
     r = run_basic_lifecycle(rt, buf, opt, period);
   } else if (opt.verify_case == "invalid_sequence") {
     r = run_invalid_sequence(rt, buf, opt);
-  } else if (opt.verify_case == "catchup_stress") {
-    r = run_catchup_stress(rt, buf, opt, period);
+  } else if (opt.verify_case == "catchup_stress_uncapped") {
+    r = run_catchup_stress_uncapped(rt, buf, opt, period);
   } else if (opt.verify_case == "one_active_stream_admission") {
     r = run_one_active_stream_admission(rt, buf, opt);
   } else if (opt.verify_case == "staged_endpoint_span_inference") {
     r = run_staged_endpoint_span_inference_regression(prov);
-  } else {
-    std::cerr << "Unknown verification case: " << opt.verify_case << "\n";
-    usage(argv[0]);
-    r = 2;
-    failure_reason = "unknown_verify_case";
   }
   if (r != 0 && failure_reason.empty()) {
     failure_reason = "case_returned_nonzero";
@@ -617,12 +953,20 @@ int main(int argc, char** argv) {
 
   // CoreRuntime owns attached-provider shutdown while the core thread is live.
   stop_attached_runtime();
+  restore_quiet_capture();
 
   if (r == 0) {
-    std::cout << "OK: synthetic_timeline_verify passed (verify_case=" << opt.verify_case << ")\n";
+    std::fprintf(stdout,
+                 "PASS synthetic_timeline_verify verify_case=%s\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
   } else {
-    std::cout << "FAIL: synthetic_timeline_verify failed (verify_case="
-              << opt.verify_case << ", reason=" << failure_reason << ")\n";
+    replay_quiet_failure();
+    std::fprintf(stdout,
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=%s\n",
+                 opt.verify_case.c_str(),
+                 failure_reason.c_str());
+    std::fflush(stdout);
   }
   return r;
 }

@@ -76,65 +76,18 @@ Frame cadence must not redefine signal cadence.
 
 ---
 
-## Dev sink: `LatestFrameMailbox`
+## Current sink status
 
-`LatestFrameMailbox` is a **development-only** sink and is not part of the
-intended release architecture.
+`ICoreFrameSink` remains the internal extension point for accepted provider
+frames that leave the dispatcher under deterministic release rules.
 
-It may be removed or replaced once production GPU-native paths are implemented.
-
-`LatestFrameMailbox`:
-
-- accepts tightly packed 32-bit RGBA-class frames
-- normalises stride
-- drops unsupported formats
-- stores only the latest frame
-
-When `CAMBANG_ENABLE_DEV_NODES` is enabled, the mailbox sink is owned and
-wired by `CamBANGServer` (which owns `CoreRuntime`). Dev nodes do not own
-or wire sinks directly.
-
-The mailbox is attached as a dev-only frame sink during server
-initialization. It is not part of the canonical provider ↔ core contract
-and does not alter snapshot publication semantics.
-
-### Accepted formats (dev visibility phase)
-
-The mailbox accepts:
-
-- `FOURCC_RGBA` (tightly packed RGBA8)
-- `FOURCC_BGRA` (tightly packed BGRA8)
-
-BGRA frames are channel-swizzled to RGBA before storage.
-
-This swizzle is a **byte-order normalisation**, not a colourspace conversion.
-
-Not performed:
-
-- YUV → RGB conversion
-- compressed-format conversion
-
-Unsupported formats are dropped and released deterministically.
-
-This sink exists solely for visibility and integration validation.
-It is not the intended production path for YUV, RAW, or compressed formats.
-
-Future production sinks may:
-
-- upload YUV planes directly to GPU
-- perform shader-based colour conversion
-- integrate with platform-native texture import paths
-
----
-
-## Production sinks
-
-Production paths are expected to use alternative sinks
-(not `LatestFrameMailbox`) for performance and feature coverage,
-including GPU-native YUV import and shader conversion.
+The current release-facing image model is result-oriented. Godot-facing image
+access is expressed through `Stream Result`, `Capture Result`, and
+`Capture Result Set`, not through developer sink storage terminology.
 
 Frame sinks are extension points, not redefinitions of the core provider
-contract.
+contract. Any future named sink implementation must be introduced deliberately
+in source and documented as current behaviour at the same time.
 
 ## Release-facing naming and role split
 
@@ -148,7 +101,7 @@ They do **not** by themselves define the Godot-facing image access API.
 ### Godot-facing image access
 
 Release-facing/public API should be expressed in **result-oriented** terms
-rather than mailbox-oriented terms.
+rather than sink-storage terms.
 
 Canonical Godot-facing image-access nouns are:
 
@@ -172,7 +125,7 @@ This keeps sink terminology aligned with the corresponding public runtime concep
 - repeating stream output
 - still-capture output
 
-without promoting development-only mailbox semantics into release
+without promoting development-only sink/storage semantics into release
 architecture.
 
 ### Initial release-facing mapping
@@ -190,7 +143,7 @@ In the initial release-facing model:
 
 - accepted repeating-stream payloads may populate the latest retained
   **Stream Result**
-- this is a result-oriented release-facing model, not public mailbox semantics
+- this is a result-oriented release-facing model, not public sink-storage semantics
 - the model does not imply that every flowing stream frame is retained,
   exported, or fanned out
 
@@ -214,23 +167,8 @@ This model does not by itself define:
 - final GPU-native presentation architecture
 - full stream-sequence / recording / broadcast APIs
 - complete third-party fanout design
-- a requirement that release-facing stream access reuse development-only
-  mailbox implementation or terminology
-
-### Mailbox status
-
-`LatestFrameMailbox` remains a **development-only** sink used for current
-visibility/integration validation.
-
-It must not be treated as the canonical release-facing image-access model.
-
-Release-facing design may retain, transform, upload, or forward image data
-through other sink implementations while exposing result-oriented
-Godot-facing APIs.
-
-`LatestFrameMailbox` is a CPU-byte visibility sink, not the release-facing
-result model. Valid GPU-primary frames may have no CPU payload and can be
-unsupported by this mailbox path without being malformed.
+- a requirement that release-facing stream access reuse any specific internal
+  sink implementation or storage terminology
 
 ---
 
@@ -242,9 +180,12 @@ Frame sinks do not modify stream counter semantics defined in
 Specifically:
 
 - `frames_received` increments when core integrates a provider frame
-- `frames_delivered` increments when the dispatcher hands a frame to the sink
-  (including `LatestFrameMailbox` in dev mode)
+- `frames_delivered` increments when the dispatcher hands a frame to an installed
+  core frame sink
 - `frames_dropped` increments when the dispatcher drops a frame before sink invocation
+
+A pre-dispatch coalesced repeating frame is released by Core and counted as
+dropped, but is not delivered because it never reaches a frame sink.
 
 Counters are updated by core prior to sink invocation and remain part of
 the canonical snapshot model.
@@ -258,7 +199,7 @@ snapshot are:
 - `visibility_last_path`
 
 These are sink-neutral stream truth fields. They reflect the current retained
-visibility path disposition without exposing mailbox-local storage internals.
+visibility path disposition without exposing sink-local storage internals.
 
 Current visibility rejection counters are still interim semantics. During this
 phase, valid GPU-primary/no-CPU-payload frames may temporarily surface under the

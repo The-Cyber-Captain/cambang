@@ -28,7 +28,7 @@ Non-Goals
 #include <vector>
 
 #if !defined(CAMBANG_INTERNAL_SMOKE)
-  #error "Pattern render bench: build with -DCAMBANG_INTERNAL_SMOKE=1 (via SCons: smoke=1)."
+  #error "pattern_render_bench: build through the repo SCons maintainer_tools alias so CAMBANG_INTERNAL_SMOKE=1 is defined."
 #endif
 
 #include "pixels/pattern/cpu_packed_pattern_renderer.h"
@@ -56,6 +56,12 @@ struct Options {
   uint8_t g = 0;
   uint8_t b = 0;
   uint8_t a = 255;
+};
+
+enum class ParseOptsResult {
+  Ok,
+  Help,
+  Error,
 };
 
 static void usage(const char* argv0) {
@@ -124,17 +130,17 @@ static bool parse_rgba(const std::string& s, uint8_t& r, uint8_t& g, uint8_t& b,
   return true;
 }
 
-static bool parse_opts(int argc, char** argv, Options& opt) {
+static ParseOptsResult parse_opts(int argc, char** argv, Options& opt) {
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     if (a == "--help" || a == "-h") {
       usage(argv[0]);
-      return false;
+      return ParseOptsResult::Help;
     }
     if (starts_with(a, "--w=")) {
       if (!parse_u32(a.substr(4), opt.width) || opt.width == 0) {
         std::cerr << "Invalid --w\n";
-        return false;
+        return ParseOptsResult::Error;
       }
       continue;
     }
@@ -142,21 +148,21 @@ static bool parse_opts(int argc, char** argv, Options& opt) {
       opt.pattern_name = a.substr(10);
       if (opt.pattern_name.empty()) {
         std::cerr << "Invalid --pattern\n";
-        return false;
+        return ParseOptsResult::Error;
       }
       continue;
     }
     if (starts_with(a, "--seed=")) {
       if (!parse_u32(a.substr(7), opt.seed)) {
         std::cerr << "Invalid --seed\n";
-        return false;
+        return ParseOptsResult::Error;
       }
       continue;
     }
     if (starts_with(a, "--checker_size=")) {
       if (!parse_u32(a.substr(15), opt.checker_size) || opt.checker_size == 0) {
         std::cerr << "Invalid --checker_size\n";
-        return false;
+        return ParseOptsResult::Error;
       }
       opt.checker_size_set = true;
       continue;
@@ -165,7 +171,7 @@ static bool parse_opts(int argc, char** argv, Options& opt) {
       bool has_a = false;
       if (!parse_rgba(a.substr(7), opt.r, opt.g, opt.b, opt.a, has_a)) {
         std::cerr << "Invalid --rgba (expected R,G,B[,A])\n";
-        return false;
+        return ParseOptsResult::Error;
       }
       opt.rgba_set = true;
       continue;
@@ -173,14 +179,14 @@ static bool parse_opts(int argc, char** argv, Options& opt) {
     if (starts_with(a, "--h=")) {
       if (!parse_u32(a.substr(4), opt.height) || opt.height == 0) {
         std::cerr << "Invalid --h\n";
-        return false;
+        return ParseOptsResult::Error;
       }
       continue;
     }
     if (starts_with(a, "--frames=")) {
       if (!parse_u32(a.substr(9), opt.frames) || opt.frames == 0) {
         std::cerr << "Invalid --frames\n";
-        return false;
+        return ParseOptsResult::Error;
       }
       continue;
     }
@@ -195,16 +201,20 @@ static bool parse_opts(int argc, char** argv, Options& opt) {
 
     std::cerr << "Unknown arg: " << a << "\n";
     usage(argv[0]);
-    return false;
+    return ParseOptsResult::Error;
   }
-  return true;
+  return ParseOptsResult::Ok;
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
   Options opt;
-  if (!parse_opts(argc, argv, opt)) {
+  const ParseOptsResult parse_result = parse_opts(argc, argv, opt);
+  if (parse_result == ParseOptsResult::Help) {
+    return 0;
+  }
+  if (parse_result != ParseOptsResult::Ok) {
     return 2;
   }
 
