@@ -47,7 +47,10 @@ Godot scene verification runs from `tests/cambang_gde/` (PowerShell). The **only
 ```powershell
 # Single scene (from tests/cambang_gde/)
 .\run_godot.ps1 -Scene res://scenes/66_public_lifecycle_verify.tscn -CaptureLogs -TimeoutSec 60 -RunLabel scene66
-# Android variant: add -RunPlatform android (exports APK, deploys over adb)
+# Android variant: add -RunPlatform android (exports APK, deploys over adb).
+# This works directly/unsandboxed on this machine — run it yourself when a
+# tranche requires Android coverage; don't defer it to the maintainer.
+# -Scene only (no -Script), no -QuitAfter; use -TimeoutSec ~90+.
 
 # Broad suite (scenes + status-panel fixtures)
 .\godot_test_suite.ps1

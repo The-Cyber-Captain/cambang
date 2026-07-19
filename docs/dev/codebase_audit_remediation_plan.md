@@ -49,7 +49,8 @@ worker inputs, exception containment, and deterministic shutdown/restart.
 
 ### Tranche 4 — Render and GPU backing seams
 
-Status: complete; validated on 2026-07-18, not yet committed.
+Status: complete; validated on 2026-07-18; committed as `527a193`/`efe916a`
+("Fix render and GPU backing teardown seams").
 
 Completed record:
 `docs/dev/completed_tranches/tranche_4_render_and_gpu_backing_seams.md`.
@@ -158,9 +159,11 @@ Expected primary files when activated:
 ### Tranche 5 — Verifier, harness, and warning-truth hygiene
 
 Status: complete after correction and full revalidation on the authorized
-Windows/Android matrix on 2026-07-19, not yet committed.
+Windows/Android matrix on 2026-07-19; committed (see `d87f183` and
+subsequent history).
 
-Authority: `docs/dev/current_tranche.md`.
+Authority (archived):
+`docs/dev/completed_tranches/tranche_5_verifier_harness_and_warning_truth_hygiene.md`.
 
 Scope: migrate the five maintained legacy Godot verification scenes (60, 61,
 62, 63, and 66) to authoritative terminal harness verdicts; make native-object
@@ -179,7 +182,24 @@ validator cannot be deleted mechanically: acquisition timing now travels on
 No Godot public API change, runner-side regex waiver, shutdown-sequencing
 change, generated-output edit, or godot-cpp change is authorized.
 
-## Queued after Tranche 5
+### Tranche 6 — Free-running tick flush split and frame-lease teardown hardening
+
+Status: complete; committed 2026-07-19 as `394ed90`/`cd76a93`; full authorized
+Windows/Android matrix validated.
+
+This tranche was a maintainer-authorized insertion from the capture-path
+performance investigation and follow-up concurrency audit (2026-07-19), not
+part of the original audit sequence; it is recorded here after the fact so
+this file remains the complete durable sequence. Record:
+`docs/dev/completed_tranches/tranche_6_free_running_tick_flush_and_frame_lease_hardening.md`.
+
+Scope: `flush_strand` split so the free-running Godot tick no longer blocks
+on strand delivery (host-stepped `advance_timeline()` unchanged); enforcement
+of the frame-lease release invariant at both CoreRuntime teardown boundaries;
+in-code documentation of `close_device()`'s core-thread-serialization-
+dependent check-then-act window.
+
+## Queued after Tranche 6
 
 The advisory static-analysis sequence in `docs/dev/static_analysis.md` remains
 required audit follow-up, but must stay in separate narrow changes after the
@@ -191,4 +211,5 @@ focused verifier/warning tranche:
 4. generate a dated baseline report and decide which checks, if any, are
    suitable as changed-code gates.
 
-These items are ordered backlog, not permission to start them during Tranche 5.
+These items are ordered backlog, not permission to start them without
+maintainer activation of the next tranche.
