@@ -76,7 +76,7 @@ CamBANG is a Godot 4.5+ GDExtension: a deterministic imaging Core with camera pr
 
 **Render-thread discipline** — RenderingServer RID creation *and* release for display textures are marshaled to the render thread via pending-queue/drain helpers (both the CPU-backed path in `cambang_stream_result_internal.cpp` and the GPU-backing bridge). Follow that pattern; never call `free_rid()` from an arbitrary thread.
 
-**Rig captures fail closed** — multi-device rig capture is rejected unless a camera-concurrency truth naming the exact device combination was ingested via `CamBANGServer.ingest_camera_description(...)` *before* `start()`. The Godot boundary collapses all rig-trigger failure reasons to `ERR_BUSY`, so a scene where every rig `trigger_capture()` returns 44 forever usually means this ingest call is missing (see `73_rig_capture_result_set_verification.gd` for the correct pattern), not actual busy-ness.
+**Rig captures fail closed** — multi-device rig capture is rejected unless a camera-concurrency truth naming the exact device combination was ingested via `CamBANGServer.ingest_camera_description(...)` *before* `start()`. That configuration gap returns `ERR_UNCONFIGURED` from `trigger_capture()` (and the first rejection per session logs its concrete failure category); other orchestration failures still return `ERR_BUSY`. See `73_rig_capture_result_set_verification.gd` for the correct ingest pattern and the negative-phase proof.
 
 **capture_id** is minted at the Godot boundary (`CamBANGServer::next_capture_id_`), shared across device and rig paths — not in Core, despite what older doc drafts implied.
 

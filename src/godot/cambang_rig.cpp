@@ -12,11 +12,12 @@ godot::Error CamBANGRig::trigger_capture() {
   if (!server_->is_running()) {
     return godot::ERR_UNAVAILABLE;
   }
-  const uint64_t capture_id = server_->trigger_rig_capture_internal_(rig_id_);
-  if (capture_id == 0) {
-    return godot::ERR_BUSY;
+  const CamBANGServer::RigTriggerInternalResult result =
+      server_->trigger_rig_capture_internal_(rig_id_);
+  if (result.capture_id == 0) {
+    return result.error;
   }
-  current_capture_id_ = capture_id;
+  current_capture_id_ = result.capture_id;
   return godot::OK;
 }
 

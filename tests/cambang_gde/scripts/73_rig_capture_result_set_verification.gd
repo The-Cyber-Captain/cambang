@@ -1,6 +1,6 @@
 extends Control
 
-const TOTAL_TIMEOUT_MS := 12000
+const TOTAL_TIMEOUT_MS := 24000
 const RESULT_SET_TIMEOUT_MS := 5000
 const SCENARIO_PATH := "res://scenarios/rig_capture_result_basic.json"
 
@@ -26,6 +26,12 @@ var _rig_a_id := 0
 var _rig_a_members: Array[int] = []
 var _excluded_device_ids: Array[int] = []
 var _rig_a_capture_ready := false
+# Negative phase: the first session deliberately starts WITHOUT ingesting the
+# camera-concurrency truth, so the multi-device rig admission gate must reject
+# the trigger with ERR_UNCONFIGURED (a permanent configuration gap), not a
+# transient-looking code. The positive phase then restarts with the truth
+# ingested and runs the original verification unchanged.
+var _negative_phase_complete := false
 
 func _ready() -> void:
 	_status_label.clear()
@@ -34,34 +40,29 @@ func _ready() -> void:
 
 	CamBANGServer.stop()
 
-	# Rig A has 2 members (DeviceA=synthetic:0, DeviceE=synthetic:4); Core's rig
-	# admission gate requires an ingested camera-concurrency truth for any
-	# multi-device rig capture (fail-closed by design), so it must be declared
-	# here before start(). ingest_camera_description() only accepts while stopped.
-	var ingest_err := CamBANGServer.ingest_camera_description(RIG_A_CAMERA_DESCRIPTION_JSON)
-	_require(ingest_err == OK, "step %d FAIL: ingest_camera_description rejected (%d)" % [_step, ingest_err])
-	_step_ok("Rig A camera concurrency description ingested")
+	var start_err := _start_runtime_and_scenario()
+	_require(start_err == OK, "step %d FAIL: negative-phase start rejected (%d)" % [_step, start_err])
+	_step_ok("negative-phase synthetic runtime started (no camera description ingested)")
 
+	_append_status("RUN: rig_capture_result_set_verification")
+
+
+func _start_runtime_and_scenario() -> Error:
 	var start_err := CamBANGServer.start(
 		CamBANGServer.PROVIDER_KIND_SYNTHETIC,
 		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
 		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME,
 		CamBANGServer.TIMELINE_RECONCILIATION_COMPLETION_GATED
 	)
-	_require(start_err == OK, "step %d FAIL: synthetic timeline start rejected (%d)" % [_step, start_err])
-	_step_ok("bootstrap synthetic runtime started")
-
+	if start_err != OK:
+		return start_err
 	var scenario_text: String = FileAccess.get_file_as_string(SCENARIO_PATH)
 	_require(scenario_text != "", "step %d FAIL: scenario missing at %s" % [_step, SCENARIO_PATH])
 	var stage_err := CamBANGServer.load_external_scenario(scenario_text)
 	_require(stage_err == OK, "step %d FAIL: unable to load external scenario" % _step)
-	_step_ok("bootstrap scenario staged (rig_capture_result_basic)")
-
 	var scenario_start_err := CamBANGServer.start_scenario()
 	_require(scenario_start_err == OK, "step %d FAIL: unable to start staged scenario" % _step)
-	_step_ok("bootstrap scenario started")
-
-	_append_status("RUN: rig_capture_result_set_verification")
+	return OK
 
 
 func _process(_delta: float) -> void:
@@ -97,6 +98,10 @@ func _process(_delta: float) -> void:
 
 	if not _rig_a_capture_ready:
 		_try_latch_rig_a_capture_readiness()
+		return
+
+	if not _negative_phase_complete:
+		_run_negative_phase_and_restart()
 		return
 
 	if not _rig_a_capture_requested:
@@ -224,6 +229,39 @@ func _try_latch_rig_a_capture_readiness() -> void:
 
 	_rig_a_capture_ready = true
 	_step_ok("Rig A member devices are LIVE and capture-admissible")
+
+
+func _run_negative_phase_and_restart() -> void:
+	var rig = CamBANGServer.get_rig(_rig_a_id)
+	_require(rig != null, "step %d FAIL: negative-phase get_rig() returned null" % _step)
+	if _done:
+		return
+	var capture_err := int(rig.trigger_capture())
+	_require(capture_err == ERR_UNCONFIGURED,
+		"step %d FAIL: rig.trigger_capture() without ingested camera-concurrency truth must return ERR_UNCONFIGURED (%d), got %d" % [
+			_step, ERR_UNCONFIGURED, capture_err])
+	if _done:
+		return
+	_step_ok("trigger without camera-concurrency truth rejected with ERR_UNCONFIGURED")
+
+	# Restart into the positive phase with the truth ingested. Rig/device
+	# instance ids belong to the finished session's generation, so all latched
+	# state is reset and re-derived from the new session's snapshots.
+	CamBANGServer.stop()
+	var ingest_err := CamBANGServer.ingest_camera_description(RIG_A_CAMERA_DESCRIPTION_JSON)
+	_require(ingest_err == OK, "step %d FAIL: ingest_camera_description rejected (%d)" % [_step, ingest_err])
+	_step_ok("Rig A camera concurrency description ingested")
+
+	var start_err := _start_runtime_and_scenario()
+	_require(start_err == OK, "step %d FAIL: positive-phase start rejected (%d)" % [_step, start_err])
+	if _done:
+		return
+	_rig_a_id = 0
+	_rig_a_members = []
+	_rig_a_capture_ready = false
+	_excluded_device_ids = []
+	_negative_phase_complete = true
+	_step_ok("positive-phase synthetic runtime restarted with ingested truth")
 
 
 func _trigger_rig_a_capture() -> void:

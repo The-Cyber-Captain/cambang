@@ -1491,6 +1491,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
   active_synthetic_role_ = synthetic_role;
   completion_gated_destructive_sequencing_enabled_ = completion_gated_destructive_sequencing_enabled;
   strict_scenario_unmet_logged_ = false;
+  rig_trigger_rejection_logged_ = false;
   _reset_scenario_session_state_();
   _clear_pending_endpoint_startup_intents_();
   _refresh_timeline_teardown_trace_mode();
@@ -2549,9 +2550,10 @@ void CamBANGServer::_drain_pending_endpoint_startup_intents_after_baseline_() {
   }
 }
 
-uint64_t CamBANGServer::trigger_rig_capture_internal_(uint64_t rig_id) {
+CamBANGServer::RigTriggerInternalResult CamBANGServer::trigger_rig_capture_internal_(uint64_t rig_id) {
+  RigTriggerInternalResult out{};
   if (rig_id == 0 || !is_public_boundary_ready_()) {
-    return 0;
+    return out;
   }
 
   uint64_t capture_id = next_capture_id_.fetch_add(1, std::memory_order_relaxed);
@@ -2561,9 +2563,43 @@ uint64_t CamBANGServer::trigger_rig_capture_internal_(uint64_t rig_id) {
 
   const auto orchestration = runtime_.orchestrate_rig_capture_with_capture_id_for_server(rig_id, capture_id);
   if (!orchestration.ok) {
-    return 0;
+    const bool imaging_spec_gate =
+        orchestration.failure == CoreRuntime::RigOrchestrationFailure::AdmissionFailed &&
+        (orchestration.admission_failure ==
+             CoreRuntime::RigCohortAdmissionFailure::ImagingSpecUnavailable ||
+         orchestration.admission_failure ==
+             CoreRuntime::RigCohortAdmissionFailure::ImagingSpecRejected);
+    if (!rig_trigger_rejection_logged_) {
+      rig_trigger_rejection_logged_ = true;
+      if (imaging_spec_gate) {
+        ERR_PRINT(godot::vformat(
+            "CamBANGServer: rig capture rejected (rig_id=%d): the multi-device rig admission "
+            "gate has no accepted camera-concurrency truth for this member combination. Call "
+            "ingest_camera_description() with the combination before start(). Further rig "
+            "rejections this session are not logged.",
+            static_cast<int64_t>(rig_id)));
+      } else {
+        ERR_PRINT(godot::vformat(
+            "CamBANGServer: rig capture rejected (rig_id=%d): orchestration failure=%d "
+            "(preflight=%d admission=%d submission=%d provider_error=%d). Further rig "
+            "rejections this session are not logged.",
+            static_cast<int64_t>(rig_id),
+            static_cast<int64_t>(orchestration.failure),
+            static_cast<int64_t>(orchestration.preflight_failure),
+            static_cast<int64_t>(orchestration.admission_failure),
+            static_cast<int64_t>(orchestration.submission_failure),
+            static_cast<int64_t>(orchestration.provider_error_code)));
+      }
+    }
+    // Tranche 7 maps only the ImagingSpec configuration gate to a distinct
+    // public code: it is a permanent, caller-fixable configuration gap, not
+    // busy-ness. Every other category keeps the legacy ERR_BUSY result.
+    out.error = imaging_spec_gate ? godot::ERR_UNCONFIGURED : godot::ERR_BUSY;
+    return out;
   }
-  return capture_id;
+  out.capture_id = capture_id;
+  out.error = godot::OK;
+  return out;
 }
 
 void CamBANGServer::_ensure_tick_connected() {

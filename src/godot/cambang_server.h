@@ -258,7 +258,21 @@ private:
       TimingDriver timing_driver);
 
   // Server-internal helper for rig-trigger orchestration (not Godot-bound).
-  uint64_t trigger_rig_capture_internal_(uint64_t rig_id);
+  // capture_id == 0 means the trigger was rejected and `error` carries the
+  // mapped public result: ERR_UNCONFIGURED for the ImagingSpec admission-gate
+  // categories (missing/rejected camera-concurrency truth -- a permanent
+  // configuration gap the caller must fix via ingest_camera_description()),
+  // ERR_BUSY for every other category (tranche 7 deliberately maps only the
+  // configuration gate; see docs/dev/current_tranche.md at that date).
+  struct RigTriggerInternalResult {
+    uint64_t capture_id = 0;
+    godot::Error error = godot::ERR_BUSY;
+  };
+  RigTriggerInternalResult trigger_rig_capture_internal_(uint64_t rig_id);
+  // One-shot per runtime session: the first rejected rig trigger logs its
+  // concrete orchestration failure category so collapsed public codes stay
+  // self-describing in the log. Reset on start().
+  bool rig_trigger_rejection_logged_ = false;
 
   // SceneTree tick hook state.
   bool tick_connected_ = false;
