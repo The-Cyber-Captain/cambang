@@ -304,7 +304,11 @@ GDE_PROVIDER_RESOLUTION = {
     "windows": {
         "family": "windows_winrt",
         "location": os.path.join("src", "imaging", "platform", "windows"),
-        "implemented": False,
+        "implemented": True,
+        "defines": ["CAMBANG_PROVIDER_WINDOWS_WINRT=1"],
+        # Media Foundation capture stack + COM/registry support. The MinGW
+        # link set needs mf + uuid in addition to the usual MF libs.
+        "libs": ["mfreadwrite", "mfplat", "mf", "mfuuid", "ole32", "uuid", "advapi32"],
     },
     "android": {
         "family": "android_camera2",
@@ -333,7 +337,21 @@ GDE_PROVIDER_RESOLUTION = {
     },
 }
 
-RUNTIME_VALIDATORS = {}
+# Platform runtime validators (platform_runtime_validate=yes). These are
+# real-OS/API visibility checks that may open local camera hardware; they
+# supplement, never replace, deterministic provider contract verification.
+RUNTIME_VALIDATORS = {
+    "windows": {
+        "program": "windows_winrt_runtime_validate",
+        "main": os.path.join("smoke", "windows_winrt_runtime_validate.cpp"),
+        "provider_dirs": [os.path.join("imaging", "platform", "windows")],
+        "extra_sources": [
+            os.path.join("imaging", "api", "provider_strand.cpp"),
+        ],
+        "defines": ["CAMBANG_PROVIDER_WINDOWS_WINRT=1"],
+        "libs": ["mfreadwrite", "mfplat", "mf", "mfuuid", "ole32", "uuid", "advapi32"],
+    },
+}
 
 
 vars = Variables()
@@ -628,6 +646,8 @@ def _all_planned_gde_clean_outputs():
 
 def _selected_platform_runtime_validate_clean_outputs(platform):
     outputs = [os.path.join(platform_runtime_validate_obj_root, platform)]
+    if platform in RUNTIME_VALIDATORS:
+        outputs.append(_program_path(RUNTIME_VALIDATORS[platform]["program"]))
     return outputs
 
 
@@ -998,6 +1018,21 @@ if build_platform_runtime_validate:
     validate_env.VariantDir(platform_runtime_validate_obj_dir, "src", duplicate=0)
 
     runtime_validate_progs = []
+    validator = RUNTIME_VALIDATORS[gde_platform]
+    validate_env.Append(CPPDEFINES=validator["defines"])
+    validate_env.Append(LIBS=validator["libs"])
+    if host_platform == "windows" and not is_msvc:
+        # Match maintainer_tools: no runtime-DLL resolution dependency.
+        validate_env.Append(LINKFLAGS=["-static", "-static-libgcc", "-static-libstdc++"])
+    validator_sources = [os.path.join(platform_runtime_validate_obj_dir, validator["main"])]
+    for provider_dir in validator["provider_dirs"]:
+        validator_sources += _glob_cpp(platform_runtime_validate_obj_dir, *provider_dir.split(os.sep))
+    for extra in validator["extra_sources"]:
+        validator_sources.append(os.path.join(platform_runtime_validate_obj_dir, extra))
+    runtime_validate_progs.append(validate_env.Program(
+        target=os.path.join(out_dir, validator["program"]),
+        source=_unique_sources(validator_sources),
+    ))
 
     platform_runtime_validate_alias = Alias("platform_runtime_validate", runtime_validate_progs)
     AlwaysBuild(platform_runtime_validate_alias)

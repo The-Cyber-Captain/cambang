@@ -12,6 +12,11 @@
   #include "imaging/stub/provider.h"
 #endif
 
+// Windows platform provider (windows_winrt family, compile-time selection).
+#if defined(CAMBANG_PROVIDER_WINDOWS_WINRT) && CAMBANG_PROVIDER_WINDOWS_WINRT
+  #include "imaging/platform/windows/winrt_camera_provider.h"
+#endif
+
 // Synthetic provider (optional compile).
 #if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
   #include "imaging/synthetic/provider.h"
@@ -287,7 +292,8 @@ ProviderResult ProviderBroker::update_stream_retained_production_plan(
 ProviderResult ProviderBroker::check_mode_supported_in_build(RuntimeMode mode) noexcept {
   switch (mode) {
     case RuntimeMode::platform_backed: {
-#if defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
+#if (defined(CAMBANG_PROVIDER_WINDOWS_WINRT) && CAMBANG_PROVIDER_WINDOWS_WINRT) || \
+    (defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB)
       return ProviderResult::success();
 #else
       return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
@@ -316,7 +322,9 @@ ProviderAccessStatus ProviderBroker::check_mode_access_readiness(RuntimeMode mod
 
   switch (mode) {
     case RuntimeMode::platform_backed: {
-#if defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
+#if defined(CAMBANG_PROVIDER_WINDOWS_WINRT) && CAMBANG_PROVIDER_WINDOWS_WINRT
+      return WinrtCameraProvider::check_access_readiness();
+#elif defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
       return StubProvider::check_access_readiness();
 #else
       return ProviderAccessStatus::failure(
@@ -527,8 +535,12 @@ ProviderResult ProviderBroker::initialize(IProviderCallbacks *callbacks) {
     }
 
     if (!candidate) {
-      // Platform-backed selection is compile-time (SCons provider=...).
-#if defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
+      // Platform-backed selection is compile-time (SCons platform=...).
+      // GDE builds compile exactly one platform family; maintainer-tool
+      // builds keep the deterministic StubProvider.
+#if defined(CAMBANG_PROVIDER_WINDOWS_WINRT) && CAMBANG_PROVIDER_WINDOWS_WINRT
+      candidate = std::make_unique<WinrtCameraProvider>();
+#elif defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
       candidate = std::make_unique<StubProvider>();
 #endif
     }
