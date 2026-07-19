@@ -91,7 +91,13 @@ int run_single_verify_case(const cambang::VerifyCaseDefinition& verify_case,
     const int rc = verify_case.run();
     if (rc == cambang::kVerifyCaseSkipped) {
       cli::line("Verification case SKIPPED");
+      cli::line("PASS verify_case_runner case=", verify_case.name, " skipped=true");
       return 0;
+    }
+    if (rc == 0) {
+      cli::line("PASS verify_case_runner case=", verify_case.name, " repeat=1");
+    } else {
+      cli::line("FAIL verify_case_runner case=", verify_case.name, " iteration=1");
     }
     return rc;
   }
@@ -101,15 +107,20 @@ int run_single_verify_case(const cambang::VerifyCaseDefinition& verify_case,
     const int rc = verify_case.run();
     if (rc == cambang::kVerifyCaseSkipped) {
       cli::line("Verification case SKIPPED");
+      cli::line("PASS verify_case_runner case=", verify_case.name, " skipped=true");
       return 0;
     }
     if (rc != 0) {
       cli::error("[repeat] iteration ", iteration, "/", repeat_count, " FAILED");
+      cli::line("FAIL verify_case_runner case=", verify_case.name,
+                " iteration=", iteration, " repeat=", repeat_count);
       return rc;
     }
   }
 
   cli::line("Verification case PASSED (repeat=", repeat_count, ")");
+  cli::line("PASS verify_case_runner case=", verify_case.name,
+            " repeat=", repeat_count);
   return 0;
 }
 
@@ -167,7 +178,8 @@ int run_all_verify_cases(const std::vector<cambang::VerifyCaseDefinition>& verif
     cli::line("[PASS] ", verify_case.name, " (", completed, "/", repeat_count, ")");
   }
 
-  cli::line("Summary: ", passed, " passed, ", skipped, " skipped, ", failed, " failed");
+  cli::line(failed == 0 ? "PASS" : "FAIL", " verify_case_runner passed=", passed,
+            " skipped=", skipped, " failed=", failed);
   return failed == 0 ? 0 : 1;
 }
 

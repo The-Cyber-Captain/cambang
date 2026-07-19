@@ -163,6 +163,6 @@ int main() {
   }
   cli::line("step 4 OK");
 
-  cli::line("OK: restart_boundary_verify passed");
+  cli::line("PASS restart_boundary_verify");
   return 0;
 }

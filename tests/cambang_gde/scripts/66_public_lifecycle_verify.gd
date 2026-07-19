@@ -1,10 +1,12 @@
 extends Node
 
 const MAX_FRAMES := 180
+const SCENE_LABEL := "66_public_lifecycle_verify"
 #const FOURCC_RGBA := 1094862674
 
 var _done := false
 var _quit_requested := false
+var _terminal_verdict_emitted := false
 var _handle_a = null
 var _handle_b = null
 var _stream = null
@@ -26,7 +28,7 @@ func _ready() -> void:
 
 	var start_err := CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC)
 	if start_err != OK:
-		_fail("FAIL: start(SYNTHETIC) rejected")
+		_error("ERROR: start(SYNTHETIC) rejected", "runtime_start_rejected")
 		return
 
 
@@ -293,7 +295,7 @@ func _wait_for_baseline() -> bool:
 		if typeof(snap) == TYPE_DICTIONARY and int(snap.get("version", -1)) == 0 and int(snap.get("topology_version", -1)) == 0:
 			return true
 		await get_tree().process_frame
-	_fail("FAIL: timed out waiting for initial baseline before lifecycle command use")
+	_fail("FAIL: timed out waiting for initial baseline before lifecycle command use", "timeout")
 	return false
 
 
@@ -301,17 +303,41 @@ func _ok(msg: String) -> void:
 	if _done:
 		return
 	_done = true
+	_emit_harness_verdict("ok", 0, "pass")
 	print(msg)
 	_cleanup_and_quit(0)
 
 
-func _fail(msg: String) -> void:
+func _fail(msg: String, reason: String = "assertion_failed") -> void:
 	if _done:
 		return
 	_done = true
+	_emit_harness_verdict("fail", 1, reason)
 	push_error(msg)
 	print(msg)
 	_cleanup_and_quit(1)
+
+
+func _error(msg: String, reason: String) -> void:
+	if _done:
+		return
+	_done = true
+	_emit_harness_verdict("error", 1, reason)
+	push_error(msg)
+	print(msg)
+	_cleanup_and_quit(1)
+
+
+func _emit_harness_verdict(status: String, exit_code: int, reason: String) -> void:
+	if _terminal_verdict_emitted:
+		return
+	_terminal_verdict_emitted = true
+	print("[CamBANG][HarnessVerdict] scene=%s status=%s exit_code=%d reason=%s" % [
+		SCENE_LABEL,
+		status,
+		exit_code,
+		reason,
+	])
 
 
 func _cleanup_and_quit(code: int) -> void:

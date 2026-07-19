@@ -1418,6 +1418,6 @@ int main() {
   if (int r = test_visibility_diagnostics_snapshot_truth()) return r;
   if (int r = test_still_capture_profile_visibility_audit_truth()) return r;
 
-  std::cout << "OK: phase3_snapshot_verify passed\n";
+  std::cout << "PASS phase3_snapshot_verify\n";
   return 0;
 }

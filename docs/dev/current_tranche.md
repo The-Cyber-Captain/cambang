@@ -1,222 +1,194 @@
 # Current tranche
 
-## Tranche 4 - Render and GPU backing seams
+## Tranche 5 - Verifier, harness, and warning-truth hygiene
 
-Status: complete; not yet committed (2026-07-18).
+Status: complete after correction and full revalidation on the authorized
+Windows/Android matrix (2026-07-19), not yet committed.
 
-This is the fourth tranche in `docs/dev/codebase_audit_remediation_plan.md`.
-It follows the committed command-truth, ProviderBroker isolation, and
-Synthetic capture-worker tranches. It owns the runtime-ops lifetime seam,
-retained GPU-backing truth, CPU/GPU Godot display bridges, render-resource
-admission/drain, and extension teardown.
+This is the fifth tranche in `docs/dev/codebase_audit_remediation_plan.md`. It
+follows the completed render/GPU ownership work and owns the verifier and
+first-party warning debt exposed while closing that tranche. It does not reopen
+Tranche 4's render-resource design.
+
+### Purpose
+
+Make maintainer evidence directly runnable, exhaustively classified, and free
+of first-party warning ambiguity. A verifier must describe and test the current
+contract, emit its own terminal verdict, and fail for a real unmet invariant—not
+because its harness still assumes behavior removed by an earlier tranche.
 
 ### Source-backed problem statement
 
-The present backing and render bridges contain several lifetime claims that
-are not established by their synchronization:
+This section records the activation baseline. The validation record below
+describes the corrected source and the authorized validation matrix.
 
-* `src/imaging/synthetic/gpu_backing_runtime.cpp` publishes an immutable
-  `SyntheticGpuBackingRuntimeOps` table through one atomic raw pointer. A caller
-  can load that pointer immediately before
-  `clear_synthetic_gpu_backing_runtime_ops()` stores null and can then enter a
-  Godot-backed function after bridge teardown has started. Atomic publication
-  is not an in-flight call lease or teardown drain.
-* `src/godot/synthetic_gpu_backing_bridge.cpp` destroys queued
-  `PendingTextureWrapperRelease` values while holding
-  `g_pending_release_mutex`. Those values own `Ref<Texture2DRD>` and shared RID
-  state whose destructors can enqueue another release and re-enter the same
-  non-recursive mutex. The same destruction-under-lock shape exists in
-  teardown and callback early-return paths.
-* `enqueue_pending_texture_wrapper_release()` takes its wrapper and state by
-  value. If teardown has closed admission, returning false destroys the moved
-  wrapper on the arbitrary caller thread even though the source says its final
-  unreference belongs on the render thread.
-* GPU uninstall invalidates live wrappers, thereby admitting release work, and
-  then immediately clears/abandons that work and unreferences the callback
-  helper. It does not prove a final render-thread drain.
-* `src/godot/cambang_stream_result_internal.cpp` similarly clears accepted CPU
-  texture creates and RID releases, drops its helper, and relies on a scheduled
-  `Callable(Object*, StringName)` resolving a stale ObjectID as a no-op.
-  `docs/dev/upstream_discrepancies.md` explicitly says that callable does not
-  retain the helper, so the source comment claiming a callback can never enter
-  torn-down extension state is not justified by CamBANG-owned lifetime.
-* CPU pending-create destruction can release the last
-  `SharedLiveCpuTextureRidState` while the queue mutex is held. Its destructor
-  can call back into the same release queue, creating the same re-entry risk as
-  the GPU path.
-* `godot_gpu_display_service.cpp` has deliberately inactive descriptor-only
-  lookup/invalidation paths while current display and materialization behavior
-  is carried by a legacy retained `shared_ptr<void>` artifact. The tranche must
-  verify that descriptor claims, actual retained artifacts, access posture,
-  and fallback behavior remain mutually truthful; it must not silently promote
-  the future descriptor seam into an unsupported cache.
-* `tests/cambang_gde/run_cpu_display_teardown_race_stress.ps1` launches Godot
-  directly, classifies crashes itself, and its GDScript does not emit the
-  shared harness verdict. It is evidence, but it is not an authoritative
-  `run_godot.ps1` gate. No equivalent focused real-renderer GPU teardown stress
-  currently exists.
+* `tests/cambang_gde/README.md` identifies Scenes 60, 61, 62, 63, and 66 as
+  older/non-protocol scenes. Their local `OK: ... PASS` or `FAIL: ...` lines are
+  useful to a human but are not `[CamBANG][HarnessVerdict]` records, so
+  `run_godot.ps1` cannot classify them authoritatively.
+* `src/smoke/verify_case/verify_case_catalog.cpp::native_type_name()` and
+  `summarize_native_shape()` omit `NativeObjectType::FrameBufferLease` and
+  `NativeObjectType::GpuBacking`. The MinGW build reports both switches as
+  incomplete. The diagnostic name function must identify them; the restart
+  shape summary must explicitly count or intentionally exclude them according
+  to their topology role rather than omitting cases accidentally.
+* `CoreRuntime::on_core_timer_tick()` intentionally advances through several
+  shutdown phases in one tick, but uses comments saying `fallthrough` rather
+  than C++ `[[fallthrough]]`. GCC therefore reports six first-party implicit
+  fallthrough warnings. The transitions appear deliberate, but warnings must
+  be resolved without adding returns that alter shutdown sequencing.
+* `src/core/provider_camera_fact_state.cpp` contains unreferenced
+  `valid_acquisition_timing()` and `valid_capture_image()` helpers. This is not
+  yet a simple deletion: acquisition timing moved to accepted `FrameView`
+  payloads, `ImageAcquisitionTiming::create()` validates the mark and receives a
+  validated `TickPeriod`, but presently accepts enum values without checking
+  their domains. The tranche must locate the authoritative validation boundary,
+  add negative coverage, and only then remove or reuse the abandoned helpers.
+* `docs/dev/maintainer_tools.md` does not list the liveness verifier or state the
+  repository-wide terminal-verdict expectation consistently with the now
+  self-supervising tool.
 
-These are ownership, wrong-thread destruction, deadlock, callback-lifetime,
-and silent-resource-abandonment risks. The correction must establish explicit
-admission and drain truth; changing comments or adding another best-effort
-clear is insufficient.
+The ordered inventory in work package 1 found these additional maintained
+native terminal-contract violations before implementation began:
+
+* `godot_result_convert_smoke` puts the tool name before `PASS`/`FAIL`;
+* `synthetic_timeline_verify`, `phase3_snapshot_verify`, and
+  `restart_boundary_verify` use `OK:` rather than `PASS` for successful final
+  summaries;
+* `verify_case_runner` ends single-case runs with `Verification case PASSED`
+  and all-case runs with an unclassified `Summary:` line rather than a final
+  `PASS`/`FAIL` record.
+
+Post-validation repeated execution exposed a further verifier-boundary defect:
+
+* `close_while_streaming` and `redundant_stop` waited for Core-owned stream
+  posture but did not wait for the reference providers' asynchronous,
+  serialized acquisition-session fact to become snapshot-visible before
+  asserting settled topology. `redundant_stop --provider=synthetic
+  --repeat=500` reproduced the resulting intermittent failure at iteration 137.
+  The correction must use bounded fact-based convergence, not a sleep or a
+  weakened acquisition-session assertion.
+
+The remaining maintained native targets already emit a final `PASS` on normal
+successful verification. `pattern_render_bench` is a benchmark and is
+intentionally excluded. Godot demos and manual teaching scenes are likewise
+not reclassified as automated verifiers merely because they print diagnostics.
 
 ### Ordered work packages
 
-Implement in this order. Do not start a later package while an earlier lifetime
-contract remains ambiguous.
+Implement in this order.
 
-1. **Runtime-ops call lifetime**
-   * Replace or wrap the atomic raw-pointer seam with explicit
-     active/draining/closed admission and an in-flight call lease.
-   * Installation publishes one stable generation. Clear closes new calls and
-     waits for admitted calls outside Godot/provider/render locks before the
-     bridge can be dismantled.
-   * Preserve prompt normal calls and the existing non-GDE no-op behavior.
+1. **Verifier terminal-contract inventory**
+   * Inventory maintained native verifiers and Godot verification scenes for a
+     directly emitted terminal `PASS`/`FAIL` or
+     `[CamBANG][HarnessVerdict]` record and matching process exit status.
+   * Keep manual demos and benchmarks distinct; do not force verification
+     protocol onto assets that are not classified as verifiers.
+   * Record any additional maintained verifier violation before editing it.
 
-2. **GPU render-work ownership and final drain**
-   * Model queued RID releases, `Texture2DRD` wrapper releases, scheduled
-     callbacks, and helper lifetime as one owned drain protocol.
-   * Move queued resources out while locked; destroy/unreference wrappers,
-     shared states, and RIDs only after releasing the queue mutex and on the
-     required render path.
-   * Define deterministic ownership for enqueue rejection and late wrapper
-     destruction after draining begins. No arbitrary-thread fallback and no
-     silent abandonment are acceptable.
-   * Keep the helper alive through the final accepted callback and prove
-     quiescence before uninstall returns.
+2. **Legacy Godot harness migration**
+   * Add exactly one terminal harness verdict to every success, expected-
+     unsupported, failure, timeout, and error exit of Scenes 60, 61, 62, 63,
+     and 66.
+   * Preserve their existing direct human-readable completion lines.
+   * Ensure cleanup cannot emit a second contradictory verdict.
+   * Launch every authoritative run only through `run_godot.ps1`; do not add
+     runner-side regex exceptions.
 
-3. **CPU render-work ownership and final drain**
-   * Apply the same admission/drain discipline to pending CPU texture creates,
-     superseded creates, RID releases, and helper callbacks.
-   * Remove reliance on stale-ObjectID no-op behavior for CamBANG correctness.
-   * Ensure accepted creates either complete and their eventual RID is owned,
-     or are cancelled before creation without leaving a later callback target.
+3. **Native-object verifier exhaustiveness**
+   * Add truthful names for `FrameBufferLease` and `GpuBacking`.
+   * Make restart-shape handling exhaustive. If those resource objects are not
+     topology descendants for the summary, express that as explicit cases and
+     test that the diagnostic still reports their presence where relevant.
+   * Add or extend a verification case so future enum growth cannot silently
+     recreate the warning or produce `unknown` for known types.
 
-4. **Backing, descriptor, and native-object truth**
-   * Audit capture GPU backing and live-stream GPU backing across create,
-     update, recreate, fallback, replacement, result retention, stop, restart,
-     and extension teardown.
-   * Keep `RetainedGpuBackingDescriptor`, `primary_backing_kind`, display
-     availability, materialization availability, CPU sidecar, retained
-     artifact, and public access posture consistent with actual capability.
-   * Verify exact native `GpuBacking` create/destroy facts on realization,
-     recreation, downgrade, failed update/retry, and release.
-   * Keep descriptor-only display lookup inactive unless source-backed provider
-     requirements justify activation; do not invent a cache for this tranche.
+4. **First-party compiler-warning truth**
+   * Replace each proven intentional shutdown transition with
+     `[[fallthrough]]`; do not change phase order, timer requests, or returns.
+   * Trace `CaptureImageFacts`, `ProviderCaptureImageFacts`, and `FrameView`
+     acquisition timing from construction through retained result truth.
+   * Enforce enum-domain validity at the narrow authoritative boundary and add
+     negative tests. Do not silently discard a malformed present fact while
+     reporting successful retention.
+   * Remove helpers only after their intended validation responsibility is
+     either active at the correct boundary or conclusively obsolete.
 
-5. **Verification and hygiene**
-   * Convert the CPU teardown race into an authoritative launcher/harness gate.
-   * Add a focused real-renderer GPU wrapper/RID teardown race with the same
-     classification and repeatability.
-   * Remove obsolete, duplicate, unreachable, or contradicted backing paths
-     only after the corrected ownership model identifies them conclusively.
-   * Reconcile `tests/cambang_gde/README.md`,
-     `docs/dev/upstream_discrepancies.md`, and the pixel payload/result contract
-     with the behavior actually proved.
+5. **Self-supervising verifier and documentation**
+   * Directly run `core_thread_liveness_watchdog_verify` on Windows. Require
+     diagnostic-first, terminal-summary-last, zero-on-PASS behavior and a
+     bounded failure when the child contract is unmet.
+   * Keep the internal child mode non-authoritative and undocumented as a user
+     workflow.
+   * Reconcile `docs/dev/maintainer_tools.md` and
+     `tests/cambang_gde/README.md` with the verified tool/scene inventory.
 
 ### Scope guardrails
 
-* Do not change the locked Godot public API, registered public classes, method
-  names, signals, constants, or public dictionary shapes.
-* Do not change `ICameraProvider` or provider contract datatypes without
-  separate maintainer authorization.
-* Do not broaden into Core command orchestration, capture-worker redesign,
-  platform-provider implementation, a generic renderer abstraction, or a new
-  public display API.
-* Do not make platform-backed providers depend on Synthetic-only artifacts.
-* Do not activate descriptor-only caching merely because the seam exists.
-* Do not rely on `RenderingServer::force_sync()` or another engine completion
-  operation until its precise guarantee has been verified against authoritative
-  Godot documentation/source. If it cannot prove callback completion, use an
-  explicit CamBANG-owned completion/fence protocol.
-* Do not weaken Scene 568, Scene 70, Scene 870, or teardown stresses merely to
-  obtain a passing verdict.
-* Every Godot process must be launched through
-  `tests/cambang_gde/run_godot.ps1`, including each stress iteration.
+* Do not change the locked Godot public API, method/signal/constant bindings,
+  or public dictionary shapes.
+* Do not change shutdown sequencing merely to remove warnings.
+* Do not weaken a scene assertion or native verifier expectation to obtain a
+  terminal PASS.
+* Do not add runner-side expected-output patterns in place of scene verdicts.
+* Do not modify godot-cpp or generated build outputs.
+* Do not treat third-party/generated compiler warnings as first-party defects.
+* Do not add clang-tidy configuration, automation, or a general smell scanner
+  in this tranche; the advisory static-analysis sequence remains queued after
+  this focused warning/verifier correction.
 
 ### Expected implementation files
 
 Primary expected files are:
 
-* `src/imaging/synthetic/gpu_backing_runtime.h`;
-* `src/imaging/synthetic/gpu_backing_runtime.cpp`;
-* `src/godot/synthetic_gpu_backing_bridge.cpp` and its internal header;
-* `src/godot/godot_gpu_display_service.cpp` and header;
-* `src/godot/cambang_stream_result_internal.cpp` and header;
-* `src/godot/module_init.cpp` where install/uninstall ordering requires it;
-* `src/imaging/synthetic/provider.h` and `provider.cpp` only for backing
-  ownership/native-object truth left after Tranche 3;
-* `src/godot/cambang_stream_result.cpp` and
-  `src/godot/cambang_capture_result.cpp` only where result access truth requires
-  correction;
-* `src/core/core_result_store.cpp` or related result records only if inspection
-  proves retained descriptor/artifact truth is inconsistent;
-* focused native verifier coverage where the runtime-ops seam can be exercised
-  without Godot;
-* `tests/cambang_gde/scripts/cpu_display_teardown_race_stress.gd`;
-* `tests/cambang_gde/run_cpu_display_teardown_race_stress.ps1`;
-* a focused GPU teardown stress script/driver;
+* `tests/cambang_gde/scripts/60_restart_boundary_abuse.gd`;
+* `tests/cambang_gde/scripts/61_tick_bounded_coalescing_abuse.gd`;
+* `tests/cambang_gde/scripts/62_snapshot_polling_immutability_abuse.gd`;
+* `tests/cambang_gde/scripts/63_snapshot_observer_minimal.gd`;
+* `tests/cambang_gde/scripts/66_public_lifecycle_verify.gd`;
 * `tests/cambang_gde/README.md`;
-* `docs/architecture/pixel_payload_and_result_contract.md`;
-* `docs/dev/upstream_discrepancies.md`;
+* `src/smoke/verify_case/verify_case_catalog.cpp` and focused verifier coverage;
+* `src/core/core_runtime.cpp` only for explicit fallthrough annotations;
+* `src/core/camera_fact_types.h`,
+  `src/core/provider_camera_fact_state.cpp`, result/frame-ingress code, and
+  focused tests only as justified by the acquisition-timing validation trace;
+* `src/smoke/core_thread_liveness_watchdog_verify.cpp` only if direct Windows
+  validation exposes a real verifier defect;
+* `src/smoke/godot_result_convert_smoke.cpp`;
+* `src/smoke/synthetic_timeline_verify.cpp`;
+* `src/smoke/phase3_snapshot_verify.cpp`;
+* `src/smoke/restart_boundary_verify.cpp`;
+* `src/smoke/verify_case_runner.cpp`;
+* `docs/dev/maintainer_tools.md`;
 * this tranche record and the durable remediation plan.
 
 Any expansion beyond these files must be source-justified before editing.
 
-### Invariants
-
-* No runtime-ops function can begin after admission closes, and bridge teardown
-  cannot proceed while an admitted call still references Godot-backed code.
-* No render callback, Godot/RenderingServer/RenderingDevice call, blocking wait,
-  resource destructor, or user callback runs while a bridge queue mutex,
-  provider-state mutex, or broad Core mutex is held.
-* Queue locks protect only queue/protocol state. Resource destruction and
-  re-entrant work occur after resources are moved into local ownership.
-* Every accepted render work item has one terminal ownership path: completed on
-  the render thread or explicitly cancelled before it can create/own a render
-  resource.
-* Every realized RID and Godot texture wrapper is released exactly once through
-  its approved thread-affine path.
-* Helper/callback targets outlive every callback that may invoke them.
-* Outstanding public wrappers become truthfully invalid after stream/extension
-  teardown and cannot draw or materialize stale-generation content.
-* Actual backing artifacts and advertised descriptor/access truth agree.
-* `godot-cpp` remains external and is not rebuilt.
-* Windows builds use MinGW with `use_mingw=yes` and
-  `mingw_prefix=/c/Compilers/mingw64`.
-
 ### Acceptance criteria
 
-* A deterministic runtime-ops race proves clear/install versus concurrent calls
-  cannot invoke an unpublished generation and that clear reaches quiescence.
-* GPU and CPU bridge protocols expose active, draining, and closed state with
-  tested admission rejection and final completion.
-* Teardown never clears a queue of destructible Godot/shared resource owners
-  while holding that queue's mutex.
-* Teardown cannot deadlock through `SharedDisplayTextureRidState` or
-  `SharedLiveCpuTextureRidState` destructor re-entry.
-* Late GPU wrapper destruction and late CPU RID-state destruction have a
-  deterministic correct-thread release owner even after ordinary admission is
-  closed.
-* Uninstall waits for or otherwise proves completion of every accepted render
-  callback before dropping its helper/target and before extension-owned code
-  becomes unavailable.
-* No correctness claim depends on stale ObjectID callable dispatch.
-* Stream and capture results preserve truthful CPU-only, GPU-only, and
-  GPU-primary-with-CPU-sidecar display/materialization behavior across failure,
-  fallback, stop, and restart.
-* Native GPU-backing lifecycle facts are balanced under create, recreate,
-  downgrade, update failure, release, and shutdown.
-* Repeated CPU and real-renderer GPU teardown stresses emit the shared harness
-  verdict, use only `run_godot.ps1` to launch Godot, and produce no crash,
-  timeout, missing verdict, leak-accounting failure, or wrong-thread release.
-* Final diff has no Godot public binding changes; the `thirdparty/godot-cpp`
-  gitlink and working HEAD remain unchanged.
+* Every maintained native verifier in scope emits its own final `PASS` or
+  `FAIL` summary and returns 0 or nonzero consistently.
+* Scenes 60, 61, 62, 63, and 66 each emit exactly one authoritative harness
+  verdict on every terminal path and classify correctly through
+  `run_godot.ps1`.
+* Known `NativeObjectType` values never render as `unknown`; restart-shape
+  handling is exhaustive and resource-object treatment is explicit.
+* The maintainer build emits no first-party implicit-fallthrough or unused-
+  helper warning covered by this tranche.
+* Invalid acquisition-timing enum values cannot enter retained result truth;
+  absence and a valid zero acquisition mark remain distinguishable.
+* Cases that assert settled stream-backed acquisition-session truth wait for
+  that provider fact explicitly; focused repeated runs do not depend on callback
+  scheduling luck.
+* The liveness verifier passes by direct invocation on Windows, prints
+  diagnostics before its terminal verdict, and terminates within its bound.
+* Documentation describes the current verifier inventory and no longer calls
+  migrated scenes non-protocol.
+* No Godot public binding or godot-cpp submodule change is present.
 
 ### Required validation
 
-Builds require approved unsandboxed execution:
+Builds require approved unsandboxed execution and external godot-cpp:
 
 ```text
 scons gde=no maintainer_tools=yes godot_cpp=external use_mingw=yes mingw_prefix=/c/Compilers/mingw64
@@ -224,104 +196,112 @@ scons platform=windows target=debug godot_cpp=external use_mingw=yes mingw_prefi
 scons platform=android target=debug arch=arm64 maintainer_tools=no godot_cpp=external ANDROID_HOME=<configured-sdk-root>
 ```
 
-Native regression floor:
+Native floor:
 
 ```text
+out/core_thread_liveness_watchdog_verify.exe
 out/provider_compliance_verify.exe
 out/synthetic_only_provider_support_verify.exe
 out/core_spine_smoke.exe
 out/core_result_path_smoke.exe
 out/core_result_byte_budget_stress_smoke.exe
+out/godot_result_convert_smoke.exe
+out/synthetic_timeline_verify.exe
+out/phase3_snapshot_verify.exe
 out/restart_boundary_verify.exe
+out/verify_case_runner.exe --run-all
+out/verify_case_runner.exe redundant_stop --provider=synthetic --repeat=500
+out/verify_case_runner.exe close_while_streaming --provider=synthetic --repeat=500
+out/verify_case_runner.exe redundant_stop --provider=stub --repeat=50
+out/verify_case_runner.exe close_while_streaming --provider=stub --repeat=50
 ```
-
-The implementation must add deterministic native/internal verification for the
-runtime-ops lease where that seam can be tested without Godot. CPU/GPU render
-thread ownership remains authoritative only when exercised through Godot.
 
 Required Windows Godot coverage, launched unsandboxed from
 `tests/cambang_gde` through `run_godot.ps1`:
 
 ```powershell
-.\run_godot.ps1 -Scene res://scenes/70_result_retrieval_verification.tscn -CaptureLogs -TimeoutSec 60 -RunLabel tranche4_scene70_result_access
-.\run_godot.ps1 -Scene res://scenes/568_backing_plan_evaluation_verify.tscn -CaptureLogs -TimeoutSec 60 -RunLabel tranche4_scene568_runtime_default -ExtraArgs @("--cambang-synth-producer-output-form=runtime_default")
-.\run_godot.ps1 -Scene res://scenes/568_backing_plan_evaluation_verify.tscn -CaptureLogs -TimeoutSec 60 -RunLabel tranche4_scene568_gpu_only_mobile -ExtraArgs @("--rendering-method=mobile", "--cambang-synth-producer-output-form=gpu_only")
-.\run_godot.ps1 -Scene res://scenes/568_backing_plan_evaluation_verify.tscn -CaptureLogs -TimeoutSec 60 -RunLabel tranche4_scene568_gpu_only_compatibility -ExtraArgs @("--rendering-method=compatibility", "--cambang-synth-producer-output-form=gpu_only")
+.\run_godot.ps1 -Scene res://scenes/60_restart_boundary_abuse.tscn -CaptureLogs -TimeoutSec 60 -RunLabel tranche5_scene60_restart
+.\run_godot.ps1 -Scene res://scenes/61_tick_bounded_coalescing_abuse.tscn -CaptureLogs -TimeoutSec 60 -RunLabel tranche5_scene61_coalescing
+.\run_godot.ps1 -Scene res://scenes/62_snapshot_polling_immutability_abuse.tscn -CaptureLogs -TimeoutSec 60 -RunLabel tranche5_scene62_snapshot_polling
+.\run_godot.ps1 -Scene res://scenes/63_snapshot_observer_minimal.tscn -CaptureLogs -TimeoutSec 60 -RunLabel tranche5_scene63_observer
+.\run_godot.ps1 -Scene res://scenes/66_public_lifecycle_verify.tscn -CaptureLogs -TimeoutSec 60 -RunLabel tranche5_scene66_lifecycle
 ```
 
-The compatibility/GPU-only run must terminate with the documented
-`expected_unsupported` verdict. Add explicit CPU-only and
-GPU-primary-with-CPU-sidecar runs if the implementation changes either path.
+Required Android deploy/run coverage over ADB, using the same launcher and
+public lifecycle scene:
 
-The corrected CPU teardown stress and new GPU teardown stress are hard gates.
-Each stress driver must invoke `run_godot.ps1` for every process, preserve each
-run's structured artifacts, require the shared harness verdict, and run enough
-fresh processes to exercise teardown interleavings. The GPU stress must use a
-real renderer and a windowed run where the exercised path requires it.
+```powershell
+.\run_godot.ps1 -RunPlatform android -Scene res://scenes/66_public_lifecycle_verify.tscn -CaptureLogs -TimeoutSec 90 -RunLabel tranche5_scene66_lifecycle_android
+```
 
-Run a bounded Scene 870 mobile-renderer windowed soak if the changed display or
-materialization path is exercised there. Windowed runs require approved
-unsandboxed execution.
+Finally run `git diff --check`, inspect Godot public binding changes, and verify
+the `thirdparty/godot-cpp` gitlink and working HEAD remain unchanged.
 
-If an Android device is configured, run Scene 568 through the same launcher for
-runtime-default and GPU-only/mobile postures. If no device is available, report
-that environmental limitation without substituting a host run.
+### Superseded validation record
 
-Finally run `git diff --check`, inspect `src/godot` public binding changes
-explicitly, and verify both the `thirdparty/godot-cpp` gitlink and working HEAD.
+The following validation completed on the authorized Windows/Android matrix on
+2026-07-19, but the later repeated-run failure reopened the tranche and
+invalidated its completion claim:
 
-### Validation record
+* the MinGW maintainer-tools build, Windows GDExtension build, and Android
+  arm64 NDK build passed; every build used `godot_cpp=external`, the Windows
+  builds used `use_mingw=yes mingw_prefix=/c/Compilers/mingw64`, and the
+  Android build used the configured Windows SDK/NDK paths;
+* the maintainer build emitted no first-party implicit-fallthrough or abandoned
+  camera-fact-helper warning covered by this tranche; remaining reported
+  warnings were third-party godot-cpp/Godot macro-expansion warnings outside
+  this scope;
+* the native floor passed: liveness self-supervision, provider compliance
+  41/41, Synthetic-only provider support, Core spine 37/37, Core result path,
+  Core result byte-budget stress, Godot result conversion, Synthetic timeline,
+  phase-3 snapshot, restart boundary, and all 23 verification cases;
+* the new `native_object_type_diagnostics` case passed and classified all six
+  known native-object types, including explicit non-topology resource counts;
+* acquisition-timing negative coverage rejected invalid clock-domain,
+  reference-event, and comparability enum values while existing zero-mark and
+  absence coverage remained passing;
+* Scenes 60, 61, 62, 63, and 66 each passed through `run_godot.ps1`; captured
+  metadata recorded exactly one `status=ok exit_code=0 reason=pass` harness
+  verdict for each run and each process returned zero;
+* direct Windows liveness invocation emitted its stale-task diagnostic before
+  `PASS core_thread_liveness_watchdog_verify ...`, observed the expected child
+  abort, and returned zero;
+* `git diff --check` passed, no Godot public binding addition/removal was
+  detected, repository HEAD remained
+  `d87f183b8255906a80caa1a267de9f59dcf20ae4`, and the godot-cpp gitlink,
+  submodule HEAD, and clean submodule worktree all remained at
+  `dcfab8de26e62c17b0f06c796125a63b1e437569`.
 
-Completed on 2026-07-18:
+This repository's configured local verification matrix is Windows host
+execution plus Android build/deploy/run over ADB. Linux, WSL, and macOS are not
+available and are not completion gates. Platform-independent code remains
+portable by design and source review, without claiming runtime validation on an
+environment that was not exercised. The required Tranche 5 gates must be rerun
+before the tranche can return to complete status.
 
-* the MinGW maintainer, Windows GDExtension, and Android arm64 builds passed;
-  every build used `godot_cpp=external`, and the Windows builds used
-  `use_mingw=yes mingw_prefix=/c/Compilers/mingw64`;
-* the complete native floor passed: provider compliance 41/41, Synthetic-only
-  provider support, Core spine 37/37, Core result path, Core result byte-budget
-  stress, and restart-boundary verification;
-* the new deterministic runtime-ops lease verifier passed, including
-  clear-versus-call and replacement-generation races;
-* focused provider verification passed for live GPU-backing create, recreate,
-  failed update/retry, downgrade, release, and balanced native lifecycle truth;
-* the Windows Godot matrix passed for Scene 70 result access and Scene 568
-  runtime-default, CPU-only, GPU-only/mobile, and
-  GPU-primary-with-CPU-sidecar postures; GPU-only/compatibility produced the
-  required `expected_unsupported` verdict;
-* the Scene 870 windowed mobile-renderer `to_image()` soak passed;
-* the authoritative GPU teardown stress passed 25/25 fresh windowed/mobile
-  processes, with artifacts under
-  `tests/cambang_gde/run-logs/tranche4_gpu_teardown_authoritative`;
-* the authoritative CPU teardown stress passed 25/25 fresh processes, with
-  artifacts under
-  `tests/cambang_gde/run-logs/tranche4_cpu_teardown_authoritative`;
-* all three PowerShell launch/stress drivers parsed successfully; a final
-  Scene 70 run passed through the hardened launcher, and a deliberate
-  one-second probe returned the expected timeout classification in 1.66 s;
-* Android device Scene 568 passed in runtime-default and GPU-only/mobile
-  postures on the connected Samsung SM-G986U1;
-* `git diff --check` passed, inspection found no Godot public binding change,
-  and the `thirdparty/godot-cpp` gitlink, working HEAD, and submodule worktree
-  all remained at `dcfab8de26e62c17b0f06c796125a63b1e437569` with no submodule
-  modification.
+### Revalidation after reopening
 
-Final sign-off was subsequently reopened after the pre-existing core-thread
-liveness death test exposed that truthful synchronous-command waiting could
-prevent the same caller from polling the watchdog. The synchronous wait now
-polls the liveness policy after crossing its side-effect boundary, without
-weakening truthful completion. The maintainer, Windows MinGW, and Android arm64
-builds passed with `godot_cpp=external`; the complete native regression floor
-and runtime-ops verifier passed; and the rebuilt Windows extension passed Scene
-70 through `run_godot.ps1`.
+Completed on 2026-07-19 after the verifier-convergence correction:
 
-The verifier was then made self-supervising so normal direct invocation owns
-the bounded child classification and repository-standard terminal summary. It
-was rebuilt with the required external/MinGW settings; direct invocation
-observed the stale diagnostic and expected abort, ended with `PASS`, and
-returned zero. An invalid-argument probe ended with `FAIL` and returned one.
-The external PowerShell verdict driver was removed rather than retained as
-duplicate test authority.
+* the MinGW maintainer-tools build, Windows GDExtension build, and Android
+  arm64 NDK build passed with `godot_cpp=external`; Windows used
+  `use_mingw=yes mingw_prefix=/c/Compilers/mingw64`, and Android used the
+  configured SDK/NDK paths;
+* `redundant_stop` and `close_while_streaming` each passed 500/500 with the
+  Synthetic provider and 50/50 with the Stub provider after waiting on the
+  existing bounded acquisition-session realization predicate;
+* the complete native floor passed: liveness self-supervision, provider
+  compliance 41/41, Synthetic-only provider support, Core spine 37/37, Core
+  result path, Core result byte-budget stress, Godot result conversion,
+  Synthetic timeline, phase-3 snapshot, restart boundary, and all 23
+  verification cases;
+* Windows Scenes 60, 61, 62, 63, and 66 each passed through
+  `run_godot.ps1` with `VERDICT: OK` and exit zero;
+* Android Scene 66 passed after export, ADB deployment, and on-device execution
+  through `run_godot.ps1`, with `VERDICT: OK` and exit zero;
+* `git diff --check` passed, no Godot public binding change was detected,
+  repository HEAD remained `d87f183b8255906a80caa1a267de9f59dcf20ae4`,
+  and the godot-cpp gitlink, submodule HEAD, and clean submodule worktree all
+  remained at `dcfab8de26e62c17b0f06c796125a63b1e437569`.
 
-All required sign-off validation now passes. Existing warnings remain confined
-to the previously recorded Core fallthrough/unused helpers, verifier switch
-coverage, and godot-cpp/macro-facing compiler surface.
+All required Tranche 5 gates in the authorized matrix now pass.

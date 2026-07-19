@@ -4830,7 +4830,7 @@ void CoreRuntime::on_core_timer_tick() {
         }
         set_phase(ShutdownPhase::DESTROY_STREAMS);
         shutdown_wait_ticks_ = 0;
-        // fallthrough
+        [[fallthrough]];
       }
 
       case ShutdownPhase::DESTROY_STREAMS: {
@@ -4872,7 +4872,7 @@ void CoreRuntime::on_core_timer_tick() {
         }
         set_phase(ShutdownPhase::CLOSE_DEVICES);
         shutdown_wait_ticks_ = 0;
-        // fallthrough
+        [[fallthrough]];
       }
 
       case ShutdownPhase::CLOSE_DEVICES: {
@@ -4897,7 +4897,7 @@ void CoreRuntime::on_core_timer_tick() {
         }
         set_phase(ShutdownPhase::PROVIDER_SHUTDOWN);
         shutdown_wait_ticks_ = 0;
-        // fallthrough
+        [[fallthrough]];
       }
 
       case ShutdownPhase::PROVIDER_SHUTDOWN: {
@@ -4923,7 +4923,7 @@ void CoreRuntime::on_core_timer_tick() {
         (void)global_resource_aggregate_telemetry().retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
         set_phase(ShutdownPhase::FINAL_PUBLISH);
         shutdown_wait_ticks_ = 0;
-        // fallthrough
+        [[fallthrough]];
       }
 
       case ShutdownPhase::FINAL_PUBLISH: {
@@ -4937,7 +4937,7 @@ void CoreRuntime::on_core_timer_tick() {
 
         set_phase(ShutdownPhase::CLEAR_DESTROYED_RETAINED_NATIVE_OBJECTS);
         shutdown_wait_ticks_ = 0;
-        // fallthrough
+        [[fallthrough]];
       }
 
       case ShutdownPhase::CLEAR_DESTROYED_RETAINED_NATIVE_OBJECTS: {
@@ -4948,7 +4948,7 @@ void CoreRuntime::on_core_timer_tick() {
         global_resource_aggregate_telemetry().clear();
         set_phase(ShutdownPhase::EXIT);
         shutdown_wait_ticks_ = 0;
-        // fallthrough
+        [[fallthrough]];
       }
 
       case ShutdownPhase::EXIT: {

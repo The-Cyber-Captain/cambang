@@ -255,6 +255,24 @@ void verify_camera_fact_types() {
       ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
       ImageAcquisitionReferenceEvent::EXPOSURE_MIDPOINT,
       ImageAcquisitionComparability::SAME_DEVICE));
+  assert(!ImageAcquisitionTiming::create(
+      0,
+      *tick_period,
+      static_cast<ImageAcquisitionClockDomain>(std::numeric_limits<uint8_t>::max()),
+      ImageAcquisitionReferenceEvent::EXPOSURE_MIDPOINT,
+      ImageAcquisitionComparability::SAME_DEVICE));
+  assert(!ImageAcquisitionTiming::create(
+      0,
+      *tick_period,
+      ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+      static_cast<ImageAcquisitionReferenceEvent>(std::numeric_limits<uint8_t>::max()),
+      ImageAcquisitionComparability::SAME_DEVICE));
+  assert(!ImageAcquisitionTiming::create(
+      0,
+      *tick_period,
+      ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+      ImageAcquisitionReferenceEvent::EXPOSURE_MIDPOINT,
+      static_cast<ImageAcquisitionComparability>(std::numeric_limits<uint8_t>::max())));
   const auto max_checked_mark = ImageAcquisitionTiming::checked_mark_from_unsigned(
       static_cast<uint64_t>(std::numeric_limits<int64_t>::max()));
   assert(max_checked_mark && *max_checked_mark == std::numeric_limits<int64_t>::max());

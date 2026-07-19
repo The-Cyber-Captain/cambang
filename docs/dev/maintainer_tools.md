@@ -35,6 +35,7 @@ Maintainer tools fall into three broad categories.
 | Tool / asset | Purpose | Category |
 |---|---|---|
 | `core_spine_smoke` | Minimal Core runtime invariant validation using the stub provider | Smoke test |
+| `core_thread_liveness_watchdog_verify` | Self-supervising death test for prompt/bounded Core-thread provider calls | Verification |
 | `synthetic_timeline_verify` | Deterministic verification of SyntheticProvider timeline behaviour and Core registry truth | Verification |
 | `phase3_snapshot_verify` | Focused verification for snapshot/native-object/publication semantics | Verification |
 | `restart_boundary_verify` | Deterministic verification of the CamBANGServer stop/start boundary contract | Verification |
@@ -71,8 +72,15 @@ Verification tools should:
 
 - be deterministic
 - avoid platform hardware dependencies where possible
-- produce a clear pass / fail result
+- emit diagnostics first and a final summary whose first token is `PASS` or
+  `FAIL`
+- return zero exactly when that final summary is `PASS`, and nonzero when it is
+  `FAIL`
 - run quickly
+
+The final summary belongs to the executable itself. A shell wrapper may add
+transport or artifact handling, but must not infer success from a partial log
+or supply a missing verdict on the verifier's behalf.
 
 ### Verification case terminology (maintainer tooling)
 
@@ -608,10 +616,40 @@ step 1 OK
 step 2 OK
 step 3 OK
 step 4 OK
-OK: restart_boundary_verify passed
+PASS restart_boundary_verify
 ```
 
 Any failure indicates a regression in Godot-boundary snapshot exposure.
+
+---
+
+## 7.1 `core_thread_liveness_watchdog_verify`
+
+**Category:** Verification tool
+
+### Purpose
+
+`core_thread_liveness_watchdog_verify` is a self-supervising death test for the
+documented prompt/bounded provider-call contract. Its private child mode wedges
+one Core-thread provider call deliberately; the normal invocation supervises
+that child, requires the stale-task diagnostic and expected abnormal child
+termination within a fixed bound, and then emits its own final verdict.
+
+### Usage
+
+```text
+./out/core_thread_liveness_watchdog_verify.exe
+```
+
+Expected terminal summary:
+
+```text
+PASS core_thread_liveness_watchdog_verify stale_task_log=true expected_abort=true exit_code=<platform-specific>
+```
+
+The diagnostic explaining the stale task appears before this final line. Run
+the executable directly; the internal child argument is implementation detail,
+not a maintainer workflow.
 
 ---
 
@@ -655,7 +693,10 @@ Godot scenes verify:
 
 ## Output Discipline
 
-Scenes must flush output before quitting so that PASS/FAIL messages are reliably captured by automated runs.
+Automated scenes must emit exactly one shared `[CamBANG][HarnessVerdict]` record
+before quitting. Human-readable `OK: ... PASS` / `FAIL: ...` lines may remain,
+but `run_godot.ps1` classifies the structured verdict and matching process exit
+status rather than scene-specific text.
 
 
 ## Scene 70 maintainer-teaching note (`stream_inspection_live`)

@@ -518,7 +518,10 @@ class ImageAcquisitionTiming {
       ImageAcquisitionClockDomain clock_domain,
       ImageAcquisitionReferenceEvent reference_event,
       ImageAcquisitionComparability comparability) {
-    if (acquisition_mark < 0) {
+    if (acquisition_mark < 0 ||
+        clock_domain > ImageAcquisitionClockDomain::DOMAIN_OPAQUE ||
+        reference_event > ImageAcquisitionReferenceEvent::UNKNOWN ||
+        comparability > ImageAcquisitionComparability::ORDERING_ONLY) {
       return std::nullopt;
     }
     return ImageAcquisitionTiming(

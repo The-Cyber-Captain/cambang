@@ -772,7 +772,7 @@ int main(int argc, char** argv) {
   }
   if (parse_result != ParseOptsResult::Ok) {
     std::fprintf(stdout,
-                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=invalid_arguments)\n",
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=invalid_arguments\n",
                  opt.verify_case.c_str());
     std::fflush(stdout);
     return 2;
@@ -782,7 +782,7 @@ int main(int argc, char** argv) {
     std::cerr << "FAIL: verify_case=catchup_stress_uncapped requires "
                  "CAMBANG_DEV_SYNTH_CATCHUP_CAP to be unset\n";
     std::fprintf(stdout,
-                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=catchup_cap_env_set)\n",
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=catchup_cap_env_set\n",
                  opt.verify_case.c_str());
     std::fflush(stdout);
     return 1;
@@ -791,7 +791,7 @@ int main(int argc, char** argv) {
     std::cerr << "Unknown verification case: " << opt.verify_case << "\n";
     usage(argv[0]);
     std::fprintf(stdout,
-                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=unknown_verify_case)\n",
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=unknown_verify_case\n",
                  opt.verify_case.c_str());
     std::fflush(stdout);
     return 2;
@@ -828,7 +828,7 @@ int main(int argc, char** argv) {
     replay_quiet_failure();
     std::cerr << "FAIL: core runtime did not start\n";
     std::fprintf(stdout,
-                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=core_runtime_start_failed)\n",
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=core_runtime_start_failed\n",
                  opt.verify_case.c_str());
     std::fflush(stdout);
     return 2;
@@ -841,7 +841,7 @@ int main(int argc, char** argv) {
     std::cerr << "FAIL: core runtime did not become LIVE before verifier setup\n";
     rt.stop();
     std::fprintf(stdout,
-                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=core_runtime_not_live)\n",
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=core_runtime_not_live\n",
                  opt.verify_case.c_str());
     std::fflush(stdout);
     return 2;
@@ -867,7 +867,7 @@ int main(int argc, char** argv) {
     std::cerr << "FAIL: synthetic provider initialize failed\n";
     rt.stop();
     std::fprintf(stdout,
-                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=synthetic_provider_initialize_failed)\n",
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=synthetic_provider_initialize_failed\n",
                  opt.verify_case.c_str());
     std::fflush(stdout);
     return 2;
@@ -887,7 +887,7 @@ int main(int argc, char** argv) {
     std::cerr << "FAIL: enumerate_endpoints failed\n";
     stop_attached_runtime();
     std::fprintf(stdout,
-                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=enumerate_endpoints_failed)\n",
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=enumerate_endpoints_failed\n",
                  opt.verify_case.c_str());
     std::fflush(stdout);
     return 2;
@@ -900,7 +900,7 @@ int main(int argc, char** argv) {
               << static_cast<int>(retain_identity) << "\n";
     stop_attached_runtime();
     std::fprintf(stdout,
-                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=retain_device_identity_failed)\n",
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=retain_device_identity_failed\n",
                  opt.verify_case.c_str());
     std::fflush(stdout);
     return 2;
@@ -911,7 +911,7 @@ int main(int argc, char** argv) {
     std::cerr << "FAIL: open_device failed\n";
     stop_attached_runtime();
     std::fprintf(stdout,
-                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=open_device_failed)\n",
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=open_device_failed\n",
                  opt.verify_case.c_str());
     std::fflush(stdout);
     return 2;
@@ -928,7 +928,7 @@ int main(int argc, char** argv) {
     std::cerr << "FAIL: invalid fps period\n";
     stop_attached_runtime();
     std::fprintf(stdout,
-                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=invalid_fps_period)\n",
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=invalid_fps_period\n",
                  opt.verify_case.c_str());
     std::fflush(stdout);
     return 2;
@@ -957,13 +957,13 @@ int main(int argc, char** argv) {
 
   if (r == 0) {
     std::fprintf(stdout,
-                 "OK: synthetic_timeline_verify passed (verify_case=%s)\n",
+                 "PASS synthetic_timeline_verify verify_case=%s\n",
                  opt.verify_case.c_str());
     std::fflush(stdout);
   } else {
     replay_quiet_failure();
     std::fprintf(stdout,
-                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=%s)\n",
+                 "FAIL synthetic_timeline_verify verify_case=%s reason=%s\n",
                  opt.verify_case.c_str(),
                  failure_reason.c_str());
     std::fflush(stdout);

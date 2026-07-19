@@ -3,9 +3,11 @@ extends Node
 const TIMEOUT_MS := 7000
 const FIRST_PUBLISH_TIMEOUT_MS := 2000
 const OBSERVATION_WINDOW_MS := 1200
+const SCENE_LABEL := "61_tick_bounded_coalescing_abuse"
 
 var _done := false
 var _quit_requested := false
+var _terminal_verdict_emitted := false
 
 var _timer: Timer
 var _first_publish_timer: Timer
@@ -42,17 +44,17 @@ func _ready() -> void:
 		# CamBANGServer.TIMELINE_RECONCILIATION_STRICT
 	)
 	if start_err != OK:
-		_fail("FAIL: synthetic timeline start rejected with error %d" % start_err)
+		_error("ERROR: synthetic timeline start rejected with error %d" % start_err, "runtime_start_rejected")
 		return
 
 	var stage_err := CamBANGServer.select_builtin_scenario("publication_coalescing")
 	if stage_err != OK:
-		_fail("FAIL: unable to stage publication_coalescing scenario")
+		_error("ERROR: unable to stage publication_coalescing scenario", "scenario_stage_rejected")
 		return
 
 	var scenario_start_err := CamBANGServer.start_scenario()
 	if scenario_start_err != OK:
-		_fail("FAIL: unable to start publication_coalescing scenario")
+		_error("ERROR: unable to start publication_coalescing scenario", "scenario_start_rejected")
 		return
 
 	print("RUN: godot tick-bounded coalescing abuse")
@@ -96,7 +98,7 @@ func _process(_delta: float) -> void:
 
 
 func _on_timeout() -> void:
-	_fail_with_context("FAIL: tick-bounded coalescing abuse timed out before reaching deterministic completion")
+	_fail_with_context("FAIL: tick-bounded coalescing abuse timed out before reaching deterministic completion", "timeout")
 
 
 func _on_first_publish_timeout() -> void:
@@ -104,7 +106,7 @@ func _on_first_publish_timeout() -> void:
 		return
 	if _publish_count > 0:
 		return
-	_fail_with_context("FAIL: no state_published callback observed during startup window")
+	_fail_with_context("FAIL: no state_published callback observed during startup window", "timeout")
 
 
 func _on_observation_timeout() -> void:
@@ -249,23 +251,47 @@ func _ok(msg: String) -> void:
 	if _done:
 		return
 	_done = true
+	_emit_harness_verdict("ok", 0, "pass")
 	print(msg)
 	_cleanup_and_quit(0)
 
 
-func _fail(msg: String) -> void:
+func _fail(msg: String, reason: String = "assertion_failed") -> void:
 	if _done:
 		return
 	_done = true
+	_emit_harness_verdict("fail", 1, reason)
 	push_error(msg)
 	print(msg)
 	_cleanup_and_quit(1)
 
 
-func _fail_with_context(msg: String) -> void:
+func _error(msg: String, reason: String) -> void:
+	if _done:
+		return
+	_done = true
+	_emit_harness_verdict("error", 1, reason)
+	push_error(msg)
+	print(msg)
+	_cleanup_and_quit(1)
+
+
+func _fail_with_context(msg: String, reason: String = "assertion_failed") -> void:
 	if _last_debug_summary != "":
 		print("INFO: %s" % _last_debug_summary)
-	_fail(msg)
+	_fail(msg, reason)
+
+
+func _emit_harness_verdict(status: String, exit_code: int, reason: String) -> void:
+	if _terminal_verdict_emitted:
+		return
+	_terminal_verdict_emitted = true
+	print("[CamBANG][HarnessVerdict] scene=%s status=%s exit_code=%d reason=%s" % [
+		SCENE_LABEL,
+		status,
+		exit_code,
+		reason,
+	])
 
 
 func _cleanup_and_quit(code: int) -> void:

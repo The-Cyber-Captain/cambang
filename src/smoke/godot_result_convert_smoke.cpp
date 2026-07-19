@@ -133,10 +133,10 @@ int main() {
     verify_absence_case();
     verify_timing_case(0);
     verify_timing_case(std::numeric_limits<int64_t>::max());
-    std::cout << "godot_result_convert_smoke PASS\n";
+    std::cout << "PASS godot_result_convert_smoke\n";
     return EXIT_SUCCESS;
   } catch (const std::exception& ex) {
-    std::cerr << "godot_result_convert_smoke FAIL: " << ex.what() << "\n";
+    std::cerr << "FAIL godot_result_convert_smoke reason=" << ex.what() << "\n";
     return EXIT_FAILURE;
   }
 }

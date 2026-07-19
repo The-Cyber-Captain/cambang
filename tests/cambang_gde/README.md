@@ -72,18 +72,22 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
 
 - `scenes/60_restart_boundary_abuse.tscn`
   - Verifies stop/restart NIL gating and first post-restart baseline counters.
+  - Authoritative terminal verdict: `[CamBANG][HarnessVerdict] scene=60_restart_boundary_abuse status=<ok|fail> exit_code=<n> reason=<token>`
   - Expected pass string: `OK: godot restart boundary abuse PASS`
 - `scenes/61_tick_bounded_coalescing_abuse.tscn`
   - Verifies max one `state_published` per Godot tick, contiguous `version`, and
     `topology_version` updates only on snapshot-observed topology changes.
+  - Authoritative terminal verdict: `[CamBANG][HarnessVerdict] scene=61_tick_bounded_coalescing_abuse status=<ok|fail|error> exit_code=<n> reason=<token>`
   - Expected pass string: `OK: godot tick-bounded coalescing abuse PASS`
 - `scenes/62_snapshot_polling_immutability_abuse.tscn`
   - Verifies per-frame polling is safe, old snapshot references remain readable,
     and cached old snapshots do not mutate after newer publishes.
+  - Authoritative terminal verdict: `[CamBANG][HarnessVerdict] scene=62_snapshot_polling_immutability_abuse status=<ok|fail|error> exit_code=<n> reason=<token>`
   - Expected pass string: `OK: godot snapshot polling/immutability abuse PASS`
 - `scenes/63_snapshot_observer_minimal.tscn`
   - Minimal snapshot-only observer diagnostics (`gen/version/topology_version`,
     device/stream counts, frame counters, stream error count).
+  - Authoritative terminal verdict: `[CamBANG][HarnessVerdict] scene=63_snapshot_observer_minimal status=<ok|fail|error> exit_code=<n> reason=<token>`
   - Expected pass string: `OK: godot snapshot observer minimal PASS`
 - `scenes/65_public_boundary_verify.tscn`
   - Verifies Godot public-boundary semantics: NIL-before-baseline, baseline-first publish,
@@ -93,6 +97,7 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - Expected pass string: `OK: godot public boundary verify PASS`
 - `scenes/66_public_lifecycle_verify.tscn`
   - Self-terminating suite verifier for Godot public lifecycle semantics.
+  - Authoritative terminal verdict: `[CamBANG][HarnessVerdict] scene=66_public_lifecycle_verify status=<ok|fail|error> exit_code=<n> reason=<token>`
   - Expected pass string: `OK: godot public lifecycle verify PASS`
 - `scenes/67_status_panel_scenario_runtime.tscn`
   - Manual/status-panel runtime observation scene: starts synthetic timeline mode,
@@ -162,19 +167,16 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
 
 ## Running
 
-Run from this directory (`tests/cambang_gde`) using Godot headless:
+Run automated verification from this directory (`tests/cambang_gde`) through
+the repository launcher so process status and the harness verdict are checked
+together:
 
-```bash
-godot4 --headless --path . --scene res://scenes/60_restart_boundary_abuse.tscn --quit-after 10
-godot4 --headless --path . --scene res://scenes/61_tick_bounded_coalescing_abuse.tscn --quit-after 1000
-godot4 --headless --path . --scene res://scenes/62_snapshot_polling_immutability_abuse.tscn --quit-after 1000
-godot4 --headless --path . --scene res://scenes/63_snapshot_observer_minimal.tscn --quit-after 10
-godot4 --headless --path . --scene res://scenes/65_public_boundary_verify.tscn --quit-after 10
-godot4 --headless --path . --scene res://scenes/66_public_lifecycle_verify.tscn --quit-after 1000
-godot4 --headless --path . --scene res://scenes/67_status_panel_scenario_runtime.tscn --quit-after 10
-godot4 --headless --path . --scene res://scenes/70_result_retrieval_verification.tscn --quit-after 20
-godot4 --headless --path . --scene res://scenes/73_rig_capture_result_set_verification.tscn --quit-after 20
-godot4 --headless --path . --scene res://scenes/568_backing_plan_evaluation_verify.tscn --quit-after 1000
+```powershell
+.\run_godot.ps1 -Scene res://scenes/60_restart_boundary_abuse.tscn -CaptureLogs -TimeoutSec 60 -RunLabel scene60_restart
+.\run_godot.ps1 -Scene res://scenes/61_tick_bounded_coalescing_abuse.tscn -CaptureLogs -TimeoutSec 60 -RunLabel scene61_coalescing
+.\run_godot.ps1 -Scene res://scenes/62_snapshot_polling_immutability_abuse.tscn -CaptureLogs -TimeoutSec 60 -RunLabel scene62_snapshot_polling
+.\run_godot.ps1 -Scene res://scenes/63_snapshot_observer_minimal.tscn -CaptureLogs -TimeoutSec 60 -RunLabel scene63_observer
+.\run_godot.ps1 -Scene res://scenes/66_public_lifecycle_verify.tscn -CaptureLogs -TimeoutSec 60 -RunLabel scene66_lifecycle
 ```
 
 PowerShell helper for local/Codex runs of harness-verdict scenes:
@@ -294,11 +296,11 @@ Notes:
   and then emit an explicit PASS/FAIL verdict based on the Godot-visible publishes they observed.
 - For bounded-observation verifiers (`61`, `62`), either omit `--quit-after` or set a generously
   large value such as `--quit-after 1000`.
-- `60_restart_boundary_abuse`, `61_tick_bounded_coalescing_abuse`, `62_snapshot_polling_immutability_abuse`,
-  `63_snapshot_observer_minimal`, and `66_public_lifecycle_verify`
-  are older/non-protocol scenes unless separately migrated.
-  Their terminal `OK: ... PASS` / `FAIL: ...` lines are useful for direct Godot/manual checks,
-  but they are not `run_godot.ps1` classification verdicts.
+- `60_restart_boundary_abuse`, `61_tick_bounded_coalescing_abuse`,
+  `62_snapshot_polling_immutability_abuse`, `63_snapshot_observer_minimal`, and
+  `66_public_lifecycle_verify` use the shared harness-verdict protocol for
+  `run_godot.ps1` classification while retaining their direct human-readable
+  `OK: ... PASS` / `FAIL: ...` lines.
 - Scene 70 is migrated to the shared harness-verdict protocol for `run_godot.ps1`
   classification while preserving its direct `OK: result_retrieval_verification passed`
   completion line.

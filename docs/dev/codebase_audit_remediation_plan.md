@@ -51,7 +51,12 @@ worker inputs, exception containment, and deterministic shutdown/restart.
 
 Status: complete; validated on 2026-07-18, not yet committed.
 
-Authority: `docs/dev/current_tranche.md`.
+Completed record:
+`docs/dev/completed_tranches/tranche_4_render_and_gpu_backing_seams.md`.
+
+The detailed findings and required-work language below preserve the activation
+baseline for traceability. Words such as "current" describe the source at
+Tranche 4 activation, not the remediated source after its validated completion.
 
 This is the originally planned Render and GPU backing seams tranche. It follows
 Tranche 3 because capture workers create or retain CPU/GPU payload ownership
@@ -150,19 +155,40 @@ Expected primary files when activated:
   ownership/fallback contract requires clarification;
 * `docs/dev/upstream_discrepancies.md`.
 
-## Recorded follow-up debt
+### Tranche 5 — Verifier, harness, and warning-truth hygiene
 
-The legacy `60_restart_boundary_abuse` scene prints its own pass marker but does
-not emit `[CamBANG][HarnessVerdict]`, so `run_godot.ps1` classifies it as
-`missing_harness_verdict`. This is test-harness debt, not a substitute for the
-native restart verifier and not part of Tranche 3. Sequence it with later
-harness-maintenance work unless a focused active-tranche test directly requires
-the shared helper.
+Status: complete after correction and full revalidation on the authorized
+Windows/Android matrix on 2026-07-19, not yet committed.
 
-The MinGW maintainer build also reports incomplete `NativeObjectType` switches
-in `src/smoke/verify_case/verify_case_catalog.cpp`: `FrameBufferLease` and
-`GpuBacking` are not handled by `native_type_name()` or
-`summarize_native_shape()`. This is verifier hygiene rather than Synthetic
-capture-executor correctness. Preserve it for the later verifier/audit-hygiene
-tranche, unless an earlier tranche changes those native-object classes and must
-make the catalog exhaustive as part of that work.
+Authority: `docs/dev/current_tranche.md`.
+
+Scope: migrate the five maintained legacy Godot verification scenes (60, 61,
+62, 63, and 66) to authoritative terminal harness verdicts; make native-object
+verification exhaustive for `FrameBufferLease` and `GpuBacking`; resolve
+first-party fallthrough and abandoned-validator warnings without changing
+shutdown behavior or discarding malformed fact truth; and directly validate the
+self-supervising liveness verifier on Windows.
+
+This tranche absorbs the previously recorded Scene 60 and
+`NativeObjectType`-switch debt. Source inspection expanded Scene 60's item to
+all five scenes that `tests/cambang_gde/README.md` explicitly classifies as
+older/non-protocol. It also established that the unused acquisition-timing
+validator cannot be deleted mechanically: acquisition timing now travels on
+`FrameView`, and its enum-domain validation boundary must be proved first.
+
+No Godot public API change, runner-side regex waiver, shutdown-sequencing
+change, generated-output edit, or godot-cpp change is authorized.
+
+## Queued after Tranche 5
+
+The advisory static-analysis sequence in `docs/dev/static_analysis.md` remains
+required audit follow-up, but must stay in separate narrow changes after the
+focused verifier/warning tranche:
+
+1. add an advisory `.clang-tidy` configuration;
+2. add a changed-file clang-tidy helper;
+3. add a CamBANG-specific advisory smell scanner;
+4. generate a dated baseline report and decide which checks, if any, are
+   suitable as changed-code gates.
+
+These items are ordered backlog, not permission to start them during Tranche 5.

@@ -178,6 +178,14 @@ Manual local validation remains authoritative for:
 
 Cloud or sandbox validation is useful, but it does not prove those paths unless they were actually exercised.
 
+The configured local verification matrix is Windows host execution plus Android
+build/deploy/run over ADB. This machine has no Linux, WSL, or macOS environment.
+Do not invent a POSIX or macOS hard completion gate unless the maintainer
+explicitly supplies and authorizes such an external environment. Keep
+platform-independent code portable by design and source review, but distinguish
+that from runtime validation actually performed here. Platform-backed provider
+verification remains specific to the platform implementation exercised.
+
 ## Build and generated files
 
 Avoid editing generated outputs or build artefacts.

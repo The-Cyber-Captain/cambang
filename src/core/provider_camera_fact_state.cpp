@@ -26,15 +26,6 @@ bool valid(SensorOrientationDegrees value) noexcept {
 bool valid(DistortionImageState value) noexcept {
   return value <= DistortionImageState::UNKNOWN;
 }
-bool valid(ImageAcquisitionClockDomain value) noexcept {
-  return value <= ImageAcquisitionClockDomain::DOMAIN_OPAQUE;
-}
-bool valid(ImageAcquisitionReferenceEvent value) noexcept {
-  return value <= ImageAcquisitionReferenceEvent::UNKNOWN;
-}
-bool valid(ImageAcquisitionComparability value) noexcept {
-  return value <= ImageAcquisitionComparability::ORDERING_ONLY;
-}
 bool valid(ImageRotationDegrees value) noexcept {
   return value == ImageRotationDegrees::DEGREES_0 ||
          value == ImageRotationDegrees::DEGREES_90 ||
@@ -62,12 +53,6 @@ bool valid_distortion(const Distortion& value) noexcept {
       value);
 }
 
-bool valid_acquisition_timing(const ImageAcquisitionTiming& value) noexcept {
-  return value.acquisition_mark() >= 0 && value.tick_period().numerator_ns() > 0 &&
-         value.tick_period().denominator() > 0 && valid(value.clock_domain()) &&
-         valid(value.reference_event()) && valid(value.comparability());
-}
-
 bool valid_focus_state(const FocusState& value) noexcept {
   if (value.valueless_by_exception()) {
     return false;
@@ -85,11 +70,6 @@ bool valid_focus_state(const FocusState& value) noexcept {
 
 bool valid_realized_image_transform(const RealizedImageTransform& value) noexcept {
   return valid(value.rotation);
-}
-
-bool valid_capture_image(const CaptureImageFacts& facts) noexcept {
-  return valid_sourced(facts.focus_state, valid_focus_state) &&
-         valid_sourced(facts.realized_image_transform, valid_realized_image_transform);
 }
 
 bool valid_static(const CameraStaticFacts& facts) noexcept {

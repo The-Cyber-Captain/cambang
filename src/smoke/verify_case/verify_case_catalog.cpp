@@ -156,6 +156,8 @@ const char* native_type_name(uint32_t type) {
     case NativeObjectType::Device: return "device";
     case NativeObjectType::AcquisitionSession: return "acquisition_session";
     case NativeObjectType::Stream: return "stream";
+    case NativeObjectType::FrameBufferLease: return "framebuffer_lease";
+    case NativeObjectType::GpuBacking: return "gpu_backing";
   }
   return "unknown";
 }
@@ -233,6 +235,9 @@ struct NativeShapeSummary {
   size_t current_generation_device_count = 0;
   size_t current_generation_acquisition_session_count = 0;
   size_t current_generation_stream_count = 0;
+  // Resource records are diagnostic inventory, not topology descendants.
+  size_t current_generation_framebuffer_lease_count = 0;
+  size_t current_generation_gpu_backing_count = 0;
   size_t stale_prior_generation_count = 0;
 };
 
@@ -248,6 +253,8 @@ NativeShapeSummary summarize_native_shape(const CamBANGStateSnapshot& snap, uint
       case NativeObjectType::Device: ++summary.current_generation_device_count; break;
       case NativeObjectType::AcquisitionSession: ++summary.current_generation_acquisition_session_count; break;
       case NativeObjectType::Stream: ++summary.current_generation_stream_count; break;
+      case NativeObjectType::FrameBufferLease: ++summary.current_generation_framebuffer_lease_count; break;
+      case NativeObjectType::GpuBacking: ++summary.current_generation_gpu_backing_count; break;
     }
   }
   return summary;
@@ -275,6 +282,10 @@ void log_restarted_baseline_diagnostic(int step_index, const ObservedSnapshot& o
              (summary.current_generation_acquisition_session_count > 0 ? "yes" : "no"),
              " current_gen_stream_descendants_present=",
              (summary.current_generation_stream_count > 0 ? "yes" : "no"),
+             " current_gen_framebuffer_lease_resources_present=",
+             (summary.current_generation_framebuffer_lease_count > 0 ? "yes" : "no"),
+             " current_gen_gpu_backing_resources_present=",
+             (summary.current_generation_gpu_backing_count > 0 ? "yes" : "no"),
              " stale_prior_generation_native_objects_present=",
              (summary.stale_prior_generation_count > 0 ? "yes" : "no"));
 
@@ -2691,6 +2702,10 @@ int close_while_streaming(VerifyCaseProviderKind provider_kind) {
     cli::error("FAIL: ", error);
     return 1;
   }
+  if (!wait_for_settled_stream_create(h, provider_kind, error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
   h.tick();
   if (!check_step(1,
                   SnapshotExpectation{}
@@ -2926,6 +2941,10 @@ int redundant_stop(VerifyCaseProviderKind provider_kind) {
     cli::error("FAIL: ", error);
     return 1;
   }
+  if (!wait_for_settled_stream_create(h, provider_kind, error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
   h.tick();
   if (!check_step(1,
                   SnapshotExpectation{}
@@ -3063,6 +3082,62 @@ int multi_device_topology_change(VerifyCaseProviderKind provider_kind) {
   return 0;
 }
 
+int native_object_type_diagnostics() {
+  struct ExpectedName {
+    NativeObjectType type;
+    std::string_view name;
+  };
+  const ExpectedName expected_names[] = {
+      {NativeObjectType::Provider, "provider"},
+      {NativeObjectType::Device, "device"},
+      {NativeObjectType::AcquisitionSession, "acquisition_session"},
+      {NativeObjectType::Stream, "stream"},
+      {NativeObjectType::FrameBufferLease, "framebuffer_lease"},
+      {NativeObjectType::GpuBacking, "gpu_backing"},
+  };
+
+  CamBANGStateSnapshot snapshot{};
+  uint64_t native_id = 1;
+  for (const auto& expected : expected_names) {
+    if (std::string_view(native_type_name(static_cast<uint32_t>(expected.type))) !=
+        expected.name) {
+      cli::error("FAIL: native object type diagnostic name mismatch for type=",
+                 static_cast<uint32_t>(expected.type));
+      return 1;
+    }
+    NativeObjectRecord record{};
+    record.native_id = native_id++;
+    record.type = static_cast<uint32_t>(expected.type);
+    record.creation_gen = 7;
+    snapshot.native_objects.push_back(record);
+  }
+  if (std::string_view(native_type_name(0)) != "unknown") {
+    cli::error("FAIL: unknown native object type did not retain an explicit diagnostic name");
+    return 1;
+  }
+
+  NativeObjectRecord stale_record{};
+  stale_record.native_id = native_id;
+  stale_record.type = static_cast<uint32_t>(NativeObjectType::Provider);
+  stale_record.creation_gen = 6;
+  snapshot.native_objects.push_back(stale_record);
+
+  const NativeShapeSummary summary = summarize_native_shape(snapshot, 7);
+  if (summary.current_generation_provider_count != 1 ||
+      summary.current_generation_device_count != 1 ||
+      summary.current_generation_acquisition_session_count != 1 ||
+      summary.current_generation_stream_count != 1 ||
+      summary.current_generation_framebuffer_lease_count != 1 ||
+      summary.current_generation_gpu_backing_count != 1 ||
+      summary.stale_prior_generation_count != 1) {
+    cli::error("FAIL: native object diagnostic shape did not classify every known type");
+    return 1;
+  }
+
+  cli::line("Verification case PASSED");
+  return 0;
+}
+
 } // namespace
 
 std::vector<VerifyCaseDefinition> verify_case_catalog(VerifyCaseProviderKind provider_kind,
@@ -3090,6 +3165,7 @@ std::vector<VerifyCaseDefinition> verify_case_catalog(VerifyCaseProviderKind pro
       {"provider_error_mid_stream", [provider_kind]() { return provider_error_mid_stream(provider_kind); }},
       {"redundant_stop", [provider_kind]() { return redundant_stop(provider_kind); }},
       {"multi_device_topology_change", [provider_kind]() { return multi_device_topology_change(provider_kind); }},
+      {"native_object_type_diagnostics", []() { return native_object_type_diagnostics(); }},
   };
 }
 
