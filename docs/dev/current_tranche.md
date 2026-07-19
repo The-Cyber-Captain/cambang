@@ -1,88 +1,94 @@
 # Current tranche
 
-## Tranche 7 - Truthful rig-trigger failure mapping at the Godot boundary
+## Tranche 8 - Advisory static-analysis sequence
 
-Status: active; maintainer-activated 2026-07-19.
+Status: active; maintainer-activated 2026-07-19 ("Activate the
+static-analysis sequence"). Authority for content and posture:
+`docs/dev/static_analysis.md` (the ratcheted advisory model, check
+families, smell patterns, baseline-report shape, and triage categories are
+defined there and are not restated here).
 
 ### Purpose
 
-Stop collapsing every rig-capture orchestration failure to `ERR_BUSY`.
-`CamBANGServer::trigger_rig_capture_internal_()` discards the failure
-category (`return 0` on any `!orchestration.ok`), so `CamBANGRig::
-trigger_capture()` reports a permanent configuration gap — a missing
-camera-concurrency truth for a multi-device rig — identically to ordinary
-transient busy-ness. This masked the scene 870 rig-capture regression and
-will trap every future integrator who forgets `ingest_camera_description()`.
-The device-capture path already maps its statuses to distinct errors
-(`map_try_trigger_device_capture_status()`); this tranche removes the rig
-path's asymmetry, minimally.
+Stand up the advisory static-analysis tooling that `static_analysis.md`
+prescribes, in its required order, without letting any tool finding drive
+source churn inside this tranche. Output is tooling plus a triaged baseline;
+fixes, if any are warranted, are future maintainer-activated work.
 
-### Scope
+### Ordered items (each lands as its own narrow change)
 
-1. Surface the orchestration failure category from
-   `CoreRuntime::RigTriggerOrchestrationResult` through
-   `trigger_rig_capture_internal_()` to `CamBANGRig::trigger_capture()`
-   via an internal seam change only (out-param or small struct return; the
-   public method signature is unchanged).
-2. Map exactly the two ImagingSpec admission-gate categories
-   (`ImagingSpecUnavailable`, `ImagingSpecRejected`) to
-   `godot::ERR_UNCONFIGURED`. Every other failure category keeps its
-   current `ERR_BUSY` result in this tranche.
-3. On the first rejected rig trigger per runtime session, emit one
-   `ERR_PRINT` naming the concrete failure category (preflight/admission/
-   submission enum value), so any collapse that remains is at least
-   self-describing in the log.
-4. Extend `tests/cambang_gde/scripts/73_rig_capture_result_set_verification.gd`
-   with a leading negative phase: start without ingesting the camera
-   description, trigger the multi-device rig, assert `ERR_UNCONFIGURED`,
-   stop; then continue the existing ingest-then-start flow with all current
-   assertions preserved unweakened.
-5. Reconcile documentation that describes the old behavior: CLAUDE.md's
-   rig-capture note, and `docs/architecture/godot_boundary_contract.md`
-   only if it enumerates rig-trigger return codes.
+1. **Advisory `.clang-tidy`** at repo root using `static_analysis.md`'s
+   recommended initial check families (`WarningsAsErrors: ''`). Noisy-check
+   scoping happens only after the item-4 baseline, per that document.
+2. **Changed-file helper** `tools/audit/run_clang_tidy_changed.py`:
+   resolves changed `src/` C++ files against a base ref (default
+   `origin/main...HEAD`), runs clang-tidy with the repo compile database,
+   and supports `--all -j N` for full-tree runs. Advisory: exit status
+   reflects tool execution health, never finding counts.
+3. **Smell scanner** `tools/audit/cambang_static_smells.py`: scans `src/`
+   (never `thirdparty/`, never generated output) for the smell patterns
+   listed in `static_analysis.md`, emitting its prescribed
+   file:line/smell/reason/audit-lens shape. Produces audit leads, not
+   verdicts.
+4. **Dated baseline report** at
+   `docs/dev/audit_baselines/cpp_static_analysis_baseline_2026_07_19.md`
+   from a real full-tree run of items 1-3 on this machine, using the report
+   shape and triage categories from `static_analysis.md`. Every
+   major/blocker-looking finding gets a triage category; none gets a fix
+   here.
+5. **Gate decision material only**: the report ends with a
+   checks-suitable-for-changed-code-gating recommendation. The decision
+   itself is reserved to the maintainer and is out of scope.
 
-### Non-goals / constraints
+Note on the baseline file vs. the no-record-files rule: the dated baseline
+is durable *reference* (a noise inventory later audits consult so they do
+not rediscover it), prescribed by `static_analysis.md` -- it is not a
+tranche-completion record. If the maintainer disagrees with that
+distinction, say so and item 4's content moves into the commit message
+instead.
 
-* No public API change: no new methods, signals, constants, or dictionary
-  shapes; `trigger_capture() -> Error` signature untouched. The changed
-  *values* for the two ImagingSpec categories are the maintainer-authorized
-  semantic refinement this tranche exists for.
-* No mapping changes for preflight or submission categories beyond the
-  diagnostic log (revisit only with evidence they mislead in practice).
-* No change to the fail-closed admission gate itself, Core orchestration,
-  or provider code.
-* Confirm scenes 73/870 do not assert the literal `ERR_BUSY` value before
-  changing it; do not weaken any existing assertion.
+### Constraints
+
+* No production source changes in this tranche -- no fixes, no NOLINT
+  insertions, no include reshuffling driven by findings. Findings land in
+  the baseline with a triage category only.
+* No CI wiring, no blocking gates, no `warnings_as_errors` interaction.
+* Tools must tolerate this machine's reality: MinGW g++ compile commands
+  consumed by LLVM 17 clang-tidy (flag-compatibility issues are triaged as
+  tool limitations in the baseline, not "fixed" by altering build flags).
+* Python 3 stdlib only for the helpers; no new dependencies.
+* Public API, snapshot schema, and build behavior untouched.
 
 ### Expected implementation files
 
-* `src/godot/cambang_server.h` / `cambang_server.cpp` (internal seam +
-  mapping + one-shot log);
-* `src/godot/cambang_rig.cpp`;
-* `tests/cambang_gde/scripts/73_rig_capture_result_set_verification.gd`;
-* `CLAUDE.md`; `docs/architecture/godot_boundary_contract.md` only if
-  required by item 5;
+* `.clang-tidy`;
+* `tools/audit/run_clang_tidy_changed.py`;
+* `tools/audit/cambang_static_smells.py`;
+* `docs/dev/audit_baselines/cpp_static_analysis_baseline_2026_07_19.md`;
+* `docs/dev/static_analysis.md` only if a factual command/path in it needs
+  reconciling with what was actually built;
 * this file (reset to stub on acceptance).
 
 ### Acceptance criteria
 
-* A multi-device rig trigger with no ingested camera-concurrency truth
-  returns `ERR_UNCONFIGURED` (proven by the new scene 73 negative phase),
-  and the same run's log names the failure category once.
-* All pre-existing scene 73 steps still pass unmodified in strength.
-* Genuine transient conditions still return `ERR_BUSY`.
+* `clang-tidy <file> -p .` works against the SCons-generated compile
+  database for a representative core file, and the helper reproduces that
+  for changed files and for `--all`.
+* The smell scanner reports the documented patterns over `src/` in the
+  documented output shape.
+* The baseline exists, names tool versions and commands, classifies noisy
+  vs. real-debt vs. gate-candidate checks, and leaves no major/blocker
+  finding untriaged.
+* Zero diffs under `src/` from this tranche.
 
 ### Required validation
 
 ```text
-scons use_mingw=yes mingw_prefix=/c/Compilers/mingw64
-out/core_spine_smoke.exe
-out/provider_compliance_verify.exe
+scons use_mingw=yes mingw_prefix=/c/Compilers/mingw64   # compdb refresh + build stays clean
+clang-tidy src/core/provider_callback_ingress.cpp -p .   # doc's own example file
+python tools/audit/run_clang_tidy_changed.py --all -j 8   # full-tree baseline input
+python tools/audit/cambang_static_smells.py               # full-tree smell leads
+out/core_spine_smoke.exe                                  # proves no build/source impact
 ```
 
-```powershell
-.\run_godot.ps1 -Scene res://scenes/73_rig_capture_result_set_verification.tscn -CaptureLogs -TimeoutSec 60 -RunLabel tranche7_scene73
-.\run_godot.ps1 -Scene res://scenes/65_public_boundary_verify.tscn -CaptureLogs -TimeoutSec 60 -RunLabel tranche7_scene65
-.\run_godot.ps1 -Scene res://scenes/870_to_image_soak_benchmark.tscn -CaptureLogs -TimeoutSec 180 -RunLabel tranche7_scene870
-.\run_godot.ps1 -RunPlatform android -Scene res://scenes/73_rig_capture_result_set_verification.tscn -CaptureLogs -TimeoutSec 90 -RunLabel tranche7_scene73_android
-```
+No Godot scene coverage is required: this tranche adds no runtime code.
