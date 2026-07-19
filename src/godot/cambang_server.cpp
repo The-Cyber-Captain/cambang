@@ -2752,7 +2752,14 @@ void CamBANGServer::_on_godot_tick(double delta) {
     if (ICameraProvider* prov = runtime_.attached_provider()) {
       if (auto* broker = dynamic_cast<ProviderBroker*>(prov)) {
         const uint64_t dt_ns = static_cast<uint64_t>(delta * 1'000'000'000.0);
-        (void)broker->try_tick_virtual_time(dt_ns);
+        // flush_strand=false: this is the free-running per-frame tick. Frames
+        // queued by this advance are delivered asynchronously by the strand
+        // worker and observed through the normal tick-bounded snapshot
+        // publication path; blocking the Godot main thread here on strand
+        // drain every frame bought no observable guarantee. Host-stepped
+        // advance_timeline()/scenario-start pumps keep the flushing default
+        // (see SyntheticProvider::advance()).
+        (void)broker->try_tick_virtual_time(dt_ns, /*flush_strand=*/false);
       }
     }
 

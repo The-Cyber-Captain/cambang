@@ -2157,24 +2157,29 @@ bool SyntheticProvider::generate_device_capture_payloads_(
     if (can_reuse_base_for_default) {
       bytes = base_bytes;
     } else {
-      const uint64_t member_alloc_begin_ns = provider_monotonic_now_ns();
-      bytes = std::make_shared<std::vector<std::uint8_t>>();
-      bytes->resize(job.frame_size_bytes);
-      const uint64_t member_alloc_sample_ns =
-          provider_monotonic_now_ns() - member_alloc_begin_ns;
-      member_alloc_ns += member_alloc_sample_ns;
-      member_cpu_prep_ns += member_alloc_sample_ns;
       const bool needs_exposure_adjustment =
           member.intended_exposure_compensation_milli_ev != 0;
       const bool needs_bgra_swizzle = job.format_fourcc == FOURCC_BGRA;
       if (!needs_exposure_adjustment && !needs_bgra_swizzle) {
+        // Copy-construct from the immutable base render: one pass into
+        // uninitialized storage. The previous resize()-then-memcpy shape
+        // value-initialized (zero-filled) the whole multi-MB buffer first and
+        // then overwrote every byte, doubling memory traffic per plain bracket
+        // member on the capture-latency path.
         const uint64_t member_copy_begin_ns = provider_monotonic_now_ns();
-        std::memcpy(bytes->data(), base_bytes->data(), job.frame_size_bytes);
+        bytes = std::make_shared<std::vector<std::uint8_t>>(*base_bytes);
         const uint64_t member_copy_sample_ns =
             provider_monotonic_now_ns() - member_copy_begin_ns;
         member_copy_ns += member_copy_sample_ns;
         member_cpu_prep_ns += member_copy_sample_ns;
       } else {
+        const uint64_t member_alloc_begin_ns = provider_monotonic_now_ns();
+        bytes = std::make_shared<std::vector<std::uint8_t>>();
+        bytes->resize(job.frame_size_bytes);
+        const uint64_t member_alloc_sample_ns =
+            provider_monotonic_now_ns() - member_alloc_begin_ns;
+        member_alloc_ns += member_alloc_sample_ns;
+        member_cpu_prep_ns += member_alloc_sample_ns;
         // Synthetic still generation can fold exposure-variant synthesis and
         // optional FourCC mapping into one pass because this provider owns the
         // source pixels. That is an implementation detail of SyntheticProvider,
@@ -4295,7 +4300,9 @@ SyntheticMetricsSnapshot SyntheticProvider::get_metrics_snapshot_for_host() cons
   return out;
 }
 
-void SyntheticProvider::advance(uint64_t dt_ns, bool allow_paused_timeline_step) {
+void SyntheticProvider::advance(uint64_t dt_ns,
+                                bool allow_paused_timeline_step,
+                                bool flush_strand) {
   if (!initialized_ || shutting_down_) {
     return;
   }
@@ -4339,6 +4346,15 @@ void SyntheticProvider::advance(uint64_t dt_ns, bool allow_paused_timeline_step)
   // Nothing after this point reads or writes provider_state_mutex_-protected
   // state.
   state_lock.unlock();
+  // flush_strand=false is the free-running per-frame tick's path (see the
+  // declaration comment in provider.h): frames queued by this advance are
+  // delivered asynchronously by the strand worker and integrated by the core
+  // pump; tick-bounded snapshot publication is unaffected. Host-stepped and
+  // harness callers keep the flush so publish-only checks never race queued
+  // delivery.
+  if (!flush_strand) {
+    return;
+  }
   const uint64_t flush_begin_ns = provider_monotonic_now_ns();
   strand_.flush();
   const uint64_t flush_ns = provider_monotonic_now_ns() - flush_begin_ns;

@@ -798,7 +798,7 @@ bool ProviderBroker::provider_call_admission_closed_for_smoke() const noexcept {
 }
 #endif
 
-bool ProviderBroker::try_tick_virtual_time(uint64_t dt_ns) {
+bool ProviderBroker::try_tick_virtual_time(uint64_t dt_ns, bool flush_strand) {
   std::vector<SyntheticScheduledEvent> deferred_dispatches;
   std::function<void(const SyntheticScheduledEvent&)> hook;
 
@@ -817,7 +817,7 @@ bool ProviderBroker::try_tick_virtual_time(uint64_t dt_ns) {
         deferring_synthetic_timeline_dispatches_ = true;
         deferred_synthetic_timeline_dispatches_.clear();
       }
-      syn->advance(dt_ns);
+      syn->advance(dt_ns, /*allow_paused_timeline_step=*/false, flush_strand);
       {
         std::lock_guard<std::mutex> dispatch_lock(synthetic_timeline_dispatch_mutex_);
         deferred_dispatches.swap(deferred_synthetic_timeline_dispatches_);

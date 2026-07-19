@@ -147,7 +147,10 @@ public:
   // ---- Virtual-time helper (not part of ICameraProvider) ----
   // Drives virtual time for backends that require an external pump (stub, synthetic
   // virtual_time). Returns true if the active backend consumed the tick.
-  bool try_tick_virtual_time(uint64_t dt_ns);
+  // flush_strand=false is reserved for the free-running per-frame runtime tick;
+  // host-stepped/deterministic callers must keep the flushing default (see
+  // SyntheticProvider::advance()'s declaration comment).
+  bool try_tick_virtual_time(uint64_t dt_ns, bool flush_strand = true);
   ProviderResult set_timeline_scenario_for_host(const SyntheticTimelineScenario& scenario);
   ProviderResult set_timeline_canonical_scenario_for_host(const SyntheticCanonicalScenario& scenario);
   ProviderResult select_timeline_builtin_scenario_for_host(const std::string& scenario_name);
