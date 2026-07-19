@@ -839,6 +839,12 @@ private:
   void on_core_stop() override;
 
   void enqueue_provider_fact(ProviderToCoreCommand&& cmd);
+  // Release every queued PROVIDER_FRAME's buffer lease, then clear the deque.
+  // FrameView release is manual, not destructor-driven, so a bare clear() on
+  // a deque still holding frames would leak provider payloads and pin
+  // provider buffer-pool slots. Core-thread-only.
+  static void release_queued_provider_frame_facts_(
+      std::deque<ProviderToCoreCommand>& facts) noexcept;
   void enqueue_request(CoreThread::Task task);
   void request_publish_from_core_unchecked();
   void begin_capture_stream_preemption_(uint64_t capture_id, uint64_t device_instance_id);

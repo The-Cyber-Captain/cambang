@@ -1187,6 +1187,18 @@ ProviderResult SyntheticProvider::close_device(uint64_t device_instance_id) {
       return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
     }
   }
+  // Known check-then-act window: the in-flight check above releases
+  // capture_mutex_ before the close below takes provider_state_mutex_ (the
+  // sequential order is required -- capture_mutex_ before provider_state_
+  // mutex_, never nested the other way). A trigger_capture racing in from a
+  // *different* thread could be admitted in that gap and produce a capture for
+  // a device this call is about to erase. This is currently unreachable under
+  // the intended-use contract: every mutating ICameraProvider entry point is
+  // invoked from the single core thread (public commands, rig submission, and
+  // the warm-expiry close all execute there), so close and trigger cannot
+  // overlap. If a future caller drives provider mutations from more than one
+  // thread, this window must be closed (e.g. re-check in-flight captures under
+  // provider_state_mutex_ after admission also takes it) rather than relied on.
   std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
   auto it = devices_.find(device_instance_id);
   if (it == devices_.end() || !it->second.open) {

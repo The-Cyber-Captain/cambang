@@ -1,10 +1,12 @@
 # Current tranche
 
-## Tranche 6 - Decouple the free-running synthetic tick from strand flush
+## Tranche 6 - Decouple the free-running synthetic tick from strand flush; frame-lease teardown hardening
 
 Status: active; approved by maintainer 2026-07-19 ("Proceed with Finding 2 —
 write the tranche entry first"), following the capture-path performance
-investigation. Preceding tranche records live in
+investigation. The follow-up concurrency audit's frame-lease teardown
+hardening was folded into this tranche by maintainer instruction ("Fold it
+into the Tranche 6 entry", 2026-07-19). Preceding tranche records live in
 `docs/dev/completed_tranches/`.
 
 ### Purpose
@@ -13,6 +15,16 @@ Remove the Godot-main-thread stall imposed by `SyntheticProvider::advance()`'s
 unconditional `strand_.flush()` on the free-running per-frame tick, without
 weakening the deterministic host-stepped `advance_timeline()` contract that
 verification scenes and publish-only checks depend on.
+
+Additionally: enforce, rather than assume, the frame-lease release invariant
+at CoreRuntime teardown boundaries. `FrameView` buffer release is manual
+(`release_now()`), not destructor-driven; frames still queued in
+`provider_facts_` at a teardown boundary and merely `clear()`ed would leak
+their multi-MB provider payloads and permanently pin provider buffer-pool
+slots. The pump currently drains the queue before the core thread exits, but
+that correctness is distributed across several cooperating mechanisms rather
+than enforced at the boundary — and this tranche's flush split makes
+unflushed queued frames the normal steady condition rather than a rarity.
 
 ### Source-backed problem statement
 
@@ -51,6 +63,20 @@ verification scenes and publish-only checks depend on.
    `flush_strand=false`. Every other caller — the host-stepped
    `advance_timeline()` path, smoke tools, verify-case harness — keeps the
    defaulted flushing behavior.
+4. Add `CoreRuntime::release_queued_provider_frame_facts_()` (core-thread-only:
+   release every queued `PROVIDER_FRAME`'s buffer lease, then clear the deque)
+   and call it from both teardown boundaries: `on_core_stop()` (previously did
+   not touch `provider_facts_`) and `start()` (previously a bare destructive
+   `provider_facts_.clear()`). `CmdProviderFrame` is the only command variant
+   carrying a `FrameView`, so this covers the full surface.
+5. Document (in code, at the site) the known check-then-act window in
+   `SyntheticProvider::close_device()`: the in-flight-capture check releases
+   `capture_mutex_` before the close takes `provider_state_mutex_` (the
+   sequential order is required by the documented lock ordering). Unreachable
+   under intended use because every mutating `ICameraProvider` entry point is
+   core-thread-serialized; the comment records the closure condition a future
+   multi-threaded platform-provider caller must implement instead of relying
+   on the window.
 
 ### Non-goals / scope guardrails
 
@@ -69,6 +95,8 @@ verification scenes and publish-only checks depend on.
 * `src/imaging/synthetic/provider.h` / `provider.cpp`;
 * `src/imaging/broker/provider_broker.h` / `provider_broker.cpp`;
 * `src/godot/cambang_server.cpp` (one call site);
+* `src/core/core_runtime.h` / `core_runtime.cpp` (scope items 4-5's
+  frame-lease boundary helper and its two call sites only);
 * this tranche record.
 
 Any expansion beyond these files must be source-justified before editing.
@@ -98,6 +126,10 @@ to the strand thread.
   a free-running tick are integrated by the core pump and published
   tick-bounded, with no missed-verdict, coalescing, or immutability
   regression.
+* Frames queued in `provider_facts_` at either teardown boundary are released
+  (lease freed, pool slot unpinned) rather than destroyed by a bare clear;
+  no double-release is possible (integration paths null the hooks after
+  releasing, and the helper runs only where the pump no longer executes).
 * No Godot public binding change.
 
 ### Required validation
@@ -131,6 +163,13 @@ end-to-end):
 .\run_godot.ps1 -Scene res://scenes/66_public_lifecycle_verify.tscn -CaptureLogs -TimeoutSec 60 -RunLabel tranche6_scene66
 .\run_godot.ps1 -Scene res://scenes/568_backing_plan_evaluation_verify.tscn -CaptureLogs -TimeoutSec 60 -RunLabel tranche6_scene568 -ExtraArgs @("--cambang-synth-producer-output-form=runtime_default")
 .\run_godot.ps1 -Scene res://scenes/870_to_image_soak_benchmark.tscn -CaptureLogs -TimeoutSec 180 -RunLabel tranche6_scene870
+```
+
+For scope item 4 (frame-lease teardown boundaries), additionally run the
+frames-in-flight-at-stop gate:
+
+```powershell
+.\run_cpu_display_teardown_race_stress.ps1 -Iterations 15 -TimeoutSec 30
 ```
 
 Android deploy/run coverage over ADB remains part of the full matrix but may

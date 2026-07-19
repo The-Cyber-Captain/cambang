@@ -4095,7 +4095,7 @@ bool CoreRuntime::start() noexcept try {
   capture_assembly_registry_.clear();
   capture_cohort_registry_.clear();
   capture_stream_preemptions_by_device_.clear();
-  provider_facts_.clear();
+  release_queued_provider_frame_facts_(provider_facts_);
   provider_capture_facts_queued_ = 0;
   pending_capture_observations_.clear();
   requests_.clear();
@@ -4970,6 +4970,15 @@ void CoreRuntime::on_core_timer_tick() {
 }
 
 void CoreRuntime::on_core_stop() {
+  // Frames still awaiting integration hold provider-owned buffer leases whose
+  // release is manual (FrameView::release_now()), not destructor-driven.
+  // The pump normally drains provider_facts_ before the core thread exits
+  // (every enqueue re-arms a timer tick, and thread_main keeps servicing
+  // deferred work while stopping), so this loop is expected to find nothing;
+  // it exists so that invariant is enforced rather than assumed -- a frame
+  // stranded here and merely clear()ed would leak its multi-MB payload and
+  // permanently pin its provider pool slot.
+  release_queued_provider_frame_facts_(provider_facts_);
   // Runtime is no longer live; clear retained results so stop/start boundaries
   // cannot expose stale prior-generation result truth.
   result_store_.clear();
@@ -6492,6 +6501,20 @@ void CoreRuntime::request_publish() {
     case CoreThread::PostResult::Enqueued:
       break;
   }
+}
+
+void CoreRuntime::release_queued_provider_frame_facts_(
+    std::deque<ProviderToCoreCommand>& facts) noexcept {
+  for (auto& cmd : facts) {
+    if (cmd.type != ProviderToCoreCommandType::PROVIDER_FRAME) {
+      continue;
+    }
+    auto& frame = std::get<CmdProviderFrame>(cmd.payload).frame;
+    frame.release_now();
+    frame.release = nullptr;
+    frame.release_user = nullptr;
+  }
+  facts.clear();
 }
 
 void CoreRuntime::enqueue_provider_fact(ProviderToCoreCommand&& cmd) {
