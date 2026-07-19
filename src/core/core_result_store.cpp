@@ -484,9 +484,17 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
         plan.retain_gpu_display ? frame.primary_backing_artifact : nullptr;
     RetainedGpuBackingDescriptor retained_gpu_backing_descriptor =
         build_retained_gpu_backing_descriptor(frame, plan.primary_kind == ResultPayloadKind::GPU_SURFACE);
+    // Waiver -- infeasible use-after-move path: the only prior move of
+    // `payload` (stream branch above) requires frame.capture_id == 0, while
+    // this branch requires capture_id != 0, and the dual-routed case
+    // deliberately copies (not moves) there so this move stays safe. frame is
+    // const and core-thread-local, so the two guards cannot disagree within
+    // one call. Verified 2026-07-19; see
+    // docs/dev/audit_baselines/cpp_static_analysis_baseline_2026_07_19.md.
     capture_result = build_default_image_capture_result(
             frame,
             plan,
+            // NOLINTNEXTLINE(bugprone-use-after-move)
             std::move(payload),
             std::move(retained_gpu_backing),
             retained_gpu_backing_descriptor);

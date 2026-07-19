@@ -60,8 +60,13 @@ config revision (the `static_analysis.md` "after first baseline" step).
 
 High-signal, low-count leads worth human follow-up, none fixed here:
 
-- `src/core/core_result_store.cpp:490` — bugprone-use-after-move ('payload').
-  Priority verification: in the result-retention path.
+- ~~`src/core/core_result_store.cpp:490` — bugprone-use-after-move~~
+  **Verified 2026-07-19: Not applicable (infeasible path), waived at site.**
+  The only prior move requires `frame.capture_id == 0`; the flagged use
+  requires `capture_id != 0`; `frame` is const and core-thread-local, so the
+  guards cannot disagree in one call, and the dual-routed case deliberately
+  copies instead of moving. NOLINTNEXTLINE with this reasoning added at the
+  site so the changed-files gate does not re-fire on future touches.
 - `src/core/resource_aggregate_telemetry.cpp:121` — clang-analyzer
   NullDereference (path-sensitive; verify feasibility of the path).
 - `src/imaging/api/provider_strand.cpp:8` — bugprone-exception-escape in
