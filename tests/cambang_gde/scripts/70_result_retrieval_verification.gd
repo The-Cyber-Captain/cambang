@@ -688,14 +688,17 @@ func _try_verify_stream_result() -> void:
 
 		_require(typeof(stream_result.get_image_properties()) == TYPE_DICTIONARY, "step %d FAIL: stream image_properties accessor must return Dictionary" % _step)
 		_require(typeof(stream_result.get_capture_attributes()) == TYPE_DICTIONARY, "step %d FAIL: stream capture_attributes accessor must return Dictionary" % _step)
-		_require(typeof(stream_result.get_location_attributes()) == TYPE_DICTIONARY, "step %d FAIL: stream location_attributes accessor must return Dictionary" % _step)
-		_require(typeof(stream_result.get_optical_calibration()) == TYPE_DICTIONARY, "step %d FAIL: stream optical_calibration accessor must return Dictionary" % _step)
+		# Removed flattened fact groups must stay removed: location truth is
+		# get_geolocation() (capture admission), optical-calibration truth is
+		# get_image_member(i)["camera_facts"].
+		_require(not stream_result.has_method("get_location_attributes"), "step %d FAIL: removed stream location_attributes accessor must not exist" % _step)
+		_require(not stream_result.has_method("get_optical_calibration"), "step %d FAIL: removed stream optical_calibration accessor must not exist" % _step)
 		_step_ok("stream grouped fact accessors verified (Dictionary)")
 
 		_require(typeof(stream_result.get_image_properties_provenance()) == TYPE_DICTIONARY, "step %d FAIL: stream image_properties_provenance must return Dictionary" % _step)
 		_require(typeof(stream_result.get_capture_attributes_provenance()) == TYPE_DICTIONARY, "step %d FAIL: stream capture_attributes_provenance must return Dictionary" % _step)
-		_require(typeof(stream_result.get_location_attributes_provenance()) == TYPE_DICTIONARY, "step %d FAIL: stream location_attributes_provenance must return Dictionary" % _step)
-		_require(typeof(stream_result.get_optical_calibration_provenance()) == TYPE_DICTIONARY, "step %d FAIL: stream optical_calibration_provenance must return Dictionary" % _step)
+		_require(not stream_result.has_method("get_location_attributes_provenance"), "step %d FAIL: removed stream location_attributes_provenance must not exist" % _step)
+		_require(not stream_result.has_method("get_optical_calibration_provenance"), "step %d FAIL: removed stream optical_calibration_provenance must not exist" % _step)
 		_step_ok("stream provenance grouped accessors verified (Dictionary)")
 
 		var stream_can_to_image := int(stream_result.can_to_image())
@@ -930,14 +933,15 @@ func _try_verify_capture_result() -> void:
 
 	_require(typeof(capture_result.get_image_properties()) == TYPE_DICTIONARY, "step %d FAIL: capture image_properties accessor must return Dictionary" % _step)
 	_require(typeof(capture_result.get_capture_attributes()) == TYPE_DICTIONARY, "step %d FAIL: capture capture_attributes accessor must return Dictionary" % _step)
-	_require(typeof(capture_result.get_location_attributes()) == TYPE_DICTIONARY, "step %d FAIL: capture location_attributes accessor must return Dictionary" % _step)
-	_require(typeof(capture_result.get_optical_calibration()) == TYPE_DICTIONARY, "step %d FAIL: capture optical_calibration accessor must return Dictionary" % _step)
+	# Removed flattened fact groups must stay removed (see stream-side note).
+	_require(not capture_result.has_method("get_location_attributes"), "step %d FAIL: removed capture location_attributes accessor must not exist" % _step)
+	_require(not capture_result.has_method("get_optical_calibration"), "step %d FAIL: removed capture optical_calibration accessor must not exist" % _step)
 	_step_ok("capture grouped fact accessors verified (Dictionary)")
 
 	_require(typeof(capture_result.get_image_properties_provenance()) == TYPE_DICTIONARY, "step %d FAIL: capture image_properties_provenance must return Dictionary" % _step)
 	_require(typeof(capture_result.get_capture_attributes_provenance()) == TYPE_DICTIONARY, "step %d FAIL: capture capture_attributes_provenance must return Dictionary" % _step)
-	_require(typeof(capture_result.get_location_attributes_provenance()) == TYPE_DICTIONARY, "step %d FAIL: capture location_attributes_provenance must return Dictionary" % _step)
-	_require(typeof(capture_result.get_optical_calibration_provenance()) == TYPE_DICTIONARY, "step %d FAIL: capture optical_calibration_provenance must return Dictionary" % _step)
+	_require(not capture_result.has_method("get_location_attributes_provenance"), "step %d FAIL: removed capture location_attributes_provenance must not exist" % _step)
+	_require(not capture_result.has_method("get_optical_calibration_provenance"), "step %d FAIL: removed capture optical_calibration_provenance must not exist" % _step)
 	_step_ok("capture provenance grouped accessors verified (Dictionary)")
 
 	var expected_members := _make_scene70_still_image_bundle_members()

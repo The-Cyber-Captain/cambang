@@ -121,14 +121,6 @@ struct CoreImageFactBundle {
   bool has_capture_attributes = false;
   ResultCaptureAttributesFacts capture_attributes{};
   ResultCaptureAttributesProvenance capture_attributes_provenance{};
-
-  bool has_location_attributes = false;
-  ResultLocationAttributesFacts location_attributes{};
-  ResultLocationAttributesProvenance location_attributes_provenance{};
-
-  bool has_optical_calibration = false;
-  ResultOpticalCalibrationFacts optical_calibration{};
-  ResultOpticalCalibrationProvenance optical_calibration_provenance{};
 };
 
 // Private completed-result fact view. These source-neutral facts deliberately

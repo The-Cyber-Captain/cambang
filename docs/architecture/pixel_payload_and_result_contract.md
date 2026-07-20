@@ -988,12 +988,18 @@ These are capability truths, not vague UX impressions.
 
 Result Objects should expose qualified image-associated fact groups rather than a generic metadata bag.
 
-Recommended first-pass groups:
+Current flattened groups:
 
 - `ImageProperties`
 - `CaptureAttributes`
-- `LocationAttributes`
-- `OpticalCalibration`
+
+Location and optical-calibration truth deliberately do NOT use flattened
+result groups: capture-associated location is exposed from the Core-owned
+capture-admission context (`get_geolocation()`), and optical calibration is
+exposed through the resolved per-member camera facts
+(`get_image_member(i)["camera_facts"]` — intrinsics/distortion/pose with
+per-fact origin). Earlier flattened `LocationAttributes`/`OpticalCalibration`
+groups were writer-less duplicates of those surfaces and were removed.
 
 ## 13.1 ImageProperties
 
@@ -1020,24 +1026,6 @@ Capture/device-state facts associated with the realized image such as:
 - sensor sensitivity / ISO-equivalent
 - flash state
 - white-balance-related state
-
-## 13.3 LocationAttributes
-
-Capture-associated location facts such as:
-
-- latitude / longitude / altitude
-- location accuracy where known
-- location timestamp where known
-
-## 13.4 OpticalCalibration
-
-Calibration/optics facts such as:
-
-- intrinsics
-- focal lengths in calibration space
-- principal point
-- distortion model
-- distortion coefficients
 
 ---
 

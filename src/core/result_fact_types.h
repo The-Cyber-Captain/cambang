@@ -1,8 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <string>
-#include <vector>
 
 namespace cambang {
 
@@ -47,34 +45,10 @@ struct ResultCaptureAttributesProvenance {
   ResultFactProvenance sensor_sensitivity_iso_equivalent = ResultFactProvenance::UNKNOWN;
 };
 
-struct ResultLocationAttributesFacts {
-  double latitude = 0.0;
-  double longitude = 0.0;
-  double altitude_m = 0.0;
-};
-
-struct ResultLocationAttributesProvenance {
-  ResultFactProvenance latitude = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance longitude = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance altitude_m = ResultFactProvenance::UNKNOWN;
-};
-
-struct ResultOpticalCalibrationFacts {
-  double principal_point_x = 0.0;
-  double principal_point_y = 0.0;
-  double focal_length_x = 0.0;
-  double focal_length_y = 0.0;
-  std::string distortion_model;
-  std::vector<double> distortion_coefficients;
-};
-
-struct ResultOpticalCalibrationProvenance {
-  ResultFactProvenance principal_point_x = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance principal_point_y = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance focal_length_x = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance focal_length_y = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance distortion_model = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance distortion_coefficients = ResultFactProvenance::UNKNOWN;
-};
+// Optical-calibration truth lives in the resolved per-member camera facts
+// (CoreResolvedCaptureImageFacts / get_image_member camera_facts); location
+// truth lives in the capture-admission context (get_geolocation()). The
+// former flattened optical-calibration and location fact groups were
+// writer-less duplicates and were removed.
 
 } // namespace cambang

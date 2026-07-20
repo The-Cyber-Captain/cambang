@@ -66,30 +66,6 @@ godot::Dictionary to_dict(const ResultCaptureAttributesFacts& v) {
   return d;
 }
 
-godot::Dictionary to_dict(const ResultLocationAttributesFacts& v) {
-  godot::Dictionary d;
-  d["latitude"] = v.latitude;
-  d["longitude"] = v.longitude;
-  d["altitude_m"] = v.altitude_m;
-  return d;
-}
-
-godot::Dictionary to_dict(const ResultOpticalCalibrationFacts& v) {
-  godot::Dictionary d;
-  d["principal_point_x"] = v.principal_point_x;
-  d["principal_point_y"] = v.principal_point_y;
-  d["focal_length_x"] = v.focal_length_x;
-  d["focal_length_y"] = v.focal_length_y;
-  d["distortion_model"] = godot::String(v.distortion_model.c_str());
-  godot::PackedFloat64Array coeffs;
-  coeffs.resize(static_cast<int64_t>(v.distortion_coefficients.size()));
-  for (int64_t i = 0; i < coeffs.size(); ++i) {
-    coeffs.set(i, v.distortion_coefficients[static_cast<size_t>(i)]);
-  }
-  d["distortion_coefficients"] = coeffs;
-  return d;
-}
-
 godot::Dictionary to_dict(const ResultImagePropertiesProvenance& v) {
   godot::Dictionary d;
   d["width"] = to_prov_int(v.width);
@@ -107,25 +83,6 @@ godot::Dictionary to_dict(const ResultCaptureAttributesProvenance& v) {
   d["focal_length_mm"] = to_prov_int(v.focal_length_mm);
   d["focus_distance_m"] = to_prov_int(v.focus_distance_m);
   d["sensor_sensitivity_iso_equivalent"] = to_prov_int(v.sensor_sensitivity_iso_equivalent);
-  return d;
-}
-
-godot::Dictionary to_dict(const ResultLocationAttributesProvenance& v) {
-  godot::Dictionary d;
-  d["latitude"] = to_prov_int(v.latitude);
-  d["longitude"] = to_prov_int(v.longitude);
-  d["altitude_m"] = to_prov_int(v.altitude_m);
-  return d;
-}
-
-godot::Dictionary to_dict(const ResultOpticalCalibrationProvenance& v) {
-  godot::Dictionary d;
-  d["principal_point_x"] = to_prov_int(v.principal_point_x);
-  d["principal_point_y"] = to_prov_int(v.principal_point_y);
-  d["focal_length_x"] = to_prov_int(v.focal_length_x);
-  d["focal_length_y"] = to_prov_int(v.focal_length_y);
-  d["distortion_model"] = to_prov_int(v.distortion_model);
-  d["distortion_coefficients"] = to_prov_int(v.distortion_coefficients);
   return d;
 }
 
