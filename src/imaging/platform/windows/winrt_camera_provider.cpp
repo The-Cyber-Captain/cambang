@@ -296,6 +296,8 @@ struct StreamProduction {
   uint32_t height = 0;
   uint32_t fourcc = 0;
   CoreRetainedProductionPlan plan{};
+  uint64_t frames_posted = 0;
+  uint64_t convert_failures = 0;
 
   struct BufferSlot {
     std::vector<uint8_t> bytes;
@@ -346,6 +348,8 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   bool failed = false;
   uint32_t configured_w = 0;
   uint32_t configured_h = 0;
+  std::atomic<uint64_t> frame_arrived_count{0};
+  std::atomic<uint64_t> frame_handler_errors{0};
 
   std::shared_ptr<StreamProduction> stream;
   std::deque<std::shared_ptr<CaptureWaiter>> waiters;
@@ -445,6 +449,13 @@ void deliver_frame_locked(DeviceBackend& backend,
                   static_cast<size_t>(waiter->height) * 4u);
     const bool ok = convert_software_bitmap(bitmap, waiter->width, waiter->height,
                                             waiter->fourcc, bytes->data());
+    if (!ok) {
+      log_line("capture waiter convert failed: delivered %dx%d fmt=%d, expected %ux%u",
+               bitmap ? bitmap.PixelWidth() : -1,
+               bitmap ? bitmap.PixelHeight() : -1,
+               bitmap ? static_cast<int>(bitmap.BitmapPixelFormat()) : -1,
+               waiter->width, waiter->height);
+    }
     std::lock_guard<std::mutex> wl(waiter->m);
     if (!waiter->done) {
       waiter->done = true;
@@ -491,8 +502,19 @@ void deliver_frame_locked(DeviceBackend& backend,
   if (!convert_software_bitmap(bitmap, s->width, s->height, s->fourcc,
                                slot->bytes.data())) {
     slot->in_use.store(false, std::memory_order_release);
+    ++s->convert_failures;
+    if ((s->convert_failures & (s->convert_failures - 1)) == 0) {
+      log_line("stream=%llu frame convert failed: delivered %dx%d fmt=%d, expected %ux%u (failures=%llu)",
+               static_cast<unsigned long long>(s->stream_id),
+               bitmap ? bitmap.PixelWidth() : -1,
+               bitmap ? bitmap.PixelHeight() : -1,
+               bitmap ? static_cast<int>(bitmap.BitmapPixelFormat()) : -1,
+               s->width, s->height,
+               static_cast<unsigned long long>(s->convert_failures));
+    }
     return;
   }
+  ++s->frames_posted;
 
   FrameView fv{};
   fv.device_instance_id = s->device_instance_id;
@@ -932,30 +954,50 @@ ProviderResult WinrtCameraProvider::ensure_reader_realized_(
                   if (!strong) {
                     return;
                   }
-                  wmcf::MediaFrameReference frame = rdr.TryAcquireLatestFrame();
-                  if (!frame) {
-                    return;
+                  strong->frame_arrived_count.fetch_add(1, std::memory_order_relaxed);
+                  // Nothing may escape into the WinRT event dispatcher: an
+                  // uncontained exception here silently kills the
+                  // subscription (observed as one-frame-then-silence).
+                  try {
+                    wmcf::MediaFrameReference frame = rdr.TryAcquireLatestFrame();
+                    if (!frame) {
+                      return;
+                    }
+                    const auto video = frame.VideoMediaFrame();
+                    if (!video) {
+                      return;
+                    }
+                    const wgi::SoftwareBitmap bitmap = video.SoftwareBitmap();
+                    if (!bitmap) {
+                      return;
+                    }
+                    int64_t mark_100ns = 0;
+                    bool has_mark = false;
+                    if (const auto ts = frame.SystemRelativeTime()) {
+                      mark_100ns = ts.Value().count();
+                      has_mark = true;
+                    }
+                    {
+                      std::lock_guard<std::mutex> bl2(strong->m);
+                      if (strong->closed) {
+                        return;
+                      }
+                      winrt_detail::deliver_frame_locked(*strong, bitmap,
+                                                         mark_100ns, has_mark);
+                    }
+                    frame.Close();
+                  } catch (const winrt::hresult_error& e) {
+                    const uint64_t n = strong->frame_handler_errors.fetch_add(
+                                           1, std::memory_order_relaxed) + 1;
+                    if ((n & (n - 1)) == 0) {
+                      winrt_detail::log_line(
+                          "FrameArrived handler error hr=0x%08X (errors=%llu)",
+                          static_cast<uint32_t>(e.code()),
+                          static_cast<unsigned long long>(n));
+                    }
+                  } catch (...) {
+                    winrt_detail::log_line("FrameArrived handler unknown exception");
                   }
-                  const auto video = frame.VideoMediaFrame();
-                  if (!video) {
-                    return;
-                  }
-                  const wgi::SoftwareBitmap bitmap = video.SoftwareBitmap();
-                  if (!bitmap) {
-                    return;
-                  }
-                  int64_t mark_100ns = 0;
-                  bool has_mark = false;
-                  if (const auto ts = frame.SystemRelativeTime()) {
-                    mark_100ns = ts.Value().count();
-                    has_mark = true;
-                  }
-                  std::lock_guard<std::mutex> bl2(strong->m);
-                  if (strong->closed) {
-                    return;
-                  }
-                  winrt_detail::deliver_frame_locked(*strong, bitmap,
-                                                     mark_100ns, has_mark);
                 });
           }
         }
