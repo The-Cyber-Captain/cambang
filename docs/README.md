@@ -28,7 +28,7 @@ runtime path.
 Current provider work should follow the provider contract and architecture docs
 rather than platform-specific assumptions from older drafts. Windows
 platform-backed work targets the `windows_winrt` family (implemented by
-`WinrtCameraProvider` over the Media Foundation capture stack; see
+`WinrtCameraProvider` via C++/WinRT `Windows.Media.Capture`; see
 `docs/dev/build_and_scaffolding.md` §6) rather than inferring behavior from
 synthetic or stub implementation details.
 

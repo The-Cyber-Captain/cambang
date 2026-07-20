@@ -3,12 +3,12 @@
 // CamBANG windows_winrt platform provider.
 //
 // Family: windows_winrt (docs/provider_architecture.md §2.2.x). The backend
-// surface is the Windows Media Foundation capture stack (MFEnumDeviceSources +
-// IMFSourceReader), which is the engine underneath WinRT MediaCapture. The
-// C++/WinRT projection and the Windows.Media.Capture ABI headers are not
-// available under this repo's mandated MinGW toolchain; Media Foundation is
-// the supported Windows camera API surface there and preserves identical
-// device identity (symbolic links) and frame semantics.
+// is the WinRT capture surface via C++/WinRT: Windows.Media.Capture
+// (MediaCapture) with Windows.Media.Capture.Frames (MediaFrameReader)
+// delivering Bgra8 software bitmaps. Device identity is the WinRT
+// DeviceInformation Id (the device-interface symbolic link). This
+// translation unit requires a C++/WinRT-capable toolchain (MSVC + Windows
+// SDK); the build compiles it only for MSVC Windows GDE targets.
 //
 // Contract source: docs/provider_implementation_brief.md. This provider is an
 // adapter to that contract; it defines no contract semantics of its own.
@@ -17,13 +17,13 @@
 // - Every mutating ICameraProvider entry arrives core-thread-serialized via
 //   ProviderBroker; provider state is still guarded by state_mutex_ across
 //   check-then-act windows.
-// - All Media Foundation object creation/configuration/release runs on a
-//   single provider-owned control thread with a bounded wait, so a wedged
-//   camera driver degrades to a deterministic ERR_TIMEOUT instead of wedging
-//   the core thread (brief §2 enforcement ladder).
-// - MF delivers samples on its own worker threads; every provider->core fact
-//   is funneled through CBProviderStrand (the single serialized callback
-//   context).
+// - All WinRT object creation/configuration/release (every awaited async op)
+//   runs on a single provider-owned control thread with a bounded wait, so a
+//   wedged camera driver degrades to a deterministic ERR_TIMEOUT instead of
+//   wedging the core thread (brief §2 enforcement ladder).
+// - FrameArrived events fire on WinRT threadpool threads; every
+//   provider->core fact is funneled through CBProviderStrand (the single
+//   serialized callback context).
 // - Still captures execute on a small bounded worker pool with generation-
 //   based cancellation; saturation is an admission failure (ERR_BUSY).
 
@@ -48,8 +48,8 @@ namespace cambang {
 
 namespace winrt_detail {
 
-// Single provider-owned thread that executes backend (COM/Media Foundation)
-// jobs FIFO. Callers wait with a deadline; on timeout the job is abandoned:
+// Single provider-owned thread that executes backend (WinRT async) jobs
+// FIFO. Callers wait with a deadline; on timeout the job is abandoned:
 // it still runs to completion eventually and must self-release anything it
 // acquired (the shared AbandonToken tells it the caller has given up).
 class BoundedControlExecutor final {
@@ -92,8 +92,8 @@ private:
   std::thread worker_;
 };
 
-// Opaque holder for per-device Media Foundation objects + sample routing
-// state. Defined in the .cpp so no platform headers leak into this header.
+// Opaque holder for per-device WinRT capture objects + frame routing state.
+// Defined in the .cpp so no platform headers leak into this header.
 struct DeviceBackend;
 
 } // namespace winrt_detail
@@ -183,7 +183,7 @@ private:
     // Core enforces one repeating stream per device instance; tracked defensively.
     uint64_t stream_id = 0;
     // AcquisitionSession native truth (the concretely realized
-    // IMFSourceReader) lives on the backend, which owns its own locking so
+    // MediaFrameReader) lives on the backend, which owns its own locking so
     // capture workers never hold state_mutex_ across bounded backend jobs.
     std::shared_ptr<winrt_detail::DeviceBackend> backend;
   };
@@ -218,7 +218,7 @@ private:
                             uint64_t owner_stream_id);
   void emit_native_destroyed_(uint64_t native_id);
 
-  // Realizes the device's IMFSourceReader (control thread) and emits the
+  // Realizes the device's MediaFrameReader (control thread) and emits the
   // AcquisitionSession native-created fact on first realization. Serialized
   // per device via the backend's configure mutex; must NOT be called while
   // holding a backend's inner mutex. Lock order: state_mutex_ (optional,
@@ -234,6 +234,10 @@ private:
       uint32_t width,
       uint32_t height,
       uint32_t format_fourcc);
+  // Starts the realized frame reader (idempotent). Same locking rules as
+  // ensure_reader_realized_.
+  ProviderResult ensure_reader_started_(
+      const std::shared_ptr<winrt_detail::DeviceBackend>& backend);
 
   // Capture executor.
   bool start_capture_executor_() noexcept;
@@ -250,7 +254,6 @@ private:
   std::atomic<bool> shutting_down_{false};
 
   winrt_detail::BoundedControlExecutor control_;
-  bool mf_started_ = false;
 
   // Provider bookkeeping state. Lock ordering when both are needed:
   // capture_mutex_ before state_mutex_ (matches SyntheticProvider).

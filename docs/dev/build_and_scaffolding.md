@@ -194,26 +194,28 @@ Declared GDE platforms and provider families:
 
 | Platform | Provider family | Source location | Current normal build support |
 |---|---|---|---|
-| `windows` | `windows_winrt` | `src/imaging/platform/windows` | Implemented (Media Foundation capture stack; see below). |
+| `windows` | `windows_winrt` | `src/imaging/platform/windows` | Implemented (C++/WinRT; requires MSVC — see below). |
 | `android` | `android_camera2` | `src/imaging/platform/android` | Not yet implemented. |
 | `linux` | `linux_v4l2` | `src/imaging/platform/linux` | Not yet implemented. |
 | `macos` | `apple_avfoundation` | `src/imaging/platform/apple` | Not yet implemented. |
 | `ios` | `apple_avfoundation` | `src/imaging/platform/apple` | Not yet implemented. |
 | `web` | `web_getusermedia` | `src/imaging/platform/web` | Not yet implemented. |
 
-The `windows_winrt` family is implemented by `WinrtCameraProvider`. Its
-backend surface is the Windows Media Foundation capture stack
-(`MFEnumDeviceSources` + `IMFSourceReader`), the engine underneath WinRT
-`MediaCapture`: the C++/WinRT projection and the `Windows.Media.Capture` ABI
-headers are not available under the repo's mandated MinGW toolchain, while
-Media Foundation is fully supported there and preserves the same device
-identity (symbolic links) and frame semantics. Windows GDE builds compile it
-with `CAMBANG_PROVIDER_WINDOWS_WINRT=1` and link the Media Foundation
-libraries; maintainer-tool builds keep the deterministic `StubProvider` as the
-platform-backed reference so the contract verifiers stay hardware-independent.
-Current capability maturity (provider_architecture.md §2.3) is minimal /
-transitional: CPU-backed RGBA/BGRA delivery, single-image still capture, no
-picture-parameter control, no GPU backing.
+The `windows_winrt` family is implemented by `WinrtCameraProvider` on the
+WinRT capture surface via C++/WinRT: `Windows.Media.Capture` (`MediaCapture`)
+with `Windows.Media.Capture.Frames` (`MediaFrameReader`) delivering Bgra8
+software bitmaps. Device identity is the WinRT `DeviceInformation` Id (the
+device-interface symbolic link). C++/WinRT requires MSVC + the Windows SDK,
+so the provider is compiled only into MSVC Windows GDE builds
+(`use_mingw=no`, defining `CAMBANG_PROVIDER_WINDOWS_WINRT=1` and linking
+`windowsapp`); MinGW Windows GDE builds remain synthetic-only and report the
+provider `not_compiled`. Maintainer-tool builds keep the deterministic
+`StubProvider` as the platform-backed reference so the contract verifiers
+stay hardware-independent. Current capability maturity
+(provider_architecture.md §2.3) is minimal / transitional: CPU-backed
+RGBA/BGRA delivery at native source formats (no scaling — a requested
+geometry with no matching native format fails deterministically),
+single-image still capture, no picture-parameter control, no GPU backing.
 
 For declared platforms whose provider family is not implemented yet, non-clean
 GDE builds are still allowed to produce a synthetic-capable artifact. In those
@@ -418,12 +420,13 @@ Implemented validators are real-OS/API visibility checks and may depend on
 local hardware, drivers, and negotiated formats. They are not a replacement
 for deterministic provider contract verification.
 
-- `windows` — `out/windows_winrt_runtime_validate.exe`: enumerates real
-  endpoints, opens the first camera, verifies live stream frame arrival,
-  still capture while streaming (ordering, exactly-one-terminal, zero-copy
-  payload owner, acquisition timing), deterministic geometry-conflict
-  rejection, and balanced native-object create/destroy across teardown.
-  Exit codes: 0 pass, 1 fail, 2 skip (no camera endpoint present).
+- `windows` — `out/windows_winrt_runtime_validate.exe` (requires the MSVC
+  toolchain: `use_mingw=no`): enumerates real endpoints, opens the first
+  camera, verifies live stream frame arrival, still capture while streaming
+  (ordering, exactly-one-terminal, zero-copy payload owner, acquisition
+  timing), deterministic geometry-conflict rejection, and balanced
+  native-object create/destroy across teardown. Exit codes: 0 pass, 1 fail,
+  2 skip (no camera endpoint present).
 
 ---
 

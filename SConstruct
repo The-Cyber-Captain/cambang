@@ -305,10 +305,11 @@ GDE_PROVIDER_RESOLUTION = {
         "family": "windows_winrt",
         "location": os.path.join("src", "imaging", "platform", "windows"),
         "implemented": True,
+        # C++/WinRT (Windows.Media.Capture) requires MSVC + Windows SDK;
+        # MinGW Windows GDE builds stay synthetic-only.
+        "requires_msvc": True,
         "defines": ["CAMBANG_PROVIDER_WINDOWS_WINRT=1"],
-        # Media Foundation capture stack + COM/registry support. The MinGW
-        # link set needs mf + uuid in addition to the usual MF libs.
-        "libs": ["mfreadwrite", "mfplat", "mf", "mfuuid", "ole32", "uuid", "advapi32"],
+        "libs": ["windowsapp", "advapi32"],
     },
     "android": {
         "family": "android_camera2",
@@ -348,8 +349,9 @@ RUNTIME_VALIDATORS = {
         "extra_sources": [
             os.path.join("imaging", "api", "provider_strand.cpp"),
         ],
+        "requires_msvc": True,
         "defines": ["CAMBANG_PROVIDER_WINDOWS_WINRT=1"],
-        "libs": ["mfreadwrite", "mfplat", "mf", "mfuuid", "ole32", "uuid", "advapi32"],
+        "libs": ["windowsapp", "advapi32"],
     },
 }
 
@@ -499,6 +501,10 @@ if not is_clean:
         Exit(1)
 
 env = Environment(variables=vars, tools=tools)
+# SCons's tool detection configures the compiler environment (for MSVC:
+# PATH/INCLUDE/LIB/LIBPATH from vcvars). Capture it before installing the
+# repo process environment so an MSVC toolchain stays reachable.
+detected_tool_env = dict(env["ENV"])
 env["ENV"] = command_process_env
 env.Append(CPPPATH=["src"])
 
@@ -510,8 +516,26 @@ is_msvc = ("cl" in cxx) or env.get("MSVC_VERSION")
 core_target = _core_target_for_flags(env["target"])
 godot_target = _godot_target(env["target"])
 
+# A platform provider family may require a specific toolchain (windows_winrt
+# needs MSVC for C++/WinRT). When the active toolchain cannot compile it, the
+# GDE artifact is still built, but synthetic-only.
+gde_provider_compiled = bool(selected_provider["implemented"]) and (
+    not selected_provider.get("requires_msvc") or bool(is_msvc)
+)
+
 if is_msvc:
-    env.Append(CXXFLAGS=["/std:c++20", "/W4"])
+    # Restore the vcvars-derived toolchain environment that the repo process
+    # environment above would otherwise hide from command execution.
+    for _var in ("PATH", "INCLUDE", "LIB", "LIBPATH"):
+        _tool_value = detected_tool_env.get(_var, "")
+        if not _tool_value:
+            continue
+        if _var == "PATH" and command_process_env.get(_var):
+            env["ENV"][_var] = _tool_value + os.pathsep + command_process_env[_var]
+        else:
+            env["ENV"][_var] = _tool_value
+    # /EHsc: C++/WinRT requires standard exception semantics.
+    env.Append(CXXFLAGS=["/std:c++20", "/W4", "/EHsc", "/bigobj"])
     if env["warnings_as_errors"]:
         env.Append(CXXFLAGS=["/WX"])
     if core_target == "debug":
@@ -540,8 +564,10 @@ if host_platform == "windows" or gde_platform == "windows":
 print(f"  gde={'yes' if build_gde else 'no'} maintainer_tools={'yes' if build_maintainer_tools else 'no'} platform_runtime_validate={'yes' if build_platform_runtime_validate else 'no'}")
 print(f"  godot_cpp={env['godot_cpp']}")
 print(f"  gde_provider={selected_provider['family']} ({selected_provider['location']})")
-if build_gde and not selected_provider["implemented"]:
+if build_gde and not gde_provider_compiled:
     print("  gde_provider_status=not_compiled")
+    if selected_provider["implemented"] and selected_provider.get("requires_msvc"):
+        print("  (windows_winrt requires the MSVC toolchain; build with use_mingw=no)")
     print("  platform_backed runtime mode unavailable")
     print("  synthetic=yes")
 elif selected_provider.get("status"):
@@ -620,10 +646,16 @@ def _planned_gde_artifact_paths(platform, target, arch):
     artifact = _gde_artifact_base(platform, target, arch)
     if platform == "windows":
         # Windows GDE builds intentionally ship/load only the extension DLL.
-        # The MinGW import library is a link-time developer artifact, not a
-        # Godot runtime dependency; include its historical location only so
-        # clean removes stale copies from the Godot project bin directory.
-        return [artifact, _gde_windows_import_library_path(target, arch)]
+        # Import libraries (MinGW .a, MSVC .lib/.exp) are link-time developer
+        # artifacts, not Godot runtime dependencies; include their locations
+        # so clean removes stale copies from the Godot project bin directory.
+        stem = _gde_artifact_stem(platform, target, arch)
+        return [
+            artifact,
+            _gde_windows_import_library_path(target, arch),
+            stem + ".lib",
+            stem + ".exp",
+        ]
     legacy_stem = _gde_artifact_stem(platform, target, arch)
     return _unique_sources([artifact, legacy_stem, legacy_stem + ".so", legacy_stem + ".dylib", legacy_stem + ".dll"])
 
@@ -896,13 +928,19 @@ if build_gde_graph:
         gde_env = _create_android_gde_env(env, host_platform, env["arch"], core_target)
     else:
         gde_env = env.Clone()
-    gde_platform_provider_status = "compiled" if selected_provider["implemented"] else "not_compiled"
+    if is_msvc:
+        # Match godot-cpp's own MSVC build (thirdparty/godot-cpp/tools/
+        # windows.py): MSVC cannot compile the untyped method-bind
+        # reinterpret_cast path, and the define must agree across the static
+        # library and these headers.
+        gde_env.Append(CPPDEFINES=["TYPED_METHOD_BIND", "NOMINMAX"])
+    gde_platform_provider_status = "compiled" if gde_provider_compiled else "not_compiled"
     gde_env.Append(CPPDEFINES=[
         "CAMBANG_GDE_BUILD=1",
         "CAMBANG_ENABLE_SYNTHETIC=1",
         ("CAMBANG_GDE_TARGET_PLATFORM", _cpp_string_define_value(gde_platform)),
         ("CAMBANG_GDE_PLATFORM_PROVIDER_FAMILY", _cpp_string_define_value(selected_provider["family"])),
-        ("CAMBANG_GDE_PLATFORM_BACKED_COMPILED", "1" if selected_provider["implemented"] else "0"),
+        ("CAMBANG_GDE_PLATFORM_BACKED_COMPILED", "1" if gde_provider_compiled else "0"),
         ("CAMBANG_GDE_PLATFORM_PROVIDER_STATUS", _cpp_string_define_value(gde_platform_provider_status)),
     ])
     gde_env.VariantDir(gde_obj_dir, "src", duplicate=0)
@@ -911,7 +949,14 @@ if build_gde_graph:
     os.makedirs(gde_out_dir, exist_ok=True)
 
     godot_cpp_libdir = os.path.join("thirdparty", "godot-cpp", "bin")
-    godot_cpp_libname = f"godot-cpp.{gde_platform}.{godot_target}.{env['arch']}"
+    # godot-cpp always emits a "lib"-prefixed archive (libgodot-cpp...).
+    # GCC-style linkers re-add that prefix to -l names; MSVC's linker does
+    # not, so it needs the literal on-disk stem.
+    godot_cpp_libname = (
+        f"libgodot-cpp.{gde_platform}.{godot_target}.{env['arch']}"
+        if is_msvc
+        else f"godot-cpp.{gde_platform}.{godot_target}.{env['arch']}"
+    )
 
     godot_cpp_cmd = _godot_cpp_scons_command(
         env,
@@ -949,11 +994,10 @@ if build_gde_graph:
     gde_sources += _glob_cpp(gde_obj_dir, "pixels", "pattern")
     gde_sources += _glob_cpp(gde_obj_dir, "imaging", "synthetic")
 
-    if selected_provider["implemented"]:
+    if gde_provider_compiled:
         provider_source_parts = selected_provider["location"].split(os.sep)[1:]
         gde_sources += _glob_cpp(gde_obj_dir, *provider_source_parts)
         gde_env.Append(CPPDEFINES=selected_provider["defines"])
-        # MinGW link set typically needs mf + uuid in addition to the usual MF libs.
         gde_env.Append(LIBS=selected_provider["libs"])
 
     if windows_uses_mingw and windows_mingw_static_runtime:
@@ -1019,6 +1063,9 @@ if build_platform_runtime_validate:
 
     runtime_validate_progs = []
     validator = RUNTIME_VALIDATORS[gde_platform]
+    if validator.get("requires_msvc") and not is_msvc:
+        print(f"ERROR: the '{gde_platform}' runtime validator requires the MSVC toolchain (build with use_mingw=no).")
+        Exit(1)
     validate_env.Append(CPPDEFINES=validator["defines"])
     validate_env.Append(LIBS=validator["libs"])
     if host_platform == "windows" and not is_msvc:

@@ -1,6 +1,10 @@
-// CamBANG windows_winrt platform provider implementation.
+// CamBANG windows_winrt platform provider implementation (C++/WinRT).
 // See winrt_camera_provider.h for the architectural overview and
 // docs/provider_implementation_brief.md for the contract this adapts to.
+//
+// Backend surface: winrt::Windows::Media::Capture::MediaCapture with
+// Windows.Media.Capture.Frames MediaFrameReader delivering Bgra8 software
+// bitmaps. Requires a C++/WinRT-capable toolchain (MSVC + Windows SDK).
 
 #include "imaging/platform/windows/winrt_camera_provider.h"
 
@@ -12,11 +16,16 @@
 #endif
 #include <windows.h>
 
-#include <mfapi.h>
-#include <mferror.h>
-#include <mfidl.h>
-#include <mfreadwrite.h>
-#include <wrl/client.h>
+#include <MemoryBuffer.h> // ::Windows::Foundation::IMemoryBufferByteAccess
+
+#include <winrt/base.h>
+#include <winrt/Windows.Devices.Enumeration.h>
+#include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Graphics.Imaging.h>
+#include <winrt/Windows.Media.Capture.Frames.h>
+#include <winrt/Windows.Media.Capture.h>
+#include <winrt/Windows.Media.MediaProperties.h>
 
 #include <cstdarg>
 #include <cstdio>
@@ -26,7 +35,12 @@
 namespace cambang {
 namespace winrt_detail {
 
-using Microsoft::WRL::ComPtr;
+namespace wf = winrt::Windows::Foundation;
+namespace wde = winrt::Windows::Devices::Enumeration;
+namespace wgi = winrt::Windows::Graphics::Imaging;
+namespace wmc = winrt::Windows::Media::Capture;
+namespace wmcf = winrt::Windows::Media::Capture::Frames;
+namespace wmm = winrt::Windows::Media::MediaProperties;
 
 namespace {
 
@@ -40,38 +54,55 @@ void log_line(const char* fmt, ...) {
   std::fflush(stderr);
 }
 
-ProviderError provider_error_from_hresult(HRESULT hr) noexcept {
-  switch (hr) {
-    case E_ACCESSDENIED:
+ProviderError provider_error_from_hresult(winrt::hresult hr) noexcept {
+  switch (static_cast<int32_t>(hr)) {
+    case static_cast<int32_t>(0x80070005): // E_ACCESSDENIED (camera consent)
       return ProviderError::ERR_PLATFORM_CONSTRAINT;
-    case MF_E_INVALIDMEDIATYPE:
-    case MF_E_UNSUPPORTED_RATE:
-    case MF_E_TOPO_CODEC_NOT_FOUND:
+    case static_cast<int32_t>(0x800710DF): // ERROR_DEVICE_NOT_AVAILABLE
+    case static_cast<int32_t>(0x80070490): // ERROR_NOT_FOUND
       return ProviderError::ERR_PLATFORM_CONSTRAINT;
-    case MF_E_HW_MFT_FAILED_START_STREAMING:
-    case MF_E_VIDEO_RECORDING_DEVICE_INVALIDATED:
+    case static_cast<int32_t>(0x800705AA): // ERROR_NO_SYSTEM_RESOURCES
       return ProviderError::ERR_TRANSIENT_FAILURE;
     default:
       return ProviderError::ERR_PROVIDER_FAILED;
   }
 }
 
-std::wstring utf8_to_wide(const std::string& s) {
-  if (s.empty()) return std::wstring();
-  const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-  if (n <= 0) return std::wstring();
-  std::wstring w(static_cast<size_t>(n), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
-  return w;
-}
-
-std::string wide_to_utf8(const wchar_t* w, size_t len) {
-  if (!w || len == 0) return std::string();
-  const int n = WideCharToMultiByte(CP_UTF8, 0, w, static_cast<int>(len), nullptr, 0, nullptr, nullptr);
+std::string hstring_to_utf8(const winrt::hstring& h) {
+  if (h.empty()) return std::string();
+  const int n = WideCharToMultiByte(CP_UTF8, 0, h.c_str(), static_cast<int>(h.size()),
+                                    nullptr, 0, nullptr, nullptr);
   if (n <= 0) return std::string();
   std::string s(static_cast<size_t>(n), '\0');
-  WideCharToMultiByte(CP_UTF8, 0, w, static_cast<int>(len), s.data(), n, nullptr, nullptr);
+  WideCharToMultiByte(CP_UTF8, 0, h.c_str(), static_cast<int>(h.size()), s.data(), n,
+                      nullptr, nullptr);
   return s;
+}
+
+winrt::hstring utf8_to_hstring(const std::string& s) {
+  if (s.empty()) return winrt::hstring();
+  const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()),
+                                    nullptr, 0);
+  if (n <= 0) return winrt::hstring();
+  std::wstring w(static_cast<size_t>(n), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+  return winrt::hstring(w);
+}
+
+// Bounded completion wait for a WinRT async op on the control thread. On
+// timeout the operation is cancelled so the control thread does not stay
+// wedged behind it. Returns true only for successful completion.
+template <typename Async>
+bool wait_async_bounded(const Async& op, uint32_t timeout_ms) {
+  if (op.wait_for(std::chrono::milliseconds(timeout_ms)) ==
+      wf::AsyncStatus::Completed) {
+    return true;
+  }
+  try {
+    op.Cancel();
+  } catch (...) {
+  }
+  return false;
 }
 
 } // namespace
@@ -152,7 +183,13 @@ bool BoundedControlExecutor::run_bounded(
 }
 
 void BoundedControlExecutor::thread_main_() noexcept {
-  const HRESULT co_hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  bool apartment_initialized = false;
+  try {
+    winrt::init_apartment(winrt::apartment_type::multi_threaded);
+    apartment_initialized = true;
+  } catch (...) {
+    // Proceed uninitialised only if the thread already had an apartment.
+  }
   for (;;) {
     Entry entry;
     {
@@ -171,21 +208,19 @@ void BoundedControlExecutor::thread_main_() noexcept {
     }
     entry.done->set_value();
   }
-  if (SUCCEEDED(co_hr)) {
-    CoUninitialize();
+  if (apartment_initialized) {
+    winrt::uninit_apartment();
   }
 }
 
 // ---------------------------------------------------------------------------
-// Frame conversion
+// Frame conversion (Bgra8 rows -> packed RGBA/BGRA)
 // ---------------------------------------------------------------------------
 
 namespace {
 
-// Converts a locked BGRX row image (MFVideoFormat_RGB32) into the destination
-// packed format. dst must hold width*height*4 bytes.
-void convert_bgrx_rows(const uint8_t* scanline0,
-                       LONG pitch,
+void convert_bgra_rows(const uint8_t* scanline0,
+                       int32_t pitch,
                        uint32_t width,
                        uint32_t height,
                        uint32_t dst_fourcc,
@@ -202,7 +237,7 @@ void convert_bgrx_rows(const uint8_t* scanline0,
         out[4 * x + 2] = src[4 * x + 0];
         out[4 * x + 3] = 0xFF;
       }
-    } else { // BGRA: same channel order, force opaque alpha over the X byte.
+    } else { // BGRA: same channel order; force opaque alpha.
       std::memcpy(out, src, row_bytes);
       for (uint32_t x = 0; x < width; ++x) {
         out[4 * x + 3] = 0xFF;
@@ -211,41 +246,39 @@ void convert_bgrx_rows(const uint8_t* scanline0,
   }
 }
 
-bool convert_sample(IMFSample* sample,
-                    uint32_t width,
-                    uint32_t height,
-                    uint32_t dst_fourcc,
-                    uint8_t* dst) {
-  if (!sample) return false;
-  ComPtr<IMFMediaBuffer> buffer;
-  if (FAILED(sample->ConvertToContiguousBuffer(&buffer)) || !buffer) {
+// Copies a Bgra8 SoftwareBitmap into dst (width*height*4, requested fourcc).
+bool convert_software_bitmap(const wgi::SoftwareBitmap& bitmap,
+                             uint32_t width,
+                             uint32_t height,
+                             uint32_t dst_fourcc,
+                             uint8_t* dst) {
+  if (!bitmap || bitmap.BitmapPixelFormat() != wgi::BitmapPixelFormat::Bgra8) {
     return false;
   }
-
-  ComPtr<IMF2DBuffer> buffer2d;
-  if (SUCCEEDED(buffer.As(&buffer2d)) && buffer2d) {
-    BYTE* scanline0 = nullptr;
-    LONG pitch = 0;
-    if (SUCCEEDED(buffer2d->Lock2D(&scanline0, &pitch)) && scanline0) {
-      convert_bgrx_rows(scanline0, pitch, width, height, dst_fourcc, dst);
-      buffer2d->Unlock2D();
-      return true;
-    }
-  }
-
-  BYTE* data = nullptr;
-  DWORD max_len = 0;
-  DWORD cur_len = 0;
-  if (FAILED(buffer->Lock(&data, &max_len, &cur_len)) || !data) {
+  if (static_cast<uint32_t>(bitmap.PixelWidth()) != width ||
+      static_cast<uint32_t>(bitmap.PixelHeight()) != height) {
     return false;
   }
-  const size_t needed = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
+  wgi::BitmapBuffer buffer = bitmap.LockBuffer(wgi::BitmapBufferAccessMode::Read);
   bool ok = false;
-  if (cur_len >= needed) {
-    convert_bgrx_rows(data, static_cast<LONG>(width) * 4, width, height, dst_fourcc, dst);
-    ok = true;
+  {
+    wf::IMemoryBufferReference reference = buffer.CreateReference();
+    auto byte_access =
+        reference.as<::Windows::Foundation::IMemoryBufferByteAccess>();
+    uint8_t* data = nullptr;
+    uint32_t capacity = 0;
+    if (SUCCEEDED(byte_access->GetBuffer(&data, &capacity)) && data) {
+      const wgi::BitmapPlaneDescription plane = buffer.GetPlaneDescription(0);
+      const uint8_t* scanline0 = data + plane.StartIndex;
+      const size_t needed = static_cast<size_t>(plane.Stride) * height;
+      if (capacity >= plane.StartIndex + needed) {
+        convert_bgra_rows(scanline0, plane.Stride, width, height, dst_fourcc, dst);
+        ok = true;
+      }
+    }
+    reference.Close();
   }
-  buffer->Unlock();
+  buffer.Close();
   return ok;
 }
 
@@ -290,61 +323,32 @@ struct CaptureWaiter {
   int64_t sample_time_100ns = 0;
 };
 
-class DeviceReaderCallback;
-
-struct DeviceBackend {
-  // Serializes reader realization/geometry configuration across the core
-  // thread and capture workers without either holding provider state_mutex_.
+struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
+  // Serializes reader realization/geometry/start across the core thread and
+  // capture workers without either holding provider state_mutex_.
   // Ordering: configure_mutex before m; state_mutex_ is never taken inside.
   std::mutex configure_mutex;
 
   std::mutex m;
-  ComPtr<IMFMediaSource> source;
-  ComPtr<IMFSourceReader> reader;
-  ComPtr<DeviceReaderCallback> callback;
+  wmc::MediaCapture capture{nullptr};
+  wmcf::MediaFrameSource frame_source{nullptr};
+  wmcf::MediaFrameReader reader{nullptr};
+  winrt::event_token frame_token{};
+  winrt::event_token failed_token{};
+  bool reader_started = false;
 
   uint64_t device_instance_id = 0;
   uint64_t root_id = 0;
   uint64_t acquisition_session_id = 0; // core-issued native id once realized
   CBProviderStrand* strand = nullptr;  // provider outlives all backends
 
-  bool closed = false;        // set before MF objects are released
-  bool pump_active = false;   // one outstanding async ReadSample
-  bool reader_failed = false;
+  bool closed = false;   // set before WinRT objects are released
+  bool failed = false;
   uint32_t configured_w = 0;
   uint32_t configured_h = 0;
 
   std::shared_ptr<StreamProduction> stream;
   std::deque<std::shared_ptr<CaptureWaiter>> waiters;
-
-  // Caller holds m. Issues the next async ReadSample when demand exists.
-  void ensure_pump_locked() {
-    if (closed || reader_failed || pump_active || !reader) {
-      return;
-    }
-    const bool need = (stream && stream->producing) || !waiters.empty();
-    if (!need) {
-      return;
-    }
-    const HRESULT hr = reader->ReadSample(
-        static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM),
-        0, nullptr, nullptr, nullptr, nullptr);
-    if (SUCCEEDED(hr)) {
-      pump_active = true;
-    } else {
-      const ProviderError err = provider_error_from_hresult(hr);
-      reader_failed = true;
-      fail_all_waiters_locked(err);
-      if (strand) {
-        strand->post_device_error(device_instance_id, err);
-        if (stream && stream->producing) {
-          stream->producing = false;
-          strand->post_stream_error(stream->stream_id, err);
-          strand->post_stream_stopped(stream->stream_id, err);
-        }
-      }
-    }
-  }
 
   // Caller holds m.
   void fail_all_waiters_locked(ProviderError error) {
@@ -358,6 +362,23 @@ struct DeviceBackend {
       }
     }
     waiters.clear();
+  }
+
+  // Caller holds m. Latches backend failure and posts the truthful facts.
+  void latch_failure_locked(ProviderError error) {
+    if (failed) {
+      return;
+    }
+    failed = true;
+    fail_all_waiters_locked(error);
+    if (strand) {
+      strand->post_device_error(device_instance_id, error);
+      if (stream && stream->producing) {
+        stream->producing = false;
+        strand->post_stream_error(stream->stream_id, error);
+        strand->post_stream_stopped(stream->stream_id, error);
+      }
+    }
   }
 };
 
@@ -392,7 +413,9 @@ std::optional<SourcedFact<ImageAcquisitionTiming>> make_acquisition_timing(
   if (sample_time_100ns < 0) {
     return std::nullopt;
   }
-  const auto tick_period = TickPeriod::create(100, 1); // MF marks tick at 100ns
+  // WinRT SystemRelativeTime marks tick at 100ns in the backend's own
+  // system-relative monotonic domain.
+  const auto tick_period = TickPeriod::create(100, 1);
   if (!tick_period) {
     return std::nullopt;
   }
@@ -408,176 +431,90 @@ std::optional<SourcedFact<ImageAcquisitionTiming>> make_acquisition_timing(
   return SourcedFact<ImageAcquisitionTiming>{*timing, FactOrigin::NATIVE_REPORTED};
 }
 
+// Routes one arrived frame to the pending capture waiter (non-lossy capture
+// truth first) and then to the repeating stream pool. Caller holds backend.m.
+void deliver_frame_locked(DeviceBackend& backend,
+                          const wgi::SoftwareBitmap& bitmap,
+                          int64_t sample_time_100ns,
+                          bool has_sample_time) {
+  if (!backend.waiters.empty()) {
+    std::shared_ptr<CaptureWaiter> waiter = backend.waiters.front();
+    backend.waiters.pop_front();
+    auto bytes = std::make_shared<std::vector<uint8_t>>();
+    bytes->resize(static_cast<size_t>(waiter->width) *
+                  static_cast<size_t>(waiter->height) * 4u);
+    const bool ok = convert_software_bitmap(bitmap, waiter->width, waiter->height,
+                                            waiter->fourcc, bytes->data());
+    std::lock_guard<std::mutex> wl(waiter->m);
+    if (!waiter->done) {
+      waiter->done = true;
+      waiter->ok = ok;
+      waiter->error = ok ? ProviderError::OK : ProviderError::ERR_PROVIDER_FAILED;
+      if (ok) {
+        waiter->bytes = std::move(bytes);
+        waiter->has_sample_time = has_sample_time;
+        waiter->sample_time_100ns = sample_time_100ns;
+      }
+      waiter->cv.notify_all();
+    }
+  }
+
+  StreamProduction* s = backend.stream.get();
+  if (!s || !s->producing || !backend.strand) {
+    return;
+  }
+
+  std::shared_ptr<StreamProduction::BufferSlot> slot;
+  const size_t n = s->pool.size();
+  for (size_t probe = 0; probe < n; ++probe) {
+    const size_t idx = (s->cursor + probe) % n;
+    auto& cand = s->pool[idx];
+    bool expected = false;
+    if (cand && cand->in_use.compare_exchange_strong(expected, true,
+                                                     std::memory_order_acq_rel,
+                                                     std::memory_order_acquire)) {
+      slot = cand;
+      s->cursor = (idx + 1) % n;
+      break;
+    }
+  }
+  if (!slot) {
+    ++s->pool_exhausted_drops;
+    if ((s->pool_exhausted_drops & (s->pool_exhausted_drops - 1)) == 0) {
+      log_line("stream=%llu frame pool exhausted (drops=%llu)",
+               static_cast<unsigned long long>(s->stream_id),
+               static_cast<unsigned long long>(s->pool_exhausted_drops));
+    }
+    return; // repeating frames are lossy
+  }
+
+  if (!convert_software_bitmap(bitmap, s->width, s->height, s->fourcc,
+                               slot->bytes.data())) {
+    slot->in_use.store(false, std::memory_order_release);
+    return;
+  }
+
+  FrameView fv{};
+  fv.device_instance_id = s->device_instance_id;
+  fv.stream_id = s->stream_id;
+  fv.acquisition_session_id = s->acquisition_session_id;
+  fv.capture_id = 0;
+  fv.width = s->width;
+  fv.height = s->height;
+  fv.format_fourcc = s->fourcc;
+  if (has_sample_time) {
+    fv.acquisition_timing = make_acquisition_timing(sample_time_100ns);
+  }
+  fv.data = slot->bytes.data();
+  fv.size_bytes = slot->bytes.size();
+  fv.stride_bytes = s->width * 4u;
+  fv.requested_retained_plan = s->plan;
+  fv.release = &release_stream_frame;
+  fv.release_user = new StreamFrameLease{slot};
+  backend.strand->post_frame(fv);
+}
+
 } // namespace
-
-// ---------------------------------------------------------------------------
-// IMFSourceReaderCallback
-// ---------------------------------------------------------------------------
-
-class DeviceReaderCallback final : public IMFSourceReaderCallback {
-public:
-  explicit DeviceReaderCallback(std::weak_ptr<DeviceBackend> backend)
-      : backend_(std::move(backend)) {}
-
-  // IUnknown
-  STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
-    if (!ppv) return E_POINTER;
-    if (riid == IID_IUnknown || riid == __uuidof(IMFSourceReaderCallback)) {
-      *ppv = static_cast<IMFSourceReaderCallback*>(this);
-      AddRef();
-      return S_OK;
-    }
-    *ppv = nullptr;
-    return E_NOINTERFACE;
-  }
-  STDMETHODIMP_(ULONG) AddRef() override {
-    return static_cast<ULONG>(refs_.fetch_add(1, std::memory_order_acq_rel) + 1);
-  }
-  STDMETHODIMP_(ULONG) Release() override {
-    const ULONG left = static_cast<ULONG>(refs_.fetch_sub(1, std::memory_order_acq_rel) - 1);
-    if (left == 0) {
-      delete this;
-    }
-    return left;
-  }
-
-  // IMFSourceReaderCallback
-  STDMETHODIMP OnReadSample(HRESULT hrStatus,
-                            DWORD /*dwStreamIndex*/,
-                            DWORD dwStreamFlags,
-                            LONGLONG llTimestamp,
-                            IMFSample* pSample) override {
-    std::shared_ptr<DeviceBackend> backend = backend_.lock();
-    if (!backend) {
-      return S_OK;
-    }
-    std::lock_guard<std::mutex> lock(backend->m);
-    backend->pump_active = false;
-    if (backend->closed) {
-      return S_OK;
-    }
-
-    if (FAILED(hrStatus) || (dwStreamFlags & MF_SOURCE_READERF_ERROR) != 0) {
-      const ProviderError err = FAILED(hrStatus)
-                                    ? provider_error_from_hresult(hrStatus)
-                                    : ProviderError::ERR_PROVIDER_FAILED;
-      backend->reader_failed = true;
-      backend->fail_all_waiters_locked(err);
-      if (backend->strand) {
-        backend->strand->post_device_error(backend->device_instance_id, err);
-        if (backend->stream && backend->stream->producing) {
-          backend->stream->producing = false;
-          backend->strand->post_stream_error(backend->stream->stream_id, err);
-          backend->strand->post_stream_stopped(backend->stream->stream_id, err);
-        }
-      }
-      return S_OK;
-    }
-
-    if (pSample) {
-      deliver_sample_locked_(*backend, pSample, llTimestamp);
-    }
-    backend->ensure_pump_locked();
-    return S_OK;
-  }
-
-  STDMETHODIMP OnFlush(DWORD /*dwStreamIndex*/) override { return S_OK; }
-  STDMETHODIMP OnEvent(DWORD /*dwStreamIndex*/, IMFMediaEvent* /*pEvent*/) override {
-    return S_OK;
-  }
-
-private:
-  ~DeviceReaderCallback() = default;
-
-  static void deliver_sample_locked_(DeviceBackend& backend,
-                                     IMFSample* sample,
-                                     LONGLONG timestamp_100ns) {
-    // Still-capture waiters take priority: they are non-lossy capture truth.
-    if (!backend.waiters.empty()) {
-      std::shared_ptr<CaptureWaiter> waiter = backend.waiters.front();
-      backend.waiters.pop_front();
-      auto bytes = std::make_shared<std::vector<uint8_t>>();
-      bytes->resize(static_cast<size_t>(waiter->width) *
-                    static_cast<size_t>(waiter->height) * 4u);
-      const bool ok = (waiter->width == backend.configured_w &&
-                       waiter->height == backend.configured_h) &&
-                      convert_sample(sample, waiter->width, waiter->height,
-                                     waiter->fourcc, bytes->data());
-      std::lock_guard<std::mutex> wl(waiter->m);
-      if (!waiter->done) {
-        waiter->done = true;
-        waiter->ok = ok;
-        waiter->error = ok ? ProviderError::OK : ProviderError::ERR_PROVIDER_FAILED;
-        if (ok) {
-          waiter->bytes = std::move(bytes);
-          waiter->has_sample_time = true;
-          waiter->sample_time_100ns = static_cast<int64_t>(timestamp_100ns);
-        }
-        waiter->cv.notify_all();
-      }
-    }
-
-    StreamProduction* s = backend.stream.get();
-    if (!s || !s->producing || !backend.strand) {
-      return;
-    }
-    if (s->width != backend.configured_w || s->height != backend.configured_h) {
-      return; // stale geometry; drop (repeating frames are lossy)
-    }
-
-    // Acquire a pool slot without per-frame allocation; exhaustion drops the
-    // frame (lossy class).
-    std::shared_ptr<StreamProduction::BufferSlot> slot;
-    const size_t n = s->pool.size();
-    for (size_t probe = 0; probe < n; ++probe) {
-      const size_t idx = (s->cursor + probe) % n;
-      auto& cand = s->pool[idx];
-      bool expected = false;
-      if (cand && cand->in_use.compare_exchange_strong(expected, true,
-                                                       std::memory_order_acq_rel,
-                                                       std::memory_order_acquire)) {
-        slot = cand;
-        s->cursor = (idx + 1) % n;
-        break;
-      }
-    }
-    if (!slot) {
-      ++s->pool_exhausted_drops;
-      if ((s->pool_exhausted_drops & (s->pool_exhausted_drops - 1)) == 0) {
-        log_line("stream=%llu frame pool exhausted (drops=%llu)",
-                 static_cast<unsigned long long>(s->stream_id),
-                 static_cast<unsigned long long>(s->pool_exhausted_drops));
-      }
-      return;
-    }
-
-    if (!convert_sample(sample, s->width, s->height, s->fourcc, slot->bytes.data())) {
-      slot->in_use.store(false, std::memory_order_release);
-      return;
-    }
-
-    FrameView fv{};
-    fv.device_instance_id = s->device_instance_id;
-    fv.stream_id = s->stream_id;
-    fv.acquisition_session_id = s->acquisition_session_id;
-    fv.capture_id = 0;
-    fv.width = s->width;
-    fv.height = s->height;
-    fv.format_fourcc = s->fourcc;
-    fv.acquisition_timing =
-        make_acquisition_timing(static_cast<int64_t>(timestamp_100ns));
-    fv.data = slot->bytes.data();
-    fv.size_bytes = slot->bytes.size();
-    fv.stride_bytes = s->width * 4u;
-    fv.requested_retained_plan = s->plan;
-    fv.release = &release_stream_frame;
-    fv.release_user = new StreamFrameLease{slot};
-    backend.strand->post_frame(fv);
-  }
-
-  std::atomic<int64_t> refs_{1};
-  std::weak_ptr<DeviceBackend> backend_;
-};
 
 } // namespace winrt_detail
 
@@ -587,10 +524,14 @@ private:
 
 using winrt_detail::BoundedControlExecutor;
 using winrt_detail::CaptureWaiter;
-using winrt_detail::ComPtr;
 using winrt_detail::DeviceBackend;
-using winrt_detail::DeviceReaderCallback;
 using winrt_detail::StreamProduction;
+namespace wf = winrt_detail::wf;
+namespace wde = winrt_detail::wde;
+namespace wgi = winrt_detail::wgi;
+namespace wmc = winrt_detail::wmc;
+namespace wmcf = winrt_detail::wmcf;
+namespace wmm = winrt_detail::wmm;
 
 namespace {
 
@@ -709,28 +650,6 @@ ProviderResult WinrtCameraProvider::initialize(IProviderCallbacks* callbacks) {
     return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
   }
 
-  auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
-  auto hr_out = std::make_shared<HRESULT>(E_FAIL);
-  const bool completed = control_.run_bounded(
-      [hr_out](const BoundedControlExecutor::AbandonToken& t) {
-        const HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_LITE);
-        if (t.abandoned.load(std::memory_order_acquire)) {
-          if (SUCCEEDED(hr)) {
-            MFShutdown();
-          }
-          return;
-        }
-        *hr_out = hr;
-      },
-      token, kControlJobTimeoutMs);
-  if (!completed || FAILED(*hr_out)) {
-    control_.stop();
-    return ProviderResult::failure(
-        completed ? winrt_detail::provider_error_from_hresult(*hr_out)
-                  : ProviderError::ERR_TIMEOUT);
-  }
-  mf_started_ = true;
-
   callbacks_ = callbacks;
   if (!strand_.start(callbacks_, "winrt_provider")) {
     callbacks_ = nullptr;
@@ -762,51 +681,34 @@ ProviderResult WinrtCameraProvider::enumerate_endpoints(
 
   struct EnumResult {
     std::vector<CameraEndpoint> endpoints;
-    HRESULT hr = E_FAIL;
+    ProviderError error = ProviderError::ERR_PROVIDER_FAILED;
+    bool ok = false;
   };
   auto result = std::make_shared<EnumResult>();
   auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
   const bool completed = control_.run_bounded(
       [result](const BoundedControlExecutor::AbandonToken& t) {
         EnumResult local;
-        ComPtr<IMFAttributes> attrs;
-        HRESULT hr = MFCreateAttributes(&attrs, 1);
-        if (SUCCEEDED(hr)) {
-          hr = attrs->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
-                              MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
-        }
-        IMFActivate** activates = nullptr;
-        UINT32 count = 0;
-        if (SUCCEEDED(hr)) {
-          hr = MFEnumDeviceSources(attrs.Get(), &activates, &count);
-        }
-        if (SUCCEEDED(hr)) {
-          for (UINT32 i = 0; i < count; ++i) {
-            wchar_t* link = nullptr;
-            UINT32 link_len = 0;
-            wchar_t* name = nullptr;
-            UINT32 name_len = 0;
-            if (SUCCEEDED(activates[i]->GetAllocatedString(
-                    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
-                    &link, &link_len)) && link) {
+        try {
+          auto op = wde::DeviceInformation::FindAllAsync(
+              wde::DeviceClass::VideoCapture);
+          if (!winrt_detail::wait_async_bounded(op, kControlJobTimeoutMs - 500)) {
+            local.error = ProviderError::ERR_TIMEOUT;
+          } else {
+            for (const wde::DeviceInformation& info : op.GetResults()) {
               CameraEndpoint ep;
-              ep.hardware_id = winrt_detail::wide_to_utf8(link, link_len);
-              if (SUCCEEDED(activates[i]->GetAllocatedString(
-                      MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &name, &name_len)) &&
-                  name) {
-                ep.name = winrt_detail::wide_to_utf8(name, name_len);
-                CoTaskMemFree(name);
-              }
-              CoTaskMemFree(link);
+              ep.hardware_id = winrt_detail::hstring_to_utf8(info.Id());
+              ep.name = winrt_detail::hstring_to_utf8(info.Name());
               if (!ep.hardware_id.empty()) {
                 local.endpoints.push_back(std::move(ep));
               }
             }
-            activates[i]->Release();
+            local.ok = true;
           }
-          CoTaskMemFree(activates);
+        } catch (const winrt::hresult_error& e) {
+          local.error = winrt_detail::provider_error_from_hresult(e.code());
+        } catch (...) {
         }
-        local.hr = hr;
         if (!t.abandoned.load(std::memory_order_acquire)) {
           *result = std::move(local);
         }
@@ -815,9 +717,8 @@ ProviderResult WinrtCameraProvider::enumerate_endpoints(
   if (!completed) {
     return ProviderResult::failure(ProviderError::ERR_TIMEOUT);
   }
-  if (FAILED(result->hr)) {
-    return ProviderResult::failure(
-        winrt_detail::provider_error_from_hresult(result->hr));
+  if (!result->ok) {
+    return ProviderResult::failure(result->error);
   }
   out_endpoints = std::move(result->endpoints);
   return ProviderResult::success();
@@ -841,47 +742,77 @@ ProviderResult WinrtCameraProvider::open_device(
     return ProviderResult::failure(ProviderError::ERR_BUSY);
   }
 
+  auto backend = std::make_shared<DeviceBackend>();
+  backend->device_instance_id = device_instance_id;
+  backend->root_id = root_id;
+  backend->strand = &strand_;
+
   struct OpenResult {
-    ComPtr<IMFMediaSource> source;
-    HRESULT hr = E_FAIL;
+    ProviderError error = ProviderError::ERR_PROVIDER_FAILED;
+    bool ok = false;
   };
   auto result = std::make_shared<OpenResult>();
   auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
-  const std::wstring wide_link = winrt_detail::utf8_to_wide(hardware_id);
+  const winrt::hstring device_hid = winrt_detail::utf8_to_hstring(hardware_id);
   const bool completed = control_.run_bounded(
-      [result, wide_link](const BoundedControlExecutor::AbandonToken& t) {
-        ComPtr<IMFMediaSource> source;
-        ComPtr<IMFAttributes> attrs;
-        HRESULT hr = MFCreateAttributes(&attrs, 2);
-        if (SUCCEEDED(hr)) {
-          hr = attrs->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
-                              MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
-        }
-        if (SUCCEEDED(hr)) {
-          hr = attrs->SetString(
-              MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
-              wide_link.c_str());
-        }
-        if (SUCCEEDED(hr)) {
-          hr = MFCreateDeviceSource(attrs.Get(), &source);
+      [result, backend, device_hid](const BoundedControlExecutor::AbandonToken& t) {
+        OpenResult local;
+        wmc::MediaCapture capture{nullptr};
+        try {
+          capture = wmc::MediaCapture();
+          wmc::MediaCaptureInitializationSettings settings;
+          settings.VideoDeviceId(device_hid);
+          settings.StreamingCaptureMode(wmc::StreamingCaptureMode::Video);
+          settings.SharingMode(wmc::MediaCaptureSharingMode::ExclusiveControl);
+          settings.MemoryPreference(wmc::MediaCaptureMemoryPreference::Cpu);
+          auto op = capture.InitializeAsync(settings);
+          if (!winrt_detail::wait_async_bounded(op, kControlJobTimeoutMs - 500)) {
+            local.error = ProviderError::ERR_TIMEOUT;
+          } else {
+            op.GetResults();
+            local.ok = true;
+          }
+        } catch (const winrt::hresult_error& e) {
+          local.error = winrt_detail::provider_error_from_hresult(e.code());
+          winrt_detail::log_line("MediaCapture initialize failed hr=0x%08X",
+                                 static_cast<uint32_t>(e.code()));
+        } catch (...) {
         }
         if (t.abandoned.load(std::memory_order_acquire)) {
           // Caller gave up: the acquisition is orphaned; release it here.
-          if (source) {
-            source->Shutdown();
+          if (local.ok && capture) {
+            capture.Close();
           }
           return;
         }
-        result->hr = hr;
-        result->source = std::move(source);
+        if (local.ok) {
+          std::weak_ptr<DeviceBackend> weak = backend;
+          std::lock_guard<std::mutex> bl(backend->m);
+          backend->capture = capture;
+          backend->failed_token = capture.Failed(
+              [weak](const wmc::MediaCapture&,
+                     const wmc::MediaCaptureFailedEventArgs& args) {
+                std::shared_ptr<DeviceBackend> strong = weak.lock();
+                if (!strong) {
+                  return;
+                }
+                std::lock_guard<std::mutex> bl2(strong->m);
+                if (strong->closed) {
+                  return;
+                }
+                strong->latch_failure_locked(
+                    winrt_detail::provider_error_from_hresult(
+                        winrt::hresult(static_cast<int32_t>(args.Code()))));
+              });
+        }
+        *result = local;
       },
       token, kControlJobTimeoutMs);
   if (!completed) {
     return ProviderResult::failure(ProviderError::ERR_TIMEOUT);
   }
-  if (FAILED(result->hr) || !result->source) {
-    return ProviderResult::failure(
-        winrt_detail::provider_error_from_hresult(result->hr));
+  if (!result->ok) {
+    return ProviderResult::failure(result->error);
   }
 
   dev.hardware_id = hardware_id;
@@ -890,11 +821,7 @@ ProviderResult WinrtCameraProvider::open_device(
   dev.open = true;
   dev.stream_id = 0;
   dev.native_id = alloc_native_id_(NativeObjectType::Device);
-  dev.backend = std::make_shared<DeviceBackend>();
-  dev.backend->device_instance_id = device_instance_id;
-  dev.backend->root_id = root_id;
-  dev.backend->strand = &strand_;
-  dev.backend->source = std::move(result->source);
+  dev.backend = backend;
 
   emit_native_created_(dev.native_id, NativeObjectType::Device, root_id,
                        device_instance_id, 0, 0);
@@ -908,54 +835,134 @@ ProviderResult WinrtCameraProvider::ensure_reader_realized_(
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
   std::lock_guard<std::mutex> configure_lock(backend->configure_mutex);
-  ComPtr<IMFMediaSource> source;
   {
     std::lock_guard<std::mutex> bl(backend->m);
     if (backend->closed) {
       return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
     }
     if (backend->reader) {
-      return backend->reader_failed
+      return backend->failed
                  ? ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED)
                  : ProviderResult::success();
     }
-    source = backend->source;
+    if (!backend->capture) {
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+    }
   }
-  if (!source) {
-    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
-  }
-
-  // COM callback objects start at refcount 1; adopt without AddRef.
-  ComPtr<DeviceReaderCallback> callback;
-  callback.Attach(new DeviceReaderCallback(backend));
 
   struct RealizeResult {
-    ComPtr<IMFSourceReader> reader;
-    HRESULT hr = E_FAIL;
+    ProviderError error = ProviderError::ERR_PROVIDER_FAILED;
+    bool ok = false;
   };
   auto result = std::make_shared<RealizeResult>();
   auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
   const bool completed = control_.run_bounded(
-      [result, source, callback](const BoundedControlExecutor::AbandonToken& t) {
-        ComPtr<IMFSourceReader> reader;
-        ComPtr<IMFAttributes> attrs;
-        HRESULT hr = MFCreateAttributes(&attrs, 2);
-        if (SUCCEEDED(hr)) {
-          hr = attrs->SetUnknown(MF_SOURCE_READER_ASYNC_CALLBACK, callback.Get());
-        }
-        if (SUCCEEDED(hr)) {
-          // Advanced video processing: format conversion to RGB32 plus
-          // scaling, so effective-config geometry can be honored exactly.
-          hr = attrs->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, TRUE);
-        }
-        if (SUCCEEDED(hr)) {
-          hr = MFCreateSourceReaderFromMediaSource(source.Get(), attrs.Get(), &reader);
+      [result, backend](const BoundedControlExecutor::AbandonToken& t) {
+        RealizeResult local;
+        wmcf::MediaFrameSource source{nullptr};
+        wmcf::MediaFrameReader reader{nullptr};
+        try {
+          wmc::MediaCapture capture{nullptr};
+          {
+            std::lock_guard<std::mutex> bl(backend->m);
+            capture = backend->capture;
+          }
+          if (!capture) {
+            local.error = ProviderError::ERR_BAD_STATE;
+          } else {
+            // Pick the color video source (prefer record, accept preview).
+            for (const auto& kv : capture.FrameSources()) {
+              const wmcf::MediaFrameSource candidate = kv.Value();
+              const auto info = candidate.Info();
+              if (info.SourceKind() != wmcf::MediaFrameSourceKind::Color) {
+                continue;
+              }
+              if (info.MediaStreamType() ==
+                  winrt::Windows::Media::Capture::MediaStreamType::VideoRecord) {
+                source = candidate;
+                break;
+              }
+              if (!source &&
+                  info.MediaStreamType() ==
+                      winrt::Windows::Media::Capture::MediaStreamType::VideoPreview) {
+                source = candidate;
+              }
+            }
+            if (!source) {
+              local.error = ProviderError::ERR_PLATFORM_CONSTRAINT;
+              winrt_detail::log_line("no color video frame source on device");
+            } else {
+              auto op = capture.CreateFrameReaderAsync(
+                  source, wmm::MediaEncodingSubtypes::Bgra8());
+              if (!winrt_detail::wait_async_bounded(op, kControlJobTimeoutMs - 500)) {
+                local.error = ProviderError::ERR_TIMEOUT;
+              } else {
+                reader = op.GetResults();
+                reader.AcquisitionMode(
+                    wmcf::MediaFrameReaderAcquisitionMode::Realtime);
+                local.ok = true;
+              }
+            }
+          }
+        } catch (const winrt::hresult_error& e) {
+          local.error = winrt_detail::provider_error_from_hresult(e.code());
+          winrt_detail::log_line("frame reader realization failed hr=0x%08X",
+                                 static_cast<uint32_t>(e.code()));
+        } catch (...) {
         }
         if (t.abandoned.load(std::memory_order_acquire)) {
-          return; // reader ComPtr releases here; source stays owned by backend
+          if (reader) {
+            reader.Close();
+          }
+          return;
         }
-        result->hr = hr;
-        result->reader = std::move(reader);
+        if (local.ok) {
+          std::weak_ptr<DeviceBackend> weak = backend;
+          std::lock_guard<std::mutex> bl(backend->m);
+          if (backend->closed) {
+            local.ok = false;
+            local.error = ProviderError::ERR_BAD_STATE;
+          } else {
+            backend->frame_source = source;
+            backend->reader = reader;
+            backend->frame_token = reader.FrameArrived(
+                [weak](const wmcf::MediaFrameReader& rdr,
+                       const wmcf::MediaFrameArrivedEventArgs&) {
+                  std::shared_ptr<DeviceBackend> strong = weak.lock();
+                  if (!strong) {
+                    return;
+                  }
+                  wmcf::MediaFrameReference frame = rdr.TryAcquireLatestFrame();
+                  if (!frame) {
+                    return;
+                  }
+                  const auto video = frame.VideoMediaFrame();
+                  if (!video) {
+                    return;
+                  }
+                  const wgi::SoftwareBitmap bitmap = video.SoftwareBitmap();
+                  if (!bitmap) {
+                    return;
+                  }
+                  int64_t mark_100ns = 0;
+                  bool has_mark = false;
+                  if (const auto ts = frame.SystemRelativeTime()) {
+                    mark_100ns = ts.Value().count();
+                    has_mark = true;
+                  }
+                  std::lock_guard<std::mutex> bl2(strong->m);
+                  if (strong->closed) {
+                    return;
+                  }
+                  winrt_detail::deliver_frame_locked(*strong, bitmap,
+                                                     mark_100ns, has_mark);
+                });
+          }
+        }
+        if (!local.ok && reader) {
+          reader.Close();
+        }
+        *result = local;
       },
       token, kControlJobTimeoutMs);
   if (!completed) {
@@ -963,26 +970,16 @@ ProviderResult WinrtCameraProvider::ensure_reader_realized_(
                            static_cast<unsigned long long>(backend->device_instance_id));
     return ProviderResult::failure(ProviderError::ERR_TIMEOUT);
   }
-  if (FAILED(result->hr) || !result->reader) {
-    winrt_detail::log_line("reader realization failed hr=0x%08lX (device=%llu)",
-                           static_cast<unsigned long>(result->hr),
-                           static_cast<unsigned long long>(backend->device_instance_id));
-    return ProviderResult::failure(
-        winrt_detail::provider_error_from_hresult(result->hr));
+  if (!result->ok) {
+    return ProviderResult::failure(result->error);
   }
 
-  // AcquisitionSession native truth: the concretely realized source reader.
+  // AcquisitionSession native truth: the concretely realized frame reader.
   const uint64_t session_id = alloc_native_id_(NativeObjectType::AcquisitionSession);
   uint64_t root_id = 0;
   uint64_t device_instance_id = 0;
   {
     std::lock_guard<std::mutex> bl(backend->m);
-    if (backend->closed) {
-      // Raced with device close: release the freshly created reader.
-      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
-    }
-    backend->reader = std::move(result->reader);
-    backend->callback = callback;
     backend->acquisition_session_id = session_id;
     root_id = backend->root_id;
     device_instance_id = backend->device_instance_id;
@@ -1007,90 +1004,162 @@ ProviderResult WinrtCameraProvider::ensure_reader_geometry_(
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
   std::lock_guard<std::mutex> configure_lock(backend->configure_mutex);
-
-  ComPtr<IMFSourceReader> reader;
   {
     std::lock_guard<std::mutex> bl(backend->m);
-    if (backend->closed || !backend->reader || backend->reader_failed) {
+    if (backend->closed || !backend->reader || backend->failed) {
       return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
     }
     if (backend->configured_w == width && backend->configured_h == height) {
       return ProviderResult::success();
     }
     // A started stream pins the negotiated geometry: reconfiguring the shared
-    // reader mid-stream would disrupt live delivery. Deterministic failure.
+    // source mid-stream would disrupt live delivery. Deterministic failure.
     if (backend->stream && backend->stream->producing) {
       return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
     }
-    reader = backend->reader;
   }
 
   struct ConfigureResult {
-    HRESULT hr = E_FAIL;
-    uint32_t actual_w = 0;
-    uint32_t actual_h = 0;
+    ProviderError error = ProviderError::ERR_PROVIDER_FAILED;
+    bool ok = false;
   };
   auto result = std::make_shared<ConfigureResult>();
   auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
   const bool completed = control_.run_bounded(
-      [result, reader, width, height](const BoundedControlExecutor::AbandonToken& t) {
+      [result, backend, width, height](const BoundedControlExecutor::AbandonToken& t) {
         ConfigureResult local;
-        ComPtr<IMFMediaType> mt;
-        HRESULT hr = MFCreateMediaType(&mt);
-        if (SUCCEEDED(hr)) hr = mt->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-        if (SUCCEEDED(hr)) hr = mt->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
-        if (SUCCEEDED(hr)) {
-          hr = MFSetAttributeSize(mt.Get(), MF_MT_FRAME_SIZE, width, height);
-        }
-        if (SUCCEEDED(hr)) {
-          hr = reader->SetStreamSelection(
-              static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), TRUE);
-        }
-        if (SUCCEEDED(hr)) {
-          hr = reader->SetCurrentMediaType(
-              static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), nullptr,
-              mt.Get());
-        }
-        if (SUCCEEDED(hr)) {
-          ComPtr<IMFMediaType> actual;
-          hr = reader->GetCurrentMediaType(
-              static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), &actual);
-          if (SUCCEEDED(hr)) {
-            UINT32 aw = 0;
-            UINT32 ah = 0;
-            if (SUCCEEDED(MFGetAttributeSize(actual.Get(), MF_MT_FRAME_SIZE, &aw, &ah))) {
-              local.actual_w = aw;
-              local.actual_h = ah;
+        try {
+          wmcf::MediaFrameSource source{nullptr};
+          {
+            std::lock_guard<std::mutex> bl(backend->m);
+            source = backend->frame_source;
+          }
+          if (!source) {
+            local.error = ProviderError::ERR_BAD_STATE;
+          } else {
+            wmcf::MediaFrameFormat chosen{nullptr};
+            for (const wmcf::MediaFrameFormat& candidate : source.SupportedFormats()) {
+              const auto vf = candidate.VideoFormat();
+              if (vf && vf.Width() == width && vf.Height() == height) {
+                chosen = candidate;
+                break;
+              }
+            }
+            if (!chosen) {
+              // The backend cannot natively produce the effective geometry
+              // Core supplied; never deliver silently-substituted geometry
+              // (brief §6).
+              winrt_detail::log_line(
+                  "no native format matches requested %ux%u", width, height);
+              local.error = ProviderError::ERR_PLATFORM_CONSTRAINT;
+            } else {
+              auto op = source.SetFormatAsync(chosen);
+              if (!winrt_detail::wait_async_bounded(op, kControlJobTimeoutMs - 500)) {
+                local.error = ProviderError::ERR_TIMEOUT;
+              } else {
+                op.GetResults();
+                local.ok = true;
+              }
             }
           }
+        } catch (const winrt::hresult_error& e) {
+          local.error = winrt_detail::provider_error_from_hresult(e.code());
+          winrt_detail::log_line("SetFormatAsync failed hr=0x%08X (%ux%u)",
+                                 static_cast<uint32_t>(e.code()), width, height);
+        } catch (...) {
         }
-        local.hr = hr;
         if (!t.abandoned.load(std::memory_order_acquire)) {
           *result = local;
         }
       },
       token, kControlJobTimeoutMs);
   if (!completed) {
-    winrt_detail::log_line("media-type configure timed out (%ux%u)", width, height);
+    winrt_detail::log_line("media-format configure timed out (%ux%u)", width, height);
     return ProviderResult::failure(ProviderError::ERR_TIMEOUT);
   }
-  if (FAILED(result->hr)) {
-    winrt_detail::log_line("media-type configure failed hr=0x%08lX (%ux%u)",
-                           static_cast<unsigned long>(result->hr), width, height);
-    return ProviderResult::failure(
-        winrt_detail::provider_error_from_hresult(result->hr));
-  }
-  if (result->actual_w != width || result->actual_h != height) {
-    // The backend negotiated something other than the effective configuration
-    // Core supplied; never deliver silently-substituted geometry (brief §6).
-    winrt_detail::log_line("media-type negotiated %ux%u instead of requested %ux%u",
-                           result->actual_w, result->actual_h, width, height);
-    return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
+  if (!result->ok) {
+    return ProviderResult::failure(result->error);
   }
 
   std::lock_guard<std::mutex> bl(backend->m);
   backend->configured_w = width;
   backend->configured_h = height;
+  return ProviderResult::success();
+}
+
+ProviderResult WinrtCameraProvider::ensure_reader_started_(
+    const std::shared_ptr<DeviceBackend>& backend) {
+  if (!backend) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  std::lock_guard<std::mutex> configure_lock(backend->configure_mutex);
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    if (backend->closed || !backend->reader || backend->failed) {
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+    }
+    if (backend->reader_started) {
+      return ProviderResult::success();
+    }
+  }
+
+  struct StartResult {
+    ProviderError error = ProviderError::ERR_PROVIDER_FAILED;
+    bool ok = false;
+  };
+  auto result = std::make_shared<StartResult>();
+  auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
+  const bool completed = control_.run_bounded(
+      [result, backend](const BoundedControlExecutor::AbandonToken& t) {
+        StartResult local;
+        try {
+          wmcf::MediaFrameReader reader{nullptr};
+          {
+            std::lock_guard<std::mutex> bl(backend->m);
+            reader = backend->reader;
+          }
+          if (!reader) {
+            local.error = ProviderError::ERR_BAD_STATE;
+          } else {
+            auto op = reader.StartAsync();
+            if (!winrt_detail::wait_async_bounded(op, kControlJobTimeoutMs - 500)) {
+              local.error = ProviderError::ERR_TIMEOUT;
+            } else {
+              switch (op.GetResults()) {
+                case wmcf::MediaFrameReaderStartStatus::Success:
+                  local.ok = true;
+                  break;
+                case wmcf::MediaFrameReaderStartStatus::DeviceNotAvailable:
+                  local.error = ProviderError::ERR_TRANSIENT_FAILURE;
+                  break;
+                case wmcf::MediaFrameReaderStartStatus::ExclusiveControlNotAvailable:
+                  local.error = ProviderError::ERR_BUSY;
+                  break;
+                default:
+                  local.error = ProviderError::ERR_PLATFORM_CONSTRAINT;
+                  break;
+              }
+            }
+          }
+        } catch (const winrt::hresult_error& e) {
+          local.error = winrt_detail::provider_error_from_hresult(e.code());
+          winrt_detail::log_line("reader StartAsync failed hr=0x%08X",
+                                 static_cast<uint32_t>(e.code()));
+        } catch (...) {
+        }
+        if (!t.abandoned.load(std::memory_order_acquire)) {
+          *result = local;
+        }
+      },
+      token, kControlJobTimeoutMs);
+  if (!completed) {
+    return ProviderResult::failure(ProviderError::ERR_TIMEOUT);
+  }
+  if (!result->ok) {
+    return ProviderResult::failure(result->error);
+  }
+  std::lock_guard<std::mutex> bl(backend->m);
+  backend->reader_started = true;
   return ProviderResult::success();
 }
 
@@ -1131,24 +1200,42 @@ ProviderResult WinrtCameraProvider::close_device(uint64_t device_instance_id) {
     backend->fail_all_waiters_locked(ProviderError::ERR_SHUTTING_DOWN);
   }
 
-  // Real release of MF objects on the control thread. IMFSourceReader's final
-  // release blocks until outstanding callbacks complete, so after this job no
-  // further OnReadSample can observe this backend.
+  // Real release of WinRT objects on the control thread.
   auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
   (void)control_.run_bounded(
       [backend](const BoundedControlExecutor::AbandonToken& /*t*/) {
         if (!backend) return;
-        ComPtr<IMFSourceReader> reader;
-        ComPtr<IMFMediaSource> source;
+        wmcf::MediaFrameReader reader{nullptr};
+        wmc::MediaCapture capture{nullptr};
+        winrt::event_token frame_token{};
+        winrt::event_token failed_token{};
         {
           std::lock_guard<std::mutex> bl(backend->m);
-          reader = std::move(backend->reader);
-          source = std::move(backend->source);
-          backend->callback.Reset();
+          reader = std::exchange(backend->reader, nullptr);
+          capture = std::exchange(backend->capture, nullptr);
+          backend->frame_source = nullptr;
+          frame_token = std::exchange(backend->frame_token, {});
+          failed_token = std::exchange(backend->failed_token, {});
+          backend->reader_started = false;
         }
-        reader.Reset();
-        if (source) {
-          source->Shutdown();
+        try {
+          if (reader) {
+            if (frame_token.value != 0) {
+              reader.FrameArrived(frame_token);
+            }
+            auto stop_op = reader.StopAsync();
+            (void)winrt_detail::wait_async_bounded(stop_op, kControlJobTimeoutMs - 500);
+            reader.Close();
+          }
+          if (capture) {
+            if (failed_token.value != 0) {
+              capture.Failed(failed_token);
+            }
+            capture.Close();
+          }
+        } catch (...) {
+          // Best-effort backend release; truthful facts are emitted by the
+          // caller regardless (the objects are unreachable after this).
         }
       },
       token, kControlJobTimeoutMs);
@@ -1276,6 +1363,10 @@ ProviderResult WinrtCameraProvider::start_stream(
   if (!pr.ok()) {
     return pr;
   }
+  pr = ensure_reader_started_(dev.backend);
+  if (!pr.ok()) {
+    return pr;
+  }
 
   StreamState& st = st_it->second;
   st.req.profile = profile;
@@ -1305,12 +1396,11 @@ ProviderResult WinrtCameraProvider::start_stream(
 
   {
     std::lock_guard<std::mutex> bl(dev.backend->m);
-    if (dev.backend->reader_failed || dev.backend->closed) {
+    if (dev.backend->failed || dev.backend->closed) {
       return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
     }
     production->producing = true;
     dev.backend->stream = production;
-    dev.backend->ensure_pump_locked();
   }
 
   st.started = true;
@@ -1492,9 +1582,10 @@ void WinrtCameraProvider::run_device_capture_job_(const DeviceCaptureJob& job) n
       return;
     }
 
-    // Fetch the backend under a short state lock only; realization and
-    // geometry configuration serialize on the backend's own configure mutex
-    // so this worker never holds state_mutex_ across bounded backend jobs.
+    // Fetch the backend under a short state lock only; realization, geometry
+    // configuration, and reader start serialize on the backend's own
+    // configure mutex so this worker never holds state_mutex_ across bounded
+    // backend jobs.
     std::shared_ptr<DeviceBackend> backend;
     {
       std::lock_guard<std::mutex> state_lock(state_mutex_);
@@ -1521,25 +1612,25 @@ void WinrtCameraProvider::run_device_capture_job_(const DeviceCaptureJob& job) n
       fail(pr.code);
       return;
     }
-
-    uint64_t session_id = 0;
-    {
-      std::lock_guard<std::mutex> bl(backend->m);
-      session_id = backend->acquisition_session_id;
+    pr = ensure_reader_started_(backend);
+    if (!pr.ok()) {
+      fail(pr.code);
+      return;
     }
 
+    uint64_t session_id = 0;
     auto waiter = std::make_shared<CaptureWaiter>();
     waiter->width = job.request.width;
     waiter->height = job.request.height;
     waiter->fourcc = job.request.format_fourcc;
     {
       std::lock_guard<std::mutex> bl(backend->m);
-      if (backend->closed || backend->reader_failed) {
+      if (backend->closed || backend->failed) {
         fail(ProviderError::ERR_PROVIDER_FAILED);
         return;
       }
+      session_id = backend->acquisition_session_id;
       backend->waiters.push_back(waiter);
-      backend->ensure_pump_locked();
     }
 
     bool done = false;
@@ -1560,8 +1651,8 @@ void WinrtCameraProvider::run_device_capture_job_(const DeviceCaptureJob& job) n
           }
         }
       }
-      // Re-check under the waiter lock: the callback may have fulfilled it
-      // between the timeout and the removal above.
+      // Re-check under the waiter lock: the frame handler may have fulfilled
+      // it between the timeout and the removal above.
       std::lock_guard<std::mutex> wl(waiter->m);
       if (!waiter->done) {
         waiter->done = true;
@@ -1657,7 +1748,7 @@ ProviderResult WinrtCameraProvider::validate_and_admit_submission_locked_(
     if (dev_it == devices_.end() || !dev_it->second.open) {
       return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
     }
-    // A started stream pins the shared reader geometry; a capture that needs
+    // A started stream pins the shared source geometry; a capture that needs
     // different geometry cannot execute without disrupting the stream.
     if (dev_it->second.backend) {
       std::lock_guard<std::mutex> bl(dev_it->second.backend->m);
@@ -1816,7 +1907,7 @@ ProviderResult WinrtCameraProvider::shutdown() {
     emit_native_destroyed_(native_id);
   }
 
-  // 5. Close devices with real MF release on the control thread.
+  // 5. Close devices with real WinRT release on the control thread.
   for (auto& [dev_id, dev] : devices_) {
     if (!dev.open) {
       continue;
@@ -1833,17 +1924,36 @@ ProviderResult WinrtCameraProvider::shutdown() {
       auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
       (void)control_.run_bounded(
           [backend](const BoundedControlExecutor::AbandonToken& /*t*/) {
-            ComPtr<IMFSourceReader> reader;
-            ComPtr<IMFMediaSource> source;
+            wmcf::MediaFrameReader reader{nullptr};
+            wmc::MediaCapture capture{nullptr};
+            winrt::event_token frame_token{};
+            winrt::event_token failed_token{};
             {
               std::lock_guard<std::mutex> bl(backend->m);
-              reader = std::move(backend->reader);
-              source = std::move(backend->source);
-              backend->callback.Reset();
+              reader = std::exchange(backend->reader, nullptr);
+              capture = std::exchange(backend->capture, nullptr);
+              backend->frame_source = nullptr;
+              frame_token = std::exchange(backend->frame_token, {});
+              failed_token = std::exchange(backend->failed_token, {});
+              backend->reader_started = false;
             }
-            reader.Reset();
-            if (source) {
-              source->Shutdown();
+            try {
+              if (reader) {
+                if (frame_token.value != 0) {
+                  reader.FrameArrived(frame_token);
+                }
+                auto stop_op = reader.StopAsync();
+                (void)winrt_detail::wait_async_bounded(stop_op,
+                                                       kControlJobTimeoutMs - 500);
+                reader.Close();
+              }
+              if (capture) {
+                if (failed_token.value != 0) {
+                  capture.Failed(failed_token);
+                }
+                capture.Close();
+              }
+            } catch (...) {
             }
           },
           token, kControlJobTimeoutMs);
@@ -1863,17 +1973,9 @@ ProviderResult WinrtCameraProvider::shutdown() {
   } // release state_mutex_ before draining the strand (brief §10)
 
   // 6. With provider state settled and no locks held: flush and stop the
-  //    strand, then release the MF runtime and the control thread.
+  //    strand, then stop the control thread.
   strand_.flush();
   strand_.stop();
-
-  if (mf_started_) {
-    auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
-    (void)control_.run_bounded(
-        [](const BoundedControlExecutor::AbandonToken& /*t*/) { MFShutdown(); },
-        token, kControlJobTimeoutMs);
-    mf_started_ = false;
-  }
   control_.stop();
 
   callbacks_ = nullptr;

@@ -76,8 +76,9 @@ func _plan_posture_is_gpu(posture: String) -> bool:
 
 func _ready():
 	CamBANGServer.set_capture_geolocation(FAKE_LOCATION)
+	#CamBANGServer.
 	CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC)
-
+	#CamBANGServer.start(CamBANGServer.PROVIDER_KIND_PLATFORM_BACKED)
 	var endpoints: Array = CamBANGServer.enumerate_devices()
 	if endpoints.is_empty():
 		push_error(\"KERR No CamBANG endpoints\")
@@ -95,6 +96,9 @@ func _ready():
 		return
 		
 	device_00 = CamBANGServer.get_device_for_hardware_id(\"synthetic:0\")
+	#CamBANGServer.get_device()
+	#device_00 = CamBANGServer.get_device_for_hardware_id(\"\\\\\\\\?\\\\USB#VID_13D3&PID_5279&MI_00#6&f7bbb15&0&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\\\\GLOBAL\")
+	
 	#var device_01 : CamBANGDevice = CamBANGServer.get_device_for_hardware_id(\"synthetic:1\")
 	device_00.set_still_capture_profile(capture_profile_00)
 
@@ -124,12 +128,23 @@ func _ready():
 
 	while not stream_00.result_live:
 		await stream_00.result_live_changed
+		
 	var stream_result := stream_00.get_result()
 	if stream_result == null:
 		push_error(\"KERR stream result unexpectedly null after result_live\")
 		return
 
 	%StreamDisplayTexture.texture = stream_result.get_display_view()
+	
+	await get_tree().create_timer(50.0).timeout
+	print(\"HERE I AM FUCKER\")
+	stream_00.stop()
+	stream_00.destroy()
+	#stream_00_b.destroy()
+	#CamBANGServer.stop()
+	%StreamDisplayTexture.texture = null
+	var huh = device_00.disengage()
+	print(\"Huh?: %s\" % huh)
 
 
 func _process(delta: float) -> void:
@@ -144,13 +159,35 @@ func _do_capture():
 		await get_tree().process_frame
 	#print(\"stopped waiting\")
 	var capture_result : CamBANGCaptureResult = device_00.get_result()
-	var stream_result : CamBANGStreamResult = stream_00.get_result()
+	#var stream_result : CamBANGStreamResult = stream_00.get_result()
 	%CaptureDisplayTexture.texture = ImageTexture.create_from_image(capture_result.to_image())
-	print(\"KERR: GEO %s\" % stream_result.has_location_attributes())
-	print(\"KERR: OPTICAL CALIBRATION %s\" % stream_result.has_optical_calibration())
+	print(\"KERR: GEO %s\" % capture_result.get_geolocation())
+	print(\"KERR: OPTICAL CALIBRATION %s\" % capture_result.get_image_properties())
 
-	%CaptureInfoText.text = str(capture_result.get_location_attributes().get(\"latitude_degrees\"))
+	var member: Dictionary = capture_result.get_image_member(0)
 	
+	if member.has(\"camera_facts\"):
+		var p: Dictionary
+		var d: Dictionary
+		var k: Dictionary
+		
+		var facts: Dictionary = member[\"camera_facts\"]
+		if facts.has(\"intrinsics\"):
+			k = facts[\"intrinsics\"]
+		# \"focal_length_x_px\", \"focal_length_y_px\",
+		# \"principal_point_x_px\", \"principal_point_y_px\",
+		# optional \"skew_px\", \"reference_width_px\", \"reference_height_px\",
+		# coordinate-domain keys, and \"origin\" (who supplied it)
+		if facts.has(\"distortion\"):
+			d = facts[\"distortion\"]
+		# e.g. \"model\": \"brown_conrady_5\", radial_k1..k3, tangential_p1/p2,
+		# reference geometry, \"origin\"
+		if facts.has(\"pose\"):
+			p = facts[\"pose\"]
+		
+		%CaptureInfoText.text = str(\"pose: \", p, \"\\nDistortion: \", d, \"\\nIntrinsics: \", k)
+	
+	%CaptureInfoText.text += str(\"\\nMembers: \", capture_result.get_image_count())
 func _do_teardown():
 	# some stuff
 	await get_tree().create_timer(WAIT_BEFORE_QUIT).timeout
