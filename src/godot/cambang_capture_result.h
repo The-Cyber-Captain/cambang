@@ -40,13 +40,10 @@ public:
   godot::Dictionary get_geolocation() const;
 
   bool has_image_properties() const;
-  bool has_capture_attributes() const;
 
   godot::Dictionary get_image_properties() const;
-  godot::Dictionary get_capture_attributes() const;
 
   godot::Dictionary get_image_properties_provenance() const;
-  godot::Dictionary get_capture_attributes_provenance() const;
 
   int can_get_display_view() const;
   int can_to_image() const;

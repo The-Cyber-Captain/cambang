@@ -29,26 +29,13 @@ struct ResultImagePropertiesProvenance {
   ResultFactProvenance bit_depth = ResultFactProvenance::UNKNOWN;
 };
 
-struct ResultCaptureAttributesFacts {
-  double exposure_time_ns = 0.0;
-  double aperture_f_number = 0.0;
-  double focal_length_mm = 0.0;
-  double focus_distance_m = 0.0;
-  double sensor_sensitivity_iso_equivalent = 0.0;
-};
-
-struct ResultCaptureAttributesProvenance {
-  ResultFactProvenance exposure_time_ns = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance aperture_f_number = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance focal_length_mm = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance focus_distance_m = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance sensor_sensitivity_iso_equivalent = ResultFactProvenance::UNKNOWN;
-};
-
 // Optical-calibration truth lives in the resolved per-member camera facts
 // (CoreResolvedCaptureImageFacts / get_image_member camera_facts); location
-// truth lives in the capture-admission context (get_geolocation()). The
-// former flattened optical-calibration and location fact groups were
-// writer-less duplicates and were removed.
+// truth lives in the capture-admission context (get_geolocation()); focus
+// state also lives in the resolved per-member camera facts
+// (camera_facts.focus_state). The former flattened optical-calibration,
+// location, and capture-attributes fact groups were writer-less duplicates
+// (no provider or Core source currently supplies exposure/aperture/ISO facts
+// at all) and were removed.
 
 } // namespace cambang

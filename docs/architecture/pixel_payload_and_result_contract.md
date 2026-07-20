@@ -991,15 +991,28 @@ Result Objects should expose qualified image-associated fact groups rather than 
 Current flattened groups:
 
 - `ImageProperties`
-- `CaptureAttributes`
 
-Location and optical-calibration truth deliberately do NOT use flattened
-result groups: capture-associated location is exposed from the Core-owned
-capture-admission context (`get_geolocation()`), and optical calibration is
-exposed through the resolved per-member camera facts
-(`get_image_member(i)["camera_facts"]` — intrinsics/distortion/pose with
-per-fact origin). Earlier flattened `LocationAttributes`/`OpticalCalibration`
-groups were writer-less duplicates of those surfaces and were removed.
+`ImageProperties.width/height/format` are derived from (not independently
+resolved from) the same top-level scalar fields `get_width()`/`get_height()`/
+`get_format()` read, so the flattened copy and the direct accessor cannot
+structurally drift; the flattened group's value over the scalars is carrying
+per-field provenance.
+
+Location, optical-calibration, focus, and capture-device-state truth
+deliberately do NOT use flattened result groups:
+
+- capture-associated location is exposed from the Core-owned
+  capture-admission context (`get_geolocation()`);
+- optical calibration, focus state, and pose are exposed through the
+  resolved per-member camera facts (`get_image_member(i)["camera_facts"]` —
+  intrinsics/distortion/pose/focus_state with per-fact origin).
+
+Earlier flattened `LocationAttributes`, `OpticalCalibration`, and
+`CaptureAttributes` groups were writer-less (no provider or Core source
+currently supplies capture-device-state facts such as exposure time,
+aperture, or ISO-equivalent at all) and were removed. A future fact tranche
+that adds such a source should extend the per-member camera facts model
+rather than reintroduce a flattened group.
 
 ## 13.1 ImageProperties
 
@@ -1014,18 +1027,6 @@ Structural image facts such as:
 
 These properties should be populated from authoritative realized frame metadata,
 not inferred from incidental CPU payload presence.
-
-## 13.2 CaptureAttributes
-
-Capture/device-state facts associated with the realized image such as:
-
-- exposure time
-- aperture
-- focal length
-- focus distance
-- sensor sensitivity / ISO-equivalent
-- flash state
-- white-balance-related state
 
 ---
 

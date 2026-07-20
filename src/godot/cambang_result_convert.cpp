@@ -56,16 +56,6 @@ godot::Dictionary to_dict(const ResultImagePropertiesFacts& v) {
   return d;
 }
 
-godot::Dictionary to_dict(const ResultCaptureAttributesFacts& v) {
-  godot::Dictionary d;
-  d["exposure_time_ns"] = v.exposure_time_ns;
-  d["aperture_f_number"] = v.aperture_f_number;
-  d["focal_length_mm"] = v.focal_length_mm;
-  d["focus_distance_m"] = v.focus_distance_m;
-  d["sensor_sensitivity_iso_equivalent"] = v.sensor_sensitivity_iso_equivalent;
-  return d;
-}
-
 godot::Dictionary to_dict(const ResultImagePropertiesProvenance& v) {
   godot::Dictionary d;
   d["width"] = to_prov_int(v.width);
@@ -73,16 +63,6 @@ godot::Dictionary to_dict(const ResultImagePropertiesProvenance& v) {
   d["format"] = to_prov_int(v.format);
   d["orientation"] = to_prov_int(v.orientation);
   d["bit_depth"] = to_prov_int(v.bit_depth);
-  return d;
-}
-
-godot::Dictionary to_dict(const ResultCaptureAttributesProvenance& v) {
-  godot::Dictionary d;
-  d["exposure_time_ns"] = to_prov_int(v.exposure_time_ns);
-  d["aperture_f_number"] = to_prov_int(v.aperture_f_number);
-  d["focal_length_mm"] = to_prov_int(v.focal_length_mm);
-  d["focus_distance_m"] = to_prov_int(v.focus_distance_m);
-  d["sensor_sensitivity_iso_equivalent"] = to_prov_int(v.sensor_sensitivity_iso_equivalent);
   return d;
 }
 

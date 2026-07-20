@@ -282,20 +282,13 @@ godot::Dictionary CamBANGCaptureResult::get_geolocation() const {
 }
 
 bool CamBANGCaptureResult::has_image_properties() const { return data_ && data_->facts.has_image_properties; }
-bool CamBANGCaptureResult::has_capture_attributes() const { return data_ && data_->default_image.has_capture_attributes; }
 
 godot::Dictionary CamBANGCaptureResult::get_image_properties() const {
   return has_image_properties() ? to_dict(data_->facts.image_properties) : godot::Dictionary();
 }
-godot::Dictionary CamBANGCaptureResult::get_capture_attributes() const {
-  return has_capture_attributes() ? to_dict(data_->default_image.capture_attributes) : godot::Dictionary();
-}
 
 godot::Dictionary CamBANGCaptureResult::get_image_properties_provenance() const {
   return has_image_properties() ? to_dict(data_->facts.image_properties_provenance) : godot::Dictionary();
-}
-godot::Dictionary CamBANGCaptureResult::get_capture_attributes_provenance() const {
-  return has_capture_attributes() ? to_dict(data_->default_image.capture_attributes_provenance) : godot::Dictionary();
 }
 
 int CamBANGCaptureResult::can_get_display_view() const {
@@ -562,13 +555,10 @@ void CamBANGCaptureResult::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_geolocation"), &CamBANGCaptureResult::get_geolocation);
 
   godot::ClassDB::bind_method(godot::D_METHOD("has_image_properties"), &CamBANGCaptureResult::has_image_properties);
-  godot::ClassDB::bind_method(godot::D_METHOD("has_capture_attributes"), &CamBANGCaptureResult::has_capture_attributes);
 
   godot::ClassDB::bind_method(godot::D_METHOD("get_image_properties"), &CamBANGCaptureResult::get_image_properties);
-  godot::ClassDB::bind_method(godot::D_METHOD("get_capture_attributes"), &CamBANGCaptureResult::get_capture_attributes);
 
   godot::ClassDB::bind_method(godot::D_METHOD("get_image_properties_provenance"), &CamBANGCaptureResult::get_image_properties_provenance);
-  godot::ClassDB::bind_method(godot::D_METHOD("get_capture_attributes_provenance"), &CamBANGCaptureResult::get_capture_attributes_provenance);
 
   godot::ClassDB::bind_method(godot::D_METHOD("can_get_display_view"), &CamBANGCaptureResult::can_get_display_view);
   godot::ClassDB::bind_method(godot::D_METHOD("can_to_image"), &CamBANGCaptureResult::can_to_image);

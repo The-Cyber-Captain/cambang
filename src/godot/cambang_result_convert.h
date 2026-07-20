@@ -10,10 +10,8 @@
 namespace cambang {
 
 godot::Dictionary to_dict(const ResultImagePropertiesFacts& v);
-godot::Dictionary to_dict(const ResultCaptureAttributesFacts& v);
 
 godot::Dictionary to_dict(const ResultImagePropertiesProvenance& v);
-godot::Dictionary to_dict(const ResultCaptureAttributesProvenance& v);
 
 godot::Ref<godot::Image> payload_to_image(const CoreResultPayloadCpuPacked& payload);
 
