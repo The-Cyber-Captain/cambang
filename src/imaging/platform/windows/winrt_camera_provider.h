@@ -116,7 +116,29 @@ public:
   CaptureTemplate capture_template() const override;
   bool supports_stream_picture_updates() const noexcept override { return false; }
   bool supports_capture_picture_updates() const noexcept override { return false; }
-  bool supports_multi_image_still_sequence() const noexcept override { return false; }
+  // Real per-member exposure-compensation bracketing (see run_device_capture_job_).
+  // Per-device/per-bundle-size support is still enforced deterministically at
+  // admission (validate_and_admit_submission_locked_): a device whose
+  // VideoDeviceController has no ExposureCompensationControl, or a bundle
+  // exceeding kMaxBracketMembers, is refused with ERR_NOT_SUPPORTED.
+  bool supports_multi_image_still_sequence() const noexcept override { return true; }
+
+  // Derived from the bounded per-step timeouts below (never a guess, per the
+  // doc comment on the base declaration): worst case is a cold reader
+  // realize+geometry+start chain (3 * kControlJobTimeoutMs) plus up to
+  // kMaxBracketMembers members, each paying one bounded exposure-compensation
+  // control job (kExposureControlJobTimeoutMs) and one bounded sample wait
+  // (kCaptureSampleWaitMs), plus a fixed safety margin. This exceeds Core's
+  // 30s default, which sizes only for a single-image capture.
+  uint64_t capture_admission_watchdog_timeout_ns() const noexcept override {
+    constexpr uint64_t kColdReaderChainMs = 3ull * kControlJobTimeoutMs;
+    constexpr uint64_t kPerMemberMs =
+        static_cast<uint64_t>(kExposureControlJobTimeoutMs) + kCaptureSampleWaitMs;
+    constexpr uint64_t kSafetyMarginMs = 2000ull;
+    constexpr uint64_t kWorstCaseMs =
+        kColdReaderChainMs + static_cast<uint64_t>(kMaxBracketMembers) * kPerMemberMs + kSafetyMarginMs;
+    return kWorstCaseMs * 1'000'000ull;
+  }
 
   ProducerBackingCapabilities stream_backing_capabilities(
       const CaptureProfile& profile,
@@ -173,6 +195,16 @@ private:
   static constexpr uint32_t kCaptureSampleWaitMs = 5000;
   static constexpr uint32_t kControlJobTimeoutMs = 3500;
   static constexpr size_t kStreamPoolSlots = 8;
+  // Setting/reading a UVC device control is near-instant on real hardware;
+  // this bound exists only to contain a wedged driver, matching the same
+  // enforcement posture as kControlJobTimeoutMs.
+  static constexpr uint32_t kExposureControlJobTimeoutMs = 2000;
+  // Provider-side admission cap for still_image_bundle size on this
+  // provider. Bounded (not unlimited) so capture_admission_watchdog_timeout_ns()
+  // above can be a derived worst case rather than an open-ended guess; 5
+  // covers realistic bracket UX (common exposure-bracket counts are 3/5/7)
+  // with headroom over this repo's 3-member reference bundle.
+  static constexpr uint32_t kMaxBracketMembers = 5;
 
   struct DeviceState {
     std::string hardware_id;
@@ -247,6 +279,44 @@ private:
   ProviderResult validate_and_admit_submission_locked_(
       const CaptureSubmission& submission,
       std::vector<DeviceCaptureJob>& out_jobs);
+
+  // Bracket-capture support. Reads of Supported/Min/Max/Step/Value are plain
+  // WinRT property gets (not awaited async ops) and are safe to call
+  // synchronously from the core thread during admission; only SetValueAsync
+  // needs the bounded control executor.
+  //
+  // Returns false (device has no usable exposure-compensation control) when
+  // unsupported or on any WinRT exception -- callers must treat that as a
+  // deterministic "bracket not supported for this device", not an error.
+  static bool query_exposure_compensation_range_(
+      const std::shared_ptr<winrt_detail::DeviceBackend>& backend,
+      float& out_min, float& out_max, float& out_step);
+
+  // Bounded (control-thread) apply of one exposure-compensation value.
+  // Converts requested_milli_ev to EV, clamps and rounds to the device's
+  // actual step grid, applies it, then reads back the real post-set value as
+  // the truthful realized EV (never the requested value re-stated as if
+  // verified). Returns false on timeout/WinRT failure.
+  bool apply_exposure_compensation_bounded_(
+      const std::shared_ptr<winrt_detail::DeviceBackend>& backend,
+      int32_t requested_milli_ev,
+      int32_t& out_realized_milli_ev,
+      ProviderError& out_error) noexcept;
+
+  struct CapturedMemberFrame {
+    bool ok = false;
+    ProviderError error = ProviderError::ERR_PROVIDER_FAILED;
+    std::shared_ptr<std::vector<uint8_t>> bytes;
+    bool has_sample_time = false;
+    int64_t sample_time_100ns = 0;
+  };
+  // Captures exactly one still frame at the given geometry/format via the
+  // waiter mechanism. Shared by the default-metered member and every
+  // additional-bracket member -- this is the same single-frame wait
+  // single-image capture already used, just made reusable per member.
+  CapturedMemberFrame capture_one_member_frame_(
+      const std::shared_ptr<winrt_detail::DeviceBackend>& backend,
+      uint32_t width, uint32_t height, uint32_t format_fourcc) noexcept;
 
   CBProviderStrand strand_;
   IProviderCallbacks* callbacks_ = nullptr;

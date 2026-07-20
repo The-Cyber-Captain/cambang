@@ -25,8 +25,11 @@
 #include <winrt/Windows.Graphics.Imaging.h>
 #include <winrt/Windows.Media.Capture.Frames.h>
 #include <winrt/Windows.Media.Capture.h>
+#include <winrt/Windows.Media.Devices.h>
 #include <winrt/Windows.Media.MediaProperties.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -40,6 +43,7 @@ namespace wde = winrt::Windows::Devices::Enumeration;
 namespace wgi = winrt::Windows::Graphics::Imaging;
 namespace wmc = winrt::Windows::Media::Capture;
 namespace wmcf = winrt::Windows::Media::Capture::Frames;
+namespace wmd = winrt::Windows::Media::Devices;
 namespace wmm = winrt::Windows::Media::MediaProperties;
 
 namespace {
@@ -553,6 +557,7 @@ namespace wde = winrt_detail::wde;
 namespace wgi = winrt_detail::wgi;
 namespace wmc = winrt_detail::wmc;
 namespace wmcf = winrt_detail::wmcf;
+namespace wmd = winrt_detail::wmd;
 namespace wmm = winrt_detail::wmm;
 
 namespace {
@@ -1598,6 +1603,178 @@ void WinrtCameraProvider::capture_worker_main_() noexcept {
   }
 }
 
+bool WinrtCameraProvider::query_exposure_compensation_range_(
+    const std::shared_ptr<DeviceBackend>& backend,
+    float& out_min, float& out_max, float& out_step) {
+  if (!backend) {
+    return false;
+  }
+  wmc::MediaCapture capture{nullptr};
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    if (backend->closed) {
+      return false;
+    }
+    capture = backend->capture;
+  }
+  if (!capture) {
+    return false;
+  }
+  try {
+    wmd::ExposureCompensationControl ctrl =
+        capture.VideoDeviceController().ExposureCompensationControl();
+    if (!ctrl || !ctrl.Supported()) {
+      return false;
+    }
+    out_min = ctrl.Min();
+    out_max = ctrl.Max();
+    out_step = ctrl.Step();
+    // Defensive: a malformed range cannot be step-rounded safely; treat it
+    // as unsupported rather than dividing by (near-)zero below.
+    if (!(out_step > 0.0f) || !(out_max >= out_min)) {
+      return false;
+    }
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool WinrtCameraProvider::apply_exposure_compensation_bounded_(
+    const std::shared_ptr<DeviceBackend>& backend,
+    int32_t requested_milli_ev,
+    int32_t& out_realized_milli_ev,
+    ProviderError& out_error) noexcept {
+  out_error = ProviderError::ERR_PROVIDER_FAILED;
+  float min_ev = 0.0f, max_ev = 0.0f, step_ev = 0.0f;
+  if (!query_exposure_compensation_range_(backend, min_ev, max_ev, step_ev)) {
+    out_error = ProviderError::ERR_NOT_SUPPORTED;
+    return false;
+  }
+
+  // Clamp then round to the device's real step grid. The device may still
+  // snap this to something else internally; the post-set readback below,
+  // not this calculation, is the truthful realized value.
+  const float requested_ev = static_cast<float>(requested_milli_ev) / 1000.0f;
+  const float clamped_ev = std::clamp(requested_ev, min_ev, max_ev);
+  const float steps_from_min = std::round((clamped_ev - min_ev) / step_ev);
+  const float target_ev = std::clamp(min_ev + steps_from_min * step_ev, min_ev, max_ev);
+
+  struct SetResult {
+    bool ok = false;
+    float realized_ev = 0.0f;
+    ProviderError error = ProviderError::ERR_PROVIDER_FAILED;
+  };
+  auto result = std::make_shared<SetResult>();
+  auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
+  const bool completed = control_.run_bounded(
+      [result, backend, target_ev](const BoundedControlExecutor::AbandonToken& t) {
+        SetResult local;
+        try {
+          wmc::MediaCapture capture{nullptr};
+          {
+            std::lock_guard<std::mutex> bl(backend->m);
+            capture = backend->capture;
+          }
+          if (!capture) {
+            local.error = ProviderError::ERR_BAD_STATE;
+          } else {
+            wmd::ExposureCompensationControl ctrl =
+                capture.VideoDeviceController().ExposureCompensationControl();
+            auto op = ctrl.SetValueAsync(target_ev);
+            if (!winrt_detail::wait_async_bounded(op, kExposureControlJobTimeoutMs - 500)) {
+              local.error = ProviderError::ERR_TIMEOUT;
+            } else {
+              op.GetResults();
+              // Truthful realized value: read back what the device actually
+              // holds after the set, never the value we requested.
+              local.realized_ev = ctrl.Value();
+              local.ok = true;
+            }
+          }
+        } catch (const winrt::hresult_error& e) {
+          local.error = winrt_detail::provider_error_from_hresult(e.code());
+        } catch (...) {
+        }
+        if (!t.abandoned.load(std::memory_order_acquire)) {
+          *result = local;
+        }
+      },
+      token, kExposureControlJobTimeoutMs);
+  if (!completed) {
+    out_error = ProviderError::ERR_TIMEOUT;
+    return false;
+  }
+  if (!result->ok) {
+    out_error = result->error;
+    return false;
+  }
+  out_realized_milli_ev = static_cast<int32_t>(std::lround(result->realized_ev * 1000.0f));
+  return true;
+}
+
+WinrtCameraProvider::CapturedMemberFrame WinrtCameraProvider::capture_one_member_frame_(
+    const std::shared_ptr<DeviceBackend>& backend,
+    uint32_t width, uint32_t height, uint32_t format_fourcc) noexcept {
+  CapturedMemberFrame result{};
+  if (!backend) {
+    return result;
+  }
+
+  auto waiter = std::make_shared<CaptureWaiter>();
+  waiter->width = width;
+  waiter->height = height;
+  waiter->fourcc = format_fourcc;
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    if (backend->closed || backend->failed) {
+      result.error = ProviderError::ERR_PROVIDER_FAILED;
+      return result;
+    }
+    backend->waiters.push_back(waiter);
+  }
+
+  bool done = false;
+  {
+    std::unique_lock<std::mutex> wl(waiter->m);
+    done = waiter->cv.wait_for(wl, std::chrono::milliseconds(kCaptureSampleWaitMs),
+                               [&] { return waiter->done; });
+  }
+  if (!done) {
+    // The stalled backend is contained here (brief §2): remove the waiter
+    // and terminalize this member instead of blocking any contract call.
+    {
+      std::lock_guard<std::mutex> bl(backend->m);
+      for (auto it = backend->waiters.begin(); it != backend->waiters.end(); ++it) {
+        if (it->get() == waiter.get()) {
+          backend->waiters.erase(it);
+          break;
+        }
+      }
+    }
+    // Re-check under the waiter lock: the frame handler may have fulfilled
+    // it between the timeout and the removal above.
+    std::lock_guard<std::mutex> wl(waiter->m);
+    if (!waiter->done) {
+      waiter->done = true;
+      waiter->ok = false;
+      waiter->error = ProviderError::ERR_TIMEOUT;
+    }
+  }
+
+  std::lock_guard<std::mutex> wl(waiter->m);
+  result.ok = waiter->ok;
+  result.error = waiter->error;
+  result.bytes = waiter->bytes;
+  result.has_sample_time = waiter->has_sample_time;
+  result.sample_time_100ns = waiter->sample_time_100ns;
+  if (result.ok && !result.bytes) {
+    result.ok = false;
+    result.error = ProviderError::ERR_PROVIDER_FAILED;
+  }
+  return result;
+}
+
 void WinrtCameraProvider::run_device_capture_job_(const DeviceCaptureJob& job) noexcept {
   const uint64_t capture_id = job.request.capture_id;
   const uint64_t device_id = job.request.device_instance_id;
@@ -1661,10 +1838,6 @@ void WinrtCameraProvider::run_device_capture_job_(const DeviceCaptureJob& job) n
     }
 
     uint64_t session_id = 0;
-    auto waiter = std::make_shared<CaptureWaiter>();
-    waiter->width = job.request.width;
-    waiter->height = job.request.height;
-    waiter->fourcc = job.request.format_fourcc;
     {
       std::lock_guard<std::mutex> bl(backend->m);
       if (backend->closed || backend->failed) {
@@ -1672,77 +1845,118 @@ void WinrtCameraProvider::run_device_capture_job_(const DeviceCaptureJob& job) n
         return;
       }
       session_id = backend->acquisition_session_id;
-      backend->waiters.push_back(waiter);
     }
 
-    bool done = false;
-    {
-      std::unique_lock<std::mutex> wl(waiter->m);
-      done = waiter->cv.wait_for(wl, std::chrono::milliseconds(kCaptureSampleWaitMs),
-                                 [&] { return waiter->done; });
-    }
-    if (!done) {
-      // The stalled backend is contained here (brief §2): remove the waiter
-      // and terminalize instead of blocking any contract call.
+    const auto& members = job.request.still_image_bundle.members;
+    const bool is_bracket_sequence = members.size() > 1;
+
+    // The exposure-compensation control is device-global (shared with any
+    // concurrently running stream, which will visibly show the bias while a
+    // bracket runs -- a genuine platform constraint, not a bug: WinRT has no
+    // per-capture-scoped exposure program independent of the live device
+    // state). Save the pre-bracket value here and restore it once every
+    // member has been captured, or as soon as the sequence fails.
+    bool have_baseline_ev = false;
+    float baseline_ev = 0.0f;
+    if (is_bracket_sequence) {
+      wmc::MediaCapture capture_for_baseline{nullptr};
       {
         std::lock_guard<std::mutex> bl(backend->m);
-        for (auto it = backend->waiters.begin(); it != backend->waiters.end(); ++it) {
-          if (it->get() == waiter.get()) {
-            backend->waiters.erase(it);
-            break;
+        capture_for_baseline = backend->capture;
+      }
+      if (capture_for_baseline) {
+        try {
+          wmd::ExposureCompensationControl ctrl =
+              capture_for_baseline.VideoDeviceController().ExposureCompensationControl();
+          if (ctrl && ctrl.Supported()) {
+            baseline_ev = ctrl.Value();
+            have_baseline_ev = true;
           }
+        } catch (...) {
         }
       }
-      // Re-check under the waiter lock: the frame handler may have fulfilled
-      // it between the timeout and the removal above.
-      std::lock_guard<std::mutex> wl(waiter->m);
-      if (!waiter->done) {
-        waiter->done = true;
-        waiter->ok = false;
-        waiter->error = ProviderError::ERR_TIMEOUT;
+    }
+    const auto restore_baseline_if_needed = [&]() {
+      if (!is_bracket_sequence || !have_baseline_ev) {
+        return;
       }
+      int32_t restore_realized = 0;
+      ProviderError restore_error = ProviderError::OK;
+      const int32_t baseline_milli_ev = static_cast<int32_t>(std::lround(baseline_ev * 1000.0f));
+      if (!apply_exposure_compensation_bounded_(backend, baseline_milli_ev, restore_realized,
+                                                restore_error)) {
+        // A restore failure does not un-capture already-truthful member
+        // frames, so it must not fail the capture -- but it does leave the
+        // live device exposure biased, which is worth surfacing.
+        winrt_detail::log_line(
+            "bracket exposure-compensation restore failed for device=%llu (error=%u)",
+            static_cast<unsigned long long>(device_id),
+            static_cast<unsigned>(restore_error));
+      }
+    };
+
+    for (const CaptureStillImageMember& member : members) {
+      int32_t realized_milli_ev = 0;
+      bool has_realized_ev = false;
+
+      if (member.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET) {
+        ProviderError ev_error = ProviderError::ERR_PROVIDER_FAILED;
+        if (!apply_exposure_compensation_bounded_(
+                backend, member.intended_exposure_compensation_milli_ev,
+                realized_milli_ev, ev_error)) {
+          fail(ev_error);
+          restore_baseline_if_needed();
+          return;
+        }
+        has_realized_ev = true;
+      } else if (have_baseline_ev) {
+        // DEFAULT_METERED member: no compensation is requested, but the
+        // baseline read above already tells us the (unmodified) control
+        // value truthfully, so report it instead of leaving it unset.
+        realized_milli_ev = static_cast<int32_t>(std::lround(baseline_ev * 1000.0f));
+        has_realized_ev = true;
+      }
+
+      const CapturedMemberFrame captured = capture_one_member_frame_(
+          backend, job.request.width, job.request.height, job.request.format_fourcc);
+      if (!captured.ok || !captured.bytes) {
+        fail(captured.error);
+        restore_baseline_if_needed();
+        return;
+      }
+
+      FrameView fv{};
+      fv.device_instance_id = device_id;
+      fv.stream_id = 0;
+      fv.acquisition_session_id = session_id;
+      fv.capture_id = capture_id;
+      fv.capture_image.routing =
+          member.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET
+              ? CaptureImageRouting::ADDITIONAL_BRACKET
+              : CaptureImageRouting::DEFAULT_METERED;
+      fv.capture_image.image_member_index = member.image_member_index;
+      fv.capture_image.applied_exposure_compensation_milli_ev =
+          member.intended_exposure_compensation_milli_ev;
+      fv.capture_image.has_realized_exposure_compensation_milli_ev = has_realized_ev;
+      fv.capture_image.realized_exposure_compensation_milli_ev = realized_milli_ev;
+      fv.width = job.request.width;
+      fv.height = job.request.height;
+      fv.format_fourcc = job.request.format_fourcc;
+      if (captured.has_sample_time) {
+        fv.acquisition_timing = winrt_detail::make_acquisition_timing(captured.sample_time_100ns);
+      }
+      fv.data = captured.bytes->data();
+      fv.size_bytes = captured.bytes->size();
+      fv.stride_bytes = job.request.width * 4u;
+      // Fresh immutable allocation: publish for zero-copy retention (brief §4).
+      fv.cpu_payload_owner = captured.bytes;
+      fv.requested_retained_plan = job.request.requested_retained_plan;
+      fv.release = &winrt_detail::release_capture_frame;
+      fv.release_user = new winrt_detail::CaptureFrameLease{captured.bytes};
+      strand_.post_frame(fv);
     }
 
-    ProviderError waiter_error = ProviderError::ERR_PROVIDER_FAILED;
-    std::shared_ptr<std::vector<uint8_t>> bytes;
-    bool ok = false;
-    bool has_time = false;
-    int64_t sample_time = 0;
-    {
-      std::lock_guard<std::mutex> wl(waiter->m);
-      ok = waiter->ok;
-      waiter_error = waiter->error;
-      bytes = waiter->bytes;
-      has_time = waiter->has_sample_time;
-      sample_time = waiter->sample_time_100ns;
-    }
-    if (!ok || !bytes) {
-      fail(waiter_error);
-      return;
-    }
-
-    FrameView fv{};
-    fv.device_instance_id = device_id;
-    fv.stream_id = 0;
-    fv.acquisition_session_id = session_id;
-    fv.capture_id = capture_id;
-    fv.capture_image.routing = CaptureImageRouting::DEFAULT_METERED;
-    fv.capture_image.image_member_index = 0;
-    fv.width = job.request.width;
-    fv.height = job.request.height;
-    fv.format_fourcc = job.request.format_fourcc;
-    if (has_time) {
-      fv.acquisition_timing = winrt_detail::make_acquisition_timing(sample_time);
-    }
-    fv.data = bytes->data();
-    fv.size_bytes = bytes->size();
-    fv.stride_bytes = job.request.width * 4u;
-    // Fresh immutable allocation: publish for zero-copy retention (brief §4).
-    fv.cpu_payload_owner = bytes;
-    fv.requested_retained_plan = job.request.requested_retained_plan;
-    fv.release = &winrt_detail::release_capture_frame;
-    fv.release_user = new winrt_detail::CaptureFrameLease{bytes};
-    strand_.post_frame(fv);
+    restore_baseline_if_needed();
 
     terminal_posted = true;
     strand_.post_capture_completed(capture_id, device_id);
@@ -1798,6 +2012,22 @@ ProviderResult WinrtCameraProvider::validate_and_admit_submission_locked_(
       if (stream && stream->producing &&
           (stream->width != req.width || stream->height != req.height)) {
         return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
+      }
+    }
+    // Provider-wide multi-image support is advertised optimistically
+    // (exposure-compensation control is a very common UVC capability), but
+    // the exact opened device may still lack it, or the caller may request
+    // more members than this provider's derived watchdog budget covers
+    // (kMaxBracketMembers) -- both fail deterministically here rather than
+    // being silently degraded to a single default image.
+    if (req.still_image_bundle.members.size() > 1) {
+      if (req.still_image_bundle.members.size() > kMaxBracketMembers) {
+        return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+      }
+      float unused_min = 0.0f, unused_max = 0.0f, unused_step = 0.0f;
+      if (!query_exposure_compensation_range_(dev_it->second.backend, unused_min, unused_max,
+                                              unused_step)) {
+        return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
       }
     }
     DeviceCaptureJob job;

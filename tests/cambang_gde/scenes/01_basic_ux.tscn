@@ -35,16 +35,16 @@ var capture_profile_00 : Dictionary = {
 			\"role\": CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED,
 			\"intended_exposure_compensation_milli_ev\": 0,
 		},
-		{
-			\"image_member_index\": 1,
-			\"role\": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
-			\"intended_exposure_compensation_milli_ev\": -1000,
-		},
-		{
-			\"image_member_index\": 2,
-			\"role\": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
-			\"intended_exposure_compensation_milli_ev\": 1000,
-		},
+		#{
+			#\"image_member_index\": 1,
+			#\"role\": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			#\"intended_exposure_compensation_milli_ev\": -1000,
+		#},
+		#{
+			#\"image_member_index\": 2,
+			#\"role\": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			#\"intended_exposure_compensation_milli_ev\": 1000,
+		#},
 		]
 	},
 }
@@ -107,8 +107,13 @@ func _ready():
 		
 	#device_00 = CamBANGServer.get_device_for_hardware_id(\"synthetic:0\")
 	#CamBANGServer.get_device()
-	device_00 = CamBANGServer.get_device_for_hardware_id(\"\\\\\\\\?\\\\USB#VID_13D3&PID_5279&MI_00#6&f7bbb15&0&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\\\\GLOBAL\")
 	
+	## razer built-in
+	#device_00 = CamBANGServer.get_device_for_hardware_id(\"\\\\\\\\?\\\\USB#VID_13D3&PID_5279&MI_00#6&f7bbb15&0&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\\\\GLOBAL\")
+
+	## usb
+	device_00 = CamBANGServer.get_device_for_hardware_id(\"\\\\\\\\?\\\\USB#VID_328F&PID_002D&MI_00#6&eb63420&2&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\\\\GLOBAL\")
+
 	#var device_01 : CamBANGDevice = CamBANGServer.get_device_for_hardware_id(\"synthetic:1\")
 	device_00.set_still_capture_profile(capture_profile_00)
 
