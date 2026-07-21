@@ -271,6 +271,17 @@ private:
   ProviderResult ensure_reader_started_(
       const std::shared_ptr<winrt_detail::DeviceBackend>& backend);
 
+  // Best-effort, device-level static camera facts (facing, sensor mounting
+  // orientation) from DeviceInformation.EnclosureLocation. Runs its own
+  // bounded control-thread lookup and never fails/blocks open_device(): a
+  // lookup failure, timeout, or a device with no reported enclosure location
+  // simply means no static facts are posted (never fabricated), logged via
+  // log_line for diagnosability only. Posts through the strand after
+  // on_device_opened, per brief §8 (static facts key by opened device
+  // identity).
+  void post_static_camera_facts_best_effort_(
+      uint64_t device_instance_id, const std::string& hardware_id);
+
   // Capture executor.
   bool start_capture_executor_() noexcept;
   void stop_and_join_capture_executor_() noexcept;
@@ -292,6 +303,16 @@ private:
       const std::shared_ptr<winrt_detail::DeviceBackend>& backend,
       float& out_min, float& out_max, float& out_step);
 
+  // Realized focus state, reported only where it maps onto CamBANG's
+  // FocusState model with zero unit-fabrication risk. WinRT's continuous
+  // FocusControl.Value() has no confirmed physical unit (its own vocabulary
+  // is preset/enum-based: ManualFocusDistance{Infinity,Hyperfocal,Nearest}),
+  // so only the AutoInfinity preset -- the one case expressible without
+  // guessing a distance -- is surfaced; every other preset/mode is left
+  // unreported rather than approximated.
+  static bool query_focus_state_at_infinity_(
+      const std::shared_ptr<winrt_detail::DeviceBackend>& backend);
+
   // Bounded (control-thread) apply of one exposure-compensation value.
   // Converts requested_milli_ev to EV, clamps and rounds to the device's
   // actual step grid, applies it, then reads back the real post-set value as
@@ -309,6 +330,21 @@ private:
     std::shared_ptr<std::vector<uint8_t>> bytes;
     bool has_sample_time = false;
     int64_t sample_time_100ns = 0;
+
+    // Optional per-image camera intrinsics/distortion, read from the
+    // delivered frame's VideoMediaFrame.CameraIntrinsics() when the
+    // device/driver genuinely supplies it (commonly null on plain UVC
+    // webcams; real on some depth/professional cameras). Never fabricated:
+    // has_intrinsics stays false when WinRT reported none.
+    bool has_intrinsics = false;
+    float focal_length_x = 0.0f;
+    float focal_length_y = 0.0f;
+    float principal_point_x = 0.0f;
+    float principal_point_y = 0.0f;
+    float radial_k1 = 0.0f, radial_k2 = 0.0f, radial_k3 = 0.0f;
+    float tangential_p1 = 0.0f, tangential_p2 = 0.0f;
+    uint32_t intrinsics_reference_width = 0;
+    uint32_t intrinsics_reference_height = 0;
   };
   // Captures exactly one still frame at the given geometry/format via the
   // waiter mechanism. Shared by the default-metered member and every

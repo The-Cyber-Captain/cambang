@@ -755,6 +755,73 @@ bool parse_pose(const JsonValue& object, const std::string& camera_id, std::opti
   return true;
 }
 
+// The four scalar dual-tier facts share one {source, <value_key>} shape and
+// one create()-rejects-non-positive rule, so they share a parser.
+template <typename Fact, typename Create>
+bool parse_positive_scalar_fact(const JsonValue& object,
+                                const char* fact_name,
+                                const char* value_key,
+                                Create create,
+                                std::optional<SourcedFact<Fact>>& result,
+                                LoadResult& out) {
+  const std::string source_label = std::string(fact_name) + ".source";
+  const std::string value_label = std::string(fact_name) + "." + value_key;
+  const JsonValue* source = field(object, "source");
+  const JsonValue* value = field(object, value_key);
+  if (!require_type(source, JsonValue::Type::String, source_label, out) ||
+      !require_type(value, JsonValue::Type::Number, value_label, out)) return false;
+  FactOrigin origin;
+  double parsed = 0.0;
+  if (!parse_origin(*source, source_label, origin, out) ||
+      !parse_finite_number(*value, value_label, parsed, out)) return false;
+  const auto checked = create(parsed);
+  if (!checked) {
+    set_error(out, LoadErrorKind::Validation, value_label + " must be greater than zero");
+    return false;
+  }
+  result = SourcedFact<Fact>{*checked, origin};
+  return true;
+}
+
+bool parse_focus_state(const JsonValue& object,
+                       std::optional<SourcedFact<FocusState>>& result,
+                       LoadResult& out) {
+  const JsonValue* source = field(object, "source");
+  const JsonValue* state = field(object, "state");
+  if (!require_type(source, JsonValue::Type::String, "focus_state.source", out) ||
+      !require_type(state, JsonValue::Type::String, "focus_state.state", out)) return false;
+  FactOrigin origin;
+  if (!parse_origin(*source, "focus_state.source", origin, out)) return false;
+  const JsonValue* distance = field(object, "distance_m");
+  if (state->string_value == "at_distance") {
+    if (!require_type(distance, JsonValue::Type::Number, "focus_state.distance_m", out)) return false;
+    double distance_value = 0.0;
+    if (!parse_finite_number(*distance, "focus_state.distance_m", distance_value, out)) return false;
+    const auto checked = FocusAtDistance::create(distance_value);
+    if (!checked) {
+      set_error(out, LoadErrorKind::Validation, "focus_state.distance_m is not finite");
+      return false;
+    }
+    result = SourcedFact<FocusState>{FocusState{*checked}, origin};
+    return true;
+  }
+  if (distance != nullptr) {
+    set_error(out, LoadErrorKind::Validation,
+              "focus_state.distance_m is only valid when state is at_distance");
+    return false;
+  }
+  if (state->string_value == "infinity") {
+    result = SourcedFact<FocusState>{FocusState{FocusAtInfinity{}}, origin};
+    return true;
+  }
+  if (state->string_value == "unknown") {
+    result = SourcedFact<FocusState>{FocusState{FocusStateUnknown{}}, origin};
+    return true;
+  }
+  set_error(out, LoadErrorKind::Validation, "focus_state.state has unknown token");
+  return false;
+}
+
 bool parse_camera(const JsonValue& value, ExternalCameraDescriptionEntry& entry, LoadResult& out) {
   if (value.type != JsonValue::Type::Object) {
     set_error(out, LoadErrorKind::Validation, "camera entry must be object");
@@ -783,6 +850,34 @@ bool parse_camera(const JsonValue& value, ExternalCameraDescriptionEntry& entry,
   }
   if (const JsonValue* pose = field(value, "pose")) {
     if (pose->type != JsonValue::Type::Object || !parse_pose(*pose, entry.camera_id, entry.facts.pose, out)) return false;
+  }
+  if (const JsonValue* focus_state = field(value, "focus_state")) {
+    if (focus_state->type != JsonValue::Type::Object ||
+        !parse_focus_state(*focus_state, entry.facts.focus_state, out)) return false;
+  }
+  if (const JsonValue* exposure_time = field(value, "exposure_time")) {
+    if (exposure_time->type != JsonValue::Type::Object ||
+        !parse_positive_scalar_fact<ExposureTime>(
+            *exposure_time, "exposure_time", "nanoseconds", ExposureTime::create,
+            entry.facts.exposure_time, out)) return false;
+  }
+  if (const JsonValue* iso = field(value, "sensor_sensitivity_iso")) {
+    if (iso->type != JsonValue::Type::Object ||
+        !parse_positive_scalar_fact<SensorSensitivityIso>(
+            *iso, "sensor_sensitivity_iso", "iso_equivalent", SensorSensitivityIso::create,
+            entry.facts.sensor_sensitivity_iso, out)) return false;
+  }
+  if (const JsonValue* aperture = field(value, "aperture_f_number")) {
+    if (aperture->type != JsonValue::Type::Object ||
+        !parse_positive_scalar_fact<ApertureFNumber>(
+            *aperture, "aperture_f_number", "f_number", ApertureFNumber::create,
+            entry.facts.aperture_f_number, out)) return false;
+  }
+  if (const JsonValue* focal_length = field(value, "focal_length_mm")) {
+    if (focal_length->type != JsonValue::Type::Object ||
+        !parse_positive_scalar_fact<FocalLengthMm>(
+            *focal_length, "focal_length_mm", "millimetres", FocalLengthMm::create,
+            entry.facts.focal_length_mm, out)) return false;
   }
   return true;
 }

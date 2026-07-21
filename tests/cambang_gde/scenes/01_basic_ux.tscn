@@ -86,9 +86,8 @@ func _plan_posture_is_gpu(posture: String) -> bool:
 
 func _ready():
 	CamBANGServer.set_capture_geolocation(FAKE_LOCATION)
-	#CamBANGServer.
-	#CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC)
-	CamBANGServer.start(CamBANGServer.PROVIDER_KIND_PLATFORM_BACKED)
+	CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC)
+	#CamBANGServer.start(CamBANGServer.PROVIDER_KIND_PLATFORM_BACKED)
 	var endpoints: Array = CamBANGServer.enumerate_devices()
 	if endpoints.is_empty():
 		push_error(\"KERR No CamBANG endpoints\")
@@ -104,15 +103,16 @@ func _ready():
 	if hardware_id.is_empty():
 		push_error(\"KERR Endpoint had no hardware_id\")
 		return
-		
-	#device_00 = CamBANGServer.get_device_for_hardware_id(\"synthetic:0\")
+	
+	## synthetic:0
+	device_00 = CamBANGServer.get_device_for_hardware_id(\"synthetic:0\")
 	#CamBANGServer.get_device()
 	
 	## razer built-in
 	#device_00 = CamBANGServer.get_device_for_hardware_id(\"\\\\\\\\?\\\\USB#VID_13D3&PID_5279&MI_00#6&f7bbb15&0&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\\\\GLOBAL\")
 
 	## usb
-	device_00 = CamBANGServer.get_device_for_hardware_id(\"\\\\\\\\?\\\\USB#VID_328F&PID_002D&MI_00#6&eb63420&2&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\\\\GLOBAL\")
+	#device_00 = CamBANGServer.get_device_for_hardware_id(\"\\\\\\\\?\\\\USB#VID_328F&PID_002D&MI_00#6&eb63420&2&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\\\\GLOBAL\")
 
 	#var device_01 : CamBANGDevice = CamBANGServer.get_device_for_hardware_id(\"synthetic:1\")
 	device_00.set_still_capture_profile(capture_profile_00)
@@ -167,8 +167,8 @@ func _process(delta: float) -> void:
 
 
 func _do_capture():
-	var tmp = device_00.trigger_capture()
-	print(\"tmp %s\" % tmp)
+	var capture_err = device_00.trigger_capture()
+	print(\"capture_err %s\" % capture_err)
 	while device_00.get_result() == null:
 		#print(\"waiting\")
 		await get_tree().process_frame
@@ -179,14 +179,30 @@ func _do_capture():
 	print(\"KERR: GEO %s\" % capture_result.get_geolocation())
 	print(\"KERR: OPTICAL CALIBRATION %s\" % capture_result.get_image_properties())
 
+
 	var member: Dictionary = capture_result.get_image_member(0)
 	
 	if member.has(\"camera_facts\"):
 		var p: Dictionary
 		var d: Dictionary
 		var k: Dictionary
-		
 		var facts: Dictionary = member[\"camera_facts\"]
+
+		
+		if facts.has(\"facing\"):
+			print(facts[\"facing\"][\"value\"], \" origin=\", facts[\"facing\"][\"origin\"])
+		
+		if facts.has(\"sensor_orientation_degrees\"):
+			print(\"Sensor orientation: \", facts[\"sensor_orientation_degrees\"][\"value\"])
+	
+		if facts.has(\"intrinsics\"):
+			var kf = facts[\"intrinsics\"]
+			print(\"Intrinsics: \", kf[\"focal_length_x_px\"], kf[\"focal_length_y_px\"],
+			kf[\"principal_point_x_px\"], kf[\"principal_point_y_px\"])
+		
+		if facts.has(\"focus_state\"):
+			print(\"focus state %s\" % [facts[\"focus_state\"][\"state\"]])  # \"infinity\" in the one case we report
+	
 		if facts.has(\"intrinsics\"):
 			k = facts[\"intrinsics\"]
 		# \"focal_length_x_px\", \"focal_length_y_px\",
@@ -202,7 +218,9 @@ func _do_capture():
 		
 		%CaptureInfoText.text = str(\"pose: \", p, \"\\nDistortion: \", d, \"\\nIntrinsics: \", k)
 	
+	%CaptureInfoText.text += str(\"\\nGEO: \", capture_result.get_geolocation())
 	%CaptureInfoText.text += str(\"\\nMembers: \", capture_result.get_image_count())
+	
 func _do_teardown():
 	# some stuff
 	await get_tree().create_timer(WAIT_BEFORE_QUIT).timeout

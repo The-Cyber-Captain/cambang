@@ -587,6 +587,83 @@ struct FocusStateUnknown {};
 
 using FocusState = std::variant<FocusAtDistance, FocusAtInfinity, FocusStateUnknown>;
 
+// Realized optical/exposure quantities. Each is device-constant on some
+// hardware (fixed iris, prime lens, locked auto-exposure) and genuinely
+// per-capture on other hardware (variable aperture, zoom lens, hunting
+// auto-exposure), so each carries both a CameraStaticFacts tier and a
+// per-capture tier, resolved external > provider-per-image > provider-static.
+class ExposureTime {
+ public:
+  static std::optional<ExposureTime> create(double nanoseconds) {
+    if (!std::isfinite(nanoseconds) || nanoseconds <= 0.0) {
+      return std::nullopt;
+    }
+    return ExposureTime(nanoseconds);
+  }
+
+  double nanoseconds() const noexcept { return nanoseconds_; }
+
+ private:
+  explicit ExposureTime(double nanoseconds) : nanoseconds_(nanoseconds) {}
+
+  double nanoseconds_;
+};
+
+class SensorSensitivityIso {
+ public:
+  static std::optional<SensorSensitivityIso> create(double iso_equivalent) {
+    if (!std::isfinite(iso_equivalent) || iso_equivalent <= 0.0) {
+      return std::nullopt;
+    }
+    return SensorSensitivityIso(iso_equivalent);
+  }
+
+  double iso_equivalent() const noexcept { return iso_equivalent_; }
+
+ private:
+  explicit SensorSensitivityIso(double iso_equivalent) : iso_equivalent_(iso_equivalent) {}
+
+  double iso_equivalent_;
+};
+
+class ApertureFNumber {
+ public:
+  static std::optional<ApertureFNumber> create(double f_number) {
+    if (!std::isfinite(f_number) || f_number <= 0.0) {
+      return std::nullopt;
+    }
+    return ApertureFNumber(f_number);
+  }
+
+  double f_number() const noexcept { return f_number_; }
+
+ private:
+  explicit ApertureFNumber(double f_number) : f_number_(f_number) {}
+
+  double f_number_;
+};
+
+// Physical lens focal length. This is lens metadata (what EXIF carries), a
+// distinct quantity from Intrinsics::focal_length_x_px() — the two are related
+// only through sensor pixel pitch, which this model does not carry, and a
+// camera may report either without the other.
+class FocalLengthMm {
+ public:
+  static std::optional<FocalLengthMm> create(double millimetres) {
+    if (!std::isfinite(millimetres) || millimetres <= 0.0) {
+      return std::nullopt;
+    }
+    return FocalLengthMm(millimetres);
+  }
+
+  double millimetres() const noexcept { return millimetres_; }
+
+ private:
+  explicit FocalLengthMm(double millimetres) : millimetres_(millimetres) {}
+
+  double millimetres_;
+};
+
 enum class ImageRotationDegrees : uint16_t {
   DEGREES_0 = 0,
   DEGREES_90 = 90,
@@ -611,6 +688,16 @@ struct CameraStaticFacts {
   std::optional<SourcedFact<Intrinsics>> intrinsics;
   std::optional<SourcedFact<Distortion>> distortion;
   std::optional<SourcedFact<CameraPose>> pose;
+  // Device-constant assertions for otherwise per-capture quantities. A camera
+  // whose hardware genuinely fixes these (fixed-focus lens, fixed iris, prime
+  // lens, locked exposure) can have them supplied here — typically via external
+  // camera-description ingestion, since such hardware usually exposes no API to
+  // read them at all.
+  std::optional<SourcedFact<FocusState>> focus_state;
+  std::optional<SourcedFact<ExposureTime>> exposure_time;
+  std::optional<SourcedFact<SensorSensitivityIso>> sensor_sensitivity_iso;
+  std::optional<SourcedFact<ApertureFNumber>> aperture_f_number;
+  std::optional<SourcedFact<FocalLengthMm>> focal_length_mm;
 };
 
 struct CaptureAdmissionFacts {
@@ -621,6 +708,10 @@ struct CaptureAdmissionFacts {
 struct CaptureImageFacts {
   std::optional<SourcedFact<ImageAcquisitionTiming>> acquisition_timing;
   std::optional<SourcedFact<FocusState>> focus_state;
+  std::optional<SourcedFact<ExposureTime>> exposure_time;
+  std::optional<SourcedFact<SensorSensitivityIso>> sensor_sensitivity_iso;
+  std::optional<SourcedFact<ApertureFNumber>> aperture_f_number;
+  std::optional<SourcedFact<FocalLengthMm>> focal_length_mm;
   std::optional<SourcedFact<RealizedImageTransform>> realized_image_transform;
 };
 
@@ -637,6 +728,10 @@ struct ProviderCaptureImageFacts {
   // Acquisition timing travels only on the accepted FrameView. These remaining
   // image facts are independently reported per capture member.
   std::optional<SourcedFact<FocusState>> focus_state;
+  std::optional<SourcedFact<ExposureTime>> exposure_time;
+  std::optional<SourcedFact<SensorSensitivityIso>> sensor_sensitivity_iso;
+  std::optional<SourcedFact<ApertureFNumber>> aperture_f_number;
+  std::optional<SourcedFact<FocalLengthMm>> focal_length_mm;
   std::optional<SourcedFact<RealizedImageTransform>> realized_image_transform;
 };
 

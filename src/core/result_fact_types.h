@@ -31,11 +31,15 @@ struct ResultImagePropertiesProvenance {
 
 // Optical-calibration truth lives in the resolved per-member camera facts
 // (CoreResolvedCaptureImageFacts / get_image_member camera_facts); location
-// truth lives in the capture-admission context (get_geolocation()); focus
-// state also lives in the resolved per-member camera facts
-// (camera_facts.focus_state). The former flattened optical-calibration,
-// location, and capture-attributes fact groups were writer-less duplicates
-// (no provider or Core source currently supplies exposure/aperture/ISO facts
-// at all) and were removed.
+// truth lives in the capture-admission context (get_geolocation()). The former
+// flattened optical-calibration, location, and capture-attributes fact groups
+// were writer-less duplicates and were removed.
+//
+// The five quantities the retired capture-attributes group covered — focus
+// distance, exposure time, ISO, aperture, and physical focal length — now live
+// in the camera-fact model proper (camera_facts.focus_state, .exposure_time,
+// .sensor_sensitivity_iso, .aperture_f_number, .focal_length_mm), each with a
+// device-constant tier and a per-capture tier. Note focal_length_mm is lens
+// metadata, distinct from the calibrated intrinsics.focal_length_x_px.
 
 } // namespace cambang

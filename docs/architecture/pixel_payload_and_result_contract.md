@@ -670,18 +670,28 @@ each contain `origin`; they are never flattened or merged. Absent facts are
 omitted, and `camera_facts` is omitted when all resolved camera facts are
 absent. `origin` describes provenance, not the internal resolution authority.
 
-Provider-owned per-member image facts are optional entries in that same
-dictionary:
+Per-member image facts are optional entries in that same dictionary:
 
 - `acquisition_timing` contains `origin`, `acquisition_mark`,
   `tick_period_numerator_ns`, `tick_period_denominator`, `clock_domain`,
   `reference_event`, and `comparability`;
 - `focus_state` contains `origin`, `state`, and `distance_m` only for the
   `at_distance` state;
+- `exposure_time` contains `origin` and `nanoseconds`;
+- `sensor_sensitivity_iso` contains `origin` and `iso_equivalent`;
+- `aperture_f_number` contains `origin` and `f_number`;
+- `focal_length_mm` contains `origin` and `millimetres`;
 - `realized_image_transform` contains `origin`, `rotation_degrees`,
   `mirrored`, and `pixels_already_transformed`.
 
-These are exact per-member provider facts. In particular,
+`acquisition_timing` and `realized_image_transform` are provider-owned. The
+other five resolve through the same external-description precedence as
+intrinsics/distortion/pose, because each is device-constant on some hardware
+and per-capture on other hardware (see `camera_fact_model.md` §12.2.1).
+`focal_length_mm` is physical lens metadata and is a separate fact from the
+calibrated `intrinsics.focal_length_x_px`.
+
+These remain exact per-member facts. In particular,
 `acquisition_timing.acquisition_mark` is in its declared provider domain and
 is not Capture Date-Time, capture-admission time, geolocation sample time, or
 another member's mark. Godot exposes all three numeric timing components
@@ -1003,16 +1013,17 @@ deliberately do NOT use flattened result groups:
 
 - capture-associated location is exposed from the Core-owned
   capture-admission context (`get_geolocation()`);
-- optical calibration, focus state, and pose are exposed through the
-  resolved per-member camera facts (`get_image_member(i)["camera_facts"]` —
-  intrinsics/distortion/pose/focus_state with per-fact origin).
+- optical calibration, pose, and realized optical/exposure state are exposed
+  through the resolved per-member camera facts
+  (`get_image_member(i)["camera_facts"]` — intrinsics/distortion/pose plus
+  focus_state/exposure_time/sensor_sensitivity_iso/aperture_f_number/
+  focal_length_mm, each with per-fact origin).
 
 Earlier flattened `LocationAttributes`, `OpticalCalibration`, and
-`CaptureAttributes` groups were writer-less (no provider or Core source
-currently supplies capture-device-state facts such as exposure time,
-aperture, or ISO-equivalent at all) and were removed. A future fact tranche
-that adds such a source should extend the per-member camera facts model
-rather than reintroduce a flattened group.
+`CaptureAttributes` groups were writer-less duplicates and were removed. The
+five quantities `CaptureAttributes` covered were subsequently restored into
+the per-member camera-facts model proper, which is the correct home for them;
+they must not be reintroduced as a flattened group.
 
 ## 13.1 ImageProperties
 

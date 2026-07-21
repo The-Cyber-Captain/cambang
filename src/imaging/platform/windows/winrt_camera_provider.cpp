@@ -21,10 +21,12 @@
 #include <winrt/base.h>
 #include <winrt/Windows.Devices.Enumeration.h>
 #include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Foundation.Numerics.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Graphics.Imaging.h>
 #include <winrt/Windows.Media.Capture.Frames.h>
 #include <winrt/Windows.Media.Capture.h>
+#include <winrt/Windows.Media.Devices.Core.h>
 #include <winrt/Windows.Media.Devices.h>
 #include <winrt/Windows.Media.MediaProperties.h>
 
@@ -44,6 +46,7 @@ namespace wgi = winrt::Windows::Graphics::Imaging;
 namespace wmc = winrt::Windows::Media::Capture;
 namespace wmcf = winrt::Windows::Media::Capture::Frames;
 namespace wmd = winrt::Windows::Media::Devices;
+namespace wmdc = winrt::Windows::Media::Devices::Core;
 namespace wmm = winrt::Windows::Media::MediaProperties;
 
 namespace {
@@ -327,6 +330,18 @@ struct CaptureWaiter {
   std::shared_ptr<std::vector<uint8_t>> bytes;
   bool has_sample_time = false;
   int64_t sample_time_100ns = 0;
+
+  // Optional camera intrinsics/distortion read from the delivered frame,
+  // when the device/driver genuinely supplies them. Never fabricated.
+  bool has_intrinsics = false;
+  float focal_length_x = 0.0f;
+  float focal_length_y = 0.0f;
+  float principal_point_x = 0.0f;
+  float principal_point_y = 0.0f;
+  float radial_k1 = 0.0f, radial_k2 = 0.0f, radial_k3 = 0.0f;
+  float tangential_p1 = 0.0f, tangential_p2 = 0.0f;
+  uint32_t intrinsics_reference_width = 0;
+  uint32_t intrinsics_reference_height = 0;
 };
 
 struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
@@ -444,7 +459,8 @@ std::optional<SourcedFact<ImageAcquisitionTiming>> make_acquisition_timing(
 void deliver_frame_locked(DeviceBackend& backend,
                           const wgi::SoftwareBitmap& bitmap,
                           int64_t sample_time_100ns,
-                          bool has_sample_time) {
+                          bool has_sample_time,
+                          const wmdc::CameraIntrinsics& intrinsics) {
   if (!backend.waiters.empty()) {
     std::shared_ptr<CaptureWaiter> waiter = backend.waiters.front();
     backend.waiters.pop_front();
@@ -469,6 +485,30 @@ void deliver_frame_locked(DeviceBackend& backend,
         waiter->bytes = std::move(bytes);
         waiter->has_sample_time = has_sample_time;
         waiter->sample_time_100ns = sample_time_100ns;
+        // Truthful only: most UVC webcams report no CameraIntrinsics at all;
+        // has_intrinsics stays false rather than fabricating a value.
+        if (intrinsics) {
+          try {
+            const auto focal_length = intrinsics.FocalLength();
+            const auto principal_point = intrinsics.PrincipalPoint();
+            const auto radial = intrinsics.RadialDistortion();
+            const auto tangential = intrinsics.TangentialDistortion();
+            waiter->focal_length_x = focal_length.x;
+            waiter->focal_length_y = focal_length.y;
+            waiter->principal_point_x = principal_point.x;
+            waiter->principal_point_y = principal_point.y;
+            waiter->radial_k1 = radial.x;
+            waiter->radial_k2 = radial.y;
+            waiter->radial_k3 = radial.z;
+            waiter->tangential_p1 = tangential.x;
+            waiter->tangential_p2 = tangential.y;
+            waiter->intrinsics_reference_width = intrinsics.ImageWidth();
+            waiter->intrinsics_reference_height = intrinsics.ImageHeight();
+            waiter->has_intrinsics = true;
+          } catch (...) {
+            // Leave has_intrinsics false; never post a partially-read fact.
+          }
+        }
       }
       waiter->cv.notify_all();
     }
@@ -558,6 +598,7 @@ namespace wgi = winrt_detail::wgi;
 namespace wmc = winrt_detail::wmc;
 namespace wmcf = winrt_detail::wmcf;
 namespace wmd = winrt_detail::wmd;
+namespace wmdc = winrt_detail::wmdc;
 namespace wmm = winrt_detail::wmm;
 
 namespace {
@@ -790,6 +831,18 @@ ProviderResult WinrtCameraProvider::open_device(
           wmc::MediaCaptureInitializationSettings settings;
           settings.VideoDeviceId(device_hid);
           settings.StreamingCaptureMode(wmc::StreamingCaptureMode::Video);
+          // ExclusiveControl is required, not preferred: honouring Core's
+          // requested geometry goes through MediaFrameSource::SetFormatAsync,
+          // which a SharedReadOnly open cannot perform. Opening read-only was
+          // tried and fails start_stream outright with no frames at all.
+          //
+          // This is a known, measured cost: holding exclusive control freezes
+          // the camera's own autofocus for as long as the device is held, and
+          // autofocus resumes the instant it is released. Captures on such
+          // hardware are therefore taken at a frozen focus and exposure. See
+          // the known-defects note in docs/dev/current_tranche.md -- the fix
+          // is not simply switching sharing mode, because the contract
+          // forbids inventing geometry to avoid setting it.
           settings.SharingMode(wmc::MediaCaptureSharingMode::ExclusiveControl);
           settings.MemoryPreference(wmc::MediaCaptureMemoryPreference::Cpu);
           auto op = capture.InitializeAsync(settings);
@@ -853,7 +906,100 @@ ProviderResult WinrtCameraProvider::open_device(
   emit_native_created_(dev.native_id, NativeObjectType::Device, root_id,
                        device_instance_id, 0, 0);
   strand_.post_device_opened(device_instance_id);
+  post_static_camera_facts_best_effort_(device_instance_id, hardware_id);
   return ProviderResult::success();
+}
+
+void WinrtCameraProvider::post_static_camera_facts_best_effort_(
+    uint64_t device_instance_id, const std::string& hardware_id) {
+  struct LookupResult {
+    bool ok = false;
+    bool has_panel = false;
+    wde::Panel panel = wde::Panel::Unknown;
+    uint32_t rotation_degrees_clockwise = 0;
+  };
+  auto result = std::make_shared<LookupResult>();
+  auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
+  const winrt::hstring device_hid = winrt_detail::utf8_to_hstring(hardware_id);
+  const bool completed = control_.run_bounded(
+      [result, device_hid](const BoundedControlExecutor::AbandonToken& t) {
+        try {
+          auto op = wde::DeviceInformation::CreateFromIdAsync(device_hid);
+          if (!winrt_detail::wait_async_bounded(op, kControlJobTimeoutMs - 500)) {
+            return;
+          }
+          const wde::DeviceInformation info = op.GetResults();
+          if (t.abandoned.load(std::memory_order_acquire) || !info) {
+            return;
+          }
+          const wde::EnclosureLocation enclosure = info.EnclosureLocation();
+          if (!enclosure) {
+            return; // device reports no enclosure location; omit, don't guess
+          }
+          LookupResult local;
+          local.ok = true;
+          local.has_panel = true;
+          local.panel = enclosure.Panel();
+          local.rotation_degrees_clockwise = enclosure.RotationAngleInDegreesClockwise();
+          if (!t.abandoned.load(std::memory_order_acquire)) {
+            *result = local;
+          }
+        } catch (...) {
+          // Best-effort enrichment only; a failure here must never affect
+          // open_device()'s already-committed success.
+        }
+      },
+      token, kControlJobTimeoutMs);
+  if (!completed || !result->ok) {
+    winrt_detail::log_line(
+        "static camera facts unavailable for device=%llu (enclosure location "
+        "lookup timed out, failed, or device reports none)",
+        static_cast<unsigned long long>(device_instance_id));
+    return;
+  }
+
+  CameraStaticFacts facts{};
+  // A device that reports a physical enclosure panel is physical hardware by
+  // construction: a virtual camera has no chassis location to report. Derived
+  // rather than native-reported -- the platform stated a panel, not a nature.
+  // Devices without an enclosure location reach the early return above, so no
+  // nature is claimed for USB or virtual cameras, which WinRT gives us no
+  // reliable way to tell apart.
+  facts.nature = SourcedFact<CameraNature>{CameraNature::PHYSICAL, FactOrigin::DERIVED};
+  if (result->panel == wde::Panel::Front) {
+    facts.facing = SourcedFact<CameraFacing>{CameraFacing::FRONT, FactOrigin::NATIVE_REPORTED};
+  } else if (result->panel == wde::Panel::Back) {
+    facts.facing = SourcedFact<CameraFacing>{CameraFacing::BACK, FactOrigin::NATIVE_REPORTED};
+  }
+  // Top/Bottom/Left/Right/Unknown don't map onto CamBANG's front/back/
+  // external vocabulary without guessing; omitted rather than fabricated.
+
+  const uint32_t rotation_mod = result->rotation_degrees_clockwise % 360u;
+  // Real mountings are always axis-aligned in practice; round to the
+  // nearest quarter-turn rather than requiring an exact match.
+  const uint32_t nearest_quarter = ((rotation_mod + 45u) / 90u) % 4u;
+  switch (nearest_quarter) {
+    case 0u:
+      facts.sensor_orientation = SourcedFact<SensorOrientationDegrees>{
+          SensorOrientationDegrees::DEGREES_0, FactOrigin::NATIVE_REPORTED};
+      break;
+    case 1u:
+      facts.sensor_orientation = SourcedFact<SensorOrientationDegrees>{
+          SensorOrientationDegrees::DEGREES_90, FactOrigin::NATIVE_REPORTED};
+      break;
+    case 2u:
+      facts.sensor_orientation = SourcedFact<SensorOrientationDegrees>{
+          SensorOrientationDegrees::DEGREES_180, FactOrigin::NATIVE_REPORTED};
+      break;
+    default:
+      facts.sensor_orientation = SourcedFact<SensorOrientationDegrees>{
+          SensorOrientationDegrees::DEGREES_270, FactOrigin::NATIVE_REPORTED};
+      break;
+  }
+
+  if (facts.facing || facts.nature || facts.sensor_orientation) {
+    strand_.post_camera_static_facts(device_instance_id, ProviderCameraFacts{facts});
+  }
 }
 
 ProviderResult WinrtCameraProvider::ensure_reader_realized_(
@@ -982,13 +1128,17 @@ ProviderResult WinrtCameraProvider::ensure_reader_realized_(
                       mark_100ns = ts.Value().count();
                       has_mark = true;
                     }
+                    // Null on most UVC webcams; real on some depth/
+                    // professional cameras. video.CameraIntrinsics() is a
+                    // plain property get, safe to call inline here.
+                    const wmdc::CameraIntrinsics intrinsics = video.CameraIntrinsics();
                     {
                       std::lock_guard<std::mutex> bl2(strong->m);
                       if (strong->closed) {
                         return;
                       }
-                      winrt_detail::deliver_frame_locked(*strong, bitmap,
-                                                         mark_100ns, has_mark);
+                      winrt_detail::deliver_frame_locked(*strong, bitmap, mark_100ns,
+                                                         has_mark, intrinsics);
                     }
                     frame.Close();
                   } catch (const winrt::hresult_error& e) {
@@ -1640,6 +1790,30 @@ bool WinrtCameraProvider::query_exposure_compensation_range_(
   }
 }
 
+bool WinrtCameraProvider::query_focus_state_at_infinity_(
+    const std::shared_ptr<DeviceBackend>& backend) {
+  if (!backend) {
+    return false;
+  }
+  wmc::MediaCapture capture{nullptr};
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    if (backend->closed) {
+      return false;
+    }
+    capture = backend->capture;
+  }
+  if (!capture) {
+    return false;
+  }
+  try {
+    wmd::FocusControl ctrl = capture.VideoDeviceController().FocusControl();
+    return ctrl && ctrl.Supported() && ctrl.Preset() == wmd::FocusPreset::AutoInfinity;
+  } catch (...) {
+    return false;
+  }
+}
+
 bool WinrtCameraProvider::apply_exposure_compensation_bounded_(
     const std::shared_ptr<DeviceBackend>& backend,
     int32_t requested_milli_ev,
@@ -1768,6 +1942,18 @@ WinrtCameraProvider::CapturedMemberFrame WinrtCameraProvider::capture_one_member
   result.bytes = waiter->bytes;
   result.has_sample_time = waiter->has_sample_time;
   result.sample_time_100ns = waiter->sample_time_100ns;
+  result.has_intrinsics = waiter->has_intrinsics;
+  result.focal_length_x = waiter->focal_length_x;
+  result.focal_length_y = waiter->focal_length_y;
+  result.principal_point_x = waiter->principal_point_x;
+  result.principal_point_y = waiter->principal_point_y;
+  result.radial_k1 = waiter->radial_k1;
+  result.radial_k2 = waiter->radial_k2;
+  result.radial_k3 = waiter->radial_k3;
+  result.tangential_p1 = waiter->tangential_p1;
+  result.tangential_p2 = waiter->tangential_p2;
+  result.intrinsics_reference_width = waiter->intrinsics_reference_width;
+  result.intrinsics_reference_height = waiter->intrinsics_reference_height;
   if (result.ok && !result.bytes) {
     result.ok = false;
     result.error = ProviderError::ERR_PROVIDER_FAILED;
@@ -1954,6 +2140,56 @@ void WinrtCameraProvider::run_device_capture_job_(const DeviceCaptureJob& job) n
       fv.release = &winrt_detail::release_capture_frame;
       fv.release_user = new winrt_detail::CaptureFrameLease{captured.bytes};
       strand_.post_frame(fv);
+
+      // Real per-image camera facts, only when WinRT genuinely reported them
+      // for this exact frame (most UVC webcams report none of this; some
+      // depth/professional cameras report intrinsics/distortion, and some
+      // report a focus preset). This is a supply-side addition only: Core's
+      // existing precedence (external ADC ingestion > provider per-image >
+      // provider static) and provenance recording are untouched, so an
+      // ingested camera description still overrides this truthfully-
+      // reported value exactly as before.
+      {
+        ProviderCaptureImageFacts image_facts{};
+        if (captured.has_intrinsics) {
+          const CoordinateDomain domain{CoordinateDomainDeliveredImage{}};
+          if (const auto intrinsics_fact = Intrinsics::create(
+                  static_cast<double>(captured.focal_length_x),
+                  static_cast<double>(captured.focal_length_y),
+                  static_cast<double>(captured.principal_point_x),
+                  static_cast<double>(captured.principal_point_y),
+                  std::nullopt, // WinRT CameraIntrinsics does not report skew
+                  captured.intrinsics_reference_width,
+                  captured.intrinsics_reference_height,
+                  domain)) {
+            image_facts.intrinsics =
+                SourcedFact<Intrinsics>{*intrinsics_fact, FactOrigin::NATIVE_REPORTED};
+          }
+          // WinRT delivers the raw sensor frame; these coefficients describe
+          // (but have not been used to correct) that raw distortion.
+          if (const auto distortion_fact = BrownConrady5Distortion::create(
+                  static_cast<double>(captured.radial_k1),
+                  static_cast<double>(captured.radial_k2),
+                  static_cast<double>(captured.radial_k3),
+                  static_cast<double>(captured.tangential_p1),
+                  static_cast<double>(captured.tangential_p2),
+                  captured.intrinsics_reference_width,
+                  captured.intrinsics_reference_height,
+                  domain,
+                  DistortionImageState::DISTORTED)) {
+            image_facts.distortion =
+                SourcedFact<Distortion>{Distortion{*distortion_fact}, FactOrigin::NATIVE_REPORTED};
+          }
+        }
+        if (query_focus_state_at_infinity_(backend)) {
+          image_facts.focus_state =
+              SourcedFact<FocusState>{FocusAtInfinity{}, FactOrigin::NATIVE_REPORTED};
+        }
+        if (image_facts.intrinsics || image_facts.distortion || image_facts.focus_state) {
+          strand_.post_capture_image_facts(capture_id, device_id, member.image_member_index,
+                                           image_facts);
+        }
+      }
     }
 
     restore_baseline_if_needed();

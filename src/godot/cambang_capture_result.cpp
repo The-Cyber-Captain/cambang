@@ -214,6 +214,34 @@ godot::Dictionary to_dict(const SourcedFact<FocusState>& fact) {
   return out;
 }
 
+godot::Dictionary to_dict(const SourcedFact<ExposureTime>& fact) {
+  godot::Dictionary out;
+  out["origin"] = godot::String(fact_origin_name(fact.origin));
+  out["nanoseconds"] = fact.value.nanoseconds();
+  return out;
+}
+
+godot::Dictionary to_dict(const SourcedFact<SensorSensitivityIso>& fact) {
+  godot::Dictionary out;
+  out["origin"] = godot::String(fact_origin_name(fact.origin));
+  out["iso_equivalent"] = fact.value.iso_equivalent();
+  return out;
+}
+
+godot::Dictionary to_dict(const SourcedFact<ApertureFNumber>& fact) {
+  godot::Dictionary out;
+  out["origin"] = godot::String(fact_origin_name(fact.origin));
+  out["f_number"] = fact.value.f_number();
+  return out;
+}
+
+godot::Dictionary to_dict(const SourcedFact<FocalLengthMm>& fact) {
+  godot::Dictionary out;
+  out["origin"] = godot::String(fact_origin_name(fact.origin));
+  out["millimetres"] = fact.value.millimetres();
+  return out;
+}
+
 godot::Dictionary to_dict(const SourcedFact<RealizedImageTransform>& fact) {
   godot::Dictionary out;
   out["origin"] = godot::String(fact_origin_name(fact.origin));
@@ -248,6 +276,16 @@ godot::Dictionary camera_facts_to_dict(const CoreResolvedCaptureImageFacts& fact
   if (facts.camera.pose) out["pose"] = to_dict(*facts.camera.pose);
   add_acquisition_timing_camera_fact(out, facts.image.acquisition_timing);
   if (facts.image.focus_state) out["focus_state"] = to_dict(*facts.image.focus_state);
+  if (facts.image.exposure_time) out["exposure_time"] = to_dict(*facts.image.exposure_time);
+  if (facts.image.sensor_sensitivity_iso) {
+    out["sensor_sensitivity_iso"] = to_dict(*facts.image.sensor_sensitivity_iso);
+  }
+  if (facts.image.aperture_f_number) {
+    out["aperture_f_number"] = to_dict(*facts.image.aperture_f_number);
+  }
+  if (facts.image.focal_length_mm) {
+    out["focal_length_mm"] = to_dict(*facts.image.focal_length_mm);
+  }
   if (facts.image.realized_image_transform) {
     out["realized_image_transform"] = to_dict(*facts.image.realized_image_transform);
   }

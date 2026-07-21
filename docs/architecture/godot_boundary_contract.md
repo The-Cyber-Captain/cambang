@@ -41,6 +41,16 @@ concurrency-only documents are not accepted through this public surface.
 Completed `CamBANGCaptureResult` objects expose resolved still-camera facts
 through optional `get_image_member(index).camera_facts`, and
 `CamBANGStreamResult` exposes stream-frame facts through `get_camera_facts()`.
+
+The asymmetry is deliberate and not a gap. Stream results carry only facts that
+ride free on the delivered frame — today, `acquisition_timing`. They are
+deliberately not burdened with facts that vary per frame and would require a
+per-frame query or resolution pass (realized exposure, sensitivity, aperture,
+focal length, focus state), for two reasons: the per-frame processing cost on a
+repeating path, and the absence of a real need, since streams are by design a
+second-class surface relative to capture operations and their results. Resolved
+camera facts belong to `CamBANGCaptureResult`. Do not migrate them onto the
+stream surface without an explicit maintainer decision reversing this.
 These surfaces include optional `acquisition_timing` with direct Godot `int`
 values for `acquisition_mark`, `tick_period_numerator_ns`, and
 `tick_period_denominator`, plus `get_capture_datetime_unix_nanoseconds()`,

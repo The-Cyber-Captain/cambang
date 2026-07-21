@@ -3884,8 +3884,36 @@ CoreResolvedCaptureImageFacts CoreRuntime::resolve_capture_image_facts_(
       ? external_facts->pose
       : provider_image && provider_image->pose ? provider_image->pose
       : static_facts ? static_facts->pose : std::nullopt;
+  // These five are device-constant on some hardware and per-capture on other
+  // hardware, so they resolve through the same three-tier chain as intrinsics/
+  // distortion/pose rather than being provider-per-image only.
+  resolved.image.focus_state = external_facts && external_facts->focus_state
+      ? external_facts->focus_state
+      : provider_image && provider_image->focus_state ? provider_image->focus_state
+      : static_facts ? static_facts->focus_state : std::nullopt;
+  resolved.image.exposure_time = external_facts && external_facts->exposure_time
+      ? external_facts->exposure_time
+      : provider_image && provider_image->exposure_time ? provider_image->exposure_time
+      : static_facts ? static_facts->exposure_time : std::nullopt;
+  resolved.image.sensor_sensitivity_iso =
+      external_facts && external_facts->sensor_sensitivity_iso
+      ? external_facts->sensor_sensitivity_iso
+      : provider_image && provider_image->sensor_sensitivity_iso
+          ? provider_image->sensor_sensitivity_iso
+      : static_facts ? static_facts->sensor_sensitivity_iso : std::nullopt;
+  resolved.image.aperture_f_number = external_facts && external_facts->aperture_f_number
+      ? external_facts->aperture_f_number
+      : provider_image && provider_image->aperture_f_number
+          ? provider_image->aperture_f_number
+      : static_facts ? static_facts->aperture_f_number : std::nullopt;
+  resolved.image.focal_length_mm = external_facts && external_facts->focal_length_mm
+      ? external_facts->focal_length_mm
+      : provider_image && provider_image->focal_length_mm ? provider_image->focal_length_mm
+      : static_facts ? static_facts->focal_length_mm : std::nullopt;
+  // realized_image_transform stays provider-per-image only: it describes what
+  // this provider did to the delivered pixels, which no external source can
+  // assert on the provider's behalf.
   if (provider_image) {
-    resolved.image.focus_state = provider_image->focus_state;
     resolved.image.realized_image_transform = provider_image->realized_image_transform;
   }
   return resolved;
