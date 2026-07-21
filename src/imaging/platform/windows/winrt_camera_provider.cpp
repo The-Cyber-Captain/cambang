@@ -2176,6 +2176,25 @@ void WinrtCameraProvider::run_device_capture_job_(const DeviceCaptureJob& job) n
       }
     };
 
+    // This loop is the provider-managed bracket fallback: per member, apply the
+    // requested exposure compensation, then take a deliberate still. It is the
+    // fallback because the native route (VariablePhotoSequenceCapture, which
+    // drives per-member frame controllers itself) reports unsupported on all
+    // hardware available here.
+    //
+    // KNOWN LIMITATION -- the exposure is changed but not settled. A control
+    // write returning does not mean the sensor has applied it: auto-exposure
+    // pipelines typically need a frame or two to converge, so a member can be
+    // captured while still partly reflecting the previous member's exposure.
+    // The bracket would then be narrower than requested, while
+    // realized_exposure_compensation_milli_ev truthfully reports the control's
+    // value -- accurate about the control, potentially misleading about the
+    // image. Settling needs a strategy (fixed delay, discard N frames, or poll
+    // for convergence) chosen against hardware that can actually be measured;
+    // neither camera here exposes an exposure-compensation control, so any
+    // choice made now would be a guess shipped as a fix. Bracket bundles are
+    // refused at admission on such devices, so this path is currently
+    // unreachable rather than silently wrong.
     for (const CaptureStillImageMember& member : members) {
       int32_t realized_milli_ev = 0;
       bool has_realized_ev = false;
