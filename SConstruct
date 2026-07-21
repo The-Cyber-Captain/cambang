@@ -690,6 +690,14 @@ def _assert_gde_bin_holds_only_deliverables(bin_dir):
         if os.path.isdir(full):
             # Android exports can nest per-ABI directories; only files are policed.
             continue
+        if entry.startswith("~"):
+            # Godot's own hot-reload shadow copies. With reloadable = true in
+            # the .gdextension the editor duplicates the module (and its .pdb)
+            # to a ~-prefixed name so it can replace the original while the
+            # project runs. They appear from ordinary editor use, are Godot's
+            # to manage, and are not ours to police -- failing the build on
+            # them would mean a build could not follow an editor session.
+            continue
         if not any(entry.endswith(suffix) for suffix in sorted(allowed_suffixes)):
             unexpected.append(entry)
     return unexpected
