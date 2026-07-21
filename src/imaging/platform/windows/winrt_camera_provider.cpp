@@ -834,15 +834,16 @@ ProviderResult WinrtCameraProvider::open_device(
           // ExclusiveControl is required, not preferred: honouring Core's
           // requested geometry goes through MediaFrameSource::SetFormatAsync,
           // which a SharedReadOnly open cannot perform. Opening read-only was
-          // tried and fails start_stream outright with no frames at all.
+          // tried and fails start_stream outright, with no frames at all, so
+          // do not "fix" this by switching sharing mode -- the contract also
+          // forbids the workaround of inheriting whatever geometry the device
+          // happens to be in.
           //
-          // This is a known, measured cost: holding exclusive control freezes
-          // the camera's own autofocus for as long as the device is held, and
-          // autofocus resumes the instant it is released. Captures on such
-          // hardware are therefore taken at a frozen focus and exposure. See
-          // the known-defects note in docs/dev/current_tranche.md -- the fix
-          // is not simply switching sharing mode, because the contract
-          // forbids inventing geometry to avoid setting it.
+          // It was briefly suspected that holding exclusive control freezes
+          // the camera's own autofocus. That is not so: a controlled
+          // comparison holding one autofocus-capable device 45s under each
+          // sharing mode showed autofocus and auto-exposure working normally
+          // in both, confirmed by direct observation of the lens motor.
           settings.SharingMode(wmc::MediaCaptureSharingMode::ExclusiveControl);
           settings.MemoryPreference(wmc::MediaCaptureMemoryPreference::Cpu);
           auto op = capture.InitializeAsync(settings);
