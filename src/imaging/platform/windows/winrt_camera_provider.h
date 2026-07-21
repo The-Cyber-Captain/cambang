@@ -10,6 +10,20 @@
 // translation unit requires a C++/WinRT-capable toolchain (MSVC + Windows
 // SDK); the build compiles it only for MSVC Windows GDE targets.
 //
+// Still capture uses a different pipeline from streaming. Stills come from
+// LowLagPhotoCapture (prepared per device, uncompressed Bgra8), never from the
+// stream frame reader; the reader is not even started for a capture. Two
+// consequences are worth knowing before changing anything here:
+//   - photo and stream geometry are coupled on this backend. Setting the photo
+//     stream's properties reconfigures a running preview, so capture geometry
+//     is set through the frame source and a capture whose geometry differs
+//     from a started stream is refused (ERR_PLATFORM_CONSTRAINT) rather than
+//     worked around. That refusal is a hardware constraint, not a shortcut.
+//   - the photo path carries no frame timestamp and no camera intrinsics of
+//     its own. Acquisition timing is therefore a provider-observed mark (see
+//     make_provider_observed_timing) and intrinsics are read from the frame
+//     source, which is legitimate only because of the geometry coupling above.
+//
 // Contract source: docs/provider_implementation_brief.md. This provider is an
 // adapter to that contract; it defines no contract semantics of its own.
 //
@@ -124,19 +138,30 @@ public:
   bool supports_multi_image_still_sequence() const noexcept override { return true; }
 
   // Derived from the bounded per-step timeouts below (never a guess, per the
-  // doc comment on the base declaration): worst case is a cold reader
-  // realize+geometry+start chain (3 * kControlJobTimeoutMs) plus up to
-  // kMaxBracketMembers members, each paying one bounded exposure-compensation
-  // control job (kExposureControlJobTimeoutMs) and one bounded sample wait
-  // (kCaptureSampleWaitMs), plus a fixed safety margin. This exceeds Core's
-  // 30s default, which sizes only for a single-image capture.
+  // doc comment on the base declaration). Re-derived when still capture moved
+  // to the photo pipeline: the step count happens to be unchanged, but the
+  // steps themselves are different.
+  //
+  // Cold setup is three bounded control jobs -- frame-source/reader
+  // realization, geometry (SetFormatAsync), and LowLagPhotoCapture
+  // preparation. Reader *start* is no longer part of the capture path at all.
+  //
+  // Each member then pays one bounded exposure-compensation control job
+  // (kExposureControlJobTimeoutMs) plus the photo capture job, whose own bound
+  // is kCaptureSampleWaitMs + kControlJobTimeoutMs: the capture wait, plus a
+  // control-thread queueing allowance because that job runs on the shared
+  // bounded executor.
+  //
+  // This exceeds Core's 30s default, which sizes only for a single-image
+  // capture.
   uint64_t capture_admission_watchdog_timeout_ns() const noexcept override {
-    constexpr uint64_t kColdReaderChainMs = 3ull * kControlJobTimeoutMs;
+    constexpr uint64_t kColdSetupChainMs = 3ull * kControlJobTimeoutMs;
     constexpr uint64_t kPerMemberMs =
-        static_cast<uint64_t>(kExposureControlJobTimeoutMs) + kCaptureSampleWaitMs;
+        static_cast<uint64_t>(kExposureControlJobTimeoutMs) + kCaptureSampleWaitMs +
+        kControlJobTimeoutMs;
     constexpr uint64_t kSafetyMarginMs = 2000ull;
     constexpr uint64_t kWorstCaseMs =
-        kColdReaderChainMs + static_cast<uint64_t>(kMaxBracketMembers) * kPerMemberMs + kSafetyMarginMs;
+        kColdSetupChainMs + static_cast<uint64_t>(kMaxBracketMembers) * kPerMemberMs + kSafetyMarginMs;
     return kWorstCaseMs * 1'000'000ull;
   }
 

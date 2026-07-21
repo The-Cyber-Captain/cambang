@@ -318,32 +318,6 @@ struct StreamProduction {
   uint64_t pool_exhausted_drops = 0;
 };
 
-struct CaptureWaiter {
-  std::mutex m;
-  std::condition_variable cv;
-  bool done = false;
-  bool ok = false;
-  ProviderError error = ProviderError::ERR_PROVIDER_FAILED;
-  uint32_t width = 0;   // requested output geometry/format (set by the worker)
-  uint32_t height = 0;
-  uint32_t fourcc = 0;
-  std::shared_ptr<std::vector<uint8_t>> bytes;
-  bool has_sample_time = false;
-  int64_t sample_time_100ns = 0;
-
-  // Optional camera intrinsics/distortion read from the delivered frame,
-  // when the device/driver genuinely supplies them. Never fabricated.
-  bool has_intrinsics = false;
-  float focal_length_x = 0.0f;
-  float focal_length_y = 0.0f;
-  float principal_point_x = 0.0f;
-  float principal_point_y = 0.0f;
-  float radial_k1 = 0.0f, radial_k2 = 0.0f, radial_k3 = 0.0f;
-  float tangential_p1 = 0.0f, tangential_p2 = 0.0f;
-  uint32_t intrinsics_reference_width = 0;
-  uint32_t intrinsics_reference_height = 0;
-};
-
 struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   // Serializes reader realization/geometry/start across the core thread and
   // capture workers without either holding provider state_mutex_.
@@ -374,21 +348,6 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   std::atomic<uint64_t> frame_handler_errors{0};
 
   std::shared_ptr<StreamProduction> stream;
-  std::deque<std::shared_ptr<CaptureWaiter>> waiters;
-
-  // Caller holds m.
-  void fail_all_waiters_locked(ProviderError error) {
-    for (auto& w : waiters) {
-      std::lock_guard<std::mutex> wl(w->m);
-      if (!w->done) {
-        w->done = true;
-        w->ok = false;
-        w->error = error;
-        w->cv.notify_all();
-      }
-    }
-    waiters.clear();
-  }
 
   // Caller holds m. Latches backend failure and posts the truthful facts.
   void latch_failure_locked(ProviderError error) {
@@ -396,7 +355,6 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
       return;
     }
     failed = true;
-    fail_all_waiters_locked(error);
     if (strand) {
       strand->post_device_error(device_instance_id, error);
       if (stream && stream->producing) {
@@ -502,63 +460,13 @@ std::optional<SourcedFact<ImageAcquisitionTiming>> make_acquisition_timing(
 
 // Routes one arrived frame to the pending capture waiter (non-lossy capture
 // truth first) and then to the repeating stream pool. Caller holds backend.m.
+// Stream delivery only. Still captures no longer come through here: they use
+// the LowLagPhotoCapture pipeline, so there is no capture-waiter path left to
+// satisfy from a video frame.
 void deliver_frame_locked(DeviceBackend& backend,
                           const wgi::SoftwareBitmap& bitmap,
                           int64_t sample_time_100ns,
-                          bool has_sample_time,
-                          const wmdc::CameraIntrinsics& intrinsics) {
-  if (!backend.waiters.empty()) {
-    std::shared_ptr<CaptureWaiter> waiter = backend.waiters.front();
-    backend.waiters.pop_front();
-    auto bytes = std::make_shared<std::vector<uint8_t>>();
-    bytes->resize(static_cast<size_t>(waiter->width) *
-                  static_cast<size_t>(waiter->height) * 4u);
-    const bool ok = convert_software_bitmap(bitmap, waiter->width, waiter->height,
-                                            waiter->fourcc, bytes->data());
-    if (!ok) {
-      log_line("capture waiter convert failed: delivered %dx%d fmt=%d, expected %ux%u",
-               bitmap ? bitmap.PixelWidth() : -1,
-               bitmap ? bitmap.PixelHeight() : -1,
-               bitmap ? static_cast<int>(bitmap.BitmapPixelFormat()) : -1,
-               waiter->width, waiter->height);
-    }
-    std::lock_guard<std::mutex> wl(waiter->m);
-    if (!waiter->done) {
-      waiter->done = true;
-      waiter->ok = ok;
-      waiter->error = ok ? ProviderError::OK : ProviderError::ERR_PROVIDER_FAILED;
-      if (ok) {
-        waiter->bytes = std::move(bytes);
-        waiter->has_sample_time = has_sample_time;
-        waiter->sample_time_100ns = sample_time_100ns;
-        // Truthful only: most UVC webcams report no CameraIntrinsics at all;
-        // has_intrinsics stays false rather than fabricating a value.
-        if (intrinsics) {
-          try {
-            const auto focal_length = intrinsics.FocalLength();
-            const auto principal_point = intrinsics.PrincipalPoint();
-            const auto radial = intrinsics.RadialDistortion();
-            const auto tangential = intrinsics.TangentialDistortion();
-            waiter->focal_length_x = focal_length.x;
-            waiter->focal_length_y = focal_length.y;
-            waiter->principal_point_x = principal_point.x;
-            waiter->principal_point_y = principal_point.y;
-            waiter->radial_k1 = radial.x;
-            waiter->radial_k2 = radial.y;
-            waiter->radial_k3 = radial.z;
-            waiter->tangential_p1 = tangential.x;
-            waiter->tangential_p2 = tangential.y;
-            waiter->intrinsics_reference_width = intrinsics.ImageWidth();
-            waiter->intrinsics_reference_height = intrinsics.ImageHeight();
-            waiter->has_intrinsics = true;
-          } catch (...) {
-            // Leave has_intrinsics false; never post a partially-read fact.
-          }
-        }
-      }
-      waiter->cv.notify_all();
-    }
-  }
+                          bool has_sample_time) {
 
   StreamProduction* s = backend.stream.get();
   if (!s || !s->producing || !backend.strand) {
@@ -635,7 +543,6 @@ void deliver_frame_locked(DeviceBackend& backend,
 // ---------------------------------------------------------------------------
 
 using winrt_detail::BoundedControlExecutor;
-using winrt_detail::CaptureWaiter;
 using winrt_detail::DeviceBackend;
 using winrt_detail::StreamProduction;
 namespace wf = winrt_detail::wf;
@@ -1175,17 +1082,13 @@ ProviderResult WinrtCameraProvider::ensure_reader_realized_(
                       mark_100ns = ts.Value().count();
                       has_mark = true;
                     }
-                    // Null on most UVC webcams; real on some depth/
-                    // professional cameras. video.CameraIntrinsics() is a
-                    // plain property get, safe to call inline here.
-                    const wmdc::CameraIntrinsics intrinsics = video.CameraIntrinsics();
                     {
                       std::lock_guard<std::mutex> bl2(strong->m);
                       if (strong->closed) {
                         return;
                       }
                       winrt_detail::deliver_frame_locked(*strong, bitmap, mark_100ns,
-                                                         has_mark, intrinsics);
+                                                         has_mark);
                     }
                     frame.Close();
                   } catch (const winrt::hresult_error& e) {
@@ -1441,7 +1344,6 @@ ProviderResult WinrtCameraProvider::close_device(uint64_t device_instance_id) {
     std::lock_guard<std::mutex> bl(backend->m);
     backend->closed = true;
     session_native_id = backend->acquisition_session_id;
-    backend->fail_all_waiters_locked(ProviderError::ERR_SHUTTING_DOWN);
   }
 
   // Real release of WinRT objects on the control thread.
@@ -2210,11 +2112,11 @@ void WinrtCameraProvider::run_device_capture_job_(const DeviceCaptureJob& job) n
       fail(pr.code);
       return;
     }
-    pr = ensure_reader_started_(backend);
-    if (!pr.ok()) {
-      fail(pr.code);
-      return;
-    }
+    // Deliberately no ensure_reader_started_ here. Stills come from the
+    // LowLagPhotoCapture pipeline, so starting the video reader would stream
+    // frames nobody consumes. The frame source is still realized above, since
+    // geometry (SetFormatAsync) and intrinsics (TryGetCameraIntrinsics) both
+    // hang off it, and a running stream keeps its own reader started.
 
     uint64_t session_id = 0;
     {
@@ -2564,7 +2466,6 @@ ProviderResult WinrtCameraProvider::shutdown() {
       (void)dev_id;
       if (dev.backend) {
         std::lock_guard<std::mutex> bl(dev.backend->m);
-        dev.backend->fail_all_waiters_locked(ProviderError::ERR_SHUTTING_DOWN);
       }
     }
   }
@@ -2621,7 +2522,6 @@ ProviderResult WinrtCameraProvider::shutdown() {
         std::lock_guard<std::mutex> bl(backend->m);
         backend->closed = true;
         session_native_id = backend->acquisition_session_id;
-        backend->fail_all_waiters_locked(ProviderError::ERR_SHUTTING_DOWN);
       }
       auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
       (void)control_.run_bounded(
