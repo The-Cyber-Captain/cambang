@@ -2371,6 +2371,24 @@ ProviderResult WinrtCameraProvider::validate_and_admit_submission_locked_(
     // more members than this provider's derived watchdog budget covers
     // (kMaxBracketMembers) -- both fail deterministically here rather than
     // being silently degraded to a single default image.
+    //
+    // WinRT-specific restriction on this answer. Admission runs on the core
+    // thread and must stay prompt and I/O-free (brief section 2), so the probe
+    // below reads the control cold -- without realizing or running any
+    // pipeline. Microsoft documents that some drivers cannot report which
+    // controls they support until the camera preview is running, and a cold
+    // read may then say unsupported for a device that does support it. A
+    // refusal from here is therefore a refusal to promise, not proof of
+    // absence.
+    //
+    // The honest shape would be three-state -- unknown / supported /
+    // unsupported -- resolved when the pipeline is first realized and only
+    // consulted (never computed) at admission. That is not implemented: no
+    // camera available here exposes an exposure-compensation control at all,
+    // so the distinction cannot be exercised, and the failure mode of guessing
+    // wrong is a spurious ERR_NOT_SUPPORTED rather than a bad capture. Do not
+    // "fix" this by making admission realize a pipeline; that trades a
+    // conservative refusal for a promptness violation.
     if (req.still_image_bundle.members.size() > 1) {
       if (req.still_image_bundle.members.size() > kMaxBracketMembers) {
         return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
