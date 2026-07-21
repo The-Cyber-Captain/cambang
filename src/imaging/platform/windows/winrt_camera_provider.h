@@ -350,6 +350,12 @@ private:
   // waiter mechanism. Shared by the default-metered member and every
   // additional-bracket member -- this is the same single-frame wait
   // single-image capture already used, just made reusable per member.
+  // Prepares the per-device still-capture pipeline, once, on first capture.
+  // Stills come from here rather than from the stream frame reader; see the
+  // still-capture note in this header's overview.
+  ProviderResult ensure_low_lag_photo_realized_(
+      const std::shared_ptr<winrt_detail::DeviceBackend>& backend) noexcept;
+
   CapturedMemberFrame capture_one_member_frame_(
       const std::shared_ptr<winrt_detail::DeviceBackend>& backend,
       uint32_t width, uint32_t height, uint32_t format_fourcc) noexcept;

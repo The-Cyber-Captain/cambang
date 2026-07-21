@@ -354,6 +354,9 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   wmc::MediaCapture capture{nullptr};
   wmcf::MediaFrameSource frame_source{nullptr};
   wmcf::MediaFrameReader reader{nullptr};
+  // Still-capture pipeline, prepared lazily on first capture. Stills come
+  // from here, not from the frame reader above, which serves streams only.
+  wmc::LowLagPhotoCapture low_lag_photo{nullptr};
   winrt::event_token frame_token{};
   winrt::event_token failed_token{};
   bool reader_started = false;
@@ -429,6 +432,49 @@ void release_stream_frame(void* user, const FrameView* /*frame*/) {
 
 void release_capture_frame(void* user, const FrameView* /*frame*/) {
   delete static_cast<CaptureFrameLease*>(user);
+}
+
+// Monotonic 100ns mark for the still-capture path, which has no frame
+// timestamp of its own. QPC is the same clock family WinRT SystemRelativeTime
+// derives from, but that equality is assumed rather than verified here, so
+// marks built on it make no cross-frame claim (see
+// make_provider_observed_timing below).
+int64_t provider_monotonic_100ns() noexcept {
+  LARGE_INTEGER frequency{};
+  LARGE_INTEGER now{};
+  if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0 ||
+      !QueryPerformanceCounter(&now) || now.QuadPart < 0) {
+    return -1;
+  }
+  // Split to avoid overflowing the multiply on long-uptime machines.
+  const int64_t whole_seconds = now.QuadPart / frequency.QuadPart;
+  const int64_t remainder = now.QuadPart % frequency.QuadPart;
+  return whole_seconds * 10'000'000LL + (remainder * 10'000'000LL) / frequency.QuadPart;
+}
+
+// Timing for a still captured through the photo pipeline. The mark is taken
+// when the capture call returns, so it trails the exposure by the pipeline's
+// processing latency and cannot be compared against stream-frame marks, whose
+// domain equality is unverified. SAME_IMAGE_ONLY states exactly that.
+std::optional<SourcedFact<ImageAcquisitionTiming>> make_provider_observed_timing(
+    int64_t mark_100ns) {
+  if (mark_100ns < 0) {
+    return std::nullopt;
+  }
+  const auto tick_period = TickPeriod::create(100, 1);
+  if (!tick_period) {
+    return std::nullopt;
+  }
+  const auto timing = ImageAcquisitionTiming::create(
+      mark_100ns,
+      *tick_period,
+      ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+      ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
+      ImageAcquisitionComparability::SAME_IMAGE_ONLY);
+  if (!timing) {
+    return std::nullopt;
+  }
+  return SourcedFact<ImageAcquisitionTiming>{*timing, FactOrigin::NATIVE_REPORTED};
 }
 
 std::optional<SourcedFact<ImageAcquisitionTiming>> make_acquisition_timing(
@@ -1405,12 +1451,14 @@ ProviderResult WinrtCameraProvider::close_device(uint64_t device_instance_id) {
         if (!backend) return;
         wmcf::MediaFrameReader reader{nullptr};
         wmc::MediaCapture capture{nullptr};
+        wmc::LowLagPhotoCapture low_lag_photo{nullptr};
         winrt::event_token frame_token{};
         winrt::event_token failed_token{};
         {
           std::lock_guard<std::mutex> bl(backend->m);
           reader = std::exchange(backend->reader, nullptr);
           capture = std::exchange(backend->capture, nullptr);
+          low_lag_photo = std::exchange(backend->low_lag_photo, nullptr);
           backend->frame_source = nullptr;
           frame_token = std::exchange(backend->frame_token, {});
           failed_token = std::exchange(backend->failed_token, {});
@@ -1424,6 +1472,10 @@ ProviderResult WinrtCameraProvider::close_device(uint64_t device_instance_id) {
             auto stop_op = reader.StopAsync();
             (void)winrt_detail::wait_async_bounded(stop_op, kControlJobTimeoutMs - 500);
             reader.Close();
+          }
+          if (low_lag_photo) {
+            auto finish_op = low_lag_photo.FinishAsync();
+            (void)winrt_detail::wait_async_bounded(finish_op, kControlJobTimeoutMs - 500);
           }
           if (capture) {
             if (failed_token.value != 0) {
@@ -1888,6 +1940,93 @@ bool WinrtCameraProvider::apply_exposure_compensation_bounded_(
   return true;
 }
 
+ProviderResult WinrtCameraProvider::ensure_low_lag_photo_realized_(
+    const std::shared_ptr<DeviceBackend>& backend) noexcept {
+  if (!backend) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    if (backend->closed || backend->failed) {
+      return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
+    }
+    if (backend->low_lag_photo) {
+      return ProviderResult::success();
+    }
+  }
+
+  struct PrepareResult {
+    bool ok = false;
+    ProviderError error = ProviderError::ERR_PROVIDER_FAILED;
+    wmc::LowLagPhotoCapture prepared{nullptr};
+  };
+  auto result = std::make_shared<PrepareResult>();
+  auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
+  const bool completed = control_.run_bounded(
+      [result, backend](const BoundedControlExecutor::AbandonToken& t) {
+        PrepareResult local;
+        try {
+          wmc::MediaCapture capture{nullptr};
+          {
+            std::lock_guard<std::mutex> bl(backend->m);
+            capture = backend->capture;
+          }
+          if (!capture) {
+            local.error = ProviderError::ERR_BAD_STATE;
+          } else {
+            // Uncompressed Bgra8: the delivered CapturedFrame then carries a
+            // SoftwareBitmap in exactly the format convert_software_bitmap
+            // already consumes for stream frames, so stills need no second
+            // conversion path.
+            auto op = capture.PrepareLowLagPhotoCaptureAsync(
+                wmm::ImageEncodingProperties::CreateUncompressed(wmm::MediaPixelFormat::Bgra8));
+            if (!winrt_detail::wait_async_bounded(op, kControlJobTimeoutMs - 500)) {
+              local.error = ProviderError::ERR_TIMEOUT;
+            } else {
+              local.prepared = op.GetResults();
+              local.ok = static_cast<bool>(local.prepared);
+              if (!local.ok) {
+                local.error = ProviderError::ERR_NOT_SUPPORTED;
+              }
+            }
+          }
+        } catch (const winrt::hresult_error& e) {
+          local.error = winrt_detail::provider_error_from_hresult(e.code());
+          winrt_detail::log_line("PrepareLowLagPhotoCaptureAsync failed hr=0x%08X",
+                                 static_cast<uint32_t>(e.code()));
+        } catch (...) {
+        }
+        if (t.abandoned.load(std::memory_order_acquire)) {
+          // Caller gave up; the prepared pipeline is orphaned, so finish it
+          // here rather than leaking it into a backend nobody will close.
+          if (local.ok && local.prepared) {
+            try {
+              auto finish_op = local.prepared.FinishAsync();
+              (void)winrt_detail::wait_async_bounded(finish_op, kControlJobTimeoutMs - 500);
+            } catch (...) {
+            }
+          }
+          return;
+        }
+        *result = local;
+      },
+      token, kControlJobTimeoutMs);
+  if (!completed) {
+    return ProviderResult::failure(ProviderError::ERR_TIMEOUT);
+  }
+  if (!result->ok) {
+    return ProviderResult::failure(result->error);
+  }
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    if (backend->closed || backend->failed) {
+      return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
+    }
+    backend->low_lag_photo = result->prepared;
+  }
+  return ProviderResult::success();
+}
+
 WinrtCameraProvider::CapturedMemberFrame WinrtCameraProvider::capture_one_member_frame_(
     const std::shared_ptr<DeviceBackend>& backend,
     uint32_t width, uint32_t height, uint32_t format_fourcc) noexcept {
@@ -1895,66 +2034,119 @@ WinrtCameraProvider::CapturedMemberFrame WinrtCameraProvider::capture_one_member
   if (!backend) {
     return result;
   }
-
-  auto waiter = std::make_shared<CaptureWaiter>();
-  waiter->width = width;
-  waiter->height = height;
-  waiter->fourcc = format_fourcc;
-  {
-    std::lock_guard<std::mutex> bl(backend->m);
-    if (backend->closed || backend->failed) {
-      result.error = ProviderError::ERR_PROVIDER_FAILED;
-      return result;
-    }
-    backend->waiters.push_back(waiter);
+  const ProviderResult prepared = ensure_low_lag_photo_realized_(backend);
+  if (!prepared.ok()) {
+    result.error = prepared.code;
+    return result;
   }
 
-  bool done = false;
-  {
-    std::unique_lock<std::mutex> wl(waiter->m);
-    done = waiter->cv.wait_for(wl, std::chrono::milliseconds(kCaptureSampleWaitMs),
-                               [&] { return waiter->done; });
-  }
-  if (!done) {
-    // The stalled backend is contained here (brief §2): remove the waiter
-    // and terminalize this member instead of blocking any contract call.
-    {
-      std::lock_guard<std::mutex> bl(backend->m);
-      for (auto it = backend->waiters.begin(); it != backend->waiters.end(); ++it) {
-        if (it->get() == waiter.get()) {
-          backend->waiters.erase(it);
-          break;
+  auto captured = std::make_shared<CapturedMemberFrame>();
+  auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
+  const bool completed = control_.run_bounded(
+      [captured, backend, width, height, format_fourcc](
+          const BoundedControlExecutor::AbandonToken& t) {
+        CapturedMemberFrame local{};
+        try {
+          wmc::LowLagPhotoCapture low_lag{nullptr};
+          wmcf::MediaFrameSource source{nullptr};
+          {
+            std::lock_guard<std::mutex> bl(backend->m);
+            if (backend->closed || backend->failed) {
+              local.error = ProviderError::ERR_PROVIDER_FAILED;
+              if (!t.abandoned.load(std::memory_order_acquire)) *captured = local;
+              return;
+            }
+            low_lag = backend->low_lag_photo;
+            source = backend->frame_source;
+          }
+          if (!low_lag) {
+            local.error = ProviderError::ERR_BAD_STATE;
+          } else {
+            auto op = low_lag.CaptureAsync();
+            if (!winrt_detail::wait_async_bounded(op, kCaptureSampleWaitMs)) {
+              local.error = ProviderError::ERR_TIMEOUT;
+            } else {
+              // Provider-observed mark: the photo pipeline exposes no frame
+              // timestamp of its own (neither ICapturedFrame nor
+              // ICapturedFrame2 carries one), so this is taken as close to the
+              // capture as the API allows and includes photo-processing
+              // latency. Comparability is therefore reported no wider than the
+              // single image -- see make_provider_observed_timing.
+              local.sample_time_100ns = winrt_detail::provider_monotonic_100ns();
+              local.has_sample_time = true;
+
+              const wmc::CapturedPhoto photo = op.GetResults();
+              const wmc::CapturedFrame frame = photo ? photo.Frame() : nullptr;
+              const auto with_bitmap =
+                  frame ? frame.try_as<wmc::ICapturedFrameWithSoftwareBitmap>() : nullptr;
+              const wgi::SoftwareBitmap bitmap =
+                  with_bitmap ? with_bitmap.SoftwareBitmap() : nullptr;
+              if (!bitmap) {
+                local.error = ProviderError::ERR_PROVIDER_FAILED;
+              } else if (static_cast<uint32_t>(bitmap.PixelWidth()) != width ||
+                         static_cast<uint32_t>(bitmap.PixelHeight()) != height) {
+                // The photo follows the frame source's format, which the
+                // caller has already set from the capture request. A mismatch
+                // is a conversion failure, never a silent resize.
+                winrt_detail::log_line(
+                    "photo geometry %dx%d does not match requested %ux%u",
+                    bitmap.PixelWidth(), bitmap.PixelHeight(), width, height);
+                local.error = ProviderError::ERR_PLATFORM_CONSTRAINT;
+              } else {
+                auto bytes = std::make_shared<std::vector<uint8_t>>(
+                    static_cast<size_t>(width) * height * 4u);
+                if (winrt_detail::convert_software_bitmap(bitmap, width, height, format_fourcc,
+                                                          bytes->data())) {
+                  local.bytes = std::move(bytes);
+                  local.ok = true;
+                } else {
+                  local.error = ProviderError::ERR_PROVIDER_FAILED;
+                }
+              }
+              // Intrinsics stay per-image and stay sourced from the frame
+              // source, which is where WinRT exposes them; the photo path has
+              // none of its own. Legitimate here only because photo and stream
+              // geometry are coupled on this backend -- the calibration is
+              // format-anchored, and the format is the one just captured at.
+              if (local.ok && source) {
+                try {
+                  const auto format = source.CurrentFormat();
+                  const auto intrinsics =
+                      format ? source.TryGetCameraIntrinsics(format) : nullptr;
+                  if (intrinsics) {
+                    local.has_intrinsics = true;
+                    local.focal_length_x = intrinsics.FocalLength().x;
+                    local.focal_length_y = intrinsics.FocalLength().y;
+                    local.principal_point_x = intrinsics.PrincipalPoint().x;
+                    local.principal_point_y = intrinsics.PrincipalPoint().y;
+                    local.radial_k1 = intrinsics.RadialDistortion().x;
+                    local.radial_k2 = intrinsics.RadialDistortion().y;
+                    local.radial_k3 = intrinsics.RadialDistortion().z;
+                    local.tangential_p1 = intrinsics.TangentialDistortion().x;
+                    local.tangential_p2 = intrinsics.TangentialDistortion().y;
+                    local.intrinsics_reference_width = intrinsics.ImageWidth();
+                    local.intrinsics_reference_height = intrinsics.ImageHeight();
+                  }
+                } catch (...) {
+                  local.has_intrinsics = false;
+                }
+              }
+            }
+          }
+        } catch (const winrt::hresult_error& e) {
+          local.error = winrt_detail::provider_error_from_hresult(e.code());
+        } catch (...) {
         }
-      }
-    }
-    // Re-check under the waiter lock: the frame handler may have fulfilled
-    // it between the timeout and the removal above.
-    std::lock_guard<std::mutex> wl(waiter->m);
-    if (!waiter->done) {
-      waiter->done = true;
-      waiter->ok = false;
-      waiter->error = ProviderError::ERR_TIMEOUT;
-    }
+        if (!t.abandoned.load(std::memory_order_acquire)) {
+          *captured = local;
+        }
+      },
+      token, kCaptureSampleWaitMs + kControlJobTimeoutMs);
+  if (!completed) {
+    result.error = ProviderError::ERR_TIMEOUT;
+    return result;
   }
-
-  std::lock_guard<std::mutex> wl(waiter->m);
-  result.ok = waiter->ok;
-  result.error = waiter->error;
-  result.bytes = waiter->bytes;
-  result.has_sample_time = waiter->has_sample_time;
-  result.sample_time_100ns = waiter->sample_time_100ns;
-  result.has_intrinsics = waiter->has_intrinsics;
-  result.focal_length_x = waiter->focal_length_x;
-  result.focal_length_y = waiter->focal_length_y;
-  result.principal_point_x = waiter->principal_point_x;
-  result.principal_point_y = waiter->principal_point_y;
-  result.radial_k1 = waiter->radial_k1;
-  result.radial_k2 = waiter->radial_k2;
-  result.radial_k3 = waiter->radial_k3;
-  result.tangential_p1 = waiter->tangential_p1;
-  result.tangential_p2 = waiter->tangential_p2;
-  result.intrinsics_reference_width = waiter->intrinsics_reference_width;
-  result.intrinsics_reference_height = waiter->intrinsics_reference_height;
+  result = *captured;
   if (result.ok && !result.bytes) {
     result.ok = false;
     result.error = ProviderError::ERR_PROVIDER_FAILED;
@@ -2130,7 +2322,8 @@ void WinrtCameraProvider::run_device_capture_job_(const DeviceCaptureJob& job) n
       fv.height = job.request.height;
       fv.format_fourcc = job.request.format_fourcc;
       if (captured.has_sample_time) {
-        fv.acquisition_timing = winrt_detail::make_acquisition_timing(captured.sample_time_100ns);
+        fv.acquisition_timing =
+            winrt_detail::make_provider_observed_timing(captured.sample_time_100ns);
       }
       fv.data = captured.bytes->data();
       fv.size_bytes = captured.bytes->size();
@@ -2435,12 +2628,14 @@ ProviderResult WinrtCameraProvider::shutdown() {
           [backend](const BoundedControlExecutor::AbandonToken& /*t*/) {
             wmcf::MediaFrameReader reader{nullptr};
             wmc::MediaCapture capture{nullptr};
+            wmc::LowLagPhotoCapture low_lag_photo{nullptr};
             winrt::event_token frame_token{};
             winrt::event_token failed_token{};
             {
               std::lock_guard<std::mutex> bl(backend->m);
               reader = std::exchange(backend->reader, nullptr);
               capture = std::exchange(backend->capture, nullptr);
+              low_lag_photo = std::exchange(backend->low_lag_photo, nullptr);
               backend->frame_source = nullptr;
               frame_token = std::exchange(backend->frame_token, {});
               failed_token = std::exchange(backend->failed_token, {});
@@ -2455,6 +2650,11 @@ ProviderResult WinrtCameraProvider::shutdown() {
                 (void)winrt_detail::wait_async_bounded(stop_op,
                                                        kControlJobTimeoutMs - 500);
                 reader.Close();
+              }
+              if (low_lag_photo) {
+                auto finish_op = low_lag_photo.FinishAsync();
+                (void)winrt_detail::wait_async_bounded(finish_op,
+                                                       kControlJobTimeoutMs - 500);
               }
               if (capture) {
                 if (failed_token.value != 0) {
