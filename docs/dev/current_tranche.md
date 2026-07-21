@@ -84,9 +84,22 @@ Established on the Integrated Camera and eMeet C970 before this tranche opened:
    Model and Software, and Make/Model describe the *host machine* (Razer /
    Blade 15), not the camera. They are not camera facts and must not be
    surfaced as any.
-2. **Payload conversion.** `CapturedFrame` to tightly-packed bytes in a
-   `cpu_payload_owner` for zero-copy adoption. Per-member allocation is
-   accepted for stills per the provider brief.
+2. **Payload conversion — settled, no new code needed.** A
+   `LowLagPhotoCapture` `CapturedFrame` exposes
+   `ICapturedFrameWithSoftwareBitmap`, and on both available cameras the
+   bitmap comes back as `Bgra8` (format 87) with `StartIndex` 0, stride equal
+   to width*4, capacity exactly the packed size, and real image content. That
+   is precisely what the existing `convert_software_bitmap()` consumes, so the
+   photo path feeds it unchanged and the packed `cpu_payload_owner` is
+   produced the same way stream frames already are. Per-member allocation
+   remains accepted for stills.
+
+   The dimension check inside that function requires the bitmap to match the
+   requested geometry. Photos follow the frame source's current format (shown
+   by a photo returning 640x480 while the source was pinned there), and the
+   provider already sets source geometry from the capture request, so they
+   agree -- but the implementation must not assume it, since a mismatch is a
+   conversion failure rather than a resize.
 3. **Capture without a stream.** Captures currently realize the reader on
    demand. Decide whether a capture on a device with no started stream still
    needs the reader realized at all once photos no longer come from it.
