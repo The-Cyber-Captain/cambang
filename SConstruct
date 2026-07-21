@@ -646,18 +646,69 @@ def _planned_gde_artifact_paths(platform, target, arch):
     artifact = _gde_artifact_base(platform, target, arch)
     if platform == "windows":
         # Windows GDE builds intentionally ship/load only the extension DLL.
-        # Import libraries (MinGW .a, MSVC .lib/.exp) are link-time developer
-        # artifacts, not Godot runtime dependencies; include their locations
-        # so clean removes stale copies from the Godot project bin directory.
+        # Import libraries (MinGW .a, MSVC .lib/.exp) and MSVC debug/link
+        # by-products (.pdb, .ilk) are link-time developer artifacts, not Godot
+        # runtime dependencies. Current builds direct them into the object tree
+        # instead; these locations remain listed so clean removes stale copies
+        # left in the Godot project bin directory by earlier builds.
         stem = _gde_artifact_stem(platform, target, arch)
         return [
             artifact,
             _gde_windows_import_library_path(target, arch),
             stem + ".lib",
             stem + ".exp",
+            stem + ".pdb",
+            stem + ".ilk",
         ]
     legacy_stem = _gde_artifact_stem(platform, target, arch)
     return _unique_sources([artifact, legacy_stem, legacy_stem + ".so", legacy_stem + ".dylib", legacy_stem + ".dll"])
+
+
+def _assert_gde_bin_holds_only_deliverables(bin_dir):
+    """Fail the build if the Godot project bin directory gains anything that is
+    not a runtime deliverable.
+
+    That directory is a delivery location, not a build output tree: it holds
+    the loadable module for each targeted platform plus the .gdextension
+    descriptor that names them. Toolchain by-products (import libraries, debug
+    symbols, incremental-link state) belong in the object tree, and have
+    silently accumulated here before -- an MSVC build once left 106 MB of .pdb
+    and .ilk beside a DLL produced by the other toolchain, which then went
+    stale and misrepresented the binary next to it.
+
+    Deliberately permissive about *which* platform's module is present: local
+    builds target one platform at a time, but Android .so and Windows .dll may
+    legitimately coexist here from separate builds.
+    """
+    if not os.path.isdir(bin_dir):
+        return
+    allowed_suffixes = set(_gde_shared_library_suffix(p) for p in GDE_PLATFORMS)
+    allowed_suffixes.update({".gdextension", ".uid"})
+    unexpected = []
+    for entry in sorted(os.listdir(bin_dir)):
+        full = os.path.join(bin_dir, entry)
+        if os.path.isdir(full):
+            # Android exports can nest per-ABI directories; only files are policed.
+            continue
+        if not any(entry.endswith(suffix) for suffix in sorted(allowed_suffixes)):
+            unexpected.append(entry)
+    return unexpected
+
+
+def _check_gde_bin_post_link(target, source, env):
+    """Post-link guard: runs after the artifact is written, so it catches
+    by-products the build just produced as well as stale ones left behind."""
+    bin_dir = os.path.join("tests", "cambang_gde", "bin")
+    unexpected = _assert_gde_bin_holds_only_deliverables(bin_dir)
+    if unexpected:
+        print(f"ERROR: non-deliverable files in {bin_dir}:")
+        for entry in unexpected:
+            print(f"  {entry}")
+        print("That directory holds loadable modules and .gdextension")
+        print("descriptors only; build by-products belong under out/. Direct")
+        print("them there, or run `scons -c gde` to clear stale ones.")
+        return 1
+    return 0
 
 
 def _planned_selected_gde_clean_outputs(platform, target, arch, precision):
@@ -1032,6 +1083,22 @@ if build_gde_graph:
         # descriptor; CamBANG does not ship or consume the Windows import
         # library that SCons would otherwise place beside the DLL.
         gde_env["no_import_lib"] = 1
+        if is_msvc:
+            # no_import_lib is honoured by the MinGW tool but not by MSVC's
+            # linker, which additionally emits .pdb and .ilk. Left alone these
+            # land in the Godot project's bin directory, which is a delivery
+            # location holding one artifact per platform -- and they are large
+            # (tens of MB each) and go stale silently when the other toolchain
+            # rebuilds the DLL beside them. Direct all four into the object
+            # tree, where build intermediates belong. Debug symbols are kept,
+            # just not shipped.
+            msvc_stem = os.path.join(gde_obj_dir, "link", f"cambang.{godot_target}.{env['arch']}")
+            os.makedirs(os.path.dirname(msvc_stem), exist_ok=True)
+            gde_env.Append(LINKFLAGS=[
+                f"/PDB:{msvc_stem}.pdb",
+                f"/IMPLIB:{msvc_stem}.lib",
+                f"/ILK:{msvc_stem}.ilk",
+            ])
 
     gde_env.Append(LIBPATH=[godot_cpp_libdir])
     gde_env.Append(LIBS=[godot_cpp_libname])
@@ -1041,6 +1108,10 @@ if build_gde_graph:
 
     gde_lib = gde_env.SharedLibrary(target=gde_target, source=gde_objects)
     gde_env.Depends(gde_lib, godot_cpp_build)
+    gde_env.AddPostAction(
+        gde_lib,
+        gde_env.Action(_check_gde_bin_post_link, "Checking $TARGET.dir holds deliverables only"),
+    )
 
     gde_alias = Alias("gde", gde_lib)
     AlwaysBuild(gde_alias)
