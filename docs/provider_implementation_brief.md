@@ -181,12 +181,26 @@ can describe a value your platform cannot report. Two rules follow:
   same window, so a pinned value cannot be confused with a scene that never
   changed. A value that never moves is a set-point; omit it.
 
-Image Acquisition Timing rides on the delivered frame only: a semantically
-valid mark/tick-period/clock-domain/reference-event/comparability/origin
-record in *your* clock domain. Zero is a valid mark and distinct from
-absence. Never substitute admission time, Capture Date-Time, lifecycle
-timing, geolocation time, or another member's timing. Core never uses your
-timing for identity, ordering, freshness, or correlation.
+Image Acquisition Timing is frame-borne wherever your backend supplies it: a
+semantically valid mark/tick-period/clock-domain/reference-event/
+comparability/origin record in *your* clock domain. Zero is a valid mark and
+distinct from absence. Never substitute admission time, Capture Date-Time,
+lifecycle timing, geolocation time, or another member's timing.
+
+Some capture paths carry no frame timestamp at all — a still-capture API may
+hand you pixels with no time of its own even when the streaming path has one.
+A provider-observed mark, taken as close to the capture as the API allows, is
+truthful there provided you declare it honestly: `PROVIDER_OBSERVED` as the
+reference event, and comparability no wider than you can actually support. If
+that mark comes from a different clock than your stream frames use, or from
+one you have not verified to be the same, say `SAME_IMAGE_ONLY` rather than
+`SAME_DEVICE` — an unverified domain assumption is not a basis for a
+cross-frame claim. Do not reach for a wall clock (EXIF `DateTimeOriginal` or
+equivalent) to fill the gap: that is Capture Date-Time's quantity, it can
+jump, and it is not a monotonic mark.
+
+Core never uses your timing for identity, ordering, freshness, or
+correlation.
 
 ## 9. The concurrency admission gate
 
