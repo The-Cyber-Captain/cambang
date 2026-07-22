@@ -23,7 +23,11 @@ param(
     [string]$AndroidExportPreset = "Android",
     [string]$AndroidDeviceSerial = "",
     [string]$AndroidPackage = "",
-    [string]$AndroidActivity = ""
+    [string]$AndroidActivity = "",
+    # Escape hatch for the pre-flight device-state check. The check is advisory
+    # and reads two dumpsys fields; this exists so a false positive can never
+    # block a run outright.
+    [switch]$AllowNonInteractiveDevice
 )
 
 Set-StrictMode -Version Latest
@@ -1392,6 +1396,62 @@ function Get-ConnectedAndroidDevices {
     return @($devices.ToArray())
 }
 
+function Test-AndroidDeviceInteractive {
+    <#
+        A dozing or locked device runs the launcher, not the app: the activity
+        is stopped moments after start, so the harness observes no scene output
+        and reports the same "timeout, missing_harness_verdict" it reports for a
+        genuinely stalled scene. Distinguishing the two afterwards means reading
+        device_logcat.log and noticing the absence of engine lines.
+
+        Checking up front converts a silent multi-minute timeout into an
+        immediate, specific message, and costs two adb shell calls. Advisory by
+        design: it returns the reason rather than throwing, so the caller
+        decides, and neither signal is treated as authoritative enough to block
+        a run outright.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$AdbPath,
+        [Parameter(Mandatory)][string]$DeviceSerial,
+        [Parameter(Mandatory)][string]$ProjectFullPath
+    )
+
+    $result = [pscustomobject]@{
+        Interactive = $true
+        Reason      = ""
+    }
+
+    $power = Invoke-CapturedProcess `
+        -FilePath $AdbPath `
+        -Arguments @("-s", $DeviceSerial, "shell", "dumpsys", "power") `
+        -WorkingDirectory $ProjectFullPath `
+        -CommandTimeoutSec 30
+    if ($power.ExitCode -eq 0) {
+        $wakefulness = [regex]::Match($power.StdoutText, "mWakefulness=(\w+)")
+        if ($wakefulness.Success -and $wakefulness.Groups[1].Value -ne "Awake") {
+            $result.Interactive = $false
+            $result.Reason = "screen is not awake (mWakefulness=$($wakefulness.Groups[1].Value))"
+            return $result
+        }
+    }
+
+    $window = Invoke-CapturedProcess `
+        -FilePath $AdbPath `
+        -Arguments @("-s", $DeviceSerial, "shell", "dumpsys", "window") `
+        -WorkingDirectory $ProjectFullPath `
+        -CommandTimeoutSec 30
+    if ($window.ExitCode -eq 0) {
+        if ($window.StdoutText -match "mDreamingLockscreen=true") {
+            $result.Interactive = $false
+            $result.Reason = "lockscreen is showing (mDreamingLockscreen=true)"
+            return $result
+        }
+    }
+
+    # An adb failure here is not evidence about the device, so it never blocks.
+    return $result
+}
+
 function Resolve-AndroidDeviceSerialValue {
     param(
         [string]$ExplicitDeviceSerial,
@@ -1649,11 +1709,30 @@ function Invoke-AndroidRun {
         [int]$ObservationTimeoutSec,
         [string]$ExplicitPackageName,
         [string]$ExplicitActivityName,
-        [string[]]$FailurePatterns
+        [string[]]$FailurePatterns,
+        [switch]$AllowNonInteractiveDevice
     )
 
     $deviceLogcatPath = Join-Path $LogRecord.RunDir "device_logcat.log"
     Ensure-FileExists -Path $deviceLogcatPath
+
+    # Checked before the export, which is the expensive step: a device that
+    # cannot foreground the app will waste the export, install and the whole
+    # observation window before failing indistinguishably from a stalled scene.
+    $deviceState = Test-AndroidDeviceInteractive `
+        -AdbPath $AdbPath `
+        -DeviceSerial $DeviceSerial `
+        -ProjectFullPath $ProjectFullPath
+    if (-not $deviceState.Interactive) {
+        $deviceStateMessage = "Android device $DeviceSerial is not interactive: $($deviceState.Reason). " +
+            "The app will be stopped as soon as it starts, producing no scene output. " +
+            "Wake and unlock the device, or pass -AllowNonInteractiveDevice to run anyway."
+        Add-LogSection -Path $LogRecord.StdoutPath -Header "android_device_state" -Body $deviceStateMessage
+        if (-not $AllowNonInteractiveDevice) {
+            throw $deviceStateMessage
+        }
+        Write-Warning $deviceStateMessage
+    }
 
     $projectFilePath = Join-Path $ProjectFullPath "project.godot"
     $originalProjectText = Get-Content -Raw $projectFilePath
@@ -2207,7 +2286,8 @@ else {
             -ObservationTimeoutSec $TimeoutSec `
             -ExplicitPackageName $AndroidPackage `
             -ExplicitActivityName $AndroidActivity `
-            -FailurePatterns $HardFailurePatterns
+            -FailurePatterns $HardFailurePatterns `
+            -AllowNonInteractiveDevice:$AllowNonInteractiveDevice
 
         $timedOut = $androidResult.TimedOut
         $processExitCode = $androidResult.ProcessExitCode
