@@ -388,6 +388,28 @@ struct StaticCharacteristics {
     }
     return false;
   }
+
+  // Per format/size minimum frame duration. Camera2 defines a session's floor
+  // as the max over its configured outputs, so this is the hardware limit for
+  // one output, not necessarily the limit the session will run at.
+  struct YuvMinDuration {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    int64_t min_frame_duration_ns = 0;
+  };
+  std::vector<YuvMinDuration> yuv_min_frame_durations;
+  bool has_max_frame_duration = false;
+  int64_t max_frame_duration_ns = 0;
+
+  // 0 when the device does not state one for this geometry.
+  int64_t min_frame_duration_for(uint32_t w, uint32_t h) const noexcept {
+    for (const auto& entry : yuv_min_frame_durations) {
+      if (entry.width == w && entry.height == h) {
+        return entry.min_frame_duration_ns;
+      }
+    }
+    return 0;
+  }
 };
 
 // Realized capture-result facts for exactly one still member. Every field is
@@ -423,7 +445,25 @@ struct ResultFacts {
   // image it describes once a burst has several captures in flight at once.
   bool has_sensor_timestamp = false;
   int64_t sensor_timestamp_ns = 0;
+
+  // ACAMERA_CONTROL_AF_STATE. Distinguishes a lens that has settled from one
+  // mid-scan, which is the difference between locking focus and locking blur.
+  bool has_af_state = false;
+  uint8_t af_state = 0;
+
+  // ACAMERA_SENSOR_FRAME_DURATION as actually applied. This is what decides
+  // how far apart burst members can land, so it is the difference between a
+  // cadence the hardware imposes and one inherited from a request template.
+  bool has_frame_duration = false;
+  int64_t frame_duration_ns = 0;
 };
+
+// True for the AF states that mean the lens has stopped moving and the result
+// is a settled position rather than a point on a scan.
+inline bool af_state_is_settled(uint8_t af_state) noexcept {
+  return af_state == ACAMERA_CONTROL_AF_STATE_FOCUSED_LOCKED ||
+         af_state == ACAMERA_CONTROL_AF_STATE_NOT_FOCUSED_LOCKED;
+}
 
 struct StreamProduction {
   uint64_t stream_id = 0;
@@ -529,6 +569,18 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   std::unique_ptr<ListenerCtx> stream_reader_ctx;
   std::unique_ptr<ListenerCtx> still_reader_ctx;
   std::unique_ptr<ListenerCtx> capture_ctx;
+  // Separate from capture_ctx on purpose: the repeating request's results
+  // arrive at frame rate and must never reach the burst collector, which
+  // counts results as bundle members.
+  std::unique_ptr<ListenerCtx> repeating_ctx;
+
+  // Auto-focus state observed on the repeating request. This is the only
+  // place a settled lens can be distinguished from a scanning one, and it
+  // exists only while a stream is producing.
+  std::mutex af_m;
+  std::condition_variable af_cv;
+  bool has_af_state = false;
+  uint8_t af_state = 0;
 
   std::string hardware_id;
   uint64_t device_instance_id = 0;
@@ -541,6 +593,10 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   bool closed = false; // set before Camera2 objects are released
   bool failed = false;
   std::atomic<uint64_t> image_arrived_count{0};
+  // Still images delivered while no burst was collecting. Non-zero is normal
+  // (AF trigger submissions produce one each); a jump across a capture would
+  // mean one landed inside a collector and displaced a real member.
+  std::atomic<uint64_t> stray_still_images{0};
 
   std::shared_ptr<StreamProduction> stream;
   std::shared_ptr<BurstCollector> burst; // non-null only during a capture
@@ -765,8 +821,11 @@ void on_still_image_available(void* context, AImageReader* reader) {
     burst = backend->burst;
   }
   if (!burst) {
-    // No capture is collecting (a late image from an abandoned burst). Drop it
-    // rather than letting it satisfy some future member's wait.
+    // No capture is collecting (a late image from an abandoned burst, or from
+    // an AF trigger submission). Drop it rather than letting it satisfy some
+    // future member's wait. Counted because a stray arriving *after* a
+    // collector is installed would instead be miscounted as a bundle member.
+    backend->stray_still_images.fetch_add(1, std::memory_order_relaxed);
     AImage_delete(image);
     return;
   }
@@ -853,6 +912,16 @@ void extract_result_facts(const ACameraMetadata* result, ResultFacts& out) {
     out.has_sensor_timestamp = true;
     out.sensor_timestamp_ns = entry.data.i64[0];
   }
+  if (ACameraMetadata_getConstEntry(result, ACAMERA_CONTROL_AF_STATE, &entry) == ACAMERA_OK &&
+      entry.count >= 1) {
+    out.has_af_state = true;
+    out.af_state = entry.data.u8[0];
+  }
+  if (ACameraMetadata_getConstEntry(result, ACAMERA_SENSOR_FRAME_DURATION, &entry) ==
+          ACAMERA_OK && entry.count >= 1) {
+    out.has_frame_duration = true;
+    out.frame_duration_ns = entry.data.i64[0];
+  }
 }
 
 void on_capture_completed(void* context,
@@ -884,6 +953,33 @@ void on_capture_completed(void* context,
     }
   }
   burst->cv.notify_all();
+}
+
+// Results from the repeating (preview) request. Deliberately does NOT touch
+// the burst collector: these arrive at frame rate and would be counted as
+// bundle members. Its only job is to observe the AF algorithm, which is what
+// makes a trigger-based focus lock possible without ever changing AF_MODE.
+void on_repeating_capture_completed(void* context,
+                                    ACameraCaptureSession* /*session*/,
+                                    ACaptureRequest* /*request*/,
+                                    const ACameraMetadata* result) {
+  auto* ctx = static_cast<ListenerCtx*>(context);
+  if (!ctx || !result) return;
+  std::shared_ptr<DeviceBackend> backend = ctx->backend.lock();
+  if (!backend) return;
+
+  ACameraMetadata_const_entry entry{};
+  if (ACameraMetadata_getConstEntry(result, ACAMERA_CONTROL_AF_STATE, &entry) != ACAMERA_OK ||
+      entry.count < 1) {
+    return;
+  }
+  const uint8_t state = entry.data.u8[0];
+  {
+    std::lock_guard<std::mutex> al(backend->af_m);
+    backend->has_af_state = true;
+    backend->af_state = state;
+  }
+  backend->af_cv.notify_all();
 }
 
 void on_capture_failed(void* context,
@@ -1061,6 +1157,26 @@ void read_static_characteristics(const ACameraMetadata* meta, StaticCharacterist
     out.pose_reference = entry.data.u8[0];
   }
 
+  if (ACameraMetadata_getConstEntry(meta, ACAMERA_SENSOR_INFO_MAX_FRAME_DURATION, &entry) ==
+          ACAMERA_OK && entry.count >= 1) {
+    out.has_max_frame_duration = true;
+    out.max_frame_duration_ns = entry.data.i64[0];
+  }
+  if (ACameraMetadata_getConstEntry(meta, ACAMERA_SCALER_AVAILABLE_MIN_FRAME_DURATIONS,
+                                    &entry) == ACAMERA_OK) {
+    // Packed as {format, width, height, duration} quadruples.
+    for (uint32_t i = 0; i + 3 < entry.count; i += 4) {
+      if (entry.data.i64[i] != AIMAGE_FORMAT_YUV_420_888) {
+        continue;
+      }
+      StaticCharacteristics::YuvMinDuration item;
+      item.width = static_cast<uint32_t>(entry.data.i64[i + 1]);
+      item.height = static_cast<uint32_t>(entry.data.i64[i + 2]);
+      item.min_frame_duration_ns = entry.data.i64[i + 3];
+      out.yuv_min_frame_durations.push_back(item);
+    }
+  }
+
   if (ACameraMetadata_getConstEntry(meta, ACAMERA_SCALER_AVAILABLE_STREAM_CONFIGURATIONS,
                                     &entry) == ACAMERA_OK) {
     // Packed as {format, width, height, input?} quadruples.
@@ -1112,10 +1228,23 @@ struct Camera2CameraProvider::MemberRequestSpec {
   bool manual = false;
   int64_t exposure_ns = 0;
   int32_t sensitivity = 0;
+  // Frame duration to request, or 0 to leave the template default. Setting it
+  // explicitly is what claims a faster sensor's cadence: both Devices measured
+  // here already defaulted to their hardware floor, but nothing guarantees a
+  // still-capture template defaults to the minimum on a sensor that can go
+  // faster, and an unclaimed floor is invisible.
+  int64_t frame_duration_ns = 0;
   // Auto: bias the AE target by this many compensation steps. Retained for
   // devices without MANUAL_SENSOR; measured to land well short of the request.
   bool apply_ae_compensation = false;
   int32_t ae_comp_steps = 0;
+  // Optional AF trigger carried on this request. START locks the lens where
+  // the auto-focus algorithm settled; CANCEL releases it back to continuous
+  // focus. AF_MODE is deliberately never changed: flipping it between the
+  // repeating preview request and the burst restarts the continuous-AF scan
+  // after every bundle, which is what made the lens hunt.
+  bool set_af_trigger = false;
+  uint8_t af_trigger = 0;
 };
 
 namespace {
@@ -1392,7 +1521,9 @@ ProviderResult Camera2CameraProvider::open_device(
   backend->stream_reader_ctx = std::make_unique<ListenerCtx>();
   backend->still_reader_ctx = std::make_unique<ListenerCtx>();
   backend->capture_ctx = std::make_unique<ListenerCtx>();
+  backend->repeating_ctx = std::make_unique<ListenerCtx>();
   backend->device_ctx->backend = backend;
+  backend->repeating_ctx->backend = backend;
   backend->session_ctx->backend = backend;
   backend->stream_reader_ctx->backend = backend;
   backend->still_reader_ctx->backend = backend;
@@ -1628,6 +1759,35 @@ void Camera2CameraProvider::post_static_camera_facts_best_effort_(
       chars.has_pre_correction_array ? "yes" : "no",
       chars.has_active_array ? "yes" : "no",
       (chars.has_pose_translation && chars.has_pose_rotation) ? "yes" : "no");
+
+  // Whether any YUV output geometry on this Device is faster than the one in
+  // use. If the fastest available equals the configured one, the cadence is a
+  // sensor-readout limit rather than a consequence of the size chosen, and no
+  // amount of reconfiguring outputs will tighten a burst.
+  {
+    int64_t fastest_ns = 0;
+    uint32_t fastest_w = 0, fastest_h = 0;
+    size_t distinct_durations = 0;
+    std::vector<int64_t> seen;
+    for (const auto& entry : chars.yuv_min_frame_durations) {
+      if (entry.min_frame_duration_ns <= 0) continue;
+      if (fastest_ns == 0 || entry.min_frame_duration_ns < fastest_ns) {
+        fastest_ns = entry.min_frame_duration_ns;
+        fastest_w = entry.width;
+        fastest_h = entry.height;
+      }
+      if (std::find(seen.begin(), seen.end(), entry.min_frame_duration_ns) == seen.end()) {
+        seen.push_back(entry.min_frame_duration_ns);
+        ++distinct_durations;
+      }
+    }
+    camera2_detail::log_line(
+        "device=%llu yuv cadence table: sizes=%zu distinct_min_durations=%zu "
+        "fastest_ns=%lld at %ux%u",
+        static_cast<unsigned long long>(device_instance_id),
+        chars.yuv_min_frame_durations.size(), distinct_durations,
+        static_cast<long long>(fastest_ns), fastest_w, fastest_h);
+  }
 
   // Bracket-execution capability, recorded per device so the choice between
   // burst submission and manual-sensor bracketing rests on stated capability
@@ -2244,7 +2404,16 @@ ProviderResult Camera2CameraProvider::start_stream(
           return;
         }
 
-        cs = ACameraCaptureSession_setRepeatingRequest(session, nullptr, 1, &request, nullptr);
+        // Result callbacks on the repeating request exist to observe AF state.
+        // Without them a focus lock has no way to tell a settled lens from a
+        // scanning one, and would pin the bracket to whatever mid-scan
+        // position happened to be current.
+        ACameraCaptureSession_captureCallbacks repeating_cbs{};
+        repeating_cbs.context = backend->repeating_ctx.get();
+        repeating_cbs.onCaptureCompleted = &camera2_detail::on_repeating_capture_completed;
+
+        cs = ACameraCaptureSession_setRepeatingRequest(session, &repeating_cbs, 1, &request,
+                                                       nullptr);
         if (cs != ACAMERA_OK) {
           ACameraOutputTarget_free(target);
           ACaptureRequest_free(request);
@@ -2584,6 +2753,16 @@ bool Camera2CameraProvider::capture_burst_(
               if (!t.abandoned.load(std::memory_order_acquire)) *submit = local;
               return;
             }
+            if (spec.frame_duration_ns > 0) {
+              const int64_t frame_duration = spec.frame_duration_ns;
+              if (ACaptureRequest_setEntry_i64(request, ACAMERA_SENSOR_FRAME_DURATION, 1,
+                                               &frame_duration) != ACAMERA_OK) {
+                local.error = ProviderError::ERR_PLATFORM_CONSTRAINT;
+                unwind();
+                if (!t.abandoned.load(std::memory_order_acquire)) *submit = local;
+                return;
+              }
+            }
             // Hold white balance across the bracket. Members differing in
             // colour as well as exposure cannot be combined, and Camera2
             // guarantees this lock is available on burst-capable devices.
@@ -2597,6 +2776,17 @@ bool Camera2CameraProvider::capture_burst_(
             if (ACaptureRequest_setEntry_i32(
                     request, ACAMERA_CONTROL_AE_EXPOSURE_COMPENSATION, 1, &comp_steps) !=
                 ACAMERA_OK) {
+              local.error = ProviderError::ERR_PLATFORM_CONSTRAINT;
+              unwind();
+              if (!t.abandoned.load(std::memory_order_acquire)) *submit = local;
+              return;
+            }
+          }
+
+          if (spec.set_af_trigger) {
+            const uint8_t trigger = spec.af_trigger;
+            if (ACaptureRequest_setEntry_u8(request, ACAMERA_CONTROL_AF_TRIGGER, 1,
+                                            &trigger) != ACAMERA_OK) {
               local.error = ProviderError::ERR_PLATFORM_CONSTRAINT;
               unwind();
               if (!t.abandoned.load(std::memory_order_acquire)) *submit = local;
@@ -2665,6 +2855,37 @@ bool Camera2CameraProvider::capture_burst_(
             [](const BurstCollector::Image& a, const BurstCollector::Image& b) {
               return a.timestamp_ns < b.timestamp_ns;
             });
+
+  // Raw collector state, independent of any member mapping. This is what
+  // distinguishes "the sensor produced these intervals" from "we paired the
+  // wrong image with the wrong member": deltas computed here come straight
+  // from sorted sensor timestamps, and a received count above expected, or a
+  // timestamp-less image, would each corrupt the mapping silently.
+  {
+    char deltas[192];
+    int used = 0;
+    deltas[0] = '\0';
+    size_t missing_timestamps = 0;
+    for (size_t i = 0; i < images.size(); ++i) {
+      if (!images[i].has_timestamp) ++missing_timestamps;
+      if (i == 0) continue;
+      const double d_ms =
+          static_cast<double>(images[i].timestamp_ns - images[i - 1].timestamp_ns) / 1.0e6;
+      const int n = std::snprintf(deltas + used, sizeof(deltas) - static_cast<size_t>(used),
+                                  "%s%.2f", used ? "," : "", d_ms);
+      if (n <= 0 || static_cast<size_t>(used + n) >= sizeof(deltas)) break;
+      used += n;
+    }
+    camera2_detail::log_line(
+        "burst collect: expected=%zu images=%zu failed=%zu no_timestamp=%zu "
+        "results_by_time=%zu results_unkeyed=%zu strays_total=%llu settled=%s "
+        "raw_deltas_ms=[%s]",
+        burst->expected, images.size(), static_cast<size_t>(0) + burst->failed_count,
+        missing_timestamps, results_by_time.size(), results_in_order.size(),
+        static_cast<unsigned long long>(
+            backend->stray_still_images.load(std::memory_order_relaxed)),
+        settled ? "yes" : "no", deltas);
+  }
 
   for (size_t i = 0; i < out_frames.size(); ++i) {
     if (i >= images.size()) {
@@ -2740,6 +2961,63 @@ bool Camera2CameraProvider::meter_manual_baseline_(
   out_exposure_ns = static_cast<double>(metered.facts.exposure_ns);
   out_sensitivity = static_cast<double>(metered.facts.iso);
   return true;
+}
+
+void Camera2CameraProvider::submit_af_trigger_(
+    const std::shared_ptr<DeviceBackend>& backend, uint8_t af_trigger) noexcept {
+  if (!backend) {
+    return;
+  }
+  auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
+  (void)control_.run_bounded(
+      [backend, af_trigger](const BoundedControlExecutor::AbandonToken& /*t*/) {
+        ACameraDevice* device = nullptr;
+        ACameraCaptureSession* session = nullptr;
+        ANativeWindow* window = nullptr;
+        {
+          std::lock_guard<std::mutex> bl(backend->m);
+          if (backend->closed || backend->failed) return;
+          device = backend->device;
+          session = backend->session;
+          window = backend->still_window;
+        }
+        if (!device || !session || !window) return;
+
+        ACaptureRequest* request = nullptr;
+        ACameraOutputTarget* target = nullptr;
+        if (ACameraDevice_createCaptureRequest(device, TEMPLATE_STILL_CAPTURE, &request) !=
+                ACAMERA_OK || !request) {
+          return;
+        }
+        // A request must carry a target; the still output is the only one
+        // guaranteed present. The resulting image is dropped by the still
+        // listener because no burst collector is installed, which is cheaper
+        // than threading a discard path through the collector.
+        if (ACameraOutputTarget_create(window, &target) != ACAMERA_OK || !target ||
+            ACaptureRequest_addTarget(request, target) != ACAMERA_OK ||
+            ACaptureRequest_setEntry_u8(request, ACAMERA_CONTROL_AF_TRIGGER, 1,
+                                        &af_trigger) != ACAMERA_OK) {
+          if (target) ACameraOutputTarget_free(target);
+          ACaptureRequest_free(request);
+          return;
+        }
+        (void)ACameraCaptureSession_capture(session, nullptr, 1, &request, nullptr);
+        ACameraOutputTarget_free(target);
+        ACaptureRequest_free(request);
+      },
+      token, kControlJobTimeoutMs);
+}
+
+bool Camera2CameraProvider::wait_for_af_lock_(
+    const std::shared_ptr<DeviceBackend>& backend) noexcept {
+  if (!backend) {
+    return false;
+  }
+  std::unique_lock<std::mutex> al(backend->af_m);
+  return backend->af_cv.wait_for(
+      al, std::chrono::milliseconds(kAfLockWaitMs), [&backend] {
+        return backend->has_af_state && camera2_detail::af_state_is_settled(backend->af_state);
+      });
 }
 
 void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job) noexcept {
@@ -2867,6 +3145,67 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
 
     std::vector<CapturedMemberFrame> frames;
     if (use_manual_burst) {
+      // Focus must hold for the whole bracket, not just exposure and white
+      // balance: members focused differently cannot be merged, and focus
+      // breathing shifts framing as well as sharpness. The widest exposure
+      // window is between metering and the burst, which is a full submission
+      // round trip -- ample time for continuous AF to move.
+      //
+      // The lock is a *trigger*, not an AF_MODE change. Setting AF_MODE_OFF on
+      // the burst while the repeating preview request runs continuous AF makes
+      // the AF algorithm restart its scan after every bundle, so the next
+      // capture then meters mid-scan and pins the bracket to a lens position
+      // that is still moving -- observed as alternating captures of blurred
+      // members. A trigger locks the lens where the algorithm settled without
+      // touching the mode, so nothing is disturbed between captures.
+      //
+      // It requires a producing stream: AF converges over frames, and the
+      // repeating request is both what drives it and the only place AF state
+      // can be observed. Without one, focus is left to the device rather than
+      // locked to an unobserved position, and the per-member focus_state fact
+      // still exposes any divergence to the caller.
+      const bool focus_lock_attempted =
+          stream_producing && !chars.fixed_focus_at_infinity;
+      bool focus_locked = false;
+      if (focus_lock_attempted) {
+        submit_af_trigger_(backend, ACAMERA_CONTROL_AF_TRIGGER_START);
+        focus_locked = wait_for_af_lock_(backend);
+      }
+      // Cadence floor, so a hardware limit can be told apart from an inherited
+      // template default. hw_min is this one output's floor; the session runs
+      // at the max over its configured outputs, so a concurrent stream can
+      // raise it above this figure.
+      camera2_detail::log_line(
+          "capture=%llu cadence: hw_min_frame_duration_ns=%lld (%ux%u) "
+          "stream_hw_min_ns=%lld max_frame_duration_ns=%lld stream_producing=%s",
+          static_cast<unsigned long long>(capture_id),
+          static_cast<long long>(
+              chars.min_frame_duration_for(job.request.width, job.request.height)),
+          job.request.width, job.request.height,
+          static_cast<long long>(stream_producing
+                                     ? chars.min_frame_duration_for(stream_w, stream_h)
+                                     : 0),
+          static_cast<long long>(chars.has_max_frame_duration ? chars.max_frame_duration_ns
+                                                             : 0),
+          stream_producing ? "yes" : "no");
+
+      camera2_detail::log_line(
+          "capture=%llu focus_lock attempted=%s settled=%s stream=%s fixed_focus=%s",
+          static_cast<unsigned long long>(capture_id),
+          focus_lock_attempted ? "yes" : "no", focus_locked ? "yes" : "no",
+          stream_producing ? "yes" : "no", chars.fixed_focus_at_infinity ? "yes" : "no");
+
+      // Release the lock however this capture ends, so continuous AF resumes
+      // for the preview and the next capture does not inherit a stale lock.
+      struct AfLockRelease {
+        Camera2CameraProvider* self;
+        std::shared_ptr<DeviceBackend> backend;
+        bool active;
+        ~AfLockRelease() {
+          if (active) self->submit_af_trigger_(backend, ACAMERA_CONTROL_AF_TRIGGER_CANCEL);
+        }
+      } af_release{this, backend, focus_lock_attempted};
+
       double baseline_exposure = 0.0;
       double baseline_sensitivity = 0.0;
       ProviderError meter_error = ProviderError::ERR_PROVIDER_FAILED;
@@ -2877,13 +3216,50 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
         return;
       }
 
-      // Each member is baseline * 2^EV. Exposure time absorbs the change
-      // first, because lengthening exposure is photometrically cleaner than
-      // raising gain; sensitivity takes only the residual exposure could not
-      // reach within the device's own range. Both are clamped to the ranges
-      // the device reported, so an unreachable request yields the closest
-      // achievable exposure rather than a refused capture -- and the realized
-      // values published below state what that clamp actually delivered.
+      // Each member is baseline * 2^EV, split between exposure time and
+      // sensitivity under one rule:
+      //
+      //   NO MEMBER MAY BE TEMPORALLY WIDER THAN THE METERED MEMBER.
+      //
+      // Darkening shortens exposure (which only narrows the member).
+      // Brightening is taken on sensitivity up to the device's ISO ceiling,
+      // and lengthens exposure past the metered value only for whatever gain
+      // could not reach.
+      //
+      // WHY THE CAP EXISTS. The obvious policy is the opposite -- lengthen
+      // exposure first, because gain costs noise and a longer exposure is
+      // photometrically cleaner. That is correct for a static scene and wrong
+      // for a bracket. A bracket's members are only useful if they describe
+      // the same scene, and a member's exposure duration is the window over
+      // which its content is smeared: measured here, a +6 EV member reached
+      // the sensor's maximum exposure and smeared its content across 147ms on
+      // one device and 400ms on another, while its neighbours spanned under a
+      // millisecond. Members that disagree about *when* they saw the world
+      // cannot be combined however precisely they agree about exposure. Taking
+      // the same +6 EV on gain instead left those members at 4.3ms and 20ms
+      // respectively -- a 34x and 20x reduction in smear, for no temporal cost
+      // at all, because sensor gain is applied per frame and takes no time.
+      //
+      // The cap is the metered exposure rather than a chosen duration
+      // precisely so that it is not a magic number: auto-exposure already
+      // judged that duration acceptable for this scene, so the rule says no
+      // bracket member may be blurrier than the reference it brackets. It
+      // degrades gracefully -- in light dim enough to exhaust the ISO range,
+      // exposure lengthens again and the old behaviour returns.
+      //
+      // WHAT IT COSTS. Noise, in the worst possible place: the brightening
+      // member is the one carrying shadow detail, which is exactly where gain
+      // noise dominates. This is a deliberate trade, not a free win. It is the
+      // right default because blur is unrecoverable while noise is partially
+      // averaged out by the merge itself -- but for a tripod or a static
+      // subject the opposite policy genuinely produces better images.
+      //
+      // This is currently a fixed internal provider policy: the public request
+      // carries only an intended compensation, with no way to express scene
+      // context or a preference. A future version may let Core (and through it
+      // the user) select the policy, or tell CamBANG whether the capture is
+      // handheld or tripod-mounted, at which point this becomes the handheld
+      // branch rather than the only behaviour.
       std::vector<MemberRequestSpec> specs;
       specs.reserve(members.size());
       for (const CaptureStillImageMember& member : members) {
@@ -2891,23 +3267,60 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
             static_cast<double>(member.intended_exposure_compensation_milli_ev) / 1000.0;
         const double target_scale = std::pow(2.0, ev);
 
-        double exposure = baseline_exposure * target_scale;
+        // Exposure may shorten freely but never exceed the metered duration.
+        double exposure = baseline_exposure * std::min(target_scale, 1.0);
         exposure = std::clamp(exposure,
                               static_cast<double>(chars.exposure_time_min_ns),
                               static_cast<double>(chars.exposure_time_max_ns));
-        const double exposure_scale =
+        double exposure_scale =
             baseline_exposure > 0.0 ? (exposure / baseline_exposure) : 1.0;
-        const double residual_scale =
+
+        // Gain takes whatever exposure did not.
+        double residual_scale =
             exposure_scale > 0.0 ? (target_scale / exposure_scale) : 1.0;
         double sensitivity = baseline_sensitivity * residual_scale;
         sensitivity = std::clamp(sensitivity,
                                  static_cast<double>(chars.sensitivity_min),
                                  static_cast<double>(chars.sensitivity_max));
 
+        // Last resort only: if gain hit its ceiling and the member is still
+        // short of the request, lengthen exposure past the metered value for
+        // the remainder. Reintroduces smear, but a bracket that cannot reach
+        // its range at all is worse than one that reaches it slowly.
+        const double achieved_scale =
+            exposure_scale * (baseline_sensitivity > 0.0
+                                  ? (sensitivity / baseline_sensitivity)
+                                  : 1.0);
+        if (achieved_scale > 0.0 && target_scale > achieved_scale) {
+          const double shortfall = target_scale / achieved_scale;
+          exposure = std::clamp(exposure * shortfall,
+                                static_cast<double>(chars.exposure_time_min_ns),
+                                static_cast<double>(chars.exposure_time_max_ns));
+        }
+
         MemberRequestSpec spec;
         spec.manual = true;
         spec.exposure_ns = static_cast<int64_t>(std::llround(exposure));
         spec.sensitivity = static_cast<int32_t>(std::lround(sensitivity));
+
+        // Ask for the fastest cadence this configuration actually permits.
+        // The floor is Camera2's own: the largest per-output minimum across
+        // the session's configured outputs, and never below the member's own
+        // exposure, which a frame cannot be shorter than. Requesting the floor
+        // is a no-op where the template already defaults to it (both Devices
+        // measured), and claims the difference where it does not.
+        int64_t frame_duration = chars.min_frame_duration_for(job.request.width,
+                                                              job.request.height);
+        if (stream_producing) {
+          frame_duration =
+              std::max(frame_duration, chars.min_frame_duration_for(stream_w, stream_h));
+        }
+        frame_duration = std::max(frame_duration, spec.exposure_ns);
+        if (chars.has_max_frame_duration && chars.max_frame_duration_ns > 0) {
+          frame_duration = std::min(frame_duration, chars.max_frame_duration_ns);
+        }
+        spec.frame_duration_ns = frame_duration;
+
         specs.push_back(spec);
       }
 
@@ -3223,6 +3636,29 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
             static_cast<long long>(
                 captured.facts.has_exposure_ns ? captured.facts.exposure_ns : -1),
             captured.facts.has_iso ? captured.facts.iso : -1);
+
+        // Realized lens position per member. Setting AF_MODE_OFF at a distance
+        // is a request; this is what the lens reported doing. Members that do
+        // not share one value are not a bracket, whatever their exposures say.
+        camera2_detail::log_line(
+            "capture=%llu member=%u realized_focus_diopters=%s%.4f",
+            static_cast<unsigned long long>(capture_id), member.image_member_index,
+            captured.facts.has_focus_diopters ? "" : "absent:",
+            captured.facts.has_focus_diopters
+                ? static_cast<double>(captured.facts.focus_diopters)
+                : -1.0);
+
+        // The frame duration the HAL actually applied for this member. If this
+        // sits well above the hardware minimum logged above, the cadence is an
+        // inherited request-template default rather than a sensor limit -- and
+        // is therefore ours to set.
+        camera2_detail::log_line(
+            "capture=%llu member=%u applied_frame_duration_ns=%s%lld",
+            static_cast<unsigned long long>(capture_id), member.image_member_index,
+            captured.facts.has_frame_duration ? "" : "absent:",
+            static_cast<long long>(captured.facts.has_frame_duration
+                                       ? captured.facts.frame_duration_ns
+                                       : -1));
 
         // Sensor-timestamp offset from the first member. This is the temporal
         // spread the burst exists to close: members far apart in time do not

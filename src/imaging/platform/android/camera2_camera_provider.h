@@ -247,6 +247,11 @@ private:
   // for every output), so this is deliberately larger than the WinRT
   // provider's equivalent.
   static constexpr uint32_t kControlJobTimeoutMs = 5000;
+  // Bound on waiting for auto-focus to settle after a lock trigger. Sized to
+  // contain a lens that never converges, not to pace one that does: a normal
+  // convergence reports a locked AF state in a few frames and the wait returns
+  // as soon as it does, so this is never spent in the common case.
+  static constexpr uint32_t kAfLockWaitMs = 1500;
   // AImageReader maxImages for the repeating stream. Must exceed the number
   // of images the converter can hold at once; the provider copies out and
   // deletes each AImage immediately, so this is headroom, not a pipeline
@@ -388,6 +393,20 @@ private:
       double& out_exposure_ns,
       double& out_sensitivity,
       ProviderError& out_error) noexcept;
+
+  // Submits a single request carrying only an AF trigger, to lock or release
+  // the lens. Fire-and-forget: the delivered image is dropped by the still
+  // listener because no collector is installed, which is cheaper than
+  // threading a discard path through the collector.
+  void submit_af_trigger_(
+      const std::shared_ptr<camera2_detail::DeviceBackend>& backend,
+      uint8_t af_trigger) noexcept;
+
+  // Waits, bounded, for the AF algorithm to reach a locked state as observed
+  // on the repeating request's results. Returns false on timeout or when no
+  // AF state is being observed at all.
+  bool wait_for_af_lock_(
+      const std::shared_ptr<camera2_detail::DeviceBackend>& backend) noexcept;
 
   CBProviderStrand strand_;
   IProviderCallbacks* callbacks_ = nullptr;

@@ -253,9 +253,37 @@ from cached characteristics. Where `MANUAL_SENSOR` is available, the provider
 meters once (one auto-exposed capture), freezes that realized
 exposure/sensitivity as the reference, derives each member as
 `baseline * 2^EV` (exposure time absorbs the change first, sensitivity takes
-only the residual), and submits **all members as one burst** with `AE_MODE_OFF`
-and AWB locked. Devices without `MANUAL_SENSOR` fall back to sequential
-auto-exposure compensation captures.
+only the residual), and submits **all members as one burst** with `AE_MODE_OFF`,
+AWB locked, and focus pinned. Devices without `MANUAL_SENSOR` fall back to
+sequential auto-exposure compensation captures.
+
+Member exposures follow the coherence rule in `provider_implementation_brief.md`
+§5.1: exposure shortens to darken, sensitivity rises to brighten, and exposure
+lengthens past the metered duration only when the ISO ceiling is reached. On
+one Device this took a `+6 EV` member from a 400 ms exposure to 20 ms at
+ISO 7168, cutting the bundle's content span from ~454 ms to ~87 ms while still
+realizing the full `+6000` milli-EV.
+
+Focus is locked for the same reason exposure and white balance are: members
+that differ cannot be combined, and focus breathing shifts framing as well as
+sharpness. The lock is an **AF trigger**, not an `AF_MODE` change:
+`AF_TRIGGER_START` locks the lens where continuous AF settled, and
+`AF_TRIGGER_CANCEL` releases it once the bundle completes. Setting
+`AF_MODE_OFF` on the burst instead was tried and is wrong — with the repeating
+preview request running continuous AF, flipping the mode restarts the AF scan
+after every bundle, so the next capture meters mid-scan and pins its members to
+a lens position that is still moving. That was observed as alternating captures
+of blurred members.
+
+The lock therefore requires a producing stream: AF converges over frames, and
+the repeating request is both what drives it and the only place
+`CONTROL_AF_STATE` can be observed. Result callbacks on the repeating request
+exist solely for that observation, and are deliberately a separate callback
+from the burst's — repeating results arrive at frame rate and would otherwise
+be counted as bundle members. Without a stream, or on a fixed-focus lens
+(`LENS_INFO_MINIMUM_FOCUS_DISTANCE == 0`), focus is left to the device rather
+than locked to an unobserved position, and the per-member `focus_state` fact
+still exposes any divergence to the caller.
 
 The distinction is not cosmetic, and both halves matter. Measured on a Galaxy
 S20 rear camera, a requested ±6 EV bracket produced ~±0.5 EV of actual image

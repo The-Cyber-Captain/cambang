@@ -120,6 +120,57 @@ match reality). See `architecture/pixel_payload_and_result_contract.md`.
   closed generation at their next checkpoint and terminalize as failed with
   `ERR_SHUTTING_DOWN` rather than delivering into a dead session.
 
+### 5.1 Multi-image bundles: coherence outranks per-image quality
+
+A multi-image still bundle exists to be *combined*. That makes it a different
+design problem from a single capture, and the difference is easy to get
+backwards.
+
+The members of a bundle are only useful together if they describe the same
+scene. Two things break that, and both are temporal:
+
+* **Between members** — the interval separating them. Anything that moves
+  (subject, or the camera in a hand) displaces between members, and no
+  post-processing recovers the alignment.
+* **Within a member** — its own exposure duration is the window over which
+  its content is smeared. A member exposing far longer than its neighbours
+  disagrees with them about *when* it saw the world, even if every member is
+  perfectly aligned at its start.
+
+So when a provider must trade image quality against temporal extent while
+realizing a bundle, **temporal coherence takes precedence**. The governing
+rule is that no member may be temporally wider than the default-metered
+member: auto-exposure already judged that duration acceptable for the scene,
+so it is a scene-derived bound rather than a chosen constant, and it means no
+member is blurrier than the reference it brackets.
+
+Concretely, for exposure bracketing: darken by shortening exposure, brighten
+by raising sensitivity, and lengthen exposure beyond the metered duration only
+when gain has reached its ceiling and the requested range is otherwise
+unreachable. Sensor gain costs noise but takes no time; exposure costs time.
+
+This is a deliberate trade, not a free win. Gain noise lands hardest on the
+brightening member, which is the one carrying shadow detail. It is the right
+default because blur is unrecoverable while noise is partially averaged out by
+the combination itself — but for a static subject on a fixed mount the
+opposite policy produces better images.
+
+Providers implement this as a fixed internal policy for now: the public
+request expresses an intended compensation only, with no way to state scene
+context or a preference. A future version may let Core (and through it the
+user) select the policy, or declare a handheld/fixed-mount context, at which
+point today's behaviour becomes the handheld branch rather than the whole of
+it. Do not invent a provider-local knob for this in the meantime.
+
+Where the backend can execute a bundle as a single submission (a burst, or an
+equivalent native sequence), prefer it: it removes the per-member round trip
+entirely. Note the ordering dependency — a burst is only safe once each
+member's exposure is fixed and independent, because back-to-back members leave
+an auto-exposure algorithm no time to converge. Hold whatever else would drift
+across the bundle, notably white balance and focus, and hold focus by locking
+the algorithm where it settled rather than by switching the control mode
+underneath a running stream.
+
 ## 6. Templates and the defaulting boundary
 
 Expose deterministic `StreamTemplate`/`CaptureTemplate`. Core materializes
