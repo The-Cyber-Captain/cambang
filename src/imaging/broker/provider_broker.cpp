@@ -17,6 +17,11 @@
   #include "imaging/platform/windows/winrt_camera_provider.h"
 #endif
 
+// Android platform provider (android_camera2 family, compile-time selection).
+#if defined(CAMBANG_PROVIDER_ANDROID_CAMERA2) && CAMBANG_PROVIDER_ANDROID_CAMERA2
+  #include "imaging/platform/android/camera2_camera_provider.h"
+#endif
+
 // Synthetic provider (optional compile).
 #if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
   #include "imaging/synthetic/provider.h"
@@ -293,6 +298,7 @@ ProviderResult ProviderBroker::check_mode_supported_in_build(RuntimeMode mode) n
   switch (mode) {
     case RuntimeMode::platform_backed: {
 #if (defined(CAMBANG_PROVIDER_WINDOWS_WINRT) && CAMBANG_PROVIDER_WINDOWS_WINRT) || \
+    (defined(CAMBANG_PROVIDER_ANDROID_CAMERA2) && CAMBANG_PROVIDER_ANDROID_CAMERA2) || \
     (defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB)
       return ProviderResult::success();
 #else
@@ -324,6 +330,8 @@ ProviderAccessStatus ProviderBroker::check_mode_access_readiness(RuntimeMode mod
     case RuntimeMode::platform_backed: {
 #if defined(CAMBANG_PROVIDER_WINDOWS_WINRT) && CAMBANG_PROVIDER_WINDOWS_WINRT
       return WinrtCameraProvider::check_access_readiness();
+#elif defined(CAMBANG_PROVIDER_ANDROID_CAMERA2) && CAMBANG_PROVIDER_ANDROID_CAMERA2
+      return Camera2CameraProvider::check_access_readiness();
 #elif defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
       return StubProvider::check_access_readiness();
 #else
@@ -540,6 +548,8 @@ ProviderResult ProviderBroker::initialize(IProviderCallbacks *callbacks) {
       // builds keep the deterministic StubProvider.
 #if defined(CAMBANG_PROVIDER_WINDOWS_WINRT) && CAMBANG_PROVIDER_WINDOWS_WINRT
       candidate = std::make_unique<WinrtCameraProvider>();
+#elif defined(CAMBANG_PROVIDER_ANDROID_CAMERA2) && CAMBANG_PROVIDER_ANDROID_CAMERA2
+      candidate = std::make_unique<Camera2CameraProvider>();
 #elif defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
       candidate = std::make_unique<StubProvider>();
 #endif

@@ -195,7 +195,7 @@ Declared GDE platforms and provider families:
 | Platform | Provider family | Source location | Current normal build support |
 |---|---|---|---|
 | `windows` | `windows_winrt` | `src/imaging/platform/windows` | Implemented (C++/WinRT; requires MSVC — see below). |
-| `android` | `android_camera2` | `src/imaging/platform/android` | Not yet implemented. |
+| `android` | `android_camera2` | `src/imaging/platform/android` | Implemented (Camera2 NDK; no extra toolchain gate). |
 | `linux` | `linux_v4l2` | `src/imaging/platform/linux` | Not yet implemented. |
 | `macos` | `apple_avfoundation` | `src/imaging/platform/apple` | Not yet implemented. |
 | `ios` | `apple_avfoundation` | `src/imaging/platform/apple` | Not yet implemented. |
@@ -216,6 +216,89 @@ stay hardware-independent. Current capability maturity
 RGBA/BGRA delivery at native source formats (no scaling — a requested
 geometry with no matching native format fails deterministically),
 single-image still capture, no picture-parameter control, no GPU backing.
+
+The `android_camera2` family is implemented by `Camera2CameraProvider` on the
+Camera2 NDK: `ACameraManager`/`ACameraDevice`/`ACameraCaptureSession`
+(`libcamera2ndk`) with `AImageReader` (`libmediandk`) delivering
+`AIMAGE_FORMAT_YUV_420_888` images that the provider converts to packed
+RGBA/BGRA. Device identity is the Camera2 camera id string. Both libraries
+ship in the NDK sysroot the Android GDE environment already targets, so unlike
+`windows_winrt` there is no extra toolchain gate: every Android GDE build
+compiles the provider, defining `CAMBANG_PROVIDER_ANDROID_CAMERA2=1` and
+linking `camera2ndk`, `mediandk`, `android` and `log`. Current capability
+maturity (provider_architecture.md §2.3) is minimal / transitional: CPU-backed
+delivery at device-supported YUV output sizes (no scaling — a requested
+geometry absent from the device's stream-configuration map fails
+deterministically), still capture with real per-request exposure-compensation
+bracketing, realized per-image facts from capture result metadata (exposure
+time, sensitivity, aperture, focal length, focus state, intrinsics and
+distortion), static facing/nature/orientation/pose, no picture-parameter
+control, no GPU backing.
+
+Two Camera2 properties are load-bearing for anyone changing that provider.
+Outputs are fixed when a capture session is created, so `start_stream`
+provisions the still output alongside the stream output at the same geometry
+and a capture needing different geometry while a stream produces is refused
+with `ERR_PLATFORM_CONSTRAINT` rather than rebuilding the session under a live
+stream. And the `CAMERA` runtime permission has no NDK query: readiness
+preflight cannot observe it, so a denial surfaces at `open_device()` as
+`ACAMERA_ERROR_PERMISSION_DENIED` mapped to `ERR_PLATFORM_CONSTRAINT`. The
+Godot test project declares the permission (`permissions/camera=true` in
+`tests/cambang_gde/export_presets.cfg`); declaring it does not grant it, so an
+on-device run that opens hardware still needs the runtime grant. That file is
+gitignored, so the declaration is per-checkout rather than shared.
+
+Multi-image still bundles take one of two bracket paths, chosen per device
+from cached characteristics. Where `MANUAL_SENSOR` is available, the provider
+meters once (one auto-exposed capture), freezes that realized
+exposure/sensitivity as the reference, derives each member as
+`baseline * 2^EV` (exposure time absorbs the change first, sensitivity takes
+only the residual), and submits **all members as one burst** with `AE_MODE_OFF`
+and AWB locked. Devices without `MANUAL_SENSOR` fall back to sequential
+auto-exposure compensation captures.
+
+The distinction is not cosmetic, and both halves matter. Measured on a Galaxy
+S20 rear camera, a requested ±6 EV bracket produced ~±0.5 EV of actual image
+change on the auto-exposure path (clamped to the device's ±2 EV compensation
+range) with members ~234 ms apart; the manual burst path delivers the full
+±6 EV — realized −6000/+5990 milli-EV — with members 37.5 ms apart on
+consecutive sensor frames. Auto-exposure compensation is unreliable for
+bracketing across every device measured, and inter-member spacing wide enough
+for the scene to change makes any merge invalid regardless of exposure
+accuracy. The two fixes compose in one direction only: manual exposure is what
+makes bursting safe, since back-to-back members leave auto-exposure no time to
+converge but leave a fixed manual exposure nothing to converge.
+
+Because burst members are in flight simultaneously, images are paired to their
+result metadata by `ACAMERA_SENSOR_TIMESTAMP` rather than arrival order.
+
+`realized_exposure_compensation_milli_ev` is derived from the exposure and
+sensitivity the sensor actually delivered, measured against the bundle's
+default-metered member — never from the AE compensation control, which reads
+back its own clamped set-point and is not a realized value. A clamped request
+is therefore still truthfully reported: the realized figure states what the
+clamp actually produced, and a member missing exposure or sensitivity metadata
+reports no realized value at all.
+
+Camera intrinsics and distortion are reported per-image rather than static
+because Camera2 expresses them in a coordinate system chosen per capture by
+`ACAMERA_DISTORTION_CORRECTION_MODE`: `OFF` means the pre-correction active
+array and `DISTORTED` pixels, `FAST`/`HIGH_QUALITY` means the active array and
+`RECTIFIED` pixels. Both are *sensor* rectangles — the delivered frame is
+cropped and scaled from them, so the reported `f`/`c` values are not valid in
+delivered-image pixels and are deliberately published in the sensor domain
+they were measured in. Rescaling them to the output geometry would be the
+intrinsic rescaling and coordinate-domain conversion CamBANG does not perform
+(`docs/dev/agent_context.md`).
+
+Real hardware may omit the correction mode from its results while still
+reporting calibration (the Galaxy S20 does). Camera2 documents that a device
+not supporting the correction API "will always list only `OFF`" in
+`ACAMERA_DISTORTION_CORRECTION_AVAILABLE_MODES`, so for a device advertising
+no correction capability the provider derives `OFF` from stated capability.
+Where a device *can* correct but did not report whether it did, the domain is
+genuinely unknowable and both facts are omitted rather than published against
+a guessed reference frame.
 
 For declared platforms whose provider family is not implemented yet, non-clean
 GDE builds are still allowed to produce a synthetic-capable artifact. In those

@@ -56,8 +56,8 @@ provider contract.
 
 Examples include:
 
-- future `windows_winrt`
-- future `android_camera2`
+- `windows_winrt` (implemented)
+- `android_camera2` (implemented)
 - future additional platform providers
 
 A platform-backed provider is an **adapter to the contract**, not a
@@ -643,9 +643,9 @@ Do **not**:
 
 ## 13. Immediate design consequence for upcoming platform providers
 
-A future platform-backed provider such as `android_camera2` should be
-implemented against the same contract already exercised by the reference
-providers and compliance tools.
+A platform-backed provider such as `android_camera2` is implemented against
+the same contract already exercised by the reference providers and compliance
+tools.
 
 That provider may become release-quality before other platform-backed
 providers do, but its higher capability level still does not redefine

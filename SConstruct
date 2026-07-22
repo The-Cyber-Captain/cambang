@@ -314,7 +314,11 @@ GDE_PROVIDER_RESOLUTION = {
     "android": {
         "family": "android_camera2",
         "location": os.path.join("src", "imaging", "platform", "android"),
-        "implemented": False,
+        "implemented": True,
+        # Camera2 NDK + AImageReader ship with the NDK sysroot the Android GDE
+        # environment already targets, so no extra toolchain gate applies.
+        "defines": ["CAMBANG_PROVIDER_ANDROID_CAMERA2=1"],
+        "libs": ["camera2ndk", "mediandk", "android", "log"],
     },
     "linux": {
         "family": "linux_v4l2",
