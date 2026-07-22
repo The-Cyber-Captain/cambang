@@ -408,6 +408,11 @@ private:
   bool wait_for_af_lock_(
       const std::shared_ptr<camera2_detail::DeviceBackend>& backend) noexcept;
 
+  // Clears the observed AF state so a wait cannot be satisfied by a settled
+  // value left over from a previous capture.
+  void reset_observed_af_state_(
+      const std::shared_ptr<camera2_detail::DeviceBackend>& backend) noexcept;
+
   CBProviderStrand strand_;
   IProviderCallbacks* callbacks_ = nullptr;
   std::atomic<bool> initialized_{false};

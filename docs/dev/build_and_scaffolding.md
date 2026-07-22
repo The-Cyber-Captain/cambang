@@ -275,14 +275,33 @@ after every bundle, so the next capture meters mid-scan and pins its members to
 a lens position that is still moving. That was observed as alternating captures
 of blurred members.
 
-The lock therefore requires a producing stream: AF converges over frames, and
+**A producing stream is a documented requirement for the focus lock**, not an
+implementation gap. Auto-focus converges over a continuous frame sequence, and
 the repeating request is both what drives it and the only place
 `CONTROL_AF_STATE` can be observed. Result callbacks on the repeating request
 exist solely for that observation, and are deliberately a separate callback
 from the burst's — repeating results arrive at frame rate and would otherwise
-be counted as bundle members. Without a stream, or on a fixed-focus lens
+be counted as bundle members.
+
+Driving convergence from the still captures themselves was measured and does
+not work: across five successive metering frames `CONTROL_AF_STATE` stayed
+`NOT_FOCUSED_LOCKED` on every attempt, and the trigger swept the lens to a
+travel limit rather than to the subject — producing bundles whose members
+agreed with each other and were uniformly out of focus, which is harder to
+detect than an obvious failure. Note `NOT_FOCUSED_LOCKED` means the lens
+stopped, *not* that it focused; only `FOCUSED_LOCKED` is an acquisition.
+Feeding auto-focus from a temporary preview flow aimed at the still reader is
+also wrong, and was measured to break capture outright: its images are
+indistinguishable from capture members once they reach that reader, so one
+lands in a collector and the bundle fails. Giving auto-focus a real frame
+source would require a dedicated session output; that is deliberately not done.
+
+So a caller that needs a consistently focused bundle should run a stream.
+Without one, or on a fixed-focus lens
 (`LENS_INFO_MINIMUM_FOCUS_DISTANCE == 0`), focus is left to the device rather
-than locked to an unobserved position, and the per-member `focus_state` fact
+than locked to an unobserved position — continuous auto-focus still progresses
+on the capture frames alone, but members may differ while it scans — and the
+per-member `focus_state` fact
 still exposes any divergence to the caller.
 
 The distinction is not cosmetic, and both halves matter. Measured on a Galaxy

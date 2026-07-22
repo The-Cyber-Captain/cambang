@@ -582,6 +582,7 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   bool has_af_state = false;
   uint8_t af_state = 0;
 
+
   std::string hardware_id;
   uint64_t device_instance_id = 0;
   uint64_t root_id = 0;
@@ -2939,6 +2940,10 @@ bool Camera2CameraProvider::meter_manual_baseline_(
   // One ordinary auto-exposed capture. Its realized exposure/sensitivity are
   // the reference the whole bracket is derived from, so this is the only place
   // auto-exposure is paid for -- once per capture rather than once per member.
+  //
+  // It carries no AF trigger: without a producing stream auto-focus cannot
+  // converge, and triggering it merely sweeps the lens to a travel limit (see
+  // the focus-lock note in run_device_capture_job_).
   std::vector<MemberRequestSpec> specs(1);
   std::vector<CapturedMemberFrame> frames;
   if (!capture_burst_(backend, width, height, format_fourcc, specs, frames) ||
@@ -2960,6 +2965,18 @@ bool Camera2CameraProvider::meter_manual_baseline_(
   }
   out_exposure_ns = static_cast<double>(metered.facts.exposure_ns);
   out_sensitivity = static_cast<double>(metered.facts.iso);
+  // Raw AF state at metering. Kept because it is what distinguishes a lens
+  // that focused (FOCUSED_LOCKED) from one that gave up and parked
+  // (NOT_FOCUSED_LOCKED) -- the two are indistinguishable from the focus
+  // distance alone, and only the first means the bundle is usable.
+  camera2_detail::log_line(
+      "meter: af_state=%s%d focus_diopters=%s%.4f",
+      metered.facts.has_af_state ? "" : "absent:",
+      metered.facts.has_af_state ? static_cast<int>(metered.facts.af_state) : -1,
+      metered.facts.has_focus_diopters ? "" : "absent:",
+      metered.facts.has_focus_diopters
+          ? static_cast<double>(metered.facts.focus_diopters)
+          : -1.0);
   return true;
 }
 
@@ -3006,6 +3023,18 @@ void Camera2CameraProvider::submit_af_trigger_(
         ACaptureRequest_free(request);
       },
       token, kControlJobTimeoutMs);
+}
+
+void Camera2CameraProvider::reset_observed_af_state_(
+    const std::shared_ptr<DeviceBackend>& backend) noexcept {
+  if (!backend) {
+    return;
+  }
+  // Without this, a capture immediately following one that locked would see
+  // the previous lock's settled state and skip waiting for its own.
+  std::lock_guard<std::mutex> al(backend->af_m);
+  backend->has_af_state = false;
+  backend->af_state = 0;
 }
 
 bool Camera2CameraProvider::wait_for_af_lock_(
@@ -3164,10 +3193,41 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
       // can be observed. Without one, focus is left to the device rather than
       // locked to an unobserved position, and the per-member focus_state fact
       // still exposes any divergence to the caller.
+      // A fixed-focus lens has nothing to lock; everything else is locked,
+      // stream or no stream. Where the caller runs a stream, its frames drive
+      // AF already; where it does not, a short temporary flow is run purely to
+      // converge the lens (converge_af_without_stream_). A capture with no
+      // preview is precisely the case where the caller cannot see that a
+      // bundle came back inconsistently focused, so it is the last place to
+      // skip the lock.
+      // With a stream running, its frames already drive auto-focus, so the
+      // lock is triggered here and observed on the repeating request's
+      // results. Without one there are no frames yet, so the trigger rides on
+      // the metering capture below and convergence is driven by re-metering.
+      // FOCUS LOCK REQUIRES A PRODUCING STREAM, and that is a platform
+      // constraint rather than a gap here. Auto-focus converges over a
+      // continuous frame sequence; a capture with no stream provides none.
+      // Measured on hardware: triggering the lock and then driving convergence
+      // with the metering captures themselves failed on every attempt --
+      // ACAMERA_CONTROL_AF_STATE stayed NOT_FOCUSED_LOCKED across five
+      // successive metering frames, and the trigger swept the lens to a travel
+      // limit (infinity, then the near stop) rather than to the subject. The
+      // bundle's members then agreed with each other and were uniformly out of
+      // focus, which is worse than not locking: consistent and wrong is harder
+      // to detect than obviously unfocused.
+      //
+      // So without a stream the lens is left wherever the device put it, which
+      // at least does not actively defocus it, and the per-member focus_state
+      // fact still lets a caller see what happened. Giving auto-focus a real
+      // frame source would need a dedicated session output for convergence
+      // frames -- pointing a temporary flow at the still reader was tried and
+      // corrupted bundle collection, because its images are indistinguishable
+      // from capture members once they reach that reader.
       const bool focus_lock_attempted =
           stream_producing && !chars.fixed_focus_at_infinity;
       bool focus_locked = false;
       if (focus_lock_attempted) {
+        reset_observed_af_state_(backend);
         submit_af_trigger_(backend, ACAMERA_CONTROL_AF_TRIGGER_START);
         focus_locked = wait_for_af_lock_(backend);
       }
@@ -3641,12 +3701,14 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
         // is a request; this is what the lens reported doing. Members that do
         // not share one value are not a bracket, whatever their exposures say.
         camera2_detail::log_line(
-            "capture=%llu member=%u realized_focus_diopters=%s%.4f",
+            "capture=%llu member=%u realized_focus_diopters=%s%.4f af_state=%s%d",
             static_cast<unsigned long long>(capture_id), member.image_member_index,
             captured.facts.has_focus_diopters ? "" : "absent:",
             captured.facts.has_focus_diopters
                 ? static_cast<double>(captured.facts.focus_diopters)
-                : -1.0);
+                : -1.0,
+            captured.facts.has_af_state ? "" : "absent:",
+            captured.facts.has_af_state ? static_cast<int>(captured.facts.af_state) : -1);
 
         // The frame duration the HAL actually applied for this member. If this
         // sits well above the hardware minimum logged above, the cadence is an

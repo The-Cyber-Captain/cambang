@@ -171,6 +171,15 @@ across the bundle, notably white balance and focus, and hold focus by locking
 the algorithm where it settled rather than by switching the control mode
 underneath a running stream.
 
+Some backends can only hold focus while a repeating stream is running, because
+their auto-focus converges over a continuous frame sequence and exposes its
+state only on that stream's results. Where that is so, say so: a stream is a
+legitimate documented precondition for a focus-locked bundle. Do not
+manufacture a private frame source to work around it. A lock reported without
+the evidence to support it is worse than an absent one — a bundle whose members
+share one *unfocused* lens position looks internally consistent and will pass
+inspection that a visibly failed capture would not.
+
 ## 6. Templates and the defaulting boundary
 
 Expose deterministic `StreamTemplate`/`CaptureTemplate`. Core materializes
