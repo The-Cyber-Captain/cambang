@@ -117,18 +117,6 @@ struct CoreImageFactBundle {
   bool has_image_properties = false;
   ResultImagePropertiesFacts image_properties{};
   ResultImagePropertiesProvenance image_properties_provenance{};
-
-  bool has_capture_attributes = false;
-  ResultCaptureAttributesFacts capture_attributes{};
-  ResultCaptureAttributesProvenance capture_attributes_provenance{};
-
-  bool has_location_attributes = false;
-  ResultLocationAttributesFacts location_attributes{};
-  ResultLocationAttributesProvenance location_attributes_provenance{};
-
-  bool has_optical_calibration = false;
-  ResultOpticalCalibrationFacts optical_calibration{};
-  ResultOpticalCalibrationProvenance optical_calibration_provenance{};
 };
 
 // Private completed-result fact view. These source-neutral facts deliberately
@@ -194,10 +182,6 @@ struct CoreCaptureResultData {
     CoreRetainedAccessTruth retained_access_truth{};
     SharedResultAccessClassificationRecord access_classification{};
     CoreResultAccessPostureKey access_posture{};
-
-    bool has_capture_attributes = false;
-    ResultCaptureAttributesFacts capture_attributes{};
-    ResultCaptureAttributesProvenance capture_attributes_provenance{};
 
     CoreResolvedCaptureImageFacts resolved_image_facts{};
   };

@@ -40,19 +40,10 @@ public:
   godot::Dictionary get_geolocation() const;
 
   bool has_image_properties() const;
-  bool has_capture_attributes() const;
-  bool has_location_attributes() const;
-  bool has_optical_calibration() const;
 
   godot::Dictionary get_image_properties() const;
-  godot::Dictionary get_capture_attributes() const;
-  godot::Dictionary get_location_attributes() const;
-  godot::Dictionary get_optical_calibration() const;
 
   godot::Dictionary get_image_properties_provenance() const;
-  godot::Dictionary get_capture_attributes_provenance() const;
-  godot::Dictionary get_location_attributes_provenance() const;
-  godot::Dictionary get_optical_calibration_provenance() const;
 
   int can_get_display_view() const;
   int can_to_image() const;

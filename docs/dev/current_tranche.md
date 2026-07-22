@@ -1,12 +1,11 @@
 # Current tranche
 
-No active tranche.
+No tranche is active.
 
-This file holds only the maintainer-approved work order for the active
-tranche: scope, acceptance criteria, validation expectations, and near-term
-constraints. When a tranche is activated, replace this file with that work
-order; when it is accepted and committed, reset this file to this stub.
+Activate one by replacing this stub with the work order: scope, anything
+explicitly out of scope, and the acceptance/validation expectations. Reset it
+to this stub once the tranche is accepted and committed.
 
-It is not a changelog, completion record, backlog, or deferred-task list —
-git history is the record of completed work, and future work is queued only
-when the maintainer activates it here.
+This file is steering for the *active* work order only. It is not a log, not a
+findings record, and not a backlog. Completed work is recorded in git history,
+with validation detail in the commit message.

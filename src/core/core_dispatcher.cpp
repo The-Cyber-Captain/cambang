@@ -443,6 +443,16 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
           }
           }
         } else {
+          // Published snapshots must reflect retained truth: the transition
+          // from "no retained stream result" to "retained stream result
+          // exists" is relevant state (it gates result_live at the public
+          // boundary) and must request publication itself. A real-latency
+          // provider delivers its first frame after the started-fact
+          // publication, and no later fact is otherwise obligated to arrive;
+          // synthetic providers mask this edge by integrating first frames in
+          // the same batch as the started fact.
+          const bool stream_result_existed =
+              sid != 0 && result_store_->get_latest_stream_result(sid) != nullptr;
           retained_for_result = result_store_->retain_frame(
               p.frame,
               stream_intent,
@@ -450,6 +460,9 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
               capture_access_posture_epoch,
               stream_requested_retained_plan,
               capture_requested_retained_plan);
+          if (retained_for_result && sid != 0 && !stream_result_existed) {
+            relevant_state_changed_ = true;
+          }
         }
       }
     }

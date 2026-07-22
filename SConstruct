@@ -304,7 +304,12 @@ GDE_PROVIDER_RESOLUTION = {
     "windows": {
         "family": "windows_winrt",
         "location": os.path.join("src", "imaging", "platform", "windows"),
-        "implemented": False,
+        "implemented": True,
+        # C++/WinRT (Windows.Media.Capture) requires MSVC + Windows SDK;
+        # MinGW Windows GDE builds stay synthetic-only.
+        "requires_msvc": True,
+        "defines": ["CAMBANG_PROVIDER_WINDOWS_WINRT=1"],
+        "libs": ["windowsapp", "advapi32"],
     },
     "android": {
         "family": "android_camera2",
@@ -333,7 +338,22 @@ GDE_PROVIDER_RESOLUTION = {
     },
 }
 
-RUNTIME_VALIDATORS = {}
+# Platform runtime validators (platform_runtime_validate=yes). These are
+# real-OS/API visibility checks that may open local camera hardware; they
+# supplement, never replace, deterministic provider contract verification.
+RUNTIME_VALIDATORS = {
+    "windows": {
+        "program": "windows_winrt_runtime_validate",
+        "main": os.path.join("smoke", "windows_winrt_runtime_validate.cpp"),
+        "provider_dirs": [os.path.join("imaging", "platform", "windows")],
+        "extra_sources": [
+            os.path.join("imaging", "api", "provider_strand.cpp"),
+        ],
+        "requires_msvc": True,
+        "defines": ["CAMBANG_PROVIDER_WINDOWS_WINRT=1"],
+        "libs": ["windowsapp", "advapi32"],
+    },
+}
 
 
 vars = Variables()
@@ -481,6 +501,10 @@ if not is_clean:
         Exit(1)
 
 env = Environment(variables=vars, tools=tools)
+# SCons's tool detection configures the compiler environment (for MSVC:
+# PATH/INCLUDE/LIB/LIBPATH from vcvars). Capture it before installing the
+# repo process environment so an MSVC toolchain stays reachable.
+detected_tool_env = dict(env["ENV"])
 env["ENV"] = command_process_env
 env.Append(CPPPATH=["src"])
 
@@ -492,8 +516,26 @@ is_msvc = ("cl" in cxx) or env.get("MSVC_VERSION")
 core_target = _core_target_for_flags(env["target"])
 godot_target = _godot_target(env["target"])
 
+# A platform provider family may require a specific toolchain (windows_winrt
+# needs MSVC for C++/WinRT). When the active toolchain cannot compile it, the
+# GDE artifact is still built, but synthetic-only.
+gde_provider_compiled = bool(selected_provider["implemented"]) and (
+    not selected_provider.get("requires_msvc") or bool(is_msvc)
+)
+
 if is_msvc:
-    env.Append(CXXFLAGS=["/std:c++20", "/W4"])
+    # Restore the vcvars-derived toolchain environment that the repo process
+    # environment above would otherwise hide from command execution.
+    for _var in ("PATH", "INCLUDE", "LIB", "LIBPATH"):
+        _tool_value = detected_tool_env.get(_var, "")
+        if not _tool_value:
+            continue
+        if _var == "PATH" and command_process_env.get(_var):
+            env["ENV"][_var] = _tool_value + os.pathsep + command_process_env[_var]
+        else:
+            env["ENV"][_var] = _tool_value
+    # /EHsc: C++/WinRT requires standard exception semantics.
+    env.Append(CXXFLAGS=["/std:c++20", "/W4", "/EHsc", "/bigobj"])
     if env["warnings_as_errors"]:
         env.Append(CXXFLAGS=["/WX"])
     if core_target == "debug":
@@ -522,8 +564,10 @@ if host_platform == "windows" or gde_platform == "windows":
 print(f"  gde={'yes' if build_gde else 'no'} maintainer_tools={'yes' if build_maintainer_tools else 'no'} platform_runtime_validate={'yes' if build_platform_runtime_validate else 'no'}")
 print(f"  godot_cpp={env['godot_cpp']}")
 print(f"  gde_provider={selected_provider['family']} ({selected_provider['location']})")
-if build_gde and not selected_provider["implemented"]:
+if build_gde and not gde_provider_compiled:
     print("  gde_provider_status=not_compiled")
+    if selected_provider["implemented"] and selected_provider.get("requires_msvc"):
+        print("  (windows_winrt requires the MSVC toolchain; build with use_mingw=no)")
     print("  platform_backed runtime mode unavailable")
     print("  synthetic=yes")
 elif selected_provider.get("status"):
@@ -602,12 +646,77 @@ def _planned_gde_artifact_paths(platform, target, arch):
     artifact = _gde_artifact_base(platform, target, arch)
     if platform == "windows":
         # Windows GDE builds intentionally ship/load only the extension DLL.
-        # The MinGW import library is a link-time developer artifact, not a
-        # Godot runtime dependency; include its historical location only so
-        # clean removes stale copies from the Godot project bin directory.
-        return [artifact, _gde_windows_import_library_path(target, arch)]
+        # Import libraries (MinGW .a, MSVC .lib/.exp) and MSVC debug/link
+        # by-products (.pdb, .ilk) are link-time developer artifacts, not Godot
+        # runtime dependencies. Current builds direct them into the object tree
+        # instead; these locations remain listed so clean removes stale copies
+        # left in the Godot project bin directory by earlier builds.
+        stem = _gde_artifact_stem(platform, target, arch)
+        return [
+            artifact,
+            _gde_windows_import_library_path(target, arch),
+            stem + ".lib",
+            stem + ".exp",
+            stem + ".pdb",
+            stem + ".ilk",
+        ]
     legacy_stem = _gde_artifact_stem(platform, target, arch)
     return _unique_sources([artifact, legacy_stem, legacy_stem + ".so", legacy_stem + ".dylib", legacy_stem + ".dll"])
+
+
+def _assert_gde_bin_holds_only_deliverables(bin_dir):
+    """Fail the build if the Godot project bin directory gains anything that is
+    not a runtime deliverable.
+
+    That directory is a delivery location, not a build output tree: it holds
+    the loadable module for each targeted platform plus the .gdextension
+    descriptor that names them. Toolchain by-products (import libraries, debug
+    symbols, incremental-link state) belong in the object tree, and have
+    silently accumulated here before -- an MSVC build once left 106 MB of .pdb
+    and .ilk beside a DLL produced by the other toolchain, which then went
+    stale and misrepresented the binary next to it.
+
+    Deliberately permissive about *which* platform's module is present: local
+    builds target one platform at a time, but Android .so and Windows .dll may
+    legitimately coexist here from separate builds.
+    """
+    if not os.path.isdir(bin_dir):
+        return
+    allowed_suffixes = set(_gde_shared_library_suffix(p) for p in GDE_PLATFORMS)
+    allowed_suffixes.update({".gdextension", ".uid"})
+    unexpected = []
+    for entry in sorted(os.listdir(bin_dir)):
+        full = os.path.join(bin_dir, entry)
+        if os.path.isdir(full):
+            # Android exports can nest per-ABI directories; only files are policed.
+            continue
+        if entry.startswith("~"):
+            # Godot's own hot-reload shadow copies. With reloadable = true in
+            # the .gdextension the editor duplicates the module (and its .pdb)
+            # to a ~-prefixed name so it can replace the original while the
+            # project runs. They appear from ordinary editor use, are Godot's
+            # to manage, and are not ours to police -- failing the build on
+            # them would mean a build could not follow an editor session.
+            continue
+        if not any(entry.endswith(suffix) for suffix in sorted(allowed_suffixes)):
+            unexpected.append(entry)
+    return unexpected
+
+
+def _check_gde_bin_post_link(target, source, env):
+    """Post-link guard: runs after the artifact is written, so it catches
+    by-products the build just produced as well as stale ones left behind."""
+    bin_dir = os.path.join("tests", "cambang_gde", "bin")
+    unexpected = _assert_gde_bin_holds_only_deliverables(bin_dir)
+    if unexpected:
+        print(f"ERROR: non-deliverable files in {bin_dir}:")
+        for entry in unexpected:
+            print(f"  {entry}")
+        print("That directory holds loadable modules and .gdextension")
+        print("descriptors only; build by-products belong under out/. Direct")
+        print("them there, or run `scons -c gde` to clear stale ones.")
+        return 1
+    return 0
 
 
 def _planned_selected_gde_clean_outputs(platform, target, arch, precision):
@@ -628,6 +737,8 @@ def _all_planned_gde_clean_outputs():
 
 def _selected_platform_runtime_validate_clean_outputs(platform):
     outputs = [os.path.join(platform_runtime_validate_obj_root, platform)]
+    if platform in RUNTIME_VALIDATORS:
+        outputs.append(_program_path(RUNTIME_VALIDATORS[platform]["program"]))
     return outputs
 
 
@@ -876,13 +987,19 @@ if build_gde_graph:
         gde_env = _create_android_gde_env(env, host_platform, env["arch"], core_target)
     else:
         gde_env = env.Clone()
-    gde_platform_provider_status = "compiled" if selected_provider["implemented"] else "not_compiled"
+    if is_msvc:
+        # Match godot-cpp's own MSVC build (thirdparty/godot-cpp/tools/
+        # windows.py): MSVC cannot compile the untyped method-bind
+        # reinterpret_cast path, and the define must agree across the static
+        # library and these headers.
+        gde_env.Append(CPPDEFINES=["TYPED_METHOD_BIND", "NOMINMAX"])
+    gde_platform_provider_status = "compiled" if gde_provider_compiled else "not_compiled"
     gde_env.Append(CPPDEFINES=[
         "CAMBANG_GDE_BUILD=1",
         "CAMBANG_ENABLE_SYNTHETIC=1",
         ("CAMBANG_GDE_TARGET_PLATFORM", _cpp_string_define_value(gde_platform)),
         ("CAMBANG_GDE_PLATFORM_PROVIDER_FAMILY", _cpp_string_define_value(selected_provider["family"])),
-        ("CAMBANG_GDE_PLATFORM_BACKED_COMPILED", "1" if selected_provider["implemented"] else "0"),
+        ("CAMBANG_GDE_PLATFORM_BACKED_COMPILED", "1" if gde_provider_compiled else "0"),
         ("CAMBANG_GDE_PLATFORM_PROVIDER_STATUS", _cpp_string_define_value(gde_platform_provider_status)),
     ])
     gde_env.VariantDir(gde_obj_dir, "src", duplicate=0)
@@ -891,7 +1008,14 @@ if build_gde_graph:
     os.makedirs(gde_out_dir, exist_ok=True)
 
     godot_cpp_libdir = os.path.join("thirdparty", "godot-cpp", "bin")
-    godot_cpp_libname = f"godot-cpp.{gde_platform}.{godot_target}.{env['arch']}"
+    # godot-cpp always emits a "lib"-prefixed archive (libgodot-cpp...).
+    # GCC-style linkers re-add that prefix to -l names; MSVC's linker does
+    # not, so it needs the literal on-disk stem.
+    godot_cpp_libname = (
+        f"libgodot-cpp.{gde_platform}.{godot_target}.{env['arch']}"
+        if is_msvc
+        else f"godot-cpp.{gde_platform}.{godot_target}.{env['arch']}"
+    )
 
     godot_cpp_cmd = _godot_cpp_scons_command(
         env,
@@ -929,11 +1053,10 @@ if build_gde_graph:
     gde_sources += _glob_cpp(gde_obj_dir, "pixels", "pattern")
     gde_sources += _glob_cpp(gde_obj_dir, "imaging", "synthetic")
 
-    if selected_provider["implemented"]:
+    if gde_provider_compiled:
         provider_source_parts = selected_provider["location"].split(os.sep)[1:]
         gde_sources += _glob_cpp(gde_obj_dir, *provider_source_parts)
         gde_env.Append(CPPDEFINES=selected_provider["defines"])
-        # MinGW link set typically needs mf + uuid in addition to the usual MF libs.
         gde_env.Append(LIBS=selected_provider["libs"])
 
     if windows_uses_mingw and windows_mingw_static_runtime:
@@ -968,6 +1091,22 @@ if build_gde_graph:
         # descriptor; CamBANG does not ship or consume the Windows import
         # library that SCons would otherwise place beside the DLL.
         gde_env["no_import_lib"] = 1
+        if is_msvc:
+            # no_import_lib is honoured by the MinGW tool but not by MSVC's
+            # linker, which additionally emits .pdb and .ilk. Left alone these
+            # land in the Godot project's bin directory, which is a delivery
+            # location holding one artifact per platform -- and they are large
+            # (tens of MB each) and go stale silently when the other toolchain
+            # rebuilds the DLL beside them. Direct all four into the object
+            # tree, where build intermediates belong. Debug symbols are kept,
+            # just not shipped.
+            msvc_stem = os.path.join(gde_obj_dir, "link", f"cambang.{godot_target}.{env['arch']}")
+            os.makedirs(os.path.dirname(msvc_stem), exist_ok=True)
+            gde_env.Append(LINKFLAGS=[
+                f"/PDB:{msvc_stem}.pdb",
+                f"/IMPLIB:{msvc_stem}.lib",
+                f"/ILK:{msvc_stem}.ilk",
+            ])
 
     gde_env.Append(LIBPATH=[godot_cpp_libdir])
     gde_env.Append(LIBS=[godot_cpp_libname])
@@ -977,6 +1116,10 @@ if build_gde_graph:
 
     gde_lib = gde_env.SharedLibrary(target=gde_target, source=gde_objects)
     gde_env.Depends(gde_lib, godot_cpp_build)
+    gde_env.AddPostAction(
+        gde_lib,
+        gde_env.Action(_check_gde_bin_post_link, "Checking $TARGET.dir holds deliverables only"),
+    )
 
     gde_alias = Alias("gde", gde_lib)
     AlwaysBuild(gde_alias)
@@ -998,6 +1141,24 @@ if build_platform_runtime_validate:
     validate_env.VariantDir(platform_runtime_validate_obj_dir, "src", duplicate=0)
 
     runtime_validate_progs = []
+    validator = RUNTIME_VALIDATORS[gde_platform]
+    if validator.get("requires_msvc") and not is_msvc:
+        print(f"ERROR: the '{gde_platform}' runtime validator requires the MSVC toolchain (build with use_mingw=no).")
+        Exit(1)
+    validate_env.Append(CPPDEFINES=validator["defines"])
+    validate_env.Append(LIBS=validator["libs"])
+    if host_platform == "windows" and not is_msvc:
+        # Match maintainer_tools: no runtime-DLL resolution dependency.
+        validate_env.Append(LINKFLAGS=["-static", "-static-libgcc", "-static-libstdc++"])
+    validator_sources = [os.path.join(platform_runtime_validate_obj_dir, validator["main"])]
+    for provider_dir in validator["provider_dirs"]:
+        validator_sources += _glob_cpp(platform_runtime_validate_obj_dir, *provider_dir.split(os.sep))
+    for extra in validator["extra_sources"]:
+        validator_sources.append(os.path.join(platform_runtime_validate_obj_dir, extra))
+    runtime_validate_progs.append(validate_env.Program(
+        target=os.path.join(out_dir, validator["program"]),
+        source=_unique_sources(validator_sources),
+    ))
 
     platform_runtime_validate_alias = Alias("platform_runtime_validate", runtime_validate_progs)
     AlwaysBuild(platform_runtime_validate_alias)

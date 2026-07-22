@@ -214,6 +214,34 @@ godot::Dictionary to_dict(const SourcedFact<FocusState>& fact) {
   return out;
 }
 
+godot::Dictionary to_dict(const SourcedFact<ExposureTime>& fact) {
+  godot::Dictionary out;
+  out["origin"] = godot::String(fact_origin_name(fact.origin));
+  out["nanoseconds"] = fact.value.nanoseconds();
+  return out;
+}
+
+godot::Dictionary to_dict(const SourcedFact<SensorSensitivityIso>& fact) {
+  godot::Dictionary out;
+  out["origin"] = godot::String(fact_origin_name(fact.origin));
+  out["iso_equivalent"] = fact.value.iso_equivalent();
+  return out;
+}
+
+godot::Dictionary to_dict(const SourcedFact<ApertureFNumber>& fact) {
+  godot::Dictionary out;
+  out["origin"] = godot::String(fact_origin_name(fact.origin));
+  out["f_number"] = fact.value.f_number();
+  return out;
+}
+
+godot::Dictionary to_dict(const SourcedFact<FocalLengthMm>& fact) {
+  godot::Dictionary out;
+  out["origin"] = godot::String(fact_origin_name(fact.origin));
+  out["millimetres"] = fact.value.millimetres();
+  return out;
+}
+
 godot::Dictionary to_dict(const SourcedFact<RealizedImageTransform>& fact) {
   godot::Dictionary out;
   out["origin"] = godot::String(fact_origin_name(fact.origin));
@@ -248,6 +276,16 @@ godot::Dictionary camera_facts_to_dict(const CoreResolvedCaptureImageFacts& fact
   if (facts.camera.pose) out["pose"] = to_dict(*facts.camera.pose);
   add_acquisition_timing_camera_fact(out, facts.image.acquisition_timing);
   if (facts.image.focus_state) out["focus_state"] = to_dict(*facts.image.focus_state);
+  if (facts.image.exposure_time) out["exposure_time"] = to_dict(*facts.image.exposure_time);
+  if (facts.image.sensor_sensitivity_iso) {
+    out["sensor_sensitivity_iso"] = to_dict(*facts.image.sensor_sensitivity_iso);
+  }
+  if (facts.image.aperture_f_number) {
+    out["aperture_f_number"] = to_dict(*facts.image.aperture_f_number);
+  }
+  if (facts.image.focal_length_mm) {
+    out["focal_length_mm"] = to_dict(*facts.image.focal_length_mm);
+  }
   if (facts.image.realized_image_transform) {
     out["realized_image_transform"] = to_dict(*facts.image.realized_image_transform);
   }
@@ -282,34 +320,13 @@ godot::Dictionary CamBANGCaptureResult::get_geolocation() const {
 }
 
 bool CamBANGCaptureResult::has_image_properties() const { return data_ && data_->facts.has_image_properties; }
-bool CamBANGCaptureResult::has_capture_attributes() const { return data_ && data_->default_image.has_capture_attributes; }
-bool CamBANGCaptureResult::has_location_attributes() const { return data_ && data_->facts.has_location_attributes; }
-bool CamBANGCaptureResult::has_optical_calibration() const { return data_ && data_->facts.has_optical_calibration; }
 
 godot::Dictionary CamBANGCaptureResult::get_image_properties() const {
   return has_image_properties() ? to_dict(data_->facts.image_properties) : godot::Dictionary();
 }
-godot::Dictionary CamBANGCaptureResult::get_capture_attributes() const {
-  return has_capture_attributes() ? to_dict(data_->default_image.capture_attributes) : godot::Dictionary();
-}
-godot::Dictionary CamBANGCaptureResult::get_location_attributes() const {
-  return has_location_attributes() ? to_dict(data_->facts.location_attributes) : godot::Dictionary();
-}
-godot::Dictionary CamBANGCaptureResult::get_optical_calibration() const {
-  return has_optical_calibration() ? to_dict(data_->facts.optical_calibration) : godot::Dictionary();
-}
 
 godot::Dictionary CamBANGCaptureResult::get_image_properties_provenance() const {
   return has_image_properties() ? to_dict(data_->facts.image_properties_provenance) : godot::Dictionary();
-}
-godot::Dictionary CamBANGCaptureResult::get_capture_attributes_provenance() const {
-  return has_capture_attributes() ? to_dict(data_->default_image.capture_attributes_provenance) : godot::Dictionary();
-}
-godot::Dictionary CamBANGCaptureResult::get_location_attributes_provenance() const {
-  return has_location_attributes() ? to_dict(data_->facts.location_attributes_provenance) : godot::Dictionary();
-}
-godot::Dictionary CamBANGCaptureResult::get_optical_calibration_provenance() const {
-  return has_optical_calibration() ? to_dict(data_->facts.optical_calibration_provenance) : godot::Dictionary();
 }
 
 int CamBANGCaptureResult::can_get_display_view() const {
@@ -576,19 +593,10 @@ void CamBANGCaptureResult::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_geolocation"), &CamBANGCaptureResult::get_geolocation);
 
   godot::ClassDB::bind_method(godot::D_METHOD("has_image_properties"), &CamBANGCaptureResult::has_image_properties);
-  godot::ClassDB::bind_method(godot::D_METHOD("has_capture_attributes"), &CamBANGCaptureResult::has_capture_attributes);
-  godot::ClassDB::bind_method(godot::D_METHOD("has_location_attributes"), &CamBANGCaptureResult::has_location_attributes);
-  godot::ClassDB::bind_method(godot::D_METHOD("has_optical_calibration"), &CamBANGCaptureResult::has_optical_calibration);
 
   godot::ClassDB::bind_method(godot::D_METHOD("get_image_properties"), &CamBANGCaptureResult::get_image_properties);
-  godot::ClassDB::bind_method(godot::D_METHOD("get_capture_attributes"), &CamBANGCaptureResult::get_capture_attributes);
-  godot::ClassDB::bind_method(godot::D_METHOD("get_location_attributes"), &CamBANGCaptureResult::get_location_attributes);
-  godot::ClassDB::bind_method(godot::D_METHOD("get_optical_calibration"), &CamBANGCaptureResult::get_optical_calibration);
 
   godot::ClassDB::bind_method(godot::D_METHOD("get_image_properties_provenance"), &CamBANGCaptureResult::get_image_properties_provenance);
-  godot::ClassDB::bind_method(godot::D_METHOD("get_capture_attributes_provenance"), &CamBANGCaptureResult::get_capture_attributes_provenance);
-  godot::ClassDB::bind_method(godot::D_METHOD("get_location_attributes_provenance"), &CamBANGCaptureResult::get_location_attributes_provenance);
-  godot::ClassDB::bind_method(godot::D_METHOD("get_optical_calibration_provenance"), &CamBANGCaptureResult::get_optical_calibration_provenance);
 
   godot::ClassDB::bind_method(godot::D_METHOD("can_get_display_view"), &CamBANGCaptureResult::can_get_display_view);
   godot::ClassDB::bind_method(godot::D_METHOD("can_to_image"), &CamBANGCaptureResult::can_to_image);

@@ -689,6 +689,124 @@
         }
       ]
     },
+    "positiveNumber": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "focusStateRecord": {
+      "type": "object",
+      "required": [
+        "source",
+        "state"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/factSource"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "at_distance",
+            "infinity",
+            "unknown"
+          ]
+        },
+        "distance_m": {
+          "type": "number"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "at_distance"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "required": [
+              "distance_m"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "distance_m"
+              ]
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "exposureTimeRecord": {
+      "type": "object",
+      "required": [
+        "source",
+        "nanoseconds"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/factSource"
+        },
+        "nanoseconds": {
+          "$ref": "#/$defs/positiveNumber"
+        }
+      },
+      "additionalProperties": true
+    },
+    "sensorSensitivityIsoRecord": {
+      "type": "object",
+      "required": [
+        "source",
+        "iso_equivalent"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/factSource"
+        },
+        "iso_equivalent": {
+          "$ref": "#/$defs/positiveNumber"
+        }
+      },
+      "additionalProperties": true
+    },
+    "apertureFNumberRecord": {
+      "type": "object",
+      "required": [
+        "source",
+        "f_number"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/factSource"
+        },
+        "f_number": {
+          "$ref": "#/$defs/positiveNumber"
+        }
+      },
+      "additionalProperties": true
+    },
+    "focalLengthMmRecord": {
+      "type": "object",
+      "required": [
+        "source",
+        "millimetres"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/factSource"
+        },
+        "millimetres": {
+          "$ref": "#/$defs/positiveNumber"
+        }
+      },
+      "additionalProperties": true
+    },
     "cameraEntry": {
       "type": "object",
       "required": [
@@ -715,6 +833,21 @@
         },
         "pose": {
           "$ref": "#/$defs/pose"
+        },
+        "focus_state": {
+          "$ref": "#/$defs/focusStateRecord"
+        },
+        "exposure_time": {
+          "$ref": "#/$defs/exposureTimeRecord"
+        },
+        "sensor_sensitivity_iso": {
+          "$ref": "#/$defs/sensorSensitivityIsoRecord"
+        },
+        "aperture_f_number": {
+          "$ref": "#/$defs/apertureFNumberRecord"
+        },
+        "focal_length_mm": {
+          "$ref": "#/$defs/focalLengthMmRecord"
         }
       },
       "additionalProperties": true

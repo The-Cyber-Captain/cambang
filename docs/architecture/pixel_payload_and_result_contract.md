@@ -670,18 +670,28 @@ each contain `origin`; they are never flattened or merged. Absent facts are
 omitted, and `camera_facts` is omitted when all resolved camera facts are
 absent. `origin` describes provenance, not the internal resolution authority.
 
-Provider-owned per-member image facts are optional entries in that same
-dictionary:
+Per-member image facts are optional entries in that same dictionary:
 
 - `acquisition_timing` contains `origin`, `acquisition_mark`,
   `tick_period_numerator_ns`, `tick_period_denominator`, `clock_domain`,
   `reference_event`, and `comparability`;
 - `focus_state` contains `origin`, `state`, and `distance_m` only for the
   `at_distance` state;
+- `exposure_time` contains `origin` and `nanoseconds`;
+- `sensor_sensitivity_iso` contains `origin` and `iso_equivalent`;
+- `aperture_f_number` contains `origin` and `f_number`;
+- `focal_length_mm` contains `origin` and `millimetres`;
 - `realized_image_transform` contains `origin`, `rotation_degrees`,
   `mirrored`, and `pixels_already_transformed`.
 
-These are exact per-member provider facts. In particular,
+`acquisition_timing` and `realized_image_transform` are provider-owned. The
+other five resolve through the same external-description precedence as
+intrinsics/distortion/pose, because each is device-constant on some hardware
+and per-capture on other hardware (see `camera_fact_model.md` §12.2.1).
+`focal_length_mm` is physical lens metadata and is a separate fact from the
+calibrated `intrinsics.focal_length_x_px`.
+
+These remain exact per-member facts. In particular,
 `acquisition_timing.acquisition_mark` is in its declared provider domain and
 is not Capture Date-Time, capture-admission time, geolocation sample time, or
 another member's mark. Godot exposes all three numeric timing components
@@ -988,12 +998,32 @@ These are capability truths, not vague UX impressions.
 
 Result Objects should expose qualified image-associated fact groups rather than a generic metadata bag.
 
-Recommended first-pass groups:
+Current flattened groups:
 
 - `ImageProperties`
-- `CaptureAttributes`
-- `LocationAttributes`
-- `OpticalCalibration`
+
+`ImageProperties.width/height/format` are derived from (not independently
+resolved from) the same top-level scalar fields `get_width()`/`get_height()`/
+`get_format()` read, so the flattened copy and the direct accessor cannot
+structurally drift; the flattened group's value over the scalars is carrying
+per-field provenance.
+
+Location, optical-calibration, focus, and capture-device-state truth
+deliberately do NOT use flattened result groups:
+
+- capture-associated location is exposed from the Core-owned
+  capture-admission context (`get_geolocation()`);
+- optical calibration, pose, and realized optical/exposure state are exposed
+  through the resolved per-member camera facts
+  (`get_image_member(i)["camera_facts"]` — intrinsics/distortion/pose plus
+  focus_state/exposure_time/sensor_sensitivity_iso/aperture_f_number/
+  focal_length_mm, each with per-fact origin).
+
+Earlier flattened `LocationAttributes`, `OpticalCalibration`, and
+`CaptureAttributes` groups were writer-less duplicates and were removed. The
+five quantities `CaptureAttributes` covered were subsequently restored into
+the per-member camera-facts model proper, which is the correct home for them;
+they must not be reintroduced as a flattened group.
 
 ## 13.1 ImageProperties
 
@@ -1008,36 +1038,6 @@ Structural image facts such as:
 
 These properties should be populated from authoritative realized frame metadata,
 not inferred from incidental CPU payload presence.
-
-## 13.2 CaptureAttributes
-
-Capture/device-state facts associated with the realized image such as:
-
-- exposure time
-- aperture
-- focal length
-- focus distance
-- sensor sensitivity / ISO-equivalent
-- flash state
-- white-balance-related state
-
-## 13.3 LocationAttributes
-
-Capture-associated location facts such as:
-
-- latitude / longitude / altitude
-- location accuracy where known
-- location timestamp where known
-
-## 13.4 OpticalCalibration
-
-Calibration/optics facts such as:
-
-- intrinsics
-- focal lengths in calibration space
-- principal point
-- distortion model
-- distortion coefficients
 
 ---
 

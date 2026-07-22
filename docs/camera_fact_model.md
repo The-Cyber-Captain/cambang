@@ -358,13 +358,45 @@ lifecycle time, geolocation sample time, or another member's mark. Core must not
 use acquisition timing as retained-frame identity, backing identity, freshness,
 ordering, deduplication, lifecycle chronology, or latency evidence.
 
-### 12.2.1 Focus and realized image transform
+### 12.2.1 Realized optical and exposure quantities
 
-Focus state and realized image transform are per-image-member provider facts.
-They remain distinct from sensor orientation and static camera pose. A provider
-may omit either fact when it cannot supply it truthfully. CamBANG carries their
-declared values and provenance without applying calibration, rotation,
-mirroring, or coordinate conversion.
+Five quantities describe what the optics and sensor actually did for a given
+image member:
+
+- focus state (`at_distance` / `infinity` / `unknown`);
+- exposure time, in nanoseconds;
+- sensor sensitivity, as an ISO equivalent;
+- aperture, as an f-number;
+- physical focal length, in millimetres.
+
+None of these is inherently static or inherently per-image. Each is device
+constant on some hardware and genuinely per-capture on other hardware — a
+fixed-focus lens has one focus distance for its lifetime while an autofocus
+lens does not; a fixed iris has one aperture while a variable-aperture module
+does not; a prime lens has one focal length while a zoom does not; a sensor
+with locked exposure has one exposure time and ISO while a hunting
+auto-exposure loop does not.
+
+They therefore carry both a static camera-description tier and a per-capture
+provider tier, and resolve through the same precedence chain as intrinsics,
+distortion, and pose (§13). This matters in practice because hardware that
+fixes one of these quantities frequently exposes no API to read it at all: the
+static tier, supplied by external camera-description ingestion, is how a
+maintainer states a value the platform will never report.
+
+Physical focal length is lens metadata and is a distinct fact from the
+calibrated `intrinsics.focal_length_x_px`. The two relate only through sensor
+pixel pitch, which this model does not carry, and a camera may report either
+without the other. Neither is derived from the other.
+
+A provider may omit any of these when it cannot supply it truthfully; absence
+is the correct report for a control the platform does not expose. CamBANG
+carries declared values and provenance without applying calibration, rotation,
+mirroring, unit conversion, or coordinate conversion.
+
+Realized image transform remains per-image-member provider truth only. It
+describes what the provider did to the delivered pixels, which no external
+source can assert on the provider's behalf.
 
 ### 12.3 Geolocation
 
@@ -401,14 +433,27 @@ This applies to:
 - intrinsics
 - distortion
 - pose
+- focus state
+- exposure time
+- sensor sensitivity (ISO)
+- aperture f-number
+- physical focal length (mm)
 
 Classification values resolve independently. Intrinsics, distortion, and pose
 remain atomic.
 
-Dynamic image-time facts remain provider-owned rather than ADC-overridable.
-Image acquisition timing resolves from the exact accepted provider frame or
-remains absent. Focus state and realized image transform resolve from the exact
-provider capture-image fact record or remain absent.
+The last five are the quantities described in §12.2.1. They are listed here
+because being per-capture on some hardware does not make a fact provider-owned:
+what decides ADC overridability is whether an external describer can
+meaningfully assert the value, and for hardware that fixes a quantity and
+reports nothing, it can.
+
+Two fact groups remain provider-owned rather than ADC-overridable, for reasons
+specific to each. Image acquisition timing resolves from the exact accepted
+provider frame or remains absent, because it is an identity-bearing property of
+that frame. Realized image transform resolves from the exact provider
+capture-image fact record or remains absent, because it describes what the
+provider did to the delivered pixels.
 
 ---
 

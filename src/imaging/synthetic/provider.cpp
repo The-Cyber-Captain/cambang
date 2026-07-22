@@ -17,6 +17,10 @@
 #include <type_traits>
 #include <utility>
 
+#if defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__)
+#include <intrin.h> // _umul128 / _udiv128
+#endif
+
 #include "imaging/synthetic/scenario_loader.h"
 #include "imaging/synthetic/gpu_update_policy_resolver.h"
 #include "imaging/api/timeline_teardown_trace.h"
@@ -484,6 +488,22 @@ uint64_t SyntheticProvider::generator_frame_ordinal_from_ns_(
   if (picture.generator_fps_num == 0 || picture.generator_fps_den == 0) {
     return 0;
   }
+  // floor(timestamp_ns * fps_num / (1e9 * fps_den)) with a 128-bit
+  // intermediate, saturating at uint64 max. The denominator always fits in
+  // 64 bits (1e9 * uint32 max < 2^63).
+#if defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__)
+  const uint64_t denominator =
+      1'000'000'000ull * static_cast<uint64_t>(picture.generator_fps_den);
+  uint64_t numerator_high = 0;
+  const uint64_t numerator_low = _umul128(
+      timestamp_ns, static_cast<uint64_t>(picture.generator_fps_num), &numerator_high);
+  if (numerator_high >= denominator) {
+    // Quotient would not fit in 64 bits (also the _udiv128 precondition).
+    return std::numeric_limits<uint64_t>::max();
+  }
+  uint64_t remainder = 0;
+  return _udiv128(numerator_high, numerator_low, denominator, &remainder);
+#else
   const __uint128_t numerator =
       static_cast<__uint128_t>(timestamp_ns) * static_cast<__uint128_t>(picture.generator_fps_num);
   const __uint128_t denominator =
@@ -496,6 +516,7 @@ uint64_t SyntheticProvider::generator_frame_ordinal_from_ns_(
     return std::numeric_limits<uint64_t>::max();
   }
   return static_cast<uint64_t>(q);
+#endif
 }
 
 ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {

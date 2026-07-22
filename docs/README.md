@@ -26,9 +26,11 @@ Android GDE build therefore remains synthetic-only rather than a platform-backed
 runtime path.
 
 Current provider work should follow the provider contract and architecture docs
-rather than platform-specific assumptions from older drafts. Future Windows
-platform-backed work should target the planned `windows_winrt` family rather
-than inferring behavior from synthetic or stub implementation details.
+rather than platform-specific assumptions from older drafts. Windows
+platform-backed work targets the `windows_winrt` family (implemented by
+`WinrtCameraProvider` via C++/WinRT `Windows.Media.Capture`; see
+`docs/dev/build_and_scaffolding.md` §6) rather than inferring behavior from
+synthetic or stub implementation details.
 
 ## Documentation map
 

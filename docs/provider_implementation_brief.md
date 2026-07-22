@@ -149,12 +149,58 @@ path with exact capture ID, device instance ID, and member index; fact
 replacement is transactional (malformed input mutates nothing; omissions
 stay absent — omit anything you cannot supply truthfully).
 
-Image Acquisition Timing rides on the delivered frame only: a semantically
-valid mark/tick-period/clock-domain/reference-event/comparability/origin
-record in *your* clock domain. Zero is a valid mark and distinct from
-absence. Never substitute admission time, Capture Date-Time, lifecycle
-timing, geolocation time, or another member's timing. Core never uses your
-timing for identity, ordering, freshness, or correlation.
+Five facts — focus state, exposure time, sensor sensitivity (ISO), aperture
+f-number, and physical focal length — exist in both the static and per-image
+containers, because each is device-constant on some hardware and per-capture
+on other hardware. Post whichever tier your backend can actually evidence:
+per-image when you read a realized value for that member, static when the
+device reports a lifetime-constant value at open. Core resolves external
+camera description > your per-image fact > your static fact, so a maintainer
+can describe a value your platform cannot report. Two rules follow:
+
+* **Absence is the correct report** when a control is unsupported. Hardware
+  that exposes no exposure or focus API is common, and reporting nothing is
+  truthful; do not treat "no control" as evidence the value is fixed, and do
+  not restate a requested value as a realized one.
+* **Never convert across unit systems you cannot evidence.** A normalized,
+  hardware-dependent, or preset-valued reading is not a physical quantity.
+  Post a fact only when your backend gives you the actual unit the fact is
+  defined in (nanoseconds, ISO equivalent, f-number, millimetres, metres);
+  otherwise omit it. Note `focal_length_mm` is lens metadata and is *not*
+  interchangeable with the calibrated `intrinsics.focal_length_x_px`.
+* **A readable control value is not automatically a realized one.** Many
+  drivers return the control's *set-point* — what was last configured, or a
+  default — rather than what the sensor actually did, and they do so even
+  while the device is streaming and its own auto algorithms are running.
+  Such a value is indistinguishable from a realized reading by inspection,
+  and a plausible-looking default is the most dangerous case of all. Before
+  publishing any realized fact sourced from a control read, prove the value
+  tracks reality: vary the scene (cover the lens; change the subject
+  distance), sample the value repeatedly, and confirm it moves. Measure
+  something independent — mean frame brightness, image sharpness — over the
+  same window, so a pinned value cannot be confused with a scene that never
+  changed. A value that never moves is a set-point; omit it.
+
+Image Acquisition Timing is frame-borne wherever your backend supplies it: a
+semantically valid mark/tick-period/clock-domain/reference-event/
+comparability/origin record in *your* clock domain. Zero is a valid mark and
+distinct from absence. Never substitute admission time, Capture Date-Time,
+lifecycle timing, geolocation time, or another member's timing.
+
+Some capture paths carry no frame timestamp at all — a still-capture API may
+hand you pixels with no time of its own even when the streaming path has one.
+A provider-observed mark, taken as close to the capture as the API allows, is
+truthful there provided you declare it honestly: `PROVIDER_OBSERVED` as the
+reference event, and comparability no wider than you can actually support. If
+that mark comes from a different clock than your stream frames use, or from
+one you have not verified to be the same, say `SAME_IMAGE_ONLY` rather than
+`SAME_DEVICE` — an unverified domain assumption is not a basis for a
+cross-frame claim. Do not reach for a wall clock (EXIF `DateTimeOriginal` or
+equivalent) to fill the gap: that is Capture Date-Time's quantity, it can
+jump, and it is not a monotonic mark.
+
+Core never uses your timing for identity, ordering, freshness, or
+correlation.
 
 ## 9. The concurrency admission gate
 

@@ -36,7 +36,7 @@ Native verifiers (host-native, deterministic, run directly):
 
 ```sh
 out/core_spine_smoke.exe              # core lifecycle/shutdown spine
-out/provider_compliance_verify.exe    # provider contract (36 checks)
+out/provider_compliance_verify.exe    # provider contract (41 checks)
 out/restart_boundary_verify.exe
 out/verify_case_runner.exe            # runs authored verification cases
 out/core_thread_liveness_watchdog_verify.exe   # self-supervising death test (abort + failed-latch modes; ~30s)

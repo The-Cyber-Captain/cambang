@@ -463,7 +463,13 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
         stream_has_current_cpu_payload,
         resolve_stream_access_posture_id(
             *mutable_stream_result, stream_has_current_cpu_payload, stream_applied_access_posture_epoch));
-    facts = build_default_facts(frame.width, frame.height, frame.format_fourcc);
+    // Derive from the already-assigned top-level fields (not frame.* again)
+    // so image_properties cannot structurally drift from get_width()/
+    // get_height()/get_format().
+    facts = build_default_facts(
+        mutable_stream_result->image_width,
+        mutable_stream_result->image_height,
+        mutable_stream_result->image_format_fourcc);
     mutable_stream_result->image_facts.acquisition_timing = frame.acquisition_timing;
     mutable_stream_result->facts = facts;
     stream_result = std::move(mutable_stream_result);
@@ -801,7 +807,13 @@ MutableCaptureResultData CoreResultStore::build_default_image_capture_result(
   }
   capture_result->default_image.acquisition_timing = frame.acquisition_timing;
 
-  CoreImageFactBundle facts = build_default_facts(frame.width, frame.height, frame.format_fourcc);
+  // Derive from the already-assigned top-level fields (not frame.* again) so
+  // image_properties cannot structurally drift from get_width()/get_height()/
+  // get_format().
+  CoreImageFactBundle facts = build_default_facts(
+      capture_result->image_width,
+      capture_result->image_height,
+      capture_result->image_format_fourcc);
   capture_result->default_image.payload_kind = plan.primary_kind;
   if (plan.primary_kind == ResultPayloadKind::CPU_PACKED || plan.retain_cpu_sidecar) {
     capture_result->default_image.payload = std::move(payload);
@@ -818,9 +830,6 @@ MutableCaptureResultData CoreResultStore::build_default_image_capture_result(
       capture_result->default_image,
       has_default_cpu_payload,
       0);
-  facts.has_capture_attributes = false;
-  facts.capture_attributes = ResultCaptureAttributesFacts{};
-  facts.capture_attributes_provenance = ResultCaptureAttributesProvenance{};
   capture_result->facts = facts;
   return capture_result;
 }

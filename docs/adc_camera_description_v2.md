@@ -404,7 +404,53 @@ coordinates into reference-frame coordinates.
 
 ---
 
-## 11. Absence Semantics
+## 11. Realized Optical and Exposure Records
+
+Each camera entry may include:
+
+- `focus_state`
+- `exposure_time`
+- `sensor_sensitivity_iso`
+- `aperture_f_number`
+- `focal_length_mm`
+
+These describe what the optics and sensor actually did. They appear in the
+camera-description document because hardware that physically fixes one of these
+quantities — a fixed-focus lens, a fixed iris, a prime lens, a sensor with
+locked exposure — commonly exposes no runtime API to report it. Describing such
+a value here is the only way it can be known.
+
+A consumer treats these as device-constant assertions. A consumer that also
+receives a per-capture value from its platform gives the per-capture value
+precedence over a provider baseline, and gives this document precedence over
+both.
+
+`focus_state` fields:
+
+- required `source`
+- required `state`, one of `at_distance`, `infinity`, `unknown`
+- `distance_m`, required when `state: at_distance` and forbidden otherwise
+
+`exposure_time`, `sensor_sensitivity_iso`, `aperture_f_number`, and
+`focal_length_mm` each carry a required `source` and one required positive
+finite number, named respectively:
+
+- `exposure_time.nanoseconds`
+- `sensor_sensitivity_iso.iso_equivalent`
+- `aperture_f_number.f_number`
+- `focal_length_mm.millimetres`
+
+Rules:
+
+- numeric values must be finite and strictly greater than zero;
+- `focal_length_mm` is physical lens metadata and is a separate fact from
+  `intrinsics.focal_length_x_px`, which is a pixel-space calibration. Neither
+  is derived from the other and a document may carry either without the other;
+- `focus_state.distance_m` is metres along the optical axis and must be finite.
+
+---
+
+## 12. Absence Semantics
 
 ADC v2 uses omission for absence.
 
@@ -421,7 +467,7 @@ ADC v1 permission-sentinel conventions such as
 
 ---
 
-## 12. Strict Validation and Additive Tolerance
+## 13. Strict Validation and Additive Tolerance
 
 Within a supported schema version:
 
@@ -445,9 +491,9 @@ recognized contract.
 
 ---
 
-## 13. Human-Authorable Examples
+## 14. Human-Authorable Examples
 
-### 13.1 Populated example
+### 14.1 Populated example
 
 ```json
 {
@@ -527,7 +573,7 @@ recognized contract.
 }
 ```
 
-### 13.2 Explicit empty full replacement
+### 14.2 Explicit empty full replacement
 
 ```json
 {

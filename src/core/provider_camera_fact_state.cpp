@@ -72,6 +72,30 @@ bool valid_realized_image_transform(const RealizedImageTransform& value) noexcep
   return valid(value.rotation);
 }
 
+bool valid_exposure_time(const ExposureTime& value) noexcept {
+  return std::isfinite(value.nanoseconds()) && value.nanoseconds() > 0.0;
+}
+bool valid_sensor_sensitivity_iso(const SensorSensitivityIso& value) noexcept {
+  return std::isfinite(value.iso_equivalent()) && value.iso_equivalent() > 0.0;
+}
+bool valid_aperture_f_number(const ApertureFNumber& value) noexcept {
+  return std::isfinite(value.f_number()) && value.f_number() > 0.0;
+}
+bool valid_focal_length_mm(const FocalLengthMm& value) noexcept {
+  return std::isfinite(value.millimetres()) && value.millimetres() > 0.0;
+}
+
+// The five dual-tier facts validate identically wherever they appear, so both
+// the static and per-capture-image containers share this check.
+template <typename Facts>
+bool valid_dual_tier_facts(const Facts& facts) noexcept {
+  return valid_sourced(facts.focus_state, valid_focus_state) &&
+         valid_sourced(facts.exposure_time, valid_exposure_time) &&
+         valid_sourced(facts.sensor_sensitivity_iso, valid_sensor_sensitivity_iso) &&
+         valid_sourced(facts.aperture_f_number, valid_aperture_f_number) &&
+         valid_sourced(facts.focal_length_mm, valid_focal_length_mm);
+}
+
 bool valid_static(const CameraStaticFacts& facts) noexcept {
   return valid_sourced(facts.facing, [](CameraFacing value) { return valid(value); }) &&
          valid_sourced(facts.nature, [](CameraNature value) { return valid(value); }) &&
@@ -80,7 +104,8 @@ bool valid_static(const CameraStaticFacts& facts) noexcept {
              [](SensorOrientationDegrees value) { return valid(value); }) &&
          valid_sourced(facts.intrinsics, valid_intrinsics) &&
          valid_sourced(facts.distortion, valid_distortion) &&
-         valid_sourced(facts.pose, valid_pose);
+         valid_sourced(facts.pose, valid_pose) &&
+         valid_dual_tier_facts(facts);
 }
 } // namespace
 
@@ -134,7 +159,7 @@ bool ProviderCameraFactState::valid(const ProviderCaptureImageFacts& facts) noex
   return valid_sourced(facts.intrinsics, valid_intrinsics) &&
          valid_sourced(facts.distortion, valid_distortion) &&
          valid_sourced(facts.pose, valid_pose) &&
-         valid_sourced(facts.focus_state, valid_focus_state) &&
+         valid_dual_tier_facts(facts) &&
          valid_sourced(facts.realized_image_transform, valid_realized_image_transform);
 }
 

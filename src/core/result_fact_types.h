@@ -1,8 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <string>
-#include <vector>
 
 namespace cambang {
 
@@ -31,50 +29,17 @@ struct ResultImagePropertiesProvenance {
   ResultFactProvenance bit_depth = ResultFactProvenance::UNKNOWN;
 };
 
-struct ResultCaptureAttributesFacts {
-  double exposure_time_ns = 0.0;
-  double aperture_f_number = 0.0;
-  double focal_length_mm = 0.0;
-  double focus_distance_m = 0.0;
-  double sensor_sensitivity_iso_equivalent = 0.0;
-};
-
-struct ResultCaptureAttributesProvenance {
-  ResultFactProvenance exposure_time_ns = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance aperture_f_number = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance focal_length_mm = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance focus_distance_m = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance sensor_sensitivity_iso_equivalent = ResultFactProvenance::UNKNOWN;
-};
-
-struct ResultLocationAttributesFacts {
-  double latitude = 0.0;
-  double longitude = 0.0;
-  double altitude_m = 0.0;
-};
-
-struct ResultLocationAttributesProvenance {
-  ResultFactProvenance latitude = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance longitude = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance altitude_m = ResultFactProvenance::UNKNOWN;
-};
-
-struct ResultOpticalCalibrationFacts {
-  double principal_point_x = 0.0;
-  double principal_point_y = 0.0;
-  double focal_length_x = 0.0;
-  double focal_length_y = 0.0;
-  std::string distortion_model;
-  std::vector<double> distortion_coefficients;
-};
-
-struct ResultOpticalCalibrationProvenance {
-  ResultFactProvenance principal_point_x = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance principal_point_y = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance focal_length_x = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance focal_length_y = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance distortion_model = ResultFactProvenance::UNKNOWN;
-  ResultFactProvenance distortion_coefficients = ResultFactProvenance::UNKNOWN;
-};
+// Optical-calibration truth lives in the resolved per-member camera facts
+// (CoreResolvedCaptureImageFacts / get_image_member camera_facts); location
+// truth lives in the capture-admission context (get_geolocation()). The former
+// flattened optical-calibration, location, and capture-attributes fact groups
+// were writer-less duplicates and were removed.
+//
+// The five quantities the retired capture-attributes group covered — focus
+// distance, exposure time, ISO, aperture, and physical focal length — now live
+// in the camera-fact model proper (camera_facts.focus_state, .exposure_time,
+// .sensor_sensitivity_iso, .aperture_f_number, .focal_length_mm), each with a
+// device-constant tier and a per-capture tier. Note focal_length_mm is lens
+// metadata, distinct from the calibrated intrinsics.focal_length_x_px.
 
 } // namespace cambang
