@@ -27,7 +27,15 @@ param(
     # Escape hatch for the pre-flight device-state check. The check is advisory
     # and reads two dumpsys fields; this exists so a false positive can never
     # block a run outright.
-    [switch]$AllowNonInteractiveDevice
+    [switch]$AllowNonInteractiveDevice,
+    # Runtime permissions to grant on Android after install, before launch.
+    # Camera access is a runtime permission that `adb install -r` does not grant,
+    # so a windowless verifier (e.g. 768) would otherwise depend on a permission
+    # being granted out of band. Extensible on purpose: a Horizon headset would
+    # add horizonos.permission.HEADSET_CAMERA here. A failed grant is reported
+    # loudly but does not abort -- a scene may still run its synthetic path, and
+    # a permission a device does not recognise is not a harness failure.
+    [string[]]$AndroidGrantPermissions = @("android.permission.CAMERA")
 )
 
 Set-StrictMode -Version Latest
@@ -1915,6 +1923,34 @@ patched_project_renderer_rendering_method_mobile=$patchedProjectRenderingMethodM
         if ($installResult.ExitCode -ne 0) {
             $processExitCode = $installResult.ExitCode
             throw "Failed to install Android APK. Exit code: $($installResult.ExitCode)"
+        }
+
+        # Grant runtime permissions before launch. `adb install -r` does not
+        # grant them, so without this a platform-backed scene would depend on a
+        # permission being granted out of band (and the Camera2 provider cannot
+        # see the runtime permission at readiness -- a denial surfaces only at
+        # device open). Non-fatal: a failed grant is logged and warned about so
+        # a downstream failure is never silent, but a scene's synthetic path can
+        # still run, and a permission the device does not recognise is expected
+        # to fail here (e.g. a custom permission on a device that lacks it).
+        foreach ($permissionName in $AndroidGrantPermissions) {
+            if ([string]::IsNullOrWhiteSpace($permissionName)) {
+                continue
+            }
+            $grantResult = Invoke-CapturedProcess `
+                -FilePath $AdbPath `
+                -Arguments @("-s", $DeviceSerial, "shell", "pm", "grant", $androidPackageName, $permissionName) `
+                -WorkingDirectory $ProjectFullPath `
+                -CommandTimeoutSec 30 `
+                -StdoutLogPath $LogRecord.StdoutPath `
+                -StderrLogPath $LogRecord.StderrPath `
+                -StepLabel "adb_pm_grant_$permissionName" `
+                -AppendToLogs
+            if ($grantResult.ExitCode -ne 0) {
+                $grantDetail = ($grantResult.StderrText, $grantResult.StdoutText | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1)
+                Write-Warning ("Failed to grant Android permission '{0}' to {1} (exit {2}): {3}. A platform-backed scene requiring it will not succeed; a synthetic path still can." -f `
+                    $permissionName, $androidPackageName, $grantResult.ExitCode, ($grantDetail -replace '\s+', ' ').Trim())
+            }
         }
 
         $startResult = Invoke-CapturedProcess `
