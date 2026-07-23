@@ -2,7 +2,6 @@ extends Control
 
 const SCENE_LABEL := "870_to_image_soak_benchmark"
 const SCENE_RECORD_ID := "scene870_to_image_soak_summary"
-const SCENARIO_PATH := "res://scenarios/870_to_image_soak_2x_rig_live.json"
 const HW_A := "synthetic:0"
 const HW_B := "synthetic:1"
 const DEV_A := "device_a"
@@ -128,6 +127,10 @@ var _devices := {
 }
 var _rig = null
 var _rig_inflight := 0
+# Unified public-API topology staging (no scenario): the setup phase drives
+# enumerate -> engage -> stream -> create_rig itself, once each.
+var _topology_engaged := false
+var _topology_streamed := false
 
 var _current_bundle_index := -1
 var _current_bundle := {}
@@ -232,35 +235,21 @@ func _bootstrap() -> void:
 
 	CamBANGServer.stop()
 	# ingest_camera_description() only accepts while stopped; must run before
-	# start() or the rig's two-device capture will be rejected ERR_BUSY by the
-	# admission gate for the whole run (see RIG_CAMERA_DESCRIPTION_JSON above).
+	# start() or create_rig()/the two-device rig trigger is rejected fail-closed
+	# by the admission gate for the whole run (see RIG_CAMERA_DESCRIPTION_JSON).
 	var ingest_err := int(CamBANGServer.ingest_camera_description(RIG_CAMERA_DESCRIPTION_JSON))
 	if ingest_err != OK:
 		_fail("bootstrap failed: ingest_camera_description returned %d" % ingest_err)
 		return
-	var start_err := int(CamBANGServer.start(
-		CamBANGServer.PROVIDER_KIND_SYNTHETIC,
-		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
-		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME,
-		CamBANGServer.TIMELINE_RECONCILIATION_COMPLETION_GATED
-	))
+	# Unified public-API topology, no scenario: the setup phase drives
+	# enumerate -> engage -> stream -> create_rig itself (provider-agnostic).
+	# Synthetic runs on the default real-time driver so its timings/latencies are
+	# comparable to the platform providers rather than replayed on virtual time.
+	var start_err := int(CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC))
 	if start_err != OK:
-		_fail("bootstrap failed: CamBANGServer.start synthetic timeline returned %d" % start_err)
+		_fail("bootstrap failed: CamBANGServer.start(synthetic) returned %d" % start_err)
 		return
-
-	var scenario_text := FileAccess.get_file_as_string(SCENARIO_PATH)
-	if scenario_text == "":
-		_fail("bootstrap failed: scenario missing at %s" % SCENARIO_PATH)
-		return
-	var load_err := int(CamBANGServer.load_external_scenario(scenario_text))
-	if load_err != OK:
-		_fail("bootstrap failed: load_external_scenario returned %d" % load_err)
-		return
-	var scenario_start_err := int(CamBANGServer.start_scenario())
-	if scenario_start_err != OK:
-		_fail("bootstrap failed: start_scenario returned %d" % scenario_start_err)
-		return
-	_log("bootstrap: synthetic timeline scenario staged and started")
+	_log("bootstrap: synthetic provider started (public-API topology, no scenario)")
 
 func _parse_args() -> void:
 	var args := OS.get_cmdline_user_args()
@@ -656,114 +645,113 @@ func _poll_setup() -> void:
 	if snapshot == null:
 		return
 	_refresh_device_snapshot_cache(snapshot)
-	_latch_devices(snapshot)
-	_latch_streams(snapshot)
-	_latch_rig(snapshot)
-	_update_stream_display_views(true)
 
+	# Stage 1: engage the two enumerated devices (once). Waits for the provider
+	# baseline to advertise them first.
+	if not _topology_engaged:
+		var endpoints: Array = CamBANGServer.enumerate_devices()
+		if endpoints.size() < 2:
+			return
+		if not _engage_setup_devices(endpoints):
+			return  # _fail already reported the hard error
+		_topology_engaged = true
+		return
+
+	# Stage 2: once both engaged devices are live, create + start a PREVIEW stream
+	# on each (once). Device id/handle come from the engaged handles, not the
+	# snapshot, so create_stream runs on the direct handle it needs.
+	if not _topology_streamed:
+		if not (_setup_device_live(DEV_A) and _setup_device_live(DEV_B)):
+			return
+		if not _create_setup_streams():
+			return
+		_topology_streamed = true
+		return
+
+	# Stage 3: form the rig from the two engaged devices via the public API (once).
+	if _rig == null:
+		_rig = CamBANGServer.create_rig(PackedStringArray([
+			str(_devices[DEV_A].get("hardware_id", "")),
+			str(_devices[DEV_B].get("hardware_id", "")),
+		]))
+		if _rig == null:
+			_fail("setup: create_rig returned null (concurrency truth not authorizing the combination?)")
+			return
+		_log("setup: rig formed via create_rig id=%d" % int(_rig.get_id()))
+		return
+
+	# Stage 4: bind display views (streams must be producing), advance when ready.
+	# Device/stream ids and the rig handle already come from the API calls above.
+	_update_stream_display_views(true)
 	if _setup_ready():
 		_log("setup complete: devices, streams, rig and display views are ready")
 		_begin_next_bundle()
 
 
-func _latch_devices(snapshot: Dictionary) -> void:
-	for dv in snapshot.get("devices", []):
-		if typeof(dv) != TYPE_DICTIONARY:
-			continue
-		var rec: Dictionary = dv
-		var hw := str(rec.get("hardware_id", ""))
-		for device_key in _devices.keys():
-			var info: Dictionary = _devices[device_key]
-			if hw != str(info.get("hardware_id", "")):
-				continue
-			var device_id := int(rec.get("instance_id", 0))
-			if device_id <= 0:
-				continue
-			if int(info.get("device_id", 0)) != device_id:
-				info["device_id"] = device_id
-				info["device"] = CamBANGServer.get_device(device_id)
-				_devices[device_key] = info
-				_log("latched %s id=%d" % [str(info.get("label", device_key)), device_id])
+func _setup_device_live(device_key: String) -> bool:
+	var info: Dictionary = _devices[device_key]
+	if int(info.get("device_id", 0)) <= 0:
+		return false
+	var dev = info.get("device", null)
+	if dev == null:
+		return false
+	if dev.has_method("is_live"):
+		return bool(dev.is_live())
+	return true
 
 
-func _latch_streams(snapshot: Dictionary) -> void:
-	var stream_device_ids := {}
-	for sv in snapshot.get("streams", []):
-		if typeof(sv) != TYPE_DICTIONARY:
-			continue
-		var rec: Dictionary = sv
-		var stream_id := int(rec.get("stream_id", 0))
-		var device_id := int(rec.get("device_instance_id", rec.get("owner_device_instance_id", 0)))
-		var intent := str(rec.get("intent", ""))
-		var mode := str(rec.get("mode", ""))
-		if stream_id <= 0 or device_id <= 0:
-			continue
-		if intent != "PREVIEW":
-			continue
-		if mode != "FLOWING" and mode != "LIVE" and mode != "ACTIVE":
-			# Some snapshots expose lifecycle and operational axes separately; keep polling
-			# unless the stream result itself becomes observable below.
-			pass
-		stream_device_ids[device_id] = stream_id
-
-	for device_key in _devices.keys():
+func _engage_setup_devices(endpoints: Array) -> bool:
+	# Map the enumerated endpoints onto Device A/B by hardware_id and engage each.
+	var enumerated := {}
+	for ep in endpoints:
+		if typeof(ep) == TYPE_DICTIONARY:
+			enumerated[str((ep as Dictionary).get("hardware_id", ""))] = true
+	for device_key in [DEV_A, DEV_B]:
 		var info: Dictionary = _devices[device_key]
-		var device_id := int(info.get("device_id", 0))
-		if device_id <= 0:
-			continue
-		if stream_device_ids.has(device_id):
-			var stream_id := int(stream_device_ids[device_id])
-			if int(info.get("stream_id", 0)) != stream_id:
-				info["stream_id"] = stream_id
-				_devices[device_key] = info
-				_log("latched %s PREVIEW stream_id=%d" % [str(info.get("label", device_key)), stream_id])
+		var hw := str(info.get("hardware_id", ""))
+		if not enumerated.has(hw):
+			_fail("setup: expected device %s was not enumerated" % hw)
+			return false
+		var dev = CamBANGServer.get_device_for_hardware_id(hw)
+		if dev == null or int(dev.engage()) != OK:
+			_fail("setup: failed to engage %s" % hw)
+			return false
+		# Keep the direct engaged handle (create_stream needs it, not a
+		# get_device() snapshot handle) and take the instance id from it directly.
+		info["device"] = dev
+		info["device_id"] = int(dev.get_instance_id())
+		_devices[device_key] = info
+	return true
 
 
-func _latch_rig(snapshot: Dictionary) -> void:
-	if _rig != null:
-		return
-	var device_id_a := int(_devices[DEV_A].get("device_id", 0))
-	var device_id_b := int(_devices[DEV_B].get("device_id", 0))
-	if device_id_a <= 0 or device_id_b <= 0:
-		return
-	var expected := [device_id_a, device_id_b]
-	expected.sort()
-	for rv in snapshot.get("rigs", []):
-		if typeof(rv) != TYPE_DICTIONARY:
-			continue
-		var rec: Dictionary = rv
-		var rig_id := int(rec.get("rig_id", 0))
-		if rig_id <= 0:
-			continue
-		var members := _extract_rig_member_ids(rec)
-		members.sort()
-		if members == expected or rig_id == BENCH_RIG_ID:
-			_rig = CamBANGServer.get_rig(rig_id)
-			if _rig != null:
-				_log("latched rig id=%d members=%s" % [rig_id, str(members)])
-			return
-
-
-func _extract_rig_member_ids(rig_rec: Dictionary) -> Array:
-	var ids := []
-	var members_v: Variant = rig_rec.get("member_device_instance_ids", null)
-	if typeof(members_v) == TYPE_ARRAY:
-		for v in members_v:
-			var id := int(v)
-			if id > 0:
-				ids.append(id)
-		return ids
-	var hw_members_v: Variant = rig_rec.get("member_hardware_ids", [])
-	if typeof(hw_members_v) == TYPE_ARRAY:
-		for hwv in hw_members_v:
-			var hw := str(hwv)
-			for device_key in _devices.keys():
-				var info: Dictionary = _devices[device_key]
-				if str(info.get("hardware_id", "")) == hw:
-					var id := int(info.get("device_id", 0))
-					if id > 0:
-						ids.append(id)
-	return ids
+func _create_setup_streams() -> bool:
+	for device_key in [DEV_A, DEV_B]:
+		var info: Dictionary = _devices[device_key]
+		var dev = info.get("device", null)
+		if dev == null:
+			_fail("setup: device handle missing for %s at stream creation" % device_key)
+			return false
+		# Intent PREVIEW at the still-capture geometry -- the live preview streams
+		# the scenario used, now created directly through the public API.
+		var stream = dev.create_stream({
+			"intent": CamBANGStream.INTENT_PREVIEW,
+			"profile": {
+				"width": STILL_PROFILE_WIDTH,
+				"height": STILL_PROFILE_HEIGHT,
+				"format_fourcc": CamBANGServer.PIXEL_FORMAT_RGBA,
+			},
+		})
+		if stream == null:
+			_fail("setup: create_stream returned null for %s" % device_key)
+			return false
+		if int(stream.start()) != OK:
+			_fail("setup: stream.start() failed for %s" % device_key)
+			return false
+		# Keep the handle so the direct stream is not torn down mid-run.
+		info["stream"] = stream
+		info["stream_id"] = int(stream.get_stream_id())
+		_devices[device_key] = info
+	return true
 
 
 func _setup_ready() -> bool:
@@ -2460,7 +2448,7 @@ func _build_summary(exit_code: int, expected_unsupported: bool) -> Dictionary:
 		"load_model": load_model,
 		"load_delivery": load_delivery,
 		"baseline_validity": _baseline_validity_summary(exit_code, load_delivery),
-		"scenario": SCENARIO_PATH,
+		"scenario": "none (public-api topology, no scenario)",
 		"capture_bundle_runs": _group_phase_records_by_bundle(_completed_phase_records),
 		"benchmark_frame_stats": _numeric_stats(_run_frame_ms),
 		"run_frame_stats": _numeric_stats(_run_frame_ms),
