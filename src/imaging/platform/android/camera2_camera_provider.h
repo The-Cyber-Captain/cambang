@@ -257,13 +257,25 @@ private:
   // deletes each AImage immediately, so this is headroom, not a pipeline
   // depth.
   static constexpr int32_t kStreamReaderMaxImages = 4;
+  // Still AImageReader depth. The provider copies out and deletes each AImage
+  // immediately, so a burst of N members can drain through a shallow reader --
+  // but only up to a point: a bundle whose members outrun this depth will
+  // starve the reader mid-burst. This depth therefore couples to
+  // kMaxBracketMembers below: raising the bracket cap REQUIRES raising this in
+  // step (and re-verifying on device), or the extra members bottleneck here.
   static constexpr int32_t kStillReaderMaxImages = 2;
   static constexpr size_t kStreamPoolSlots = 8;
   // Provider-side admission cap for still_image_bundle size on this provider.
-  // Bounded (not unlimited) so capture_admission_watchdog_timeout_ns() above
-  // can be a derived worst case rather than an open-ended guess; 5 covers
-  // realistic bracket UX (common exposure-bracket counts are 3/5/7) with
-  // headroom over this repo's 3-member reference bundle.
+  // This is a deliberate POLICY cap, not a device/hardware limit: it is the same
+  // constant on every device (so all devices refuse >5 identically), and it
+  // bounds capture_admission_watchdog_timeout_ns() above to a derived worst case
+  // (kColdSetupChainMs + kMaxBracketMembers*kPerMemberMs + ...) rather than an
+  // open-ended guess. 5 covers realistic bracket UX (3- and 5-shot) with
+  // headroom over this repo's 3-member reference bundle; 7-shot is refused with
+  // ERR_NOT_SUPPORTED by design. Raising this is a two-part change, not a
+  // one-liner: widen the latency budget above AND raise kStillReaderMaxImages
+  // (the still-reader depth would otherwise bottleneck the larger burst), then
+  // re-verify a full-count bracket on real hardware.
   static constexpr uint32_t kMaxBracketMembers = 5;
 
   struct DeviceState {
