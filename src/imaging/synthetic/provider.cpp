@@ -1020,7 +1020,8 @@ void SyntheticProvider::emit_camera_static_facts_(const DeviceState& d) {
 
 void SyntheticProvider::emit_capture_image_facts_(
     const CaptureRequest& request,
-    uint32_t image_member_index) {
+    uint32_t image_member_index,
+    int32_t applied_exposure_compensation_milli_ev) {
   if (!callbacks_) return;
   std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
   const char* hardware_id = resolve_hardware_id_for_device_locked_(request.device_instance_id);
@@ -1050,6 +1051,22 @@ void SyntheticProvider::emit_capture_image_facts_(
           false,
           true},
       FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  // Photometric truth for a virtual pinhole: it has no shutter and no lens, so
+  // exposure_time / aperture_f_number / focal_length_mm are deliberately ABSENT
+  // (absence says "no such thing" -- a zero would assert a false measurement;
+  // the projection focal already lives truthfully in intrinsics). The one
+  // photometric control this provider actually exercises is signal GAIN -- the
+  // per-member brightness LUT in copy_rgba8_with_optional_adjustments(), which is
+  // exactly what ISO is. Report it: base ISO 100 at EV 0, scaled by the same
+  // 2^(EV/1000) gain the pixels get, so realised ISO tracks realised EV. -EV
+  // therefore lowers ISO, +EV raises it, and exposure never enters the model.
+  constexpr double kSyntheticBaseIso = 100.0;
+  const double iso_gain = std::pow(
+      2.0, static_cast<double>(applied_exposure_compensation_milli_ev) / 1000.0);
+  if (const auto iso = SensorSensitivityIso::create(kSyntheticBaseIso * iso_gain)) {
+    facts.sensor_sensitivity_iso =
+        SourcedFact<SensorSensitivityIso>{*iso, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  }
   strand_.post_capture_image_facts(
       request.capture_id, request.device_instance_id, image_member_index, std::move(facts));
 }
@@ -2237,8 +2254,22 @@ bool SyntheticProvider::generate_device_capture_payloads_(
     fv.width = req.width;
     fv.height = req.height;
     fv.format_fourcc = job.format_fourcc;
+    // Deterministic sequential-capture cadence. Each member represents a fresh
+    // exposure taken one nominal frame period after the previous, so member i's
+    // acquisition mark is capture_ts_ns + i*frame_period (member 0 == the capture
+    // start, delta 0). This is a MODELLED, reproducible cadence in virtual time,
+    // NOT a wall-clock processing timestamp: synthetic is the deterministic
+    // reference provider, so its published marks must be identical across runs
+    // and machines. The stagger reflects sequential-capture order only, never
+    // compute time; a real burst's marks come from the sensor, here they are
+    // authored. (If the mark's meaning is ever redefined to mid/end-of-capture,
+    // this stays start-referenced -- synthetic members have no exposure duration.)
+    const uint64_t member_acquisition_mark_ns =
+        capture_ts_ns +
+        static_cast<uint64_t>(i) *
+            fps_period_ns(cfg_.nominal.fps_num, cfg_.nominal.fps_den);
     if (const auto timing = synthetic_acquisition_timing_from_unsigned(
-            capture_ts_ns,
+            member_acquisition_mark_ns,
             ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
             ImageAcquisitionComparability::SAME_PROVIDER)) {
       fv.acquisition_timing =
@@ -2340,7 +2371,8 @@ bool SyntheticProvider::generate_device_capture_payloads_(
         provider_monotonic_now_ns() - member_frame_assembly_begin_ns;
     member_frame_assembly_ns += member_frame_assembly_sample_ns;
     const uint64_t member_post_begin_ns = provider_monotonic_now_ns();
-    emit_capture_image_facts_(req, member.image_member_index);
+    emit_capture_image_facts_(req, member.image_member_index,
+                              member.intended_exposure_compensation_milli_ev);
     strand_.post_frame(fv);
     const uint64_t member_post_end_ns = provider_monotonic_now_ns();
     member_post_sample_ns = member_post_end_ns - member_post_begin_ns;
