@@ -2215,6 +2215,33 @@ godot::Ref<CamBANGRig> CamBANGServer::get_rig(uint64_t rig_id) const {
   return out;
 }
 
+godot::Ref<CamBANGRig> CamBANGServer::create_rig(
+    const godot::PackedStringArray& member_hardware_ids) {
+  if (!is_public_boundary_ready_()) {
+    return godot::Ref<CamBANGRig>();
+  }
+  std::vector<std::string> members;
+  members.reserve(static_cast<size_t>(member_hardware_ids.size()));
+  for (int i = 0; i < member_hardware_ids.size(); ++i) {
+    const std::string hw = std::string(member_hardware_ids[i].utf8().get_data());
+    if (hw.empty()) {
+      return godot::Ref<CamBANGRig>();
+    }
+    members.push_back(hw);
+  }
+  if (members.size() < 2) {
+    return godot::Ref<CamBANGRig>();
+  }
+  const uint64_t rig_id = next_rig_id_.fetch_add(1, std::memory_order_relaxed);
+  if (!runtime_.create_rig_from_hardware_ids(rig_id, members)) {
+    return godot::Ref<CamBANGRig>();
+  }
+  godot::Ref<CamBANGRig> out;
+  out.instantiate();
+  out->set_server_and_id(this, rig_id);
+  return out;
+}
+
 godot::Ref<CamBANGStreamResult> CamBANGServer::get_stream_result_by_stream_id(uint64_t stream_id) const {
   if (!is_public_boundary_ready_()) {
     return godot::Ref<CamBANGStreamResult>();
@@ -4109,6 +4136,7 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_device_for_hardware_id", "hardware_id"), &CamBANGServer::get_device_for_hardware_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device", "device_instance_id"), &CamBANGServer::get_device);
   godot::ClassDB::bind_method(godot::D_METHOD("get_rig", "rig_id"), &CamBANGServer::get_rig);
+  godot::ClassDB::bind_method(godot::D_METHOD("create_rig", "member_hardware_ids"), &CamBANGServer::create_rig);
   godot::ClassDB::bind_method(godot::D_METHOD("get_stream_result_by_stream_id", "stream_id"), &CamBANGServer::get_stream_result_by_stream_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_capture_result_by_id", "capture_id", "device_instance_id"), &CamBANGServer::get_capture_result_by_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_capture_result_set_by_id", "capture_id"), &CamBANGServer::get_capture_result_set_by_id);

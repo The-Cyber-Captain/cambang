@@ -130,6 +130,10 @@ public:
   godot::Ref<CamBANGDevice> get_device_for_hardware_id(const godot::String& hardware_id) const;
   godot::Ref<CamBANGDevice> get_device(uint64_t device_instance_id) const;
   godot::Ref<CamBANGRig> get_rig(uint64_t rig_id) const;
+  // Form a rig from two or more engaged devices' hardware ids and return its
+  // bound handle, or null if the ingested concurrency truth does not authorize
+  // the combination. The server mints the rig_id (like capture_id).
+  godot::Ref<CamBANGRig> create_rig(const godot::PackedStringArray& member_hardware_ids);
   godot::Ref<CamBANGStreamResult> get_stream_result_by_stream_id(uint64_t stream_id) const;
   godot::Ref<CamBANGCaptureResult> get_capture_result_by_id(uint64_t capture_id, uint64_t device_instance_id) const;
   uint64_t get_latest_capture_id_for_device(uint64_t device_instance_id) const;
@@ -363,6 +367,7 @@ private:
   // temporary dev scaffolding to attach/initialize the provider.
   std::unique_ptr<ICameraProvider> provider_;
   std::atomic<uint64_t> next_capture_id_{1};
+  std::atomic<uint64_t> next_rig_id_{1};
   std::atomic<uint64_t> next_direct_device_instance_id_{DIRECT_DEVICE_INSTANCE_ID_BASE};
   std::atomic<uint64_t> next_direct_root_id_{DIRECT_ROOT_ID_BASE};
   std::atomic<uint64_t> next_direct_stream_id_{DIRECT_STREAM_ID_BASE};

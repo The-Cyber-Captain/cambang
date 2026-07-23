@@ -6415,6 +6415,37 @@ bool CoreRuntime::retain_rig_member_hardware_ids(
   return false;
 }
 
+bool CoreRuntime::create_rig_from_hardware_ids(
+    uint64_t rig_id,
+    const std::vector<std::string>& member_hardware_ids) noexcept try {
+  if (rig_id == 0 || member_hardware_ids.size() < 2) {
+    return false;
+  }
+  return run_synchronous_command_(false, [this, rig_id, member_hardware_ids]() {
+    // Fail-closed on the ingested concurrency truth: no truth, or a truth that
+    // does not authorize this exact combination, forms no rig. This mirrors the
+    // trigger-time gate in grouped_rig_imaging_spec_admission_failure_ so a rig
+    // that create_rig admits will also pass rig-capture admission.
+    const CoreSpecState::ImagingSpecInterpretation imaging_spec =
+        spec_state_.interpret_imaging_spec();
+    if (imaging_spec.camera_concurrency.kind !=
+        camera_concurrency::TruthKind::Supported) {
+      return false;
+    }
+    if (!camera_concurrency::requested_camera_id_set_is_allowed(
+            imaging_spec.camera_concurrency, member_hardware_ids)) {
+      return false;
+    }
+    if (!rigs_.retain_member_hardware_ids(rig_id, member_hardware_ids)) {
+      return false;
+    }
+    request_publish_from_core_unchecked();
+    return true;
+  });
+} catch (...) {
+  return false;
+}
+
 CoreRuntime::IngestCameraConcurrencyResult
 CoreRuntime::ingest_camera_concurrency_json_for_server(
     const std::string& json_text) {
