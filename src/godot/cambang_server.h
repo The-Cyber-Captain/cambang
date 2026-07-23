@@ -101,6 +101,15 @@ public:
   godot::Variant get_active_provider_config() const;
   godot::Dictionary get_provider_support() const;
   godot::Variant get_synthetic_metrics_snapshot() const;
+  // Provider-neutral view of Core's backing-plan evaluation reports, sourced
+  // directly from CoreRuntime rather than through the synthetic-metrics crutch,
+  // so it is available under every provider. Returns a NIL Variant when the
+  // runtime is not running; otherwise an Array of per-target report
+  // Dictionaries. Diagnostic/verification surface only -- these reports are
+  // deliberately not part of the published snapshot (see
+  // docs/status_panel_surface_policy.md); this reads Core registry-backed truth
+  // on demand.
+  godot::Variant get_backing_plan_evaluation_diagnostics() const;
 
   godot::Error select_builtin_scenario(const godot::String& scenario_name);
   godot::Error load_external_scenario(const godot::String& json_text);

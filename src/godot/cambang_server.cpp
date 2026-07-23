@@ -3491,6 +3491,30 @@ godot::Variant CamBANGServer::get_state_snapshot() const {
 }
 
 
+godot::Variant CamBANGServer::get_backing_plan_evaluation_diagnostics() const {
+  if (!runtime_.is_running()) {
+    return godot::Variant();
+  }
+  // Sourced straight from Core, with no provider cast: backing-plan evaluation
+  // is Core-owned and exists under every provider. The synthetic
+  // capture-ready timing records are provider-specific enrichment of the
+  // candidate-evidence entries, absent by definition here, so an empty vector
+  // is passed -- the decision, steady/requested postures, and completion
+  // reason (what verification asserts) do not depend on it.
+  static const std::vector<SyntheticCaptureReadyTimingRecordSnapshot>
+      kNoProviderTimingRecords;
+  const std::vector<CoreCaptureLifecycleTimingReport>
+      recent_capture_lifecycle_timing =
+          runtime_.recent_capture_lifecycle_timing_reports();
+  godot::Array evaluation_reports;
+  for (const CoreBackingPlanEvaluationReport& report :
+       runtime_.backing_plan_evaluation_reports()) {
+    evaluation_reports.append(backing_plan_evaluation_report_to_dictionary(
+        report, kNoProviderTimingRecords, recent_capture_lifecycle_timing));
+  }
+  return godot::Variant(evaluation_reports);
+}
+
 godot::Variant CamBANGServer::get_synthetic_metrics_snapshot() const {
   if (!runtime_.is_running()) {
     return godot::Variant();
@@ -4080,6 +4104,7 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("advance_timeline", "dt_ns"), &CamBANGServer::advance_timeline);
   godot::ClassDB::bind_method(godot::D_METHOD("get_state_snapshot"), &CamBANGServer::get_state_snapshot);
   godot::ClassDB::bind_method(godot::D_METHOD("get_synthetic_metrics_snapshot"), &CamBANGServer::get_synthetic_metrics_snapshot);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_backing_plan_evaluation_diagnostics"), &CamBANGServer::get_backing_plan_evaluation_diagnostics);
   godot::ClassDB::bind_method(godot::D_METHOD("enumerate_devices"), &CamBANGServer::enumerate_devices);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device_for_hardware_id", "hardware_id"), &CamBANGServer::get_device_for_hardware_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device", "device_instance_id"), &CamBANGServer::get_device);
