@@ -1,18 +1,19 @@
 extends Node
 
-## Scene 75: create_stream() picture-extension public-API verification.
+## Scene 75: picture-extension public-API verification (stream + capture).
 ##
-## The public create_stream definition gained an optional `picture` sub-dict
-## (pattern seed + overlay toggles), forwarded to StreamRequest.picture and gated
-## on the provider's supports_stream_picture_updates(). This verifies the parse
-## contract on the synthetic provider (which supports it):
-## - a valid picture (seed + overlays) is accepted (non-null stream),
-## - a picture with an unknown key is rejected (null),
-## - a picture with a wrong-typed field is rejected (null).
+## Two public entry points gained the full PictureConfig (preset by canonical
+## token, seed, generator cadence, overlays, solid colour, checker size):
+## - create_stream()'s optional `picture` sub-dict -> StreamRequest.picture, gated
+##   on supports_stream_picture_updates(),
+## - CamBANGDevice.set_capture_picture() -> device capture picture, gated on
+##   supports_capture_picture_updates().
 ##
-## The capability gate itself -- platform providers rejecting a picture because
-## supports_stream_picture_updates() is false -- is exercised on the platform
-## surfaces (Scene 870 platform-backed runs), since synthetic supports it here.
+## Verified on the synthetic provider (which supports both): a valid full picture
+## is accepted; an unknown preset token, an unknown key, and an out-of-range solid
+## colour are each rejected; set_capture_picture accepts a valid picture and
+## rejects an unknown preset. The capability gate itself (platform providers
+## rejecting a picture) is exercised on the platform surfaces (Scene 870).
 ##
 ## Synthetic-only, headless, self-terminating: emits [CamBANG][HarnessVerdict].
 
@@ -84,32 +85,52 @@ func _run() -> void:
 		_fail("device %s did not become live" % HW_A)
 		return
 
-	# A) valid picture (seed + both overlays) is accepted.
+	# --- create_stream picture (full PictureConfig) ---------------------------
+	# A) valid full stream picture (preset by name + seed + colour + checker).
 	var ok_stream = dev.create_stream({
 		"intent": CamBANGStream.INTENT_PREVIEW,
 		"profile": _base_profile(),
-		"picture": {"seed": 0x0751, "overlay_moving_bar": false, "overlay_frame_index_offsets": true},
+		"picture": {"preset": "checker", "seed": 0x0751, "solid_r": 255, "solid_g": 64,
+			"solid_b": 64, "solid_a": 255, "checker_size_px": 24, "overlay_moving_bar": false},
 	})
 	if ok_stream == null:
-		_fail("create_stream with a valid picture(seed+overlays) returned null on synthetic")
+		_fail("create_stream with a valid full picture returned null on synthetic")
 		return
 
-	# B) unknown key in picture -> rejected (the parse whitelist is strict).
+	# B) unknown preset token -> rejected.
 	if dev.create_stream({
-		"intent": CamBANGStream.INTENT_PREVIEW,
-		"profile": _base_profile(),
+		"intent": CamBANGStream.INTENT_PREVIEW, "profile": _base_profile(),
+		"picture": {"preset": "no_such_preset"},
+	}) != null:
+		_fail("create_stream accepted an unknown preset token")
+		return
+
+	# C) unknown key -> rejected (the parse whitelist is strict).
+	if dev.create_stream({
+		"intent": CamBANGStream.INTENT_PREVIEW, "profile": _base_profile(),
 		"picture": {"bogus_key": 1},
 	}) != null:
 		_fail("create_stream accepted a picture with an unknown key")
 		return
 
-	# C) wrong-typed field -> rejected.
+	# D) out-of-range solid colour (>255) -> rejected.
 	if dev.create_stream({
-		"intent": CamBANGStream.INTENT_PREVIEW,
-		"profile": _base_profile(),
-		"picture": {"seed": "not_an_integer"},
+		"intent": CamBANGStream.INTENT_PREVIEW, "profile": _base_profile(),
+		"picture": {"solid_r": 999},
 	}) != null:
-		_fail("create_stream accepted a non-integer picture seed")
+		_fail("create_stream accepted an out-of-range solid colour")
 		return
 
-	_emit("ok", "synthetic accepts picture(seed+overlays); rejects unknown-key and wrong-typed picture")
+	# --- set_capture_picture (device-scoped) ----------------------------------
+	# E) a valid full capture picture is accepted.
+	if int(dev.set_capture_picture({"preset": "solid", "seed": 0x0752,
+			"solid_r": 92, "solid_g": 44, "solid_b": 152, "solid_a": 255})) != OK:
+		_fail("set_capture_picture rejected a valid picture on synthetic")
+		return
+
+	# F) an unknown preset token is rejected.
+	if int(dev.set_capture_picture({"preset": "no_such_preset"})) == OK:
+		_fail("set_capture_picture accepted an unknown preset token")
+		return
+
+	_emit("ok", "create_stream + set_capture_picture accept full pictures; reject unknown preset/key/out-of-range")

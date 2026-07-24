@@ -269,6 +269,18 @@ godot::Error CamBANGDevice::set_still_capture_profile(const godot::Dictionary& p
   return server_->set_device_still_capture_profile(device_instance_id, next_profile, sequence);
 }
 
+godot::Error CamBANGDevice::set_capture_picture(const godot::Dictionary& picture) {
+  if (!server_) {
+    return godot::ERR_BUSY;
+  }
+  const uint64_t device_instance_id = get_instance_id();
+  if (device_instance_id == 0) {
+    // Capture picture is device-scoped: the device must be engaged/live.
+    return godot::ERR_BUSY;
+  }
+  return server_->set_device_capture_picture(device_instance_id, picture);
+}
+
 godot::Dictionary CamBANGDevice::get_still_capture_profile() const {
   const uint64_t device_instance_id = get_instance_id();
   if (!server_ || device_instance_id == 0) {
@@ -293,6 +305,7 @@ void CamBANGDevice::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_result"), &CamBANGDevice::get_result);
   godot::ClassDB::bind_method(godot::D_METHOD("set_warm_policy", "policy"), &CamBANGDevice::set_warm_policy);
   godot::ClassDB::bind_method(godot::D_METHOD("set_still_capture_profile", "profile"), &CamBANGDevice::set_still_capture_profile);
+  godot::ClassDB::bind_method(godot::D_METHOD("set_capture_picture", "picture"), &CamBANGDevice::set_capture_picture);
   godot::ClassDB::bind_method(godot::D_METHOD("get_still_capture_profile"), &CamBANGDevice::get_still_capture_profile);
   ADD_PROPERTY(godot::PropertyInfo(godot::Variant::BOOL, "live"), "", "is_live");
   ADD_SIGNAL(godot::MethodInfo(

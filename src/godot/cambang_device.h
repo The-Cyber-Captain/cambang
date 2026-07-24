@@ -55,6 +55,7 @@ public:
   godot::Ref<CamBANGCaptureResult> get_result() const;
   godot::Error set_warm_policy(const godot::Dictionary& policy);
   godot::Error set_still_capture_profile(const godot::Dictionary& profile);
+  godot::Error set_capture_picture(const godot::Dictionary& picture);
   godot::Dictionary get_still_capture_profile() const;
 
 protected:

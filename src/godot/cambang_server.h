@@ -151,6 +151,10 @@ public:
   godot::Error set_device_still_capture_profile(uint64_t device_instance_id,
                                                 const CaptureProfile& profile,
                                                 const CaptureStillImageBundle& still_image_bundle);
+  // Device-scoped capture picture (pattern appearance) update; parses the full
+  // PictureConfig from the dict, gated on supports_capture_picture_updates().
+  godot::Error set_device_capture_picture(uint64_t device_instance_id,
+                                          const godot::Dictionary& picture_def);
   godot::Error set_endpoint_still_capture_profile_startup_intent(
       const godot::String& hardware_id,
       const CaptureProfile& profile,
