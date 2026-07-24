@@ -199,14 +199,59 @@ static bool parse_stream_profile_definition(const godot::Variant& value,
   return true;
 }
 
+static bool parse_stream_bool_field(const godot::Dictionary& dict, const char* key, bool& out) noexcept {
+  const godot::Variant v = dict.get(key, godot::Variant());
+  if (v.get_type() != godot::Variant::BOOL) {
+    return false;
+  }
+  out = bool(v);
+  return true;
+}
+
+// Optional per-stream picture (pattern appearance) parameters. Provider-agnostic
+// in the contract (PictureConfig), but only meaningful where the provider reports
+// supports_stream_picture_updates() -- in practice the synthetic provider, so two
+// devices can be given distinct seeds and rendered visibly distinct. Unspecified
+// fields inherit the provider's stream template picture.
+static bool parse_stream_picture_definition(const godot::Variant& value,
+                                            const PictureConfig& template_picture,
+                                            PictureConfig& out_picture) noexcept {
+  if (value.get_type() != godot::Variant::DICTIONARY) {
+    return false;
+  }
+  const godot::Dictionary picture = value;
+  if (!stream_definition_has_only_keys(
+          picture, {"seed", "overlay_moving_bar", "overlay_frame_index_offsets"})) {
+    return false;
+  }
+  out_picture = template_picture;
+  if (picture.has("seed") &&
+      !parse_stream_definition_u32_field(picture, "seed", out_picture.seed, false)) {
+    return false;
+  }
+  if (picture.has("overlay_moving_bar") &&
+      !parse_stream_bool_field(picture, "overlay_moving_bar", out_picture.overlay_moving_bar)) {
+    return false;
+  }
+  if (picture.has("overlay_frame_index_offsets") &&
+      !parse_stream_bool_field(picture, "overlay_frame_index_offsets", out_picture.overlay_frame_index_offsets)) {
+    return false;
+  }
+  return true;
+}
+
 static bool parse_stream_definition(const godot::Variant& definition,
                                     const StreamTemplate& stream_template,
                                     StreamIntent& out_intent,
                                     CaptureProfile& out_profile,
-                                    bool& out_has_profile) noexcept {
+                                    bool& out_has_profile,
+                                    PictureConfig& out_picture,
+                                    bool& out_has_picture) noexcept {
   out_intent = StreamIntent::PREVIEW;
   out_profile = CaptureProfile{};
   out_has_profile = false;
+  out_picture = stream_template.picture;
+  out_has_picture = false;
 
   if (definition.get_type() == godot::Variant::NIL) {
     return true;
@@ -216,7 +261,7 @@ static bool parse_stream_definition(const godot::Variant& definition,
   }
 
   const godot::Dictionary def = definition;
-  if (!stream_definition_has_only_keys(def, {"intent", "profile"})) {
+  if (!stream_definition_has_only_keys(def, {"intent", "profile", "picture"})) {
     return false;
   }
 
@@ -232,6 +277,14 @@ static bool parse_stream_definition(const godot::Variant& definition,
       return false;
     }
     out_has_profile = true;
+  }
+
+  if (def.has("picture")) {
+    if (!parse_stream_picture_definition(
+            def.get("picture", godot::Variant()), stream_template.picture, out_picture)) {
+      return false;
+    }
+    out_has_picture = true;
   }
   return true;
 }
@@ -1937,12 +1990,21 @@ godot::Ref<CamBANGStream> CamBANGServer::create_stream_for_endpoint_hardware_id(
   StreamIntent stream_intent = StreamIntent::PREVIEW;
   CaptureProfile stream_profile{};
   bool has_stream_profile = false;
+  PictureConfig stream_picture{};
+  bool has_stream_picture = false;
   if (!parse_stream_definition(
           definition,
           stream_template,
           stream_intent,
           stream_profile,
-          has_stream_profile)) {
+          has_stream_profile,
+          stream_picture,
+          has_stream_picture)) {
+    return godot::Ref<CamBANGStream>();
+  }
+  // Reject a picture request the active provider cannot honour, rather than
+  // silently ignoring it (per supports_stream_picture_updates()).
+  if (has_stream_picture && !provider_->supports_stream_picture_updates()) {
     return godot::Ref<CamBANGStream>();
   }
 
@@ -1955,7 +2017,7 @@ godot::Ref<CamBANGStream> CamBANGServer::create_stream_for_endpoint_hardware_id(
       state.device_instance_id,
       stream_intent,
       has_stream_profile ? &stream_profile : nullptr,
-      nullptr,
+      has_stream_picture ? &stream_picture : nullptr,
       0);
   if (cs != TryCreateStreamStatus::OK) {
     return godot::Ref<CamBANGStream>();
