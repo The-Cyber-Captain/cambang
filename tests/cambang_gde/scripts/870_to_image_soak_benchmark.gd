@@ -33,51 +33,46 @@ const _SYNTHETIC_CAPTURE_PICTURE := {
 # DeviceInformation symbolic links, and whether two cameras are truly concurrent
 # is discovered at runtime (a claimed-but-unusable combination surfaces as a rig
 # capture failure, not a silent wrong result).
+# Curated testable-equipment table. Each entry declares the camera-concurrency
+# the rig claims to Core plus which pair the rig drives. Two id regimes:
+#  - KNOWN ids (synthetic constants; Android's stable Camera2 id strings): the
+#    entry lists `cameras` + `concurrent_combinations` + `rig_pair`, and the
+#    concurrency truth is ingested before start().
+#  - DISCOVERED ids (WinRT DeviceInformation symbolic links -- machine-specific):
+#    the entry lists no cameras, and the enumerate-first path discovers the pair
+#    at runtime (start -> enumerate -> select -> stop -> ingest -> start).
+# Android matches by OS.get_model_name(); single-host OSes match their sole entry.
+# Adding a device is one table row.
 const EQUIPMENT := {
-	# Synthetic advertises stable ids, so it takes the ingest-before-start
-	# shortcut (no enumerate-first needed).
 	"synthetic": {
-		"hardware_ids": [HW_A, HW_B],
-		"concurrency_supported": true,
+		"cameras": [HW_A, HW_B],
+		"concurrent_combinations": [[HW_A, HW_B]],
+		"rig_pair": [HW_A, HW_B],
 		"permissions": [],
 	},
-	# Platform-backed equipment, grouped by OS.get_name() then matched to a curated
-	# entry at runtime -- Android by model, single-host OSes (Windows/WinRT) by the
-	# sole entry. Camera ids are NEVER listed: identity is resolved by enumeration
-	# (enumerate/map), so WinRT's machine-specific symbolic-link ids and each
-	# handset's Camera2 ids come from the device, not this table. Each entry
-	# supplies the human label, the match key, the permission prerequisites, and
-	# the concurrency CLAIM (whether the selected pair is declared concurrent to
-	# Core -- discovered true/false at runtime by whether the rig actually works).
-	# Concurrency values here are maintainer-supplied placeholders.
 	"platform_backed": {
 		"Android": [
 			{
 				"label": "galaxy_s20_plus",
 				"model_match": "SM-G986U1",
 				"permissions": ["android.permission.CAMERA"],
-				"concurrency_supported": true,  # TODO(maintainer): confirm concurrent pair
+				# Stable Camera2 ids (maintainer-supplied): five cameras, with the
+				# device's real concurrent combinations. The rig drives one of them.
+				"cameras": ["0", "1", "2", "3", "4"],
+				"concurrent_combinations": [["0", "1"], ["0", "3"]],
+				"rig_pair": ["0", "1"],
 			},
-			{
-				"label": "hammer_construction_2_thermal",
-				"model_match": "Hammer_Construction_2_Thermal_5G",
-				"permissions": ["android.permission.CAMERA"],
-				"concurrency_supported": false,  # minimum concurrency (maintainer to confirm)
-			},
-			{
-				"label": "meta_quest_3",
-				"model_match": "Quest 3",
-				# Horizon OS gates the passthrough cameras behind an extra permission.
-				"permissions": ["android.permission.CAMERA", "horizonos.permission.HEADSET_CAMERA"],
-				"concurrency_supported": true,  # TODO(maintainer): Quest passthrough pair
-			},
+			# hammer_construction_2_thermal, meta_quest_3: filled after the
+			# galaxy_s20_plus proof of concept (each needs a physical plug/unplug).
 		],
 		"Windows": [
 			{
 				"label": "winrt_host",
 				"model_match": "",  # single host: matched unconditionally
 				"permissions": [],  # WinRT consent model is permissive here
-				"concurrency_supported": true,  # discovered at runtime (2-cam host)
+				# No cameras/combinations: WinRT ids are machine-specific symbolic
+				# links -> enumerate-first path discovers the pair at runtime.
+				# (Populating this, if ever needed, requires on-host assistance.)
 			},
 		],
 	},
@@ -174,7 +169,7 @@ var _devices := {
 		"device": null,
 		"stream_id": 0,
 		"stream_observed_changes": 0,
-		"stream_last_observed_revision": 0,
+		"stream_last_observed_mark": 0,
 		"stream_observation_first_us": 0,
 		"stream_observation_last_us": 0,
 		"live_display_bound": false,
@@ -187,7 +182,7 @@ var _devices := {
 		"device": null,
 		"stream_id": 0,
 		"stream_observed_changes": 0,
-		"stream_last_observed_revision": 0,
+		"stream_last_observed_mark": 0,
 		"stream_observation_first_us": 0,
 		"stream_observation_last_us": 0,
 		"live_display_bound": false,
@@ -299,37 +294,43 @@ func _process(delta: float) -> void:
 
 func _bootstrap() -> void:
 	if _provider_arg == "synthetic":
-		_bootstrap_synthetic()
+		_bootstrap_from_known_ids(EQUIPMENT.get("synthetic", {}), true)
 	else:
 		_bootstrap_platform()
 
 
-func _bootstrap_synthetic() -> void:
-	var equip: Dictionary = EQUIPMENT.get("synthetic", {})
-	var hw_ids: Array = equip.get("hardware_ids", [])
-	if hw_ids.size() < 2:
-		_finish(0, true, "equipment_not_configured:synthetic")
+func _bootstrap_from_known_ids(equip: Dictionary, synthetic: bool) -> void:
+	# Known camera ids (synthetic constants, or Android's stable Camera2 id
+	# strings from the table): ingest the concurrency truth (cameras +
+	# combinations) before start(); the rig drives rig_pair. No enumerate-first.
+	var cameras: Array = equip.get("cameras", [])
+	var combinations: Array = equip.get("concurrent_combinations", [])
+	var rig_pair: Array = equip.get("rig_pair", [])
+	if cameras.size() < 2 or rig_pair.size() < 2:
+		_finish(0, true, "equipment_incomplete:%s" % str(equip.get("label", _provider_arg)))
 		return
-	_devices[DEV_A]["hardware_id"] = str(hw_ids[0])
-	_devices[DEV_B]["hardware_id"] = str(hw_ids[1])
+	_devices[DEV_A]["hardware_id"] = str(rig_pair[0])
+	_devices[DEV_B]["hardware_id"] = str(rig_pair[1])
 	CamBANGServer.stop()
-	# Stable ids: ingest-before-start directly (no enumerate-first needed).
-	var truth := _build_concurrency_truth_json(hw_ids, bool(equip.get("concurrency_supported", false)))
+	var truth := _build_concurrency_truth(cameras, combinations)
 	if int(CamBANGServer.ingest_camera_description(truth)) != OK:
-		_fail("bootstrap failed: ingest_camera_description (synthetic)")
+		_fail("bootstrap failed: ingest_camera_description")
 		return
-	if int(CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC)) != OK:
-		_fail("bootstrap failed: start(synthetic)")
+	var start_err := int(
+		CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC) if synthetic
+		else CamBANGServer.start()
+	)
+	if start_err != OK:
+		_fail("bootstrap failed: start(%s) returned %d" % [_provider_arg, start_err])
 		return
-	_log("bootstrap: synthetic provider started (public-API topology, no scenario)")
+	_log("bootstrap: %s started (known ids, ingest-before-start); rig pair=%s" % [
+		str(equip.get("label", _provider_arg)), str(rig_pair)
+	])
 
 
 func _bootstrap_platform() -> void:
-	# Enumerate/map: identity is resolved from the device, never hardcoded. Pick
-	# the curated entry for the attached hardware, verify its permission
-	# prerequisites (pre-granted for an automated soak), then discover the rig
-	# pair by enumeration and ingest the concurrency truth naming it before the
-	# working start(): start -> enumerate -> select -> stop -> ingest -> start.
+	# Resolve the curated entry for the attached hardware, verify its permission
+	# prerequisites (pre-granted for an automated soak).
 	var equip := _resolve_platform_equipment()
 	if equip.is_empty():
 		_finish(0, true, "equipment_not_configured:%s" % _platform_identity_text())
@@ -337,6 +338,13 @@ func _bootstrap_platform() -> void:
 	if not _platform_permissions_granted(equip.get("permissions", [])):
 		_finish(0, true, "permission_not_granted:%s" % str(equip.get("label", "?")))
 		return
+	# Android's Camera2 ids are stable and listed in the table -> known-id path.
+	if not (equip.get("cameras", []) as Array).is_empty():
+		_bootstrap_from_known_ids(equip, false)
+		return
+	# WinRT etc.: ids are machine-specific symbolic links -> enumerate-first
+	# (discover the pair, then ingest): start -> enumerate -> select -> stop ->
+	# ingest -> start.
 	CamBANGServer.stop()
 	if int(CamBANGServer.start()) != OK:
 		_fail("platform bootstrap: initial start() failed")
@@ -350,7 +358,7 @@ func _bootstrap_platform() -> void:
 		return
 	var pair := _select_platform_pair(endpoints)
 	CamBANGServer.stop()
-	var truth := _build_concurrency_truth_json(pair, bool(equip.get("concurrency_supported", false)))
+	var truth := _build_concurrency_truth(pair, [pair])
 	if int(CamBANGServer.ingest_camera_description(truth)) != OK:
 		_fail("platform bootstrap: ingest_camera_description failed")
 		return
@@ -359,9 +367,7 @@ func _bootstrap_platform() -> void:
 		return
 	_devices[DEV_A]["hardware_id"] = str(pair[0])
 	_devices[DEV_B]["hardware_id"] = str(pair[1])
-	_log("bootstrap: %s started; rig pair=%s concurrency_claimed=%s" % [
-		str(equip.get("label", "?")), str(pair), str(bool(equip.get("concurrency_supported", false)))
-	])
+	_log("bootstrap: %s started (enumerate-first); rig pair=%s" % [str(equip.get("label", "?")), str(pair)])
 
 
 func _platform_identity_text() -> String:
@@ -407,20 +413,32 @@ func _select_platform_pair(endpoints: Array) -> Array:
 	return ids.slice(0, 2)
 
 
-func _build_concurrency_truth_json(hardware_ids: Array, supported: bool) -> String:
-	var cameras := []
-	for hw in hardware_ids:
-		cameras.append({"camera_id": str(hw)})
-	var concurrency := {"supported": supported}
-	if supported:
-		concurrency["camera_id_combinations"] = [hardware_ids.duplicate()]
+func _build_concurrency_truth(cameras: Array, combinations: Array) -> String:
+	var camera_dicts := []
+	for c in cameras:
+		camera_dicts.append({"camera_id": str(c)})
+	var combos := []
+	for combo in combinations:
+		var ids := []
+		for c in combo:
+			ids.append(str(c))
+		combos.append(ids)
 	return JSON.stringify({
 		"schema_version": 2,
-		"cameras": cameras,
-		"concurrent_camera_support": concurrency,
+		"cameras": camera_dicts,
+		"concurrent_camera_support": {
+			"supported": combos.size() > 0,
+			"camera_id_combinations": combos,
+		},
 	})
 
 func _parse_args() -> void:
+	# Project-setting default for the provider: Android has no post-'--' user args,
+	# so a manual export or run_godot.ps1 can select the provider via this setting.
+	# The cmdline below still overrides it on the host.
+	var setting_provider := str(ProjectSettings.get_setting("cambang/maintainer/bench_provider", "")).strip_edges().to_lower()
+	if setting_provider != "":
+		_provider_arg = setting_provider
 	var args := OS.get_cmdline_user_args()
 	for raw_arg in args:
 		var arg := str(raw_arg)
@@ -962,11 +980,6 @@ func _update_stream_display_views(require_bind: bool) -> void:
 	var observe_result_advancement := now_us - _last_stream_observation_us >= 10000
 	if observe_result_advancement:
 		_last_stream_observation_us = now_us
-	var revisions_by_stream := {}
-	if observe_result_advancement:
-		var metrics = CamBANGServer.get_synthetic_metrics_snapshot()
-		if typeof(metrics) == TYPE_DICTIONARY:
-			revisions_by_stream = metrics.get("synthetic_stream_result_revisions", {})
 	for device_key in [DEV_A, DEV_B]:
 		var info: Dictionary = _devices[device_key]
 		var label = _stream_live_labels.get(device_key, null)
@@ -983,14 +996,22 @@ func _update_stream_display_views(require_bind: bool) -> void:
 		if observe_result_advancement or should_recheck:
 			stream_result = CamBANGServer.get_stream_result_by_stream_id(stream_id)
 			if stream_result != null and observe_result_advancement:
-				var revision := int(revisions_by_stream.get(stream_id, 0))
-				var prior_revision := int(info.get("stream_last_observed_revision", 0))
-				if revision > prior_revision:
-					if int(info.get("stream_observation_first_us", 0)) == 0:
-						info["stream_observation_first_us"] = now_us
-					info["stream_observed_changes"] = int(info.get("stream_observed_changes", 0)) + (revision - prior_revision)
-					info["stream_observation_last_us"] = now_us
-				info["stream_last_observed_revision"] = revision
+				# Provider-agnostic stream-advancement: count distinct successive
+				# per-frame acquisition marks. The mark advances per delivered frame
+				# and repeats when no new frame arrived between polls, so each change
+				# is one observed delivery (native_reported on platform,
+				# virtual-camera-authored on synthetic; both monotonic). This replaces
+				# the synthetic-only synthetic_stream_result_revisions channel, which
+				# was empty -- hence observed_updates=0 -- on platform-backed runs.
+				var mark := _stream_acquisition_mark(stream_result)
+				if mark != 0:
+					var prior_mark := int(info.get("stream_last_observed_mark", 0))
+					if prior_mark != 0 and mark != prior_mark:
+						if int(info.get("stream_observation_first_us", 0)) == 0:
+							info["stream_observation_first_us"] = now_us
+						info["stream_observed_changes"] = int(info.get("stream_observed_changes", 0)) + 1
+						info["stream_observation_last_us"] = now_us
+					info["stream_last_observed_mark"] = mark
 		if not should_recheck and bound:
 			_set_label_text_if_changed(label, "%s\nstream_id=%d\nobserved_updates=%d\nobserved_update_fps=%.2f" % [
 				str(info.get("label", device_key)),
@@ -1025,6 +1046,19 @@ func _update_stream_display_views(require_bind: bool) -> void:
 				_stream_observed_fps(device_key),
 			])
 		_devices[device_key] = info
+
+
+func _stream_acquisition_mark(stream_result) -> int:
+	# Per-frame acquisition mark from the stream result's camera facts, or 0 when
+	# absent. add_acquisition_timing_camera_fact() omits the key entirely if the
+	# provider did not report timing, so a missing key reads as 0 (no advancement).
+	if stream_result == null or not stream_result.has_method("get_camera_facts"):
+		return 0
+	var facts: Dictionary = stream_result.get_camera_facts()
+	var at_v: Variant = facts.get("acquisition_timing", null)
+	if typeof(at_v) != TYPE_DICTIONARY:
+		return 0
+	return int((at_v as Dictionary).get("acquisition_mark", 0))
 
 
 func _stream_observed_fps(device_key: String) -> float:
@@ -1255,7 +1289,10 @@ func _apply_current_bundle_profile() -> void:
 			return
 		var still_profile_before := _get_device_still_profile(int(info.get("device_id", 0)))
 		_profile_before_by_device[device_key] = int(still_profile_before.get("version", -1))
-		if _still_profile_matches_members(still_profile_before, members):
+		# Members alone are not enough on a platform-backed provider: a single-member
+		# (metered_only) bundle matches the device default, which carries the wrong
+		# geometry (Camera2's 640x480), so the apply must still run to pin STILL_PROFILE.
+		if _still_profile_matches_members(still_profile_before, members) and _still_profile_geometry_ok(still_profile_before):
 			continue
 		var request := _make_still_profile_request(members, still_profile_before)
 		var err := int(device.set_still_capture_profile(request))
@@ -1266,8 +1303,21 @@ func _apply_current_bundle_profile() -> void:
 
 
 func _make_still_profile_request(members: Array, visible_still_profile: Dictionary) -> Dictionary:
+	# Camera2/WinRT couple the still to the live feed geometry: a session's output
+	# set is fixed at creation and one device holds only one session, so a still
+	# whose geometry differs from the producing stream is refused
+	# (ERR_PLATFORM_CONSTRAINT) rather than rebuilding the session under a live feed
+	# (see the Camera2 note in docs/dev/build_and_scaffolding.md). The soak's streams
+	# are created at STILL_PROFILE, so on a platform-backed provider pin the capture
+	# there too instead of inheriting the provider's default visible still geometry
+	# (e.g. Camera2's 640x480 capture-template default, which drove the mismatch).
+	# Synthetic has no such coupling; leave its geometry exactly as before so the
+	# approved baseline is unchanged.
 	var width: int = int(visible_still_profile.get("width", STILL_PROFILE_WIDTH))
 	var height: int = int(visible_still_profile.get("height", STILL_PROFILE_HEIGHT))
+	if _provider_arg != "synthetic":
+		width = STILL_PROFILE_WIDTH
+		height = STILL_PROFILE_HEIGHT
 	var format_fourcc: int = int(visible_still_profile.get("format_fourcc", visible_still_profile.get("format", CamBANGServer.PIXEL_FORMAT_RGBA)))
 	if width <= 0:
 		width = STILL_PROFILE_WIDTH
@@ -1320,6 +1370,8 @@ func _profiles_visible_for_current_bundle() -> bool:
 		if still_profile.is_empty():
 			return false
 		if not _still_profile_matches_members(still_profile, members):
+			return false
+		if not _still_profile_geometry_ok(still_profile):
 			return false
 		var before := int(_profile_before_by_device.get(device_key, -1))
 		if before >= 0 and int(still_profile.get("version", -1)) < before:
@@ -1387,6 +1439,15 @@ func _still_profile_matches_members(still_profile: Dictionary, expected_members:
 		if int(o.get("intended_exposure_compensation_milli_ev", 0)) != int(e.get("intended_exposure_compensation_milli_ev", 0)):
 			return false
 	return true
+
+
+func _still_profile_geometry_ok(still_profile: Dictionary) -> bool:
+	# Synthetic keeps its historical still geometry (no feed coupling), so it never
+	# blocks the members-match skip. Platform-backed providers must capture at
+	# STILL_PROFILE to match the producing feed (see _make_still_profile_request).
+	if _provider_arg == "synthetic":
+		return true
+	return int(still_profile.get("width", -1)) == STILL_PROFILE_WIDTH and int(still_profile.get("height", -1)) == STILL_PROFILE_HEIGHT
 
 
 func _role_to_code(role_v: Variant) -> int:

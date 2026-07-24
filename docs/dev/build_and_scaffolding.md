@@ -236,11 +236,23 @@ distortion), static facing/nature/orientation/pose, no picture-parameter
 control, no GPU backing.
 
 Two Camera2 properties are load-bearing for anyone changing that provider.
-Outputs are fixed when a capture session is created, so `start_stream`
-provisions the still output alongside the stream output at the same geometry
-and a capture needing different geometry while a stream produces is refused
-with `ERR_PLATFORM_CONSTRAINT` rather than rebuilding the session under a live
-stream. And the `CAMERA` runtime permission has no NDK query: readiness
+First, a camera device holds **at most one active capture session**, and a
+session's output set is fixed at creation — Android canonises both. The
+`CameraDevice.createCaptureSession` contract: *"If a prior CameraCaptureSession
+already exists when this method is called, the previous session will no longer
+be able to accept new capture requests and will be closed"*; the capture-session
+guide: *"When a session is created, you cannot add or remove pipelines."* So the
+feed and the still **cannot** be two concurrent native sessions on one device (a
+second `createCaptureSession` closes the first, dropping the live feed), and the
+only way to change the output set is to rebuild the session — which closes the
+feed. `start_stream` therefore provisions the still output alongside the stream
+output at the same geometry, and a capture needing different geometry while a
+stream produces is refused with `ERR_PLATFORM_CONSTRAINT` rather than rebuilding
+the session under a live stream. (This is a Camera2 platform law, not a CamBANG
+choice; the `AcquisitionSession`/`Stream` split is realized as two outputs of
+one native session here, whereas WinRT maps it to a separate `LowLagPhotoCapture`
+pipeline. Sources: [CameraDevice.createCaptureSession](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/hardware/camera2/CameraDevice.java),
+[Camera capture sessions and requests](https://developer.android.com/media/camera/camera2/capture-sessions-requests).) And the `CAMERA` runtime permission has no NDK query: readiness
 preflight cannot observe it, so a denial surfaces at `open_device()` as
 `ACAMERA_ERROR_PERMISSION_DENIED` mapped to `ERR_PLATFORM_CONSTRAINT`. The
 Godot test project declares the permission (`permissions/camera=true` in

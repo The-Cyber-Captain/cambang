@@ -3803,6 +3803,11 @@ ProviderResult Camera2CameraProvider::validate_and_admit_submission_locked_(
       std::lock_guard<std::mutex> bl(dev_it->second.backend->m);
       const StaticCharacteristics& chars = dev_it->second.backend->chars;
       if (!chars.supports_size(req.width, req.height)) {
+        camera2_detail::log_line(
+            "capture admission refused: device=%llu rig=%llu size=%ux%u not in "
+            "supported still sizes -> ERR_PLATFORM_CONSTRAINT",
+            static_cast<unsigned long long>(req.device_instance_id),
+            static_cast<unsigned long long>(req.rig_id), req.width, req.height);
         return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
       }
       // A started stream pins the session output set; a capture that needs a
@@ -3811,6 +3816,12 @@ ProviderResult Camera2CameraProvider::validate_and_admit_submission_locked_(
       const auto& stream = dev_it->second.backend->stream;
       if (stream && stream->producing &&
           (stream->width != req.width || stream->height != req.height)) {
+        camera2_detail::log_line(
+            "capture admission refused: device=%llu rig=%llu request=%ux%u "
+            "differs from producing stream=%ux%u -> ERR_PLATFORM_CONSTRAINT",
+            static_cast<unsigned long long>(req.device_instance_id),
+            static_cast<unsigned long long>(req.rig_id), req.width, req.height,
+            stream->width, stream->height);
         return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
       }
       if (req.still_image_bundle.members.size() > 1) {
