@@ -20,17 +20,17 @@ The current SCons entrypoint supports an Android GDE build path. On this source
 snapshot, `platform=android` builds the Android-targeted GDExtension artifact
 through the pinned Android NDK toolchain when the local SDK/NDK is available.
 
-Android platform-backed provider work is not yet compiled into that artifact:
-the current `android_camera2` provider family reports `not_compiled`, and the
-Android GDE build therefore remains synthetic-only rather than a platform-backed
-runtime path.
+Android platform-backed provider work is compiled into that artifact: the
+`android_camera2` provider family is implemented by `Camera2CameraProvider` on
+the Camera2 NDK, and every Android GDE build reports it `compiled`. Camera2 NDK
+and AImageReader ship in the NDK sysroot, so no extra toolchain gate applies.
 
 Current provider work should follow the provider contract and architecture docs
 rather than platform-specific assumptions from older drafts. Windows
 platform-backed work targets the `windows_winrt` family (implemented by
-`WinrtCameraProvider` via C++/WinRT `Windows.Media.Capture`; see
-`docs/dev/build_and_scaffolding.md` §6) rather than inferring behavior from
-synthetic or stub implementation details.
+`WinrtCameraProvider` via C++/WinRT `Windows.Media.Capture`) and Android targets
+`android_camera2` (see `docs/dev/build_and_scaffolding.md` §6) rather than
+inferring behavior from synthetic or stub implementation details.
 
 ## Documentation map
 

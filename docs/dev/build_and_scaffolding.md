@@ -195,7 +195,7 @@ Declared GDE platforms and provider families:
 | Platform | Provider family | Source location | Current normal build support |
 |---|---|---|---|
 | `windows` | `windows_winrt` | `src/imaging/platform/windows` | Implemented (C++/WinRT; requires MSVC — see below). |
-| `android` | `android_camera2` | `src/imaging/platform/android` | Not yet implemented. |
+| `android` | `android_camera2` | `src/imaging/platform/android` | Implemented (Camera2 NDK; no extra toolchain gate). |
 | `linux` | `linux_v4l2` | `src/imaging/platform/linux` | Not yet implemented. |
 | `macos` | `apple_avfoundation` | `src/imaging/platform/apple` | Not yet implemented. |
 | `ios` | `apple_avfoundation` | `src/imaging/platform/apple` | Not yet implemented. |
@@ -216,6 +216,148 @@ stay hardware-independent. Current capability maturity
 RGBA/BGRA delivery at native source formats (no scaling — a requested
 geometry with no matching native format fails deterministically),
 single-image still capture, no picture-parameter control, no GPU backing.
+
+The `android_camera2` family is implemented by `Camera2CameraProvider` on the
+Camera2 NDK: `ACameraManager`/`ACameraDevice`/`ACameraCaptureSession`
+(`libcamera2ndk`) with `AImageReader` (`libmediandk`) delivering
+`AIMAGE_FORMAT_YUV_420_888` images that the provider converts to packed
+RGBA/BGRA. Device identity is the Camera2 camera id string. Both libraries
+ship in the NDK sysroot the Android GDE environment already targets, so unlike
+`windows_winrt` there is no extra toolchain gate: every Android GDE build
+compiles the provider, defining `CAMBANG_PROVIDER_ANDROID_CAMERA2=1` and
+linking `camera2ndk`, `mediandk`, `android` and `log`. Current capability
+maturity (provider_architecture.md §2.3) is minimal / transitional: CPU-backed
+delivery at device-supported YUV output sizes (no scaling — a requested
+geometry absent from the device's stream-configuration map fails
+deterministically), still capture with real per-request exposure-compensation
+bracketing, realized per-image facts from capture result metadata (exposure
+time, sensitivity, aperture, focal length, focus state, intrinsics and
+distortion), static facing/nature/orientation/pose, no picture-parameter
+control, no GPU backing.
+
+Two Camera2 properties are load-bearing for anyone changing that provider.
+First, a camera device holds **at most one active capture session**, and a
+session's output set is fixed at creation — Android canonises both. The
+`CameraDevice.createCaptureSession` contract: *"If a prior CameraCaptureSession
+already exists when this method is called, the previous session will no longer
+be able to accept new capture requests and will be closed"*; the capture-session
+guide: *"When a session is created, you cannot add or remove pipelines."* So the
+feed and the still **cannot** be two concurrent native sessions on one device (a
+second `createCaptureSession` closes the first, dropping the live feed), and the
+only way to change the output set is to rebuild the session — which closes the
+feed. `start_stream` therefore provisions the still output alongside the stream
+output at the same geometry, and a capture needing different geometry while a
+stream produces is refused with `ERR_PLATFORM_CONSTRAINT` rather than rebuilding
+the session under a live stream. (This is a Camera2 platform law, not a CamBANG
+choice; the `AcquisitionSession`/`Stream` split is realized as two outputs of
+one native session here, whereas WinRT maps it to a separate `LowLagPhotoCapture`
+pipeline. Sources: [CameraDevice.createCaptureSession](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/hardware/camera2/CameraDevice.java),
+[Camera capture sessions and requests](https://developer.android.com/media/camera/camera2/capture-sessions-requests).) And the `CAMERA` runtime permission has no NDK query: readiness
+preflight cannot observe it, so a denial surfaces at `open_device()` as
+`ACAMERA_ERROR_PERMISSION_DENIED` mapped to `ERR_PLATFORM_CONSTRAINT`. The
+Godot test project declares the permission (`permissions/camera=true` in
+`tests/cambang_gde/export_presets.cfg`); declaring it does not grant it, so an
+on-device run that opens hardware still needs the runtime grant. That file is
+gitignored, so the declaration is per-checkout rather than shared.
+
+Multi-image still bundles take one of two bracket paths, chosen per device
+from cached characteristics. Where `MANUAL_SENSOR` is available, the provider
+meters once (one auto-exposed capture), freezes that realized
+exposure/sensitivity as the reference, derives each member as
+`baseline * 2^EV` (exposure time absorbs the change first, sensitivity takes
+only the residual), and submits **all members as one burst** with `AE_MODE_OFF`,
+AWB locked, and focus pinned. Devices without `MANUAL_SENSOR` fall back to
+sequential auto-exposure compensation captures.
+
+Member exposures follow the coherence rule in `provider_implementation_brief.md`
+§5.1: exposure shortens to darken, sensitivity rises to brighten, and exposure
+lengthens past the metered duration only when the ISO ceiling is reached. On
+one Device this took a `+6 EV` member from a 400 ms exposure to 20 ms at
+ISO 7168, cutting the bundle's content span from ~454 ms to ~87 ms while still
+realizing the full `+6000` milli-EV.
+
+Focus is locked for the same reason exposure and white balance are: members
+that differ cannot be combined, and focus breathing shifts framing as well as
+sharpness. The lock is an **AF trigger**, not an `AF_MODE` change:
+`AF_TRIGGER_START` locks the lens where continuous AF settled, and
+`AF_TRIGGER_CANCEL` releases it once the bundle completes. Setting
+`AF_MODE_OFF` on the burst instead was tried and is wrong — with the repeating
+preview request running continuous AF, flipping the mode restarts the AF scan
+after every bundle, so the next capture meters mid-scan and pins its members to
+a lens position that is still moving. That was observed as alternating captures
+of blurred members.
+
+**A producing stream is a documented requirement for the focus lock**, not an
+implementation gap. Auto-focus converges over a continuous frame sequence, and
+the repeating request is both what drives it and the only place
+`CONTROL_AF_STATE` can be observed. Result callbacks on the repeating request
+exist solely for that observation, and are deliberately a separate callback
+from the burst's — repeating results arrive at frame rate and would otherwise
+be counted as bundle members.
+
+Driving convergence from the still captures themselves was measured and does
+not work: across five successive metering frames `CONTROL_AF_STATE` stayed
+`NOT_FOCUSED_LOCKED` on every attempt, and the trigger swept the lens to a
+travel limit rather than to the subject — producing bundles whose members
+agreed with each other and were uniformly out of focus, which is harder to
+detect than an obvious failure. Note `NOT_FOCUSED_LOCKED` means the lens
+stopped, *not* that it focused; only `FOCUSED_LOCKED` is an acquisition.
+Feeding auto-focus from a temporary preview flow aimed at the still reader is
+also wrong, and was measured to break capture outright: its images are
+indistinguishable from capture members once they reach that reader, so one
+lands in a collector and the bundle fails. Giving auto-focus a real frame
+source would require a dedicated session output; that is deliberately not done.
+
+So a caller that needs a consistently focused bundle should run a stream.
+Without one, or on a fixed-focus lens
+(`LENS_INFO_MINIMUM_FOCUS_DISTANCE == 0`), focus is left to the device rather
+than locked to an unobserved position — continuous auto-focus still progresses
+on the capture frames alone, but members may differ while it scans — and the
+per-member `focus_state` fact
+still exposes any divergence to the caller.
+
+The distinction is not cosmetic, and both halves matter. Measured on a Galaxy
+S20 rear camera, a requested ±6 EV bracket produced ~±0.5 EV of actual image
+change on the auto-exposure path (clamped to the device's ±2 EV compensation
+range) with members ~234 ms apart; the manual burst path delivers the full
+±6 EV — realized −6000/+5990 milli-EV — with members 37.5 ms apart on
+consecutive sensor frames. Auto-exposure compensation is unreliable for
+bracketing across every device measured, and inter-member spacing wide enough
+for the scene to change makes any merge invalid regardless of exposure
+accuracy. The two fixes compose in one direction only: manual exposure is what
+makes bursting safe, since back-to-back members leave auto-exposure no time to
+converge but leave a fixed manual exposure nothing to converge.
+
+Because burst members are in flight simultaneously, images are paired to their
+result metadata by `ACAMERA_SENSOR_TIMESTAMP` rather than arrival order.
+
+`realized_exposure_compensation_milli_ev` is derived from the exposure and
+sensitivity the sensor actually delivered, measured against the bundle's
+default-metered member — never from the AE compensation control, which reads
+back its own clamped set-point and is not a realized value. A clamped request
+is therefore still truthfully reported: the realized figure states what the
+clamp actually produced, and a member missing exposure or sensitivity metadata
+reports no realized value at all.
+
+Camera intrinsics and distortion are reported per-image rather than static
+because Camera2 expresses them in a coordinate system chosen per capture by
+`ACAMERA_DISTORTION_CORRECTION_MODE`: `OFF` means the pre-correction active
+array and `DISTORTED` pixels, `FAST`/`HIGH_QUALITY` means the active array and
+`RECTIFIED` pixels. Both are *sensor* rectangles — the delivered frame is
+cropped and scaled from them, so the reported `f`/`c` values are not valid in
+delivered-image pixels and are deliberately published in the sensor domain
+they were measured in. Rescaling them to the output geometry would be the
+intrinsic rescaling and coordinate-domain conversion CamBANG does not perform
+(`docs/dev/agent_context.md`).
+
+Real hardware may omit the correction mode from its results while still
+reporting calibration (the Galaxy S20 does). Camera2 documents that a device
+not supporting the correction API "will always list only `OFF`" in
+`ACAMERA_DISTORTION_CORRECTION_AVAILABLE_MODES`, so for a device advertising
+no correction capability the provider derives `OFF` from stated capability.
+Where a device *can* correct but did not report whether it did, the domain is
+genuinely unknowable and both facts are omitted rather than published against
+a guessed reference frame.
 
 For declared platforms whose provider family is not implemented yet, non-clean
 GDE builds are still allowed to produce a synthetic-capable artifact. In those

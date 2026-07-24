@@ -9,6 +9,7 @@
 #include "godot/synthetic_gpu_backing_bridge.h"
 #include "godot/godot_gpu_display_service.h"
 #include "godot/cambang_rig.h"
+#include "pixels/pattern/pattern_registry.h"
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/error_macros.hpp>
@@ -199,14 +200,111 @@ static bool parse_stream_profile_definition(const godot::Variant& value,
   return true;
 }
 
+static bool parse_stream_bool_field(const godot::Dictionary& dict, const char* key, bool& out) noexcept {
+  const godot::Variant v = dict.get(key, godot::Variant());
+  if (v.get_type() != godot::Variant::BOOL) {
+    return false;
+  }
+  out = bool(v);
+  return true;
+}
+
+static bool parse_picture_u8_field(const godot::Dictionary& dict, const char* key, uint8_t& out) noexcept {
+  uint32_t v = 0;
+  if (!parse_stream_definition_u32_field(dict, key, v, false)) {
+    return false;
+  }
+  if (v > 255u) {
+    return false;
+  }
+  out = static_cast<uint8_t>(v);
+  return true;
+}
+
+// Optional picture (pattern appearance) parameters -- the full provider-agnostic
+// PictureConfig, matching the scenario picture vocabulary: preset (by canonical
+// token), seed, generator cadence, overlays, solid colour, checker size. Only
+// meaningful where the provider reports supports_{stream,capture}_picture_updates()
+// -- in practice the synthetic provider. Unspecified fields inherit the provider's
+// template picture (stream or capture template). Shared by create_stream and the
+// device capture-picture path.
+static bool parse_picture_definition(const godot::Variant& value,
+                                     const PictureConfig& template_picture,
+                                     PictureConfig& out_picture) noexcept {
+  if (value.get_type() != godot::Variant::DICTIONARY) {
+    return false;
+  }
+  const godot::Dictionary picture = value;
+  if (!stream_definition_has_only_keys(
+          picture, {"preset", "seed", "generator_fps_num", "generator_fps_den",
+                    "overlay_frame_index_offsets", "overlay_moving_bar",
+                    "solid_r", "solid_g", "solid_b", "solid_a", "checker_size_px"})) {
+    return false;
+  }
+  out_picture = template_picture;
+  if (picture.has("preset")) {
+    const godot::Variant pv = picture.get("preset", godot::Variant());
+    if (pv.get_type() != godot::Variant::STRING) {
+      return false;
+    }
+    const godot::String name = pv;
+    const PatternPresetInfo* info = find_preset_info_by_name(name.utf8().get_data());
+    if (info == nullptr) {
+      return false;  // unknown preset token
+    }
+    out_picture.preset = info->preset;
+  }
+  if (picture.has("seed") &&
+      !parse_stream_definition_u32_field(picture, "seed", out_picture.seed, false)) {
+    return false;
+  }
+  if (picture.has("generator_fps_num") &&
+      !parse_stream_definition_u32_field(picture, "generator_fps_num", out_picture.generator_fps_num, false)) {
+    return false;
+  }
+  if (picture.has("generator_fps_den") &&
+      !parse_stream_definition_u32_field(picture, "generator_fps_den", out_picture.generator_fps_den, false)) {
+    return false;
+  }
+  if (picture.has("overlay_frame_index_offsets") &&
+      !parse_stream_bool_field(picture, "overlay_frame_index_offsets", out_picture.overlay_frame_index_offsets)) {
+    return false;
+  }
+  if (picture.has("overlay_moving_bar") &&
+      !parse_stream_bool_field(picture, "overlay_moving_bar", out_picture.overlay_moving_bar)) {
+    return false;
+  }
+  if (picture.has("solid_r") && !parse_picture_u8_field(picture, "solid_r", out_picture.solid_r)) {
+    return false;
+  }
+  if (picture.has("solid_g") && !parse_picture_u8_field(picture, "solid_g", out_picture.solid_g)) {
+    return false;
+  }
+  if (picture.has("solid_b") && !parse_picture_u8_field(picture, "solid_b", out_picture.solid_b)) {
+    return false;
+  }
+  if (picture.has("solid_a") && !parse_picture_u8_field(picture, "solid_a", out_picture.solid_a)) {
+    return false;
+  }
+  if (picture.has("checker_size_px") &&
+      !parse_stream_definition_u32_field(picture, "checker_size_px", out_picture.checker_size_px, false)) {
+    return false;
+  }
+  return true;
+}
+
 static bool parse_stream_definition(const godot::Variant& definition,
                                     const StreamTemplate& stream_template,
                                     StreamIntent& out_intent,
                                     CaptureProfile& out_profile,
-                                    bool& out_has_profile) noexcept {
+                                    bool& out_has_profile,
+                                    PictureConfig& out_picture,
+                                    bool& out_has_picture) noexcept {
   out_intent = StreamIntent::PREVIEW;
   out_profile = CaptureProfile{};
   out_has_profile = false;
+  out_picture = stream_template.picture;
+  out_has_picture = false;
 
   if (definition.get_type() == godot::Variant::NIL) {
     return true;
@@ -216,7 +314,7 @@ static bool parse_stream_definition(const godot::Variant& definition,
   }
 
   const godot::Dictionary def = definition;
-  if (!stream_definition_has_only_keys(def, {"intent", "profile"})) {
+  if (!stream_definition_has_only_keys(def, {"intent", "profile", "picture"})) {
     return false;
   }
 
@@ -232,6 +330,14 @@ static bool parse_stream_definition(const godot::Variant& definition,
       return false;
     }
     out_has_profile = true;
+  }
+
+  if (def.has("picture")) {
+    if (!parse_picture_definition(
+            def.get("picture", godot::Variant()), stream_template.picture, out_picture)) {
+      return false;
+    }
+    out_has_picture = true;
   }
   return true;
 }
@@ -1937,12 +2043,21 @@ godot::Ref<CamBANGStream> CamBANGServer::create_stream_for_endpoint_hardware_id(
   StreamIntent stream_intent = StreamIntent::PREVIEW;
   CaptureProfile stream_profile{};
   bool has_stream_profile = false;
+  PictureConfig stream_picture{};
+  bool has_stream_picture = false;
   if (!parse_stream_definition(
           definition,
           stream_template,
           stream_intent,
           stream_profile,
-          has_stream_profile)) {
+          has_stream_profile,
+          stream_picture,
+          has_stream_picture)) {
+    return godot::Ref<CamBANGStream>();
+  }
+  // Reject a picture request the active provider cannot honour, rather than
+  // silently ignoring it (per supports_stream_picture_updates()).
+  if (has_stream_picture && !provider_->supports_stream_picture_updates()) {
     return godot::Ref<CamBANGStream>();
   }
 
@@ -1955,7 +2070,7 @@ godot::Ref<CamBANGStream> CamBANGServer::create_stream_for_endpoint_hardware_id(
       state.device_instance_id,
       stream_intent,
       has_stream_profile ? &stream_profile : nullptr,
-      nullptr,
+      has_stream_picture ? &stream_picture : nullptr,
       0);
   if (cs != TryCreateStreamStatus::OK) {
     return godot::Ref<CamBANGStream>();
@@ -1965,6 +2080,36 @@ godot::Ref<CamBANGStream> CamBANGServer::create_stream_for_endpoint_hardware_id(
   out.instantiate();
   out->set_identity(const_cast<CamBANGServer*>(this), hardware_id, state.device_instance_id, stream_id);
   return out;
+}
+
+static godot::Error map_try_set_capture_picture_status(TrySetCapturePictureStatus s) noexcept {
+  switch (s) {
+    case TrySetCapturePictureStatus::OK: return godot::OK;
+    case TrySetCapturePictureStatus::NotSupported: return godot::ERR_UNAVAILABLE;
+    case TrySetCapturePictureStatus::Busy: return godot::ERR_BUSY;
+    case TrySetCapturePictureStatus::InvalidArgument: return godot::ERR_INVALID_PARAMETER;
+    case TrySetCapturePictureStatus::ProviderRejected: return godot::ERR_INVALID_PARAMETER;
+  }
+  return godot::FAILED;
+}
+
+godot::Error CamBANGServer::set_device_capture_picture(
+    uint64_t device_instance_id, const godot::Dictionary& picture_def) {
+  if (device_instance_id == 0 || !is_public_boundary_ready_() || !provider_) {
+    return godot::ERR_UNAVAILABLE;
+  }
+  // Reject a capture-picture request the active provider cannot honour, per
+  // supports_capture_picture_updates() (parallel to the create_stream gate).
+  if (!provider_->supports_capture_picture_updates()) {
+    return godot::ERR_UNAVAILABLE;
+  }
+  const CaptureTemplate capture_template = provider_->capture_template();
+  PictureConfig picture{};
+  if (!parse_picture_definition(picture_def, capture_template.picture, picture)) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+  return map_try_set_capture_picture_status(
+      runtime_.try_set_capture_picture_config(device_instance_id, picture));
 }
 
 godot::Error CamBANGServer::destroy_direct_stream_handle(
@@ -2212,6 +2357,33 @@ godot::Ref<CamBANGRig> CamBANGServer::get_rig(uint64_t rig_id) const {
   godot::Ref<CamBANGRig> out;
   out.instantiate();
   out->set_server_and_id(const_cast<CamBANGServer*>(this), rig_id);
+  return out;
+}
+
+godot::Ref<CamBANGRig> CamBANGServer::create_rig(
+    const godot::PackedStringArray& member_hardware_ids) {
+  if (!is_public_boundary_ready_()) {
+    return godot::Ref<CamBANGRig>();
+  }
+  std::vector<std::string> members;
+  members.reserve(static_cast<size_t>(member_hardware_ids.size()));
+  for (int i = 0; i < member_hardware_ids.size(); ++i) {
+    const std::string hw = std::string(member_hardware_ids[i].utf8().get_data());
+    if (hw.empty()) {
+      return godot::Ref<CamBANGRig>();
+    }
+    members.push_back(hw);
+  }
+  if (members.size() < 2) {
+    return godot::Ref<CamBANGRig>();
+  }
+  const uint64_t rig_id = next_rig_id_.fetch_add(1, std::memory_order_relaxed);
+  if (!runtime_.create_rig_from_hardware_ids(rig_id, members)) {
+    return godot::Ref<CamBANGRig>();
+  }
+  godot::Ref<CamBANGRig> out;
+  out.instantiate();
+  out->set_server_and_id(this, rig_id);
   return out;
 }
 
@@ -3491,6 +3663,30 @@ godot::Variant CamBANGServer::get_state_snapshot() const {
 }
 
 
+godot::Variant CamBANGServer::get_backing_plan_evaluation_diagnostics() const {
+  if (!runtime_.is_running()) {
+    return godot::Variant();
+  }
+  // Sourced straight from Core, with no provider cast: backing-plan evaluation
+  // is Core-owned and exists under every provider. The synthetic
+  // capture-ready timing records are provider-specific enrichment of the
+  // candidate-evidence entries, absent by definition here, so an empty vector
+  // is passed -- the decision, steady/requested postures, and completion
+  // reason (what verification asserts) do not depend on it.
+  static const std::vector<SyntheticCaptureReadyTimingRecordSnapshot>
+      kNoProviderTimingRecords;
+  const std::vector<CoreCaptureLifecycleTimingReport>
+      recent_capture_lifecycle_timing =
+          runtime_.recent_capture_lifecycle_timing_reports();
+  godot::Array evaluation_reports;
+  for (const CoreBackingPlanEvaluationReport& report :
+       runtime_.backing_plan_evaluation_reports()) {
+    evaluation_reports.append(backing_plan_evaluation_report_to_dictionary(
+        report, kNoProviderTimingRecords, recent_capture_lifecycle_timing));
+  }
+  return godot::Variant(evaluation_reports);
+}
+
 godot::Variant CamBANGServer::get_synthetic_metrics_snapshot() const {
   if (!runtime_.is_running()) {
     return godot::Variant();
@@ -4080,10 +4276,12 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("advance_timeline", "dt_ns"), &CamBANGServer::advance_timeline);
   godot::ClassDB::bind_method(godot::D_METHOD("get_state_snapshot"), &CamBANGServer::get_state_snapshot);
   godot::ClassDB::bind_method(godot::D_METHOD("get_synthetic_metrics_snapshot"), &CamBANGServer::get_synthetic_metrics_snapshot);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_backing_plan_evaluation_diagnostics"), &CamBANGServer::get_backing_plan_evaluation_diagnostics);
   godot::ClassDB::bind_method(godot::D_METHOD("enumerate_devices"), &CamBANGServer::enumerate_devices);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device_for_hardware_id", "hardware_id"), &CamBANGServer::get_device_for_hardware_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device", "device_instance_id"), &CamBANGServer::get_device);
   godot::ClassDB::bind_method(godot::D_METHOD("get_rig", "rig_id"), &CamBANGServer::get_rig);
+  godot::ClassDB::bind_method(godot::D_METHOD("create_rig", "member_hardware_ids"), &CamBANGServer::create_rig);
   godot::ClassDB::bind_method(godot::D_METHOD("get_stream_result_by_stream_id", "stream_id"), &CamBANGServer::get_stream_result_by_stream_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_capture_result_by_id", "capture_id", "device_instance_id"), &CamBANGServer::get_capture_result_by_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_capture_result_set_by_id", "capture_id"), &CamBANGServer::get_capture_result_set_by_id);

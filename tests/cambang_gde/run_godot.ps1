@@ -23,7 +23,25 @@ param(
     [string]$AndroidExportPreset = "Android",
     [string]$AndroidDeviceSerial = "",
     [string]$AndroidPackage = "",
-    [string]$AndroidActivity = ""
+    [string]$AndroidActivity = "",
+    # Escape hatch for the pre-flight device-state check. The check is advisory
+    # and reads two dumpsys fields; this exists so a false positive can never
+    # block a run outright.
+    [switch]$AllowNonInteractiveDevice,
+    # Runtime permissions to grant on Android after install, before launch.
+    # Camera access is a runtime permission that `adb install -r` does not grant,
+    # so a windowless verifier (e.g. 768) would otherwise depend on a permission
+    # being granted out of band. A failed grant is reported loudly but does not
+    # abort -- a scene may still run its synthetic path, and a permission a device
+    # does not recognise is not a harness failure, which is why the Horizon
+    # headset permissions are safe to request unconditionally: HEADSET_CAMERA
+    # covers a Quest's passthrough cameras and AVATAR_CAMERA its virtual camera,
+    # and both are simply ignored by handsets that do not declare them.
+    [string[]]$AndroidGrantPermissions = @(
+        "android.permission.CAMERA",
+        "horizonos.permission.HEADSET_CAMERA",
+        "horizonos.permission.AVATAR_CAMERA"
+    )
 )
 
 Set-StrictMode -Version Latest
@@ -1110,6 +1128,8 @@ function Get-AndroidLaunchSettingsFromExtraArgs {
         HasSyntheticStreamCapabilityDowngrades = $false
         SyntheticCaptureCapabilityDowngrades = ""
         HasSyntheticCaptureCapabilityDowngrades = $false
+        BenchProvider = ""
+        HasBenchProvider = $false
         UnsupportedArgs = New-Object System.Collections.Generic.List[string]
     }
 
@@ -1153,6 +1173,26 @@ function Get-AndroidLaunchSettingsFromExtraArgs {
             continue
         }
 
+        # Android has no post-'--' user args, so the bench provider cannot ride
+        # OS.get_cmdline_user_args() the way it does on Windows. Translate it into
+        # the cambang/maintainer/bench_provider project setting instead, which
+        # 870's _parse_args() reads as its default.
+        if ($arg -like "--cambang-bench-provider=*") {
+            $result.BenchProvider = $arg.Substring("--cambang-bench-provider=".Length)
+            $result.HasBenchProvider = $true
+            continue
+        }
+
+        if ($arg -eq "--cambang-bench-provider") {
+            if ($index + 1 -ge $ExtraArgValues.Count) {
+                throw "Expected value after --cambang-bench-provider."
+            }
+            $index++
+            $result.BenchProvider = $ExtraArgValues[$index]
+            $result.HasBenchProvider = $true
+            continue
+        }
+
         $result.UnsupportedArgs.Add($arg)
     }
 
@@ -1180,6 +1220,15 @@ function Get-PatchedAndroidProjectText {
     }
     if ($AndroidLaunchSettings.HasSyntheticCaptureCapabilityDowngrades) {
         $updated = Set-SingleLineValue -Text $updated -LinePrefix 'maintainer/synthetic_capture_capability_downgrades=' -NewValue ('"{0}"' -f $AndroidLaunchSettings.SyntheticCaptureCapabilityDowngrades)
+    }
+    if ($AndroidLaunchSettings.HasBenchProvider) {
+        # Not present in project.godot by default, so insert it into [cambang]
+        # rather than only replacing an existing line.
+        $updated = Set-OrInsertSingleLineValue `
+            -Text $updated `
+            -LinePrefix 'maintainer/bench_provider=' `
+            -NewValue ('"{0}"' -f $AndroidLaunchSettings.BenchProvider) `
+            -InsertAfterLinePrefix 'maintainer/synthetic_producer_output_form='
     }
     $renderingMethod = if ($AndroidLaunchSettings.HasRenderingMethod) {
         $AndroidLaunchSettings.RenderingMethod
@@ -1390,6 +1439,62 @@ function Get-ConnectedAndroidDevices {
     }
 
     return @($devices.ToArray())
+}
+
+function Test-AndroidDeviceInteractive {
+    <#
+        A dozing or locked device runs the launcher, not the app: the activity
+        is stopped moments after start, so the harness observes no scene output
+        and reports the same "timeout, missing_harness_verdict" it reports for a
+        genuinely stalled scene. Distinguishing the two afterwards means reading
+        device_logcat.log and noticing the absence of engine lines.
+
+        Checking up front converts a silent multi-minute timeout into an
+        immediate, specific message, and costs two adb shell calls. Advisory by
+        design: it returns the reason rather than throwing, so the caller
+        decides, and neither signal is treated as authoritative enough to block
+        a run outright.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$AdbPath,
+        [Parameter(Mandatory)][string]$DeviceSerial,
+        [Parameter(Mandatory)][string]$ProjectFullPath
+    )
+
+    $result = [pscustomobject]@{
+        Interactive = $true
+        Reason      = ""
+    }
+
+    $power = Invoke-CapturedProcess `
+        -FilePath $AdbPath `
+        -Arguments @("-s", $DeviceSerial, "shell", "dumpsys", "power") `
+        -WorkingDirectory $ProjectFullPath `
+        -CommandTimeoutSec 30
+    if ($power.ExitCode -eq 0) {
+        $wakefulness = [regex]::Match($power.StdoutText, "mWakefulness=(\w+)")
+        if ($wakefulness.Success -and $wakefulness.Groups[1].Value -ne "Awake") {
+            $result.Interactive = $false
+            $result.Reason = "screen is not awake (mWakefulness=$($wakefulness.Groups[1].Value))"
+            return $result
+        }
+    }
+
+    $window = Invoke-CapturedProcess `
+        -FilePath $AdbPath `
+        -Arguments @("-s", $DeviceSerial, "shell", "dumpsys", "window") `
+        -WorkingDirectory $ProjectFullPath `
+        -CommandTimeoutSec 30
+    if ($window.ExitCode -eq 0) {
+        if ($window.StdoutText -match "mDreamingLockscreen=true") {
+            $result.Interactive = $false
+            $result.Reason = "lockscreen is showing (mDreamingLockscreen=true)"
+            return $result
+        }
+    }
+
+    # An adb failure here is not evidence about the device, so it never blocks.
+    return $result
 }
 
 function Resolve-AndroidDeviceSerialValue {
@@ -1649,11 +1754,30 @@ function Invoke-AndroidRun {
         [int]$ObservationTimeoutSec,
         [string]$ExplicitPackageName,
         [string]$ExplicitActivityName,
-        [string[]]$FailurePatterns
+        [string[]]$FailurePatterns,
+        [switch]$AllowNonInteractiveDevice
     )
 
     $deviceLogcatPath = Join-Path $LogRecord.RunDir "device_logcat.log"
     Ensure-FileExists -Path $deviceLogcatPath
+
+    # Checked before the export, which is the expensive step: a device that
+    # cannot foreground the app will waste the export, install and the whole
+    # observation window before failing indistinguishably from a stalled scene.
+    $deviceState = Test-AndroidDeviceInteractive `
+        -AdbPath $AdbPath `
+        -DeviceSerial $DeviceSerial `
+        -ProjectFullPath $ProjectFullPath
+    if (-not $deviceState.Interactive) {
+        $deviceStateMessage = "Android device $DeviceSerial is not interactive: $($deviceState.Reason). " +
+            "The app will be stopped as soon as it starts, producing no scene output. " +
+            "Wake and unlock the device, or pass -AllowNonInteractiveDevice to run anyway."
+        Add-LogSection -Path $LogRecord.StdoutPath -Header "android_device_state" -Body $deviceStateMessage
+        if (-not $AllowNonInteractiveDevice) {
+            throw $deviceStateMessage
+        }
+        Write-Warning $deviceStateMessage
+    }
 
     $projectFilePath = Join-Path $ProjectFullPath "project.godot"
     $originalProjectText = Get-Content -Raw $projectFilePath
@@ -1692,13 +1816,14 @@ rendering_method=$(if ($AndroidLaunchSettings.HasRenderingMethod) { $AndroidLaun
 synthetic_producer_output_form=$($AndroidLaunchSettings.SyntheticProducerOutputForm)
 synthetic_stream_capability_downgrades=$($AndroidLaunchSettings.SyntheticStreamCapabilityDowngrades)
 synthetic_capture_capability_downgrades=$($AndroidLaunchSettings.SyntheticCaptureCapabilityDowngrades)
+bench_provider=$(if ($AndroidLaunchSettings.HasBenchProvider) { $AndroidLaunchSettings.BenchProvider } else { "(default)" })
 patched_project_renderer_rendering_method=$patchedProjectRenderingMethod
 patched_project_renderer_rendering_method_mobile=$patchedProjectRenderingMethodMobile
 "@
 
     try {
         if ($patchedProjectText -ne $originalProjectText) {
-            Set-Content -Path $projectFilePath -Value $patchedProjectText
+            Set-Content -Path $projectFilePath -Value $patchedProjectText -NoNewline
         }
 
         $exportArguments = @("--headless", "--quit", "--path", $ProjectFullPath, "--log-file", $stagedExportGodotLogPath, "--export-debug", $ExportPreset, $stagedExportApkPath)
@@ -1780,7 +1905,7 @@ patched_project_renderer_rendering_method_mobile=$patchedProjectRenderingMethodM
         Move-Item -LiteralPath $stagedExportApkPath -Destination $exportApkPath -Force
 
         if (-not $projectRestored) {
-            Set-Content -Path $projectFilePath -Value $originalProjectText
+            Set-Content -Path $projectFilePath -Value $originalProjectText -NoNewline
             $projectRestored = $true
         }
 
@@ -1836,6 +1961,34 @@ patched_project_renderer_rendering_method_mobile=$patchedProjectRenderingMethodM
         if ($installResult.ExitCode -ne 0) {
             $processExitCode = $installResult.ExitCode
             throw "Failed to install Android APK. Exit code: $($installResult.ExitCode)"
+        }
+
+        # Grant runtime permissions before launch. `adb install -r` does not
+        # grant them, so without this a platform-backed scene would depend on a
+        # permission being granted out of band (and the Camera2 provider cannot
+        # see the runtime permission at readiness -- a denial surfaces only at
+        # device open). Non-fatal: a failed grant is logged and warned about so
+        # a downstream failure is never silent, but a scene's synthetic path can
+        # still run, and a permission the device does not recognise is expected
+        # to fail here (e.g. a custom permission on a device that lacks it).
+        foreach ($permissionName in $AndroidGrantPermissions) {
+            if ([string]::IsNullOrWhiteSpace($permissionName)) {
+                continue
+            }
+            $grantResult = Invoke-CapturedProcess `
+                -FilePath $AdbPath `
+                -Arguments @("-s", $DeviceSerial, "shell", "pm", "grant", $androidPackageName, $permissionName) `
+                -WorkingDirectory $ProjectFullPath `
+                -CommandTimeoutSec 30 `
+                -StdoutLogPath $LogRecord.StdoutPath `
+                -StderrLogPath $LogRecord.StderrPath `
+                -StepLabel "adb_pm_grant_$permissionName" `
+                -AppendToLogs
+            if ($grantResult.ExitCode -ne 0) {
+                $grantDetail = ($grantResult.StderrText, $grantResult.StdoutText | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1)
+                Write-Warning ("Failed to grant Android permission '{0}' to {1} (exit {2}): {3}. A platform-backed scene requiring it will not succeed; a synthetic path still can." -f `
+                    $permissionName, $androidPackageName, $grantResult.ExitCode, ($grantDetail -replace '\s+', ' ').Trim())
+            }
         }
 
         $startResult = Invoke-CapturedProcess `
@@ -2014,7 +2167,7 @@ patched_project_renderer_rendering_method_mobile=$patchedProjectRenderingMethodM
         }
 
         if (-not $projectRestored) {
-            Set-Content -Path $projectFilePath -Value $originalProjectText
+            Set-Content -Path $projectFilePath -Value $originalProjectText -NoNewline
         }
         Remove-Item -LiteralPath $exportStagingDir -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -2207,7 +2360,8 @@ else {
             -ObservationTimeoutSec $TimeoutSec `
             -ExplicitPackageName $AndroidPackage `
             -ExplicitActivityName $AndroidActivity `
-            -FailurePatterns $HardFailurePatterns
+            -FailurePatterns $HardFailurePatterns `
+            -AllowNonInteractiveDevice:$AllowNonInteractiveDevice
 
         $timedOut = $androidResult.TimedOut
         $processExitCode = $androidResult.ProcessExitCode

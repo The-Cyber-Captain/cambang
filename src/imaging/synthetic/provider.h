@@ -391,7 +391,8 @@ private:
   void emit_native_destroy_(uint64_t native_id);
   void emit_camera_static_facts_(const DeviceState& d);
   void emit_capture_image_facts_(const CaptureRequest& request,
-                                 uint32_t image_member_index);
+                                 uint32_t image_member_index,
+                                 int32_t applied_exposure_compensation_milli_ev);
   uint64_t ensure_native_acquisition_session_(DeviceState& d);
   void retain_native_acquisition_session_for_stream_(DeviceState& d);
   void retain_native_acquisition_session_for_capture_(DeviceState& d);

@@ -2,18 +2,110 @@ extends Control
 
 const SCENE_LABEL := "870_to_image_soak_benchmark"
 const SCENE_RECORD_ID := "scene870_to_image_soak_summary"
-const SCENARIO_PATH := "res://scenarios/870_to_image_soak_2x_rig_live.json"
 const HW_A := "synthetic:0"
 const HW_B := "synthetic:1"
 const DEV_A := "device_a"
 const DEV_B := "device_b"
 const BENCH_RIG_ID := 870001
+# Distinct synthetic per-device pictures (full PictureConfig) so the two sources
+# render visibly distinct -- for BOTH the live streams and the captures, mirroring
+# what the removed scenario authored (checker/noise/solid + distinct colours).
+# Applied only for synthetic (platform providers reject a picture).
+const _SYNTHETIC_STREAM_PICTURE := {
+	DEV_A: {"preset": "checker", "seed": 87021, "solid_r": 255, "solid_g": 64, "solid_b": 64, "solid_a": 255, "checker_size_px": 24},
+	DEV_B: {"preset": "noise", "seed": 87022, "solid_r": 64, "solid_g": 160, "solid_b": 255, "solid_a": 255, "checker_size_px": 20},
+}
+const _SYNTHETIC_CAPTURE_PICTURE := {
+	DEV_A: {"preset": "checker", "seed": 87011, "solid_r": 16, "solid_g": 40, "solid_b": 96, "solid_a": 255, "checker_size_px": 18},
+	DEV_B: {"preset": "solid", "seed": 87012, "solid_r": 92, "solid_g": 44, "solid_b": 152, "solid_a": 255, "checker_size_px": 16},
+}
 
-# Core's rig admission gate fail-closes any multi-device rig capture unless a
-# camera-concurrency truth naming the exact combination has been ingested
-# (see docs/architecture -- CoreRuntime::grouped_rig_imaging_spec_admission_
-# failure_()). Mirrors 73_rig_capture_result_set_verification.gd's pattern.
-const RIG_CAMERA_DESCRIPTION_JSON := "{\"schema_version\":2,\"cameras\":[{\"camera_id\":\"synthetic:0\"},{\"camera_id\":\"synthetic:1\"}],\"concurrent_camera_support\":{\"supported\":true,\"camera_id_combinations\":[[\"synthetic:0\",\"synthetic:1\"]]}}"
+# Curated testable-equipment table (maintainer-owned), keyed by the
+# --cambang-bench-provider selection. Each entry names the two devices the rig
+# drives (by hardware_id) and whether their concurrent use is claimed to Core.
+# The rig's concurrency truth is built from this and ingested via
+# ingest_camera_description() before start(), because Core's rig admission gate
+# fail-closes any multi-device rig unless a truth naming the exact combination
+# was ingested (CoreRuntime::grouped_rig_imaging_spec_admission_failure_).
+#
+# Synthetic uses stable ids. Platform entries are added with the real equipment;
+# note that Camera2 ids are stable strings but WinRT ids are machine-specific
+# DeviceInformation symbolic links, and whether two cameras are truly concurrent
+# is discovered at runtime (a claimed-but-unusable combination surfaces as a rig
+# capture failure, not a silent wrong result).
+# Curated testable-equipment table. Each entry declares the camera-concurrency
+# the rig claims to Core plus which pair the rig drives. Two id regimes:
+#  - KNOWN ids (synthetic constants; Android's stable Camera2 id strings): the
+#    entry lists `cameras` + `concurrent_combinations` + `rig_pair`, and the
+#    concurrency truth is ingested before start().
+#  - DISCOVERED ids (WinRT DeviceInformation symbolic links -- machine-specific):
+#    the entry lists no cameras, and the enumerate-first path discovers the pair
+#    at runtime (start -> enumerate -> select -> stop -> ingest -> start).
+# Android matches by OS.get_model_name(); single-host OSes match their sole entry.
+# Adding a device is one table row.
+const EQUIPMENT := {
+	"synthetic": {
+		"cameras": [HW_A, HW_B],
+		"concurrent_combinations": [[HW_A, HW_B]],
+		"rig_pair": [HW_A, HW_B],
+		"permissions": [],
+	},
+	"platform_backed": {
+		"Android": [
+			{
+				"label": "galaxy_s20_plus",
+				"model_match": "SM-G986U1",
+				"permissions": ["android.permission.CAMERA"],
+				# Stable Camera2 ids (maintainer-supplied): five cameras, with the
+				# device's real concurrent combinations. The rig drives one of them.
+				"cameras": ["0", "1", "2", "3", "4"],
+				"concurrent_combinations": [["0", "1"], ["0", "3"]],
+				"rig_pair": ["0", "1"],
+			},
+			# hammer_construction_2_thermal, meta_quest_3: filled after the
+			{
+				"label": "hammer_construction_2_thermal",
+				"model_match": "Hammer_Construction_2_Thermal_5G",
+				"permissions": ["android.permission.CAMERA"],
+				# Stable Camera2 ids (maintainer-supplied): five cameras, with the
+				# device's real concurrent combinations. The rig drives one of them.
+				"cameras": ["0", "1"],
+				"concurrent_combinations": [],
+				"rig_pair": [],
+			},
+			{
+				"label": "meta_quest_3",
+				"model_match": "Quest 3",
+				# HEADSET_CAMERA covers the two passthrough cameras (50/51);
+				# AVATAR_CAMERA gates the virtual camera (id 1). Without the latter
+				# declared here the permission gate passes while openCamera on id 1
+				# fails with ACAMERA_ERROR_PERMISSION_DENIED (-10013), which reads as
+				# an opaque engage failure instead of a missing grant.
+				"permissions": [
+					"android.permission.CAMERA",
+					"horizonos.permission.HEADSET_CAMERA",
+					"horizonos.permission.AVATAR_CAMERA",
+				],
+				# Stable Camera2 ids (maintainer-supplied): five cameras, with the
+				# device's real concurrent combinations. The rig drives one of them.
+				"cameras": ["1", "50", "51"],
+				"concurrent_combinations": [["1", "50", "51"]],
+				"rig_pair": ["1", "51"],
+			},
+			# galaxy_s20_plus proof of concept (each needs a physical plug/unplug).
+		],
+		"Windows": [
+			{
+				"label": "winrt_host",
+				"model_match": "",  # single host: matched unconditionally
+				"permissions": [],  # WinRT consent model is permissive here
+				# No cameras/combinations: WinRT ids are machine-specific symbolic
+				# links -> enumerate-first path discovers the pair at runtime.
+				# (Populating this, if ever needed, requires on-host assistance.)
+			},
+		],
+	},
+}
 
 const SETUP_TIMEOUT_MS := 10000
 const PROFILE_APPLY_TIMEOUT_MS := 5000
@@ -22,7 +114,12 @@ const RIG_CAPTURE_TIMEOUT_US := 7000000
 const WARMUP_SEC_DEFAULT := 0.65
 const HUMAN_PHASE_SEC_DEFAULT := 3.00 #0.70
 const SUPERHUMAN_PHASE_SEC_DEFAULT := 0.35
-const RIG_PHASE_SEC_DEFAULT := 0.70
+# Rig captures are serialised (one in flight at a time, see _request_rig_capture)
+# and a rig result set takes ~0.9-1.5s to become ready on real hardware, so a rig
+# phase shorter than that cannot complete even one sample -- the old 0.70 default
+# meant rig phases never sampled at all and always reported under_sampled. Sized
+# for ~10 samples per rig phase at ~1.2s each.
+const RIG_PHASE_SEC_DEFAULT := 12.00
 const EXIT_VISUAL_HOLD_SEC_DEFAULT := 1.50
 const PREFLIGHT_STREAMS_ONLY_SEC := 10.00
 const STREAM_DISPLAY_REBIND_INTERVAL_US := 100000
@@ -45,6 +142,9 @@ const PHASE_PREFLIGHT := "preflight"
 const PHASE_RUNNING := "running"
 const PHASE_SETTLEMENT_PROBE := "settlement_probe"
 const PHASE_DONE := "done"
+# The bundle the acquisition-session settlement probe asserts is active. Named
+# once so the probe's guard and the skip check cannot drift apart.
+const ACQ_PROBE_BUNDLE_LABEL := "ev5_-2_-1_0_1_2"
 
 const SETTLEMENT_PROBE_SETTLE_TIMEOUT_US := 2500000
 const LOAD_PROFILE_HUMAN := "human"
@@ -106,7 +206,7 @@ var _devices := {
 		"device": null,
 		"stream_id": 0,
 		"stream_observed_changes": 0,
-		"stream_last_observed_revision": 0,
+		"stream_last_observed_mark": 0,
 		"stream_observation_first_us": 0,
 		"stream_observation_last_us": 0,
 		"live_display_bound": false,
@@ -119,7 +219,7 @@ var _devices := {
 		"device": null,
 		"stream_id": 0,
 		"stream_observed_changes": 0,
-		"stream_last_observed_revision": 0,
+		"stream_last_observed_mark": 0,
 		"stream_observation_first_us": 0,
 		"stream_observation_last_us": 0,
 		"live_display_bound": false,
@@ -127,7 +227,21 @@ var _devices := {
 	},
 }
 var _rig = null
+# Capability skips. A capability the attached hardware cannot achieve is skipped
+# LOUDLY rather than run-and-refused: the run still reports status=ok (that status
+# is reserved for real failures, and expected_unsupported is reserved for
+# output_form/renderer mismatch), but every skip is recorded here, logged at the
+# moment it is decided, named in the harness verdict's reason=, and marks the
+# run's benchmark numbers partial so a degraded run is never silently compared
+# against a full one.
+var _skips := []
+var _skip_rig := false
+var _skipped_bundle_labels := {}
 var _rig_inflight := 0
+# Unified public-API topology staging (no scenario): the setup phase drives
+# enumerate -> engage -> stream -> create_rig itself, once each.
+var _topology_engaged := false
+var _topology_streamed := false
 
 var _current_bundle_index := -1
 var _current_bundle := {}
@@ -226,43 +340,168 @@ func _process(delta: float) -> void:
 
 
 func _bootstrap() -> void:
-	if _provider_arg != "synthetic":
-		_finish(0, true, "provider_not_supported")
-		return
+	if _provider_arg == "synthetic":
+		_bootstrap_from_known_ids(EQUIPMENT.get("synthetic", {}), true)
+	else:
+		_bootstrap_platform()
 
+
+func _bootstrap_from_known_ids(equip: Dictionary, synthetic: bool) -> void:
+	# Known camera ids (synthetic constants, or Android's stable Camera2 id
+	# strings from the table): ingest the concurrency truth (cameras +
+	# combinations) before start(); the rig drives rig_pair. No enumerate-first.
+	var cameras: Array = equip.get("cameras", [])
+	var combinations: Array = equip.get("concurrent_combinations", [])
+	var rig_pair: Array = equip.get("rig_pair", [])
+	# Fewer than two cameras means the two-device soak cannot run at all -- that
+	# stays a whole-run bail. An absent rig_pair is different: every device-scoped
+	# phase is still valid, so run them and skip only the rig-scoped ones.
+	if cameras.size() < 2:
+		_finish(0, true, "equipment_incomplete:%s" % str(equip.get("label", _provider_arg)))
+		return
+	if rig_pair.size() < 2:
+		_skip_rig = true
+		_record_skip(
+			"rig",
+			"no_rig_pair_configured",
+			"%s declares rig_pair=%s (needs 2 camera ids)" % [
+				str(equip.get("label", _provider_arg)), str(rig_pair)
+			])
+	# The rig pair normally names the two devices to engage; without one, fall back
+	# to the first two declared cameras so the device-scoped phases still run.
+	var device_pair: Array = rig_pair if not _skip_rig else [cameras[0], cameras[1]]
+	_devices[DEV_A]["hardware_id"] = str(device_pair[0])
+	_devices[DEV_B]["hardware_id"] = str(device_pair[1])
 	CamBANGServer.stop()
-	# ingest_camera_description() only accepts while stopped; must run before
-	# start() or the rig's two-device capture will be rejected ERR_BUSY by the
-	# admission gate for the whole run (see RIG_CAMERA_DESCRIPTION_JSON above).
-	var ingest_err := int(CamBANGServer.ingest_camera_description(RIG_CAMERA_DESCRIPTION_JSON))
-	if ingest_err != OK:
-		_fail("bootstrap failed: ingest_camera_description returned %d" % ingest_err)
+	var truth := _build_concurrency_truth(cameras, combinations)
+	if int(CamBANGServer.ingest_camera_description(truth)) != OK:
+		_fail("bootstrap failed: ingest_camera_description")
 		return
-	var start_err := int(CamBANGServer.start(
-		CamBANGServer.PROVIDER_KIND_SYNTHETIC,
-		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
-		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME,
-		CamBANGServer.TIMELINE_RECONCILIATION_COMPLETION_GATED
-	))
+	var start_err := int(
+		CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC) if synthetic
+		else CamBANGServer.start()
+	)
 	if start_err != OK:
-		_fail("bootstrap failed: CamBANGServer.start synthetic timeline returned %d" % start_err)
+		_fail("bootstrap failed: start(%s) returned %d" % [_provider_arg, start_err])
 		return
+	_log("bootstrap: %s started (known ids, ingest-before-start); devices=%s rig=%s" % [
+		str(equip.get("label", _provider_arg)),
+		str(device_pair),
+		("skipped" if _skip_rig else str(rig_pair)),
+	])
 
-	var scenario_text := FileAccess.get_file_as_string(SCENARIO_PATH)
-	if scenario_text == "":
-		_fail("bootstrap failed: scenario missing at %s" % SCENARIO_PATH)
+
+func _bootstrap_platform() -> void:
+	# Resolve the curated entry for the attached hardware, verify its permission
+	# prerequisites (pre-granted for an automated soak).
+	var equip := _resolve_platform_equipment()
+	if equip.is_empty():
+		_finish(0, true, "equipment_not_configured:%s" % _platform_identity_text())
 		return
-	var load_err := int(CamBANGServer.load_external_scenario(scenario_text))
-	if load_err != OK:
-		_fail("bootstrap failed: load_external_scenario returned %d" % load_err)
+	if not _platform_permissions_granted(equip.get("permissions", [])):
+		_finish(0, true, "permission_not_granted:%s" % str(equip.get("label", "?")))
 		return
-	var scenario_start_err := int(CamBANGServer.start_scenario())
-	if scenario_start_err != OK:
-		_fail("bootstrap failed: start_scenario returned %d" % scenario_start_err)
+	# Android's Camera2 ids are stable and listed in the table -> known-id path.
+	if not (equip.get("cameras", []) as Array).is_empty():
+		_bootstrap_from_known_ids(equip, false)
 		return
-	_log("bootstrap: synthetic timeline scenario staged and started")
+	# WinRT etc.: ids are machine-specific symbolic links -> enumerate-first
+	# (discover the pair, then ingest): start -> enumerate -> select -> stop ->
+	# ingest -> start.
+	CamBANGServer.stop()
+	if int(CamBANGServer.start()) != OK:
+		_fail("platform bootstrap: initial start() failed")
+		return
+	var endpoints: Array = CamBANGServer.enumerate_devices()
+	if endpoints.size() < 2:
+		# Fewer than two cameras -> no rig here. Single-device degrade is a later
+		# refinement; for now report it plainly rather than fail hard.
+		CamBANGServer.stop()
+		_finish(0, true, "insufficient_cameras:%s:%d" % [str(equip.get("label", "?")), endpoints.size()])
+		return
+	var pair := _select_platform_pair(endpoints)
+	CamBANGServer.stop()
+	var truth := _build_concurrency_truth(pair, [pair])
+	if int(CamBANGServer.ingest_camera_description(truth)) != OK:
+		_fail("platform bootstrap: ingest_camera_description failed")
+		return
+	if int(CamBANGServer.start()) != OK:
+		_fail("platform bootstrap: working start() after ingest failed")
+		return
+	_devices[DEV_A]["hardware_id"] = str(pair[0])
+	_devices[DEV_B]["hardware_id"] = str(pair[1])
+	_log("bootstrap: %s started (enumerate-first); rig pair=%s" % [str(equip.get("label", "?")), str(pair)])
+
+
+func _platform_identity_text() -> String:
+	var model := (OS.get_model_name() if OS.has_method("get_model_name") else "?")
+	return "%s/%s" % [OS.get_name(), model]
+
+
+func _resolve_platform_equipment() -> Dictionary:
+	var os_entries: Array = EQUIPMENT.get("platform_backed", {}).get(OS.get_name(), [])
+	if os_entries.is_empty():
+		return {}
+	if OS.get_name() != "Android":
+		# Single-host OSes (e.g. Windows/WinRT): the sole entry, no model gate.
+		return os_entries[0]
+	var model := (OS.get_model_name() if OS.has_method("get_model_name") else "")
+	for e in os_entries:
+		if str((e as Dictionary).get("model_match", "")) == model:
+			return e
+	return {}
+
+
+func _platform_permissions_granted(perms: Array) -> bool:
+	# Automated soak: permissions are pre-granted out of band (run_godot.ps1
+	# -AndroidGrantPermissions). We only verify -- there is no in-scene dialog.
+	if OS.get_name() != "Android" or perms.is_empty():
+		return true
+	var granted := OS.get_granted_permissions()
+	for p in perms:
+		if not (str(p) in granted):
+			return false
+	return true
+
+
+func _select_platform_pair(endpoints: Array) -> Array:
+	# Default selection policy: the first two enumerated cameras. Extensible per
+	# equipment entry later (e.g. by facing/role) without hardcoding ids.
+	var ids := []
+	for ep in endpoints:
+		if typeof(ep) == TYPE_DICTIONARY:
+			var hw := str((ep as Dictionary).get("hardware_id", ""))
+			if hw != "":
+				ids.append(hw)
+	return ids.slice(0, 2)
+
+
+func _build_concurrency_truth(cameras: Array, combinations: Array) -> String:
+	var camera_dicts := []
+	for c in cameras:
+		camera_dicts.append({"camera_id": str(c)})
+	var combos := []
+	for combo in combinations:
+		var ids := []
+		for c in combo:
+			ids.append(str(c))
+		combos.append(ids)
+	return JSON.stringify({
+		"schema_version": 2,
+		"cameras": camera_dicts,
+		"concurrent_camera_support": {
+			"supported": combos.size() > 0,
+			"camera_id_combinations": combos,
+		},
+	})
 
 func _parse_args() -> void:
+	# Project-setting default for the provider: Android has no post-'--' user args,
+	# so a manual export or run_godot.ps1 can select the provider via this setting.
+	# The cmdline below still overrides it on the host.
+	var setting_provider := str(ProjectSettings.get_setting("cambang/maintainer/bench_provider", "")).strip_edges().to_lower()
+	if setting_provider != "":
+		_provider_arg = setting_provider
 	var args := OS.get_cmdline_user_args()
 	for raw_arg in args:
 		var arg := str(raw_arg)
@@ -656,118 +895,136 @@ func _poll_setup() -> void:
 	if snapshot == null:
 		return
 	_refresh_device_snapshot_cache(snapshot)
-	_latch_devices(snapshot)
-	_latch_streams(snapshot)
-	_latch_rig(snapshot)
-	_update_stream_display_views(true)
 
+	# Stage 1: engage the two enumerated devices (once). Waits for the provider
+	# baseline to advertise them first.
+	if not _topology_engaged:
+		var endpoints: Array = CamBANGServer.enumerate_devices()
+		if endpoints.size() < 2:
+			return
+		if not _engage_setup_devices(endpoints):
+			return  # _fail already reported the hard error
+		_topology_engaged = true
+		return
+
+	# Stage 2: once both engaged devices are live, create + start a PREVIEW stream
+	# on each (once). Device id/handle come from the engaged handles, not the
+	# snapshot, so create_stream runs on the direct handle it needs.
+	if not _topology_streamed:
+		if not (_setup_device_live(DEV_A) and _setup_device_live(DEV_B)):
+			return
+		if not _create_setup_streams():
+			return
+		_topology_streamed = true
+		return
+
+	# Stage 3: form the rig from the two engaged devices via the public API (once).
+	# Skipped outright when the equipment declares no authorized rig pair.
+	if _rig == null and not _skip_rig:
+		_rig = CamBANGServer.create_rig(PackedStringArray([
+			str(_devices[DEV_A].get("hardware_id", "")),
+			str(_devices[DEV_B].get("hardware_id", "")),
+		]))
+		if _rig == null:
+			_fail("setup: create_rig returned null (concurrency truth not authorizing the combination?)")
+			return
+		_log("setup: rig formed via create_rig id=%d" % int(_rig.get_id()))
+		return
+
+	# Stage 4: bind display views (streams must be producing), advance when ready.
+	# Device/stream ids and the rig handle already come from the API calls above.
+	_update_stream_display_views(true)
 	if _setup_ready():
 		_log("setup complete: devices, streams, rig and display views are ready")
 		_begin_next_bundle()
 
 
-func _latch_devices(snapshot: Dictionary) -> void:
-	for dv in snapshot.get("devices", []):
-		if typeof(dv) != TYPE_DICTIONARY:
-			continue
-		var rec: Dictionary = dv
-		var hw := str(rec.get("hardware_id", ""))
-		for device_key in _devices.keys():
-			var info: Dictionary = _devices[device_key]
-			if hw != str(info.get("hardware_id", "")):
-				continue
-			var device_id := int(rec.get("instance_id", 0))
-			if device_id <= 0:
-				continue
-			if int(info.get("device_id", 0)) != device_id:
-				info["device_id"] = device_id
-				info["device"] = CamBANGServer.get_device(device_id)
-				_devices[device_key] = info
-				_log("latched %s id=%d" % [str(info.get("label", device_key)), device_id])
+func _setup_device_live(device_key: String) -> bool:
+	var info: Dictionary = _devices[device_key]
+	if int(info.get("device_id", 0)) <= 0:
+		return false
+	var dev = info.get("device", null)
+	if dev == null:
+		return false
+	if dev.has_method("is_live"):
+		return bool(dev.is_live())
+	return true
 
 
-func _latch_streams(snapshot: Dictionary) -> void:
-	var stream_device_ids := {}
-	for sv in snapshot.get("streams", []):
-		if typeof(sv) != TYPE_DICTIONARY:
-			continue
-		var rec: Dictionary = sv
-		var stream_id := int(rec.get("stream_id", 0))
-		var device_id := int(rec.get("device_instance_id", rec.get("owner_device_instance_id", 0)))
-		var intent := str(rec.get("intent", ""))
-		var mode := str(rec.get("mode", ""))
-		if stream_id <= 0 or device_id <= 0:
-			continue
-		if intent != "PREVIEW":
-			continue
-		if mode != "FLOWING" and mode != "LIVE" and mode != "ACTIVE":
-			# Some snapshots expose lifecycle and operational axes separately; keep polling
-			# unless the stream result itself becomes observable below.
-			pass
-		stream_device_ids[device_id] = stream_id
-
-	for device_key in _devices.keys():
+func _engage_setup_devices(endpoints: Array) -> bool:
+	# Map the enumerated endpoints onto Device A/B by hardware_id and engage each.
+	var enumerated := {}
+	for ep in endpoints:
+		if typeof(ep) == TYPE_DICTIONARY:
+			enumerated[str((ep as Dictionary).get("hardware_id", ""))] = true
+	for device_key in [DEV_A, DEV_B]:
 		var info: Dictionary = _devices[device_key]
-		var device_id := int(info.get("device_id", 0))
-		if device_id <= 0:
-			continue
-		if stream_device_ids.has(device_id):
-			var stream_id := int(stream_device_ids[device_id])
-			if int(info.get("stream_id", 0)) != stream_id:
-				info["stream_id"] = stream_id
-				_devices[device_key] = info
-				_log("latched %s PREVIEW stream_id=%d" % [str(info.get("label", device_key)), stream_id])
+		var hw := str(info.get("hardware_id", ""))
+		if not enumerated.has(hw):
+			_fail("setup: expected device %s was not enumerated" % hw)
+			return false
+		var dev = CamBANGServer.get_device_for_hardware_id(hw)
+		if dev == null or int(dev.engage()) != OK:
+			_fail("setup: failed to engage %s" % hw)
+			return false
+		# Keep the direct engaged handle (create_stream needs it, not a
+		# get_device() snapshot handle) and take the instance id from it directly.
+		info["device"] = dev
+		info["device_id"] = int(dev.get_instance_id())
+		_devices[device_key] = info
+	return true
 
 
-func _latch_rig(snapshot: Dictionary) -> void:
-	if _rig != null:
-		return
-	var device_id_a := int(_devices[DEV_A].get("device_id", 0))
-	var device_id_b := int(_devices[DEV_B].get("device_id", 0))
-	if device_id_a <= 0 or device_id_b <= 0:
-		return
-	var expected := [device_id_a, device_id_b]
-	expected.sort()
-	for rv in snapshot.get("rigs", []):
-		if typeof(rv) != TYPE_DICTIONARY:
-			continue
-		var rec: Dictionary = rv
-		var rig_id := int(rec.get("rig_id", 0))
-		if rig_id <= 0:
-			continue
-		var members := _extract_rig_member_ids(rec)
-		members.sort()
-		if members == expected or rig_id == BENCH_RIG_ID:
-			_rig = CamBANGServer.get_rig(rig_id)
-			if _rig != null:
-				_log("latched rig id=%d members=%s" % [rig_id, str(members)])
-			return
+func _create_setup_streams() -> bool:
+	for device_key in [DEV_A, DEV_B]:
+		var info: Dictionary = _devices[device_key]
+		var dev = info.get("device", null)
+		if dev == null:
+			_fail("setup: device handle missing for %s at stream creation" % device_key)
+			return false
+		# Intent PREVIEW at the still-capture geometry -- the live preview streams
+		# the scenario used, now created directly through the public API.
+		var stream_def := {
+			"intent": CamBANGStream.INTENT_PREVIEW,
+			"profile": {
+				"width": STILL_PROFILE_WIDTH,
+				"height": STILL_PROFILE_HEIGHT,
+				"format_fourcc": CamBANGServer.PIXEL_FORMAT_RGBA,
+			},
+		}
+		# Synthetic-only: a distinct per-device stream picture so Device A and B are
+		# visibly distinct sources (the scenario used to author this). Platform
+		# providers reject a picture per supports_stream_picture_updates(), so it
+		# is only sent for synthetic.
+		if _provider_arg == "synthetic":
+			stream_def["picture"] = _SYNTHETIC_STREAM_PICTURE.get(device_key, {})
+		var stream = dev.create_stream(stream_def)
+		if stream == null:
+			_fail("setup: create_stream returned null for %s" % device_key)
+			return false
+		if int(stream.start()) != OK:
+			_fail("setup: stream.start() failed for %s" % device_key)
+			return false
+		# Keep the handle so the direct stream is not torn down mid-run.
+		info["stream"] = stream
+		info["stream_id"] = int(stream.get_stream_id())
+		_devices[device_key] = info
 
-
-func _extract_rig_member_ids(rig_rec: Dictionary) -> Array:
-	var ids := []
-	var members_v: Variant = rig_rec.get("member_device_instance_ids", null)
-	if typeof(members_v) == TYPE_ARRAY:
-		for v in members_v:
-			var id := int(v)
-			if id > 0:
-				ids.append(id)
-		return ids
-	var hw_members_v: Variant = rig_rec.get("member_hardware_ids", [])
-	if typeof(hw_members_v) == TYPE_ARRAY:
-		for hwv in hw_members_v:
-			var hw := str(hwv)
-			for device_key in _devices.keys():
-				var info: Dictionary = _devices[device_key]
-				if str(info.get("hardware_id", "")) == hw:
-					var id := int(info.get("device_id", 0))
-					if id > 0:
-						ids.append(id)
-	return ids
+		# Synthetic-only: a distinct per-device CAPTURE picture too, so the captured
+		# images (and the rig members) are visibly distinct, not just the live
+		# streams. Device-scoped, gated on supports_capture_picture_updates().
+		if _provider_arg == "synthetic":
+			var cap_picture: Dictionary = _SYNTHETIC_CAPTURE_PICTURE.get(device_key, {})
+			if not cap_picture.is_empty():
+				var cap_err := int(dev.set_capture_picture(cap_picture))
+				if cap_err != OK:
+					_fail("setup: set_capture_picture failed for %s (%d)" % [device_key, cap_err])
+					return false
+	return true
 
 
 func _setup_ready() -> bool:
-	if _rig == null:
+	if _rig == null and not _skip_rig:
 		return false
 	for device_key in [DEV_A, DEV_B]:
 		var info: Dictionary = _devices[device_key]
@@ -787,11 +1044,6 @@ func _update_stream_display_views(require_bind: bool) -> void:
 	var observe_result_advancement := now_us - _last_stream_observation_us >= 10000
 	if observe_result_advancement:
 		_last_stream_observation_us = now_us
-	var revisions_by_stream := {}
-	if observe_result_advancement:
-		var metrics = CamBANGServer.get_synthetic_metrics_snapshot()
-		if typeof(metrics) == TYPE_DICTIONARY:
-			revisions_by_stream = metrics.get("synthetic_stream_result_revisions", {})
 	for device_key in [DEV_A, DEV_B]:
 		var info: Dictionary = _devices[device_key]
 		var label = _stream_live_labels.get(device_key, null)
@@ -808,14 +1060,22 @@ func _update_stream_display_views(require_bind: bool) -> void:
 		if observe_result_advancement or should_recheck:
 			stream_result = CamBANGServer.get_stream_result_by_stream_id(stream_id)
 			if stream_result != null and observe_result_advancement:
-				var revision := int(revisions_by_stream.get(stream_id, 0))
-				var prior_revision := int(info.get("stream_last_observed_revision", 0))
-				if revision > prior_revision:
-					if int(info.get("stream_observation_first_us", 0)) == 0:
-						info["stream_observation_first_us"] = now_us
-					info["stream_observed_changes"] = int(info.get("stream_observed_changes", 0)) + (revision - prior_revision)
-					info["stream_observation_last_us"] = now_us
-				info["stream_last_observed_revision"] = revision
+				# Provider-agnostic stream-advancement: count distinct successive
+				# per-frame acquisition marks. The mark advances per delivered frame
+				# and repeats when no new frame arrived between polls, so each change
+				# is one observed delivery (native_reported on platform,
+				# virtual-camera-authored on synthetic; both monotonic). This replaces
+				# the synthetic-only synthetic_stream_result_revisions channel, which
+				# was empty -- hence observed_updates=0 -- on platform-backed runs.
+				var mark := _stream_acquisition_mark(stream_result)
+				if mark != 0:
+					var prior_mark := int(info.get("stream_last_observed_mark", 0))
+					if prior_mark != 0 and mark != prior_mark:
+						if int(info.get("stream_observation_first_us", 0)) == 0:
+							info["stream_observation_first_us"] = now_us
+						info["stream_observed_changes"] = int(info.get("stream_observed_changes", 0)) + 1
+						info["stream_observation_last_us"] = now_us
+					info["stream_last_observed_mark"] = mark
 		if not should_recheck and bound:
 			_set_label_text_if_changed(label, "%s\nstream_id=%d\nobserved_updates=%d\nobserved_update_fps=%.2f" % [
 				str(info.get("label", device_key)),
@@ -852,6 +1112,19 @@ func _update_stream_display_views(require_bind: bool) -> void:
 		_devices[device_key] = info
 
 
+func _stream_acquisition_mark(stream_result) -> int:
+	# Per-frame acquisition mark from the stream result's camera facts, or 0 when
+	# absent. add_acquisition_timing_camera_fact() omits the key entirely if the
+	# provider did not report timing, so a missing key reads as 0 (no advancement).
+	if stream_result == null or not stream_result.has_method("get_camera_facts"):
+		return 0
+	var facts: Dictionary = stream_result.get_camera_facts()
+	var at_v: Variant = facts.get("acquisition_timing", null)
+	if typeof(at_v) != TYPE_DICTIONARY:
+		return 0
+	return int((at_v as Dictionary).get("acquisition_mark", 0))
+
+
 func _stream_observed_fps(device_key: String) -> float:
 	var info: Dictionary = _devices[device_key]
 	var first_us := int(info.get("stream_observation_first_us", 0))
@@ -863,13 +1136,54 @@ func _stream_observed_fps(device_key: String) -> float:
 		return 0.0
 	return float(int(info.get("stream_observed_changes", 0))) / elapsed_sec
 
+func _record_skip(group: String, reason: String, evidence: String) -> void:
+	# One entry per skipped capability group. Logged immediately so the decision is
+	# visible in the run log at the point it was taken, not just in the summary.
+	_skips.append({
+		"group": group,
+		"reason": reason,
+		"evidence": evidence,
+		"at_us": _now_us(),
+	})
+	_log("SKIP [%s]: %s (%s)" % [group, reason, evidence])
+
+
+func _skipped_groups() -> Array:
+	var groups := []
+	for skip_v in _skips:
+		var group := str((skip_v as Dictionary).get("group", ""))
+		if group != "" and not groups.has(group):
+			groups.append(group)
+	return groups
+
+
+func _finish_reason_with_skips(base: String) -> String:
+	# The launcher parses reason= as a single \S+ token, so no whitespace here.
+	var groups := _skipped_groups()
+	if groups.is_empty():
+		return base
+	return "%s;skipped=%s" % [base, ",".join(groups)]
+
+
 func _begin_next_bundle() -> void:
 	_current_bundle_index += 1
 	if _current_bundle_index >= _bundle_definitions().size():
+		# The settlement probe is inherently bracket-dependent (it asserts the
+		# 5-member EV bundle is active), so a skipped bracket skips the probe too
+		# rather than driving it into the same deterministic refusal.
+		if _skipped_bundle_labels.has(ACQ_PROBE_BUNDLE_LABEL):
+			if not _acq_probe_attempted:
+				_acq_probe_attempted = true
+				_record_skip(
+					"settlement_probe",
+					"requires_skipped_bracket_bundle",
+					"%s was skipped, so the acquisition-session settlement probe cannot run" % ACQ_PROBE_BUNDLE_LABEL)
+			_finish(0, false, _finish_reason_with_skips("complete"))
+			return
 		if not _acq_probe_attempted:
 			_begin_acquisition_session_settlement_probe()
 			return
-		_finish(0, false)
+		_finish(0, false, _finish_reason_with_skips("complete"))
 		return
 	_current_bundle = _bundle_definitions()[_current_bundle_index]
 	_profile_requested = false
@@ -893,7 +1207,7 @@ func _begin_acquisition_session_settlement_probe() -> void:
 	_acq_probe_bundle_label = str(_current_bundle.get("label", ""))
 	_acq_probe_required_member_count = int(_current_bundle.get("member_count", 0))
 	_acq_probe_devices = {}
-	if _acq_probe_bundle_label != "ev5_-2_-1_0_1_2" or _acq_probe_required_member_count != 5:
+	if _acq_probe_bundle_label != ACQ_PROBE_BUNDLE_LABEL or _acq_probe_required_member_count != 5:
 		_fail("settlement probe failed: EV5 bundle was not active at probe start")
 		return
 	_freeze_benchmark_metrics()
@@ -944,7 +1258,7 @@ func _poll_acquisition_session_settlement_probe() -> void:
 	if _acq_probe_stage != "settle":
 		return
 	if _acq_probe_all_devices_settled() or _now_us() >= _acq_probe_settle_deadline_us:
-		_finish(0, false)
+		_finish(0, false, _finish_reason_with_skips("complete"))
 
 
 func _acq_probe_all_captures_finished() -> bool:
@@ -1062,12 +1376,68 @@ func _poll_profile_application() -> void:
 		_apply_current_bundle_profile()
 		return
 	if _profiles_visible_for_current_bundle():
+		_log("profile visible: %s" % str(_current_bundle.get("label", "")))
+		# Multi-member bundles are only knowable as supported by attempting one:
+		# the profile-set succeeds even where the device cannot bracket (providers
+		# advertise multi-image optimistically), so the refusal only surfaces at
+		# trigger_capture(). Probe once; on refusal skip the whole bundle rather
+		# than running every phase into the same deterministic rejection.
+		if not _probe_bundle_supported():
+			_begin_next_bundle()
+			return
 		_state = PHASE_WARMUP
 		_warmup_started_us = _now_us()
-		_log("profile visible: %s" % str(_current_bundle.get("label", "")))
 		return
 	if Time.get_ticks_msec() - _profile_started_ms > PROFILE_APPLY_TIMEOUT_MS:
 		_fail("profile timeout: expected still profile did not become visible for %s" % str(_current_bundle.get("label", "")))
+
+
+func _probe_bundle_supported() -> bool:
+	# Single-member bundles are always attemptable; only bracket bundles need the
+	# probe. Returns false when the bundle must be skipped.
+	var label := str(_current_bundle.get("label", ""))
+	if int(_current_bundle.get("member_count", 0)) <= 1:
+		return true
+	var info: Dictionary = _devices[DEV_A]
+	var device = info.get("device", null)
+	if device == null:
+		return true  # nothing to probe with; let the phases run and report normally
+	var baseline_capture_id := _device_last_capture_id(DEV_A)
+	var trigger_start := _now_us()
+	var err := int(device.trigger_capture())
+	var trigger_end := _now_us()
+	if err != OK:
+		# A refusal is synchronous and starts nothing, so there is no capture to
+		# account for here -- the device simply cannot supply this bundle.
+		_skipped_bundle_labels[label] = true
+		_record_skip(
+			"bracket",
+			"device_cannot_supply_bundle",
+			"%s (%d members) refused at trigger_capture on %s: err=%d" % [
+				label, int(_current_bundle.get("member_count", 0)), DEV_A, err
+			])
+		return false
+	# Accepted: track it the way a preflight capture is tracked (phase_index=-1)
+	# so it drains normally without being attributed to any benchmark phase.
+	info["inflight_captures"] = int(info.get("inflight_captures", 0)) + 1
+	_devices[DEV_A] = info
+	_capture_jobs.append({
+		"kind": "device_capture",
+		"device_key": DEV_A,
+		"device": device,
+		"device_id": int(info.get("device_id", 0)),
+		"request_us": trigger_start,
+		"trigger_start_us": trigger_start,
+		"trigger_end_us": trigger_end,
+		"trigger_call_us": trigger_end - trigger_start,
+		"baseline_capture_id": baseline_capture_id,
+		"bundle_label": label,
+		"expected_member_count": int(_current_bundle.get("member_count", 0)),
+		"phase_index": -1,
+		"visual_sequence": _current_phase_visual_sequence,
+		"is_preflight_capture": true,
+	})
+	return true
 
 
 func _apply_current_bundle_profile() -> void:
@@ -1080,7 +1450,10 @@ func _apply_current_bundle_profile() -> void:
 			return
 		var still_profile_before := _get_device_still_profile(int(info.get("device_id", 0)))
 		_profile_before_by_device[device_key] = int(still_profile_before.get("version", -1))
-		if _still_profile_matches_members(still_profile_before, members):
+		# Members alone are not enough on a platform-backed provider: a single-member
+		# (metered_only) bundle matches the device default, which carries the wrong
+		# geometry (Camera2's 640x480), so the apply must still run to pin STILL_PROFILE.
+		if _still_profile_matches_members(still_profile_before, members) and _still_profile_geometry_ok(still_profile_before):
 			continue
 		var request := _make_still_profile_request(members, still_profile_before)
 		var err := int(device.set_still_capture_profile(request))
@@ -1091,8 +1464,21 @@ func _apply_current_bundle_profile() -> void:
 
 
 func _make_still_profile_request(members: Array, visible_still_profile: Dictionary) -> Dictionary:
+	# Camera2/WinRT couple the still to the live feed geometry: a session's output
+	# set is fixed at creation and one device holds only one session, so a still
+	# whose geometry differs from the producing stream is refused
+	# (ERR_PLATFORM_CONSTRAINT) rather than rebuilding the session under a live feed
+	# (see the Camera2 note in docs/dev/build_and_scaffolding.md). The soak's streams
+	# are created at STILL_PROFILE, so on a platform-backed provider pin the capture
+	# there too instead of inheriting the provider's default visible still geometry
+	# (e.g. Camera2's 640x480 capture-template default, which drove the mismatch).
+	# Synthetic has no such coupling; leave its geometry exactly as before so the
+	# approved baseline is unchanged.
 	var width: int = int(visible_still_profile.get("width", STILL_PROFILE_WIDTH))
 	var height: int = int(visible_still_profile.get("height", STILL_PROFILE_HEIGHT))
+	if _provider_arg != "synthetic":
+		width = STILL_PROFILE_WIDTH
+		height = STILL_PROFILE_HEIGHT
 	var format_fourcc: int = int(visible_still_profile.get("format_fourcc", visible_still_profile.get("format", CamBANGServer.PIXEL_FORMAT_RGBA)))
 	if width <= 0:
 		width = STILL_PROFILE_WIDTH
@@ -1145,6 +1531,8 @@ func _profiles_visible_for_current_bundle() -> bool:
 		if still_profile.is_empty():
 			return false
 		if not _still_profile_matches_members(still_profile, members):
+			return false
+		if not _still_profile_geometry_ok(still_profile):
 			return false
 		var before := int(_profile_before_by_device.get(device_key, -1))
 		if before >= 0 and int(still_profile.get("version", -1)) < before:
@@ -1212,6 +1600,15 @@ func _still_profile_matches_members(still_profile: Dictionary, expected_members:
 		if int(o.get("intended_exposure_compensation_milli_ev", 0)) != int(e.get("intended_exposure_compensation_milli_ev", 0)):
 			return false
 	return true
+
+
+func _still_profile_geometry_ok(still_profile: Dictionary) -> bool:
+	# Synthetic keeps its historical still geometry (no feed coupling), so it never
+	# blocks the members-match skip. Platform-backed providers must capture at
+	# STILL_PROFILE to match the producing feed (see _make_still_profile_request).
+	if _provider_arg == "synthetic":
+		return true
+	return int(still_profile.get("width", -1)) == STILL_PROFILE_WIDTH and int(still_profile.get("height", -1)) == STILL_PROFILE_HEIGHT
 
 
 func _role_to_code(role_v: Variant) -> int:
@@ -1340,9 +1737,12 @@ func _make_phase_matrix() -> Array:
 			phases.append(_phase_def(mode, scope, true, false, false, "Capture"))
 			phases.append(_phase_def(mode, scope, false, true, false, "Stream"))
 			phases.append(_phase_def(mode, scope, true, true, false, "Capture & Stream"))
-	phases.append(_phase_def("rig", {"scope": "rig", "devices": [DEV_A, DEV_B]}, false, false, true, "Rig-capture"))
-	phases.append(_phase_def("rig", {"scope": "rig_plus_capture", "devices": [DEV_A, DEV_B]}, true, false, true, "Rig-capture & Capture"))
-	phases.append(_phase_def("rig", {"scope": "rig_plus_capture_stream", "devices": [DEV_A, DEV_B]}, true, true, true, "Rig-capture & Capture & Stream"))
+	# Rig-scoped phases are omitted entirely when the hardware has no authorized
+	# rig pair -- the skip is recorded in the manifest, not silently absent.
+	if not _skip_rig:
+		phases.append(_phase_def("rig", {"scope": "rig", "devices": [DEV_A, DEV_B]}, false, false, true, "Rig-capture"))
+		phases.append(_phase_def("rig", {"scope": "rig_plus_capture", "devices": [DEV_A, DEV_B]}, true, false, true, "Rig-capture & Capture"))
+		phases.append(_phase_def("rig", {"scope": "rig_plus_capture_stream", "devices": [DEV_A, DEV_B]}, true, true, true, "Rig-capture & Capture & Stream"))
 	return phases
 
 
@@ -2429,6 +2829,12 @@ func _build_summary(exit_code: int, expected_unsupported: bool) -> Dictionary:
 		"scene": SCENE_LABEL,
 		"exit_code": exit_code,
 		"expected_unsupported": expected_unsupported,
+		# Capabilities the attached hardware could not achieve. Non-empty means the
+		# benchmark numbers below cover only part of the matrix and must not be
+		# compared against a full run.
+		"skipped": _skips.duplicate(true),
+		"skipped_groups": _skipped_groups(),
+		"baselines_partial": not _skips.is_empty(),
 		"harness": {
 			"status": _harness_status_for_finish(exit_code, expected_unsupported),
 			"reason": _finish_reason,
@@ -2460,7 +2866,7 @@ func _build_summary(exit_code: int, expected_unsupported: bool) -> Dictionary:
 		"load_model": load_model,
 		"load_delivery": load_delivery,
 		"baseline_validity": _baseline_validity_summary(exit_code, load_delivery),
-		"scenario": SCENARIO_PATH,
+		"scenario": "none (public-api topology, no scenario)",
 		"capture_bundle_runs": _group_phase_records_by_bundle(_completed_phase_records),
 		"benchmark_frame_stats": _numeric_stats(_run_frame_ms),
 		"run_frame_stats": _numeric_stats(_run_frame_ms),

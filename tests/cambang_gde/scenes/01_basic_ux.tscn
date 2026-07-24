@@ -35,16 +35,16 @@ var capture_profile_00 : Dictionary = {
 			\"role\": CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED,
 			\"intended_exposure_compensation_milli_ev\": 0,
 		},
-		#{
-			#\"image_member_index\": 1,
-			#\"role\": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
-			#\"intended_exposure_compensation_milli_ev\": -1000,
-		#},
-		#{
-			#\"image_member_index\": 2,
-			#\"role\": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
-			#\"intended_exposure_compensation_milli_ev\": 1000,
-		#},
+		{
+			\"image_member_index\": 1,
+			\"role\": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			\"intended_exposure_compensation_milli_ev\": -4000,
+		},
+		{
+			\"image_member_index\": 2,
+			\"role\": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			\"intended_exposure_compensation_milli_ev\": 4000,
+		},
 		]
 	},
 }
@@ -85,9 +85,17 @@ func _plan_posture_is_gpu(posture: String) -> bool:
 	return posture.begins_with(\"GPU-primary\")
 
 func _ready():
+	var camera_permission = \"android.permission.CAMERA\"
+	if OS.get_granted_permissions().has(camera_permission):
+		print(\"Camera permission already granted!\")
+	else:
+		# Request the permission from the user
+		OS.request_permissions()
+		await get_tree().create_timer(5.0).timeout
+	
 	CamBANGServer.set_capture_geolocation(FAKE_LOCATION)
-	CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC)
-	#CamBANGServer.start(CamBANGServer.PROVIDER_KIND_PLATFORM_BACKED)
+	#CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC)
+	CamBANGServer.start(CamBANGServer.PROVIDER_KIND_PLATFORM_BACKED)
 	var endpoints: Array = CamBANGServer.enumerate_devices()
 	if endpoints.is_empty():
 		push_error(\"KERR No CamBANG endpoints\")
@@ -105,7 +113,7 @@ func _ready():
 		return
 	
 	## synthetic:0
-	device_00 = CamBANGServer.get_device_for_hardware_id(\"synthetic:0\")
+	#device_00 = CamBANGServer.get_device_for_hardware_id(\"synthetic:0\")
 	#CamBANGServer.get_device()
 	
 	## razer built-in
@@ -113,6 +121,10 @@ func _ready():
 
 	## usb
 	#device_00 = CamBANGServer.get_device_for_hardware_id(\"\\\\\\\\?\\\\USB#VID_328F&PID_002D&MI_00#6&eb63420&2&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\\\\GLOBAL\")
+
+	## Camera2 device 0
+	device_00 = CamBANGServer.get_device_for_hardware_id(\"0\")
+
 
 	#var device_01 : CamBANGDevice = CamBANGServer.get_device_for_hardware_id(\"synthetic:1\")
 	device_00.set_still_capture_profile(capture_profile_00)
@@ -125,6 +137,7 @@ func _ready():
 		await device_00.live_changed
 
 	#var stream_00 : CamBANGStream = device_00.create_stream()
+
 	stream_00 = device_00.create_stream(({
 	\"intent\": CamBANGStream.INTENT_VIEWFINDER,
 	\"profile\": {
@@ -133,33 +146,33 @@ func _ready():
 		\"format_fourcc\": CamBANGServer.PIXEL_FORMAT_RGBA,
 		\"target_fps_min\": 30,
 		\"target_fps_max\": 30,
-	}
-}))
-	var stream_00_b : CamBANGStream = device_00.create_stream()
-
+		}
+	}))
 	
-	stream_00.start()
+	#stream_00.start()
 	#stream_00_b.start()
 
-	while not stream_00.result_live:
-		await stream_00.result_live_changed
-		
-	var stream_result := stream_00.get_result()
-	if stream_result == null:
-		push_error(\"KERR stream result unexpectedly null after result_live\")
-		return
-
-	%StreamDisplayTexture.texture = stream_result.get_display_view()
+	#while not stream_00.result_live:
+		#await stream_00.result_live_changed
+		#
+	#var stream_result := stream_00.get_result()
+	#if stream_result == null:
+		#push_error(\"KERR stream result unexpectedly null after result_live\")
+		#return
+#
+	#%StreamDisplayTexture.texture = stream_result.get_display_view()
+	#
 	
-	await get_tree().create_timer(50.0).timeout
-	print(\"HERE I AM FUCKER\")
-	stream_00.stop()
-	stream_00.destroy()
-	#stream_00_b.destroy()
-	#CamBANGServer.stop()
-	%StreamDisplayTexture.texture = null
-	var huh = device_00.disengage()
-	print(\"Huh?: %s\" % huh)
+	##-------------------------
+	#await get_tree().create_timer(50.0).timeout
+	#print(\"HERE I AM FUCKER\")
+	#stream_00.stop()
+	#stream_00.destroy()
+	##stream_00_b.destroy()
+	##CamBANGServer.stop()
+	#%StreamDisplayTexture.texture = null
+	#var huh = device_00.disengage()
+	#print(\"Huh?: %s\" % huh)
 
 
 func _process(delta: float) -> void:
@@ -174,19 +187,25 @@ func _do_capture():
 		await get_tree().process_frame
 	#print(\"stopped waiting\")
 	var capture_result : CamBANGCaptureResult = device_00.get_result()
+	
 	#var stream_result : CamBANGStreamResult = stream_00.get_result()
 	%CaptureDisplayTexture.texture = ImageTexture.create_from_image(capture_result.to_image())
+	%CaptureDisplayTexture01.texture = ImageTexture.create_from_image(capture_result.to_image_member(1))
+
 	print(\"KERR: GEO %s\" % capture_result.get_geolocation())
 	print(\"KERR: OPTICAL CALIBRATION %s\" % capture_result.get_image_properties())
 
 
 	var member: Dictionary = capture_result.get_image_member(0)
+	var member01: Dictionary = capture_result.get_image_member(1)
+
 	
 	if member.has(\"camera_facts\"):
 		var p: Dictionary
 		var d: Dictionary
 		var k: Dictionary
 		var facts: Dictionary = member[\"camera_facts\"]
+		print(\"Facts don't do what you want them to: %s\" % facts)
 
 		
 		if facts.has(\"facing\"):
@@ -215,12 +234,15 @@ func _do_capture():
 		# reference geometry, \"origin\"
 		if facts.has(\"pose\"):
 			p = facts[\"pose\"]
-		
-		%CaptureInfoText.text = str(\"pose: \", p, \"\\nDistortion: \", d, \"\\nIntrinsics: \", k)
-	
-	%CaptureInfoText.text += str(\"\\nGEO: \", capture_result.get_geolocation())
-	%CaptureInfoText.text += str(\"\\nMembers: \", capture_result.get_image_count())
-	
+		%CaptureInfoText.text = str(\"Time: %s\\nISO: %s\" % [facts[\"acquisition_timing\"], facts[\"sensor_sensitivity_iso\"]])
+
+		#%CaptureInfoText.text = str(\"pose: \", p, \"\\nDistortion: \", d, \"\\nIntrinsics: \", k)
+	var facts01: Dictionary = member01[\"camera_facts\"]
+
+	%CaptureInfoText01.text = str(\"Time: %s\\nISO: %s\" % [facts01[\"acquisition_timing\"], facts01[\"sensor_sensitivity_iso\"]])
+
+	#%CaptureInfoText.text += str(\"\\nGEO: \", capture_result.get_geolocation())
+	#%CaptureInfoText.text += str(\"\\nMembers: \", capture_result.get_image_count())
 func _do_teardown():
 	# some stuff
 	await get_tree().create_timer(WAIT_BEFORE_QUIT).timeout
@@ -279,6 +301,7 @@ layout_mode = 2
 layout_mode = 2
 
 [node name="CaptureButton" type="Button" parent="MarginContainer/VBoxContainer/HBoxContainer"]
+custom_minimum_size = Vector2(0, 64)
 layout_mode = 2
 size_flags_horizontal = 3
 text = "Capture"
@@ -290,20 +313,42 @@ layout_mode = 2
 size_flags_horizontal = 4
 texture = SubResource("GradientTexture1D_8sgf2")
 
-[node name="HBoxContainer2" type="HBoxContainer" parent="MarginContainer/VBoxContainer"]
+[node name="HBoxContainer4" type="HBoxContainer" parent="MarginContainer/VBoxContainer"]
 layout_mode = 2
 
-[node name="CaptureDisplayTexture" type="TextureRect" parent="MarginContainer/VBoxContainer/HBoxContainer2"]
+[node name="HBoxContainer2" type="HBoxContainer" parent="MarginContainer/VBoxContainer/HBoxContainer4"]
+layout_mode = 2
+
+[node name="CaptureDisplayTexture" type="TextureRect" parent="MarginContainer/VBoxContainer/HBoxContainer4/HBoxContainer2"]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(320, 180)
 layout_mode = 2
 size_flags_horizontal = 4
 texture = SubResource("GradientTexture1D_1g2es")
 
-[node name="CaptureInfoText" type="Label" parent="MarginContainer/VBoxContainer/HBoxContainer2"]
+[node name="CaptureInfoText" type="Label" parent="MarginContainer/VBoxContainer/HBoxContainer4/HBoxContainer2"]
 unique_name_in_owner = true
+custom_minimum_size = Vector2(300, 0)
+layout_mode = 2
+text = "<capture info>."
+autowrap_mode = 1
+
+[node name="HBoxContainer3" type="HBoxContainer" parent="MarginContainer/VBoxContainer/HBoxContainer4"]
+layout_mode = 2
+
+[node name="CaptureDisplayTexture01" type="TextureRect" parent="MarginContainer/VBoxContainer/HBoxContainer4/HBoxContainer3"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(320, 180)
+layout_mode = 2
+size_flags_horizontal = 4
+texture = SubResource("GradientTexture1D_1g2es")
+
+[node name="CaptureInfoText01" type="Label" parent="MarginContainer/VBoxContainer/HBoxContainer4/HBoxContainer3"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(300, 0)
 layout_mode = 2
 text = "<capture info>"
+autowrap_mode = 1
 
 [node name="CamBANGStatusPanel" type="PanelContainer" parent="MarginContainer/VBoxContainer"]
 custom_minimum_size = Vector2(320, 0)

@@ -248,6 +248,29 @@ def _godot_cpp_lib_path(platform: str, target: str, arch: str, windows_uses_ming
     return os.path.join("thirdparty", "godot-cpp", "bin", f"libgodot-cpp.{platform}.{target}.{arch}.{ext}")
 
 
+def _windows_native_path(path: str) -> str:
+    """Convert an MSYS/Cygwin-style path (/c/Compilers/...) to a native Windows
+    path (C:/Compilers/...).
+
+    The root build reaches its MinGW compiler through SCons's `mingw` tool,
+    which resolves bare `g++` via PATH, so an MSYS-style `mingw_prefix` never
+    has to be launched. The *delegated* godot-cpp sub-build is different: its
+    windows.py builds an absolute compiler path from `mingw_prefix`
+    (`<prefix>/bin/x86_64-w64-mingw32-g++`) and SCons spawns it directly. A
+    native-Windows process cannot launch `/c/...`; only `C:/...` works. So the
+    prefix must be normalized before it crosses into the delegated build.
+
+    Only the leading `/<drive>/` form is rewritten; anything already
+    Windows-shaped (or a bare relative prefix) is returned unchanged.
+    """
+    if os.name != "nt" or not path:
+        return path
+    parts = path.replace("\\", "/").split("/")
+    if len(parts) >= 3 and parts[0] == "" and len(parts[1]) == 1 and parts[1].isalpha():
+        return parts[1].upper() + ":/" + "/".join(parts[2:])
+    return path
+
+
 def _godot_cpp_scons_args(env, platform: str, target: str, arch: str, precision: str, windows_uses_mingw: bool):
     args = [
         f'"{python_exe}"',
@@ -263,7 +286,9 @@ def _godot_cpp_scons_args(env, platform: str, target: str, arch: str, precision:
     if platform == "windows" and windows_uses_mingw:
         args.append("use_mingw=yes")
         if env["mingw_prefix"]:
-            args.append(f"mingw_prefix={env['mingw_prefix']}")
+            # The delegated build spawns the compiler by absolute path, so an
+            # MSYS-style prefix (/c/...) would be unlaunchable on Windows.
+            args.append(f"mingw_prefix={_windows_native_path(env['mingw_prefix'])}")
         if env["use_llvm"] == "yes":
             args.append("use_llvm=yes")
     if platform == "android":
@@ -314,7 +339,11 @@ GDE_PROVIDER_RESOLUTION = {
     "android": {
         "family": "android_camera2",
         "location": os.path.join("src", "imaging", "platform", "android"),
-        "implemented": False,
+        "implemented": True,
+        # Camera2 NDK + AImageReader ship with the NDK sysroot the Android GDE
+        # environment already targets, so no extra toolchain gate applies.
+        "defines": ["CAMBANG_PROVIDER_ANDROID_CAMERA2=1"],
+        "libs": ["camera2ndk", "mediandk", "android", "log"],
     },
     "linux": {
         "family": "linux_v4l2",

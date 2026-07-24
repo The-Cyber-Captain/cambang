@@ -101,6 +101,15 @@ public:
   godot::Variant get_active_provider_config() const;
   godot::Dictionary get_provider_support() const;
   godot::Variant get_synthetic_metrics_snapshot() const;
+  // Provider-neutral view of Core's backing-plan evaluation reports, sourced
+  // directly from CoreRuntime rather than through the synthetic-metrics crutch,
+  // so it is available under every provider. Returns a NIL Variant when the
+  // runtime is not running; otherwise an Array of per-target report
+  // Dictionaries. Diagnostic/verification surface only -- these reports are
+  // deliberately not part of the published snapshot (see
+  // docs/status_panel_surface_policy.md); this reads Core registry-backed truth
+  // on demand.
+  godot::Variant get_backing_plan_evaluation_diagnostics() const;
 
   godot::Error select_builtin_scenario(const godot::String& scenario_name);
   godot::Error load_external_scenario(const godot::String& json_text);
@@ -121,6 +130,10 @@ public:
   godot::Ref<CamBANGDevice> get_device_for_hardware_id(const godot::String& hardware_id) const;
   godot::Ref<CamBANGDevice> get_device(uint64_t device_instance_id) const;
   godot::Ref<CamBANGRig> get_rig(uint64_t rig_id) const;
+  // Form a rig from two or more engaged devices' hardware ids and return its
+  // bound handle, or null if the ingested concurrency truth does not authorize
+  // the combination. The server mints the rig_id (like capture_id).
+  godot::Ref<CamBANGRig> create_rig(const godot::PackedStringArray& member_hardware_ids);
   godot::Ref<CamBANGStreamResult> get_stream_result_by_stream_id(uint64_t stream_id) const;
   godot::Ref<CamBANGCaptureResult> get_capture_result_by_id(uint64_t capture_id, uint64_t device_instance_id) const;
   uint64_t get_latest_capture_id_for_device(uint64_t device_instance_id) const;
@@ -138,6 +151,10 @@ public:
   godot::Error set_device_still_capture_profile(uint64_t device_instance_id,
                                                 const CaptureProfile& profile,
                                                 const CaptureStillImageBundle& still_image_bundle);
+  // Device-scoped capture picture (pattern appearance) update; parses the full
+  // PictureConfig from the dict, gated on supports_capture_picture_updates().
+  godot::Error set_device_capture_picture(uint64_t device_instance_id,
+                                          const godot::Dictionary& picture_def);
   godot::Error set_endpoint_still_capture_profile_startup_intent(
       const godot::String& hardware_id,
       const CaptureProfile& profile,
@@ -354,6 +371,7 @@ private:
   // temporary dev scaffolding to attach/initialize the provider.
   std::unique_ptr<ICameraProvider> provider_;
   std::atomic<uint64_t> next_capture_id_{1};
+  std::atomic<uint64_t> next_rig_id_{1};
   std::atomic<uint64_t> next_direct_device_instance_id_{DIRECT_DEVICE_INSTANCE_ID_BASE};
   std::atomic<uint64_t> next_direct_root_id_{DIRECT_ROOT_ID_BASE};
   std::atomic<uint64_t> next_direct_stream_id_{DIRECT_STREAM_ID_BASE};

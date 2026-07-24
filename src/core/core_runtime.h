@@ -522,6 +522,15 @@ enum class TryCloseDeviceStatus : uint8_t {
       uint64_t rig_id,
       const std::vector<std::string>& member_hardware_ids) noexcept;
 
+  // Form a rig record from member hardware ids outside any synthetic scenario,
+  // admitted only if the ingested camera-concurrency truth authorizes the exact
+  // combination (the same gate grouped_rig_imaging_spec_admission_failure_ uses
+  // at trigger time). Returns false if the combination is unauthorized or the
+  // retain fails. The caller (CamBANGServer::create_rig) mints the rig_id.
+  bool create_rig_from_hardware_ids(
+      uint64_t rig_id,
+      const std::vector<std::string>& member_hardware_ids) noexcept;
+
   enum class IngestCameraConcurrencyStatus : uint8_t {
     Ok = 0,
     Busy = 1,
