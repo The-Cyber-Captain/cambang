@@ -31,11 +31,17 @@ param(
     # Runtime permissions to grant on Android after install, before launch.
     # Camera access is a runtime permission that `adb install -r` does not grant,
     # so a windowless verifier (e.g. 768) would otherwise depend on a permission
-    # being granted out of band. Extensible on purpose: a Horizon headset would
-    # add horizonos.permission.HEADSET_CAMERA here. A failed grant is reported
-    # loudly but does not abort -- a scene may still run its synthetic path, and
-    # a permission a device does not recognise is not a harness failure.
-    [string[]]$AndroidGrantPermissions = @("android.permission.CAMERA")
+    # being granted out of band. A failed grant is reported loudly but does not
+    # abort -- a scene may still run its synthetic path, and a permission a device
+    # does not recognise is not a harness failure, which is why the Horizon
+    # headset permissions are safe to request unconditionally: HEADSET_CAMERA
+    # covers a Quest's passthrough cameras and AVATAR_CAMERA its virtual camera,
+    # and both are simply ignored by handsets that do not declare them.
+    [string[]]$AndroidGrantPermissions = @(
+        "android.permission.CAMERA",
+        "horizonos.permission.HEADSET_CAMERA",
+        "horizonos.permission.AVATAR_CAMERA"
+    )
 )
 
 Set-StrictMode -Version Latest
@@ -1122,6 +1128,8 @@ function Get-AndroidLaunchSettingsFromExtraArgs {
         HasSyntheticStreamCapabilityDowngrades = $false
         SyntheticCaptureCapabilityDowngrades = ""
         HasSyntheticCaptureCapabilityDowngrades = $false
+        BenchProvider = ""
+        HasBenchProvider = $false
         UnsupportedArgs = New-Object System.Collections.Generic.List[string]
     }
 
@@ -1165,6 +1173,26 @@ function Get-AndroidLaunchSettingsFromExtraArgs {
             continue
         }
 
+        # Android has no post-'--' user args, so the bench provider cannot ride
+        # OS.get_cmdline_user_args() the way it does on Windows. Translate it into
+        # the cambang/maintainer/bench_provider project setting instead, which
+        # 870's _parse_args() reads as its default.
+        if ($arg -like "--cambang-bench-provider=*") {
+            $result.BenchProvider = $arg.Substring("--cambang-bench-provider=".Length)
+            $result.HasBenchProvider = $true
+            continue
+        }
+
+        if ($arg -eq "--cambang-bench-provider") {
+            if ($index + 1 -ge $ExtraArgValues.Count) {
+                throw "Expected value after --cambang-bench-provider."
+            }
+            $index++
+            $result.BenchProvider = $ExtraArgValues[$index]
+            $result.HasBenchProvider = $true
+            continue
+        }
+
         $result.UnsupportedArgs.Add($arg)
     }
 
@@ -1192,6 +1220,15 @@ function Get-PatchedAndroidProjectText {
     }
     if ($AndroidLaunchSettings.HasSyntheticCaptureCapabilityDowngrades) {
         $updated = Set-SingleLineValue -Text $updated -LinePrefix 'maintainer/synthetic_capture_capability_downgrades=' -NewValue ('"{0}"' -f $AndroidLaunchSettings.SyntheticCaptureCapabilityDowngrades)
+    }
+    if ($AndroidLaunchSettings.HasBenchProvider) {
+        # Not present in project.godot by default, so insert it into [cambang]
+        # rather than only replacing an existing line.
+        $updated = Set-OrInsertSingleLineValue `
+            -Text $updated `
+            -LinePrefix 'maintainer/bench_provider=' `
+            -NewValue ('"{0}"' -f $AndroidLaunchSettings.BenchProvider) `
+            -InsertAfterLinePrefix 'maintainer/synthetic_producer_output_form='
     }
     $renderingMethod = if ($AndroidLaunchSettings.HasRenderingMethod) {
         $AndroidLaunchSettings.RenderingMethod
@@ -1779,13 +1816,14 @@ rendering_method=$(if ($AndroidLaunchSettings.HasRenderingMethod) { $AndroidLaun
 synthetic_producer_output_form=$($AndroidLaunchSettings.SyntheticProducerOutputForm)
 synthetic_stream_capability_downgrades=$($AndroidLaunchSettings.SyntheticStreamCapabilityDowngrades)
 synthetic_capture_capability_downgrades=$($AndroidLaunchSettings.SyntheticCaptureCapabilityDowngrades)
+bench_provider=$(if ($AndroidLaunchSettings.HasBenchProvider) { $AndroidLaunchSettings.BenchProvider } else { "(default)" })
 patched_project_renderer_rendering_method=$patchedProjectRenderingMethod
 patched_project_renderer_rendering_method_mobile=$patchedProjectRenderingMethodMobile
 "@
 
     try {
         if ($patchedProjectText -ne $originalProjectText) {
-            Set-Content -Path $projectFilePath -Value $patchedProjectText
+            Set-Content -Path $projectFilePath -Value $patchedProjectText -NoNewline
         }
 
         $exportArguments = @("--headless", "--quit", "--path", $ProjectFullPath, "--log-file", $stagedExportGodotLogPath, "--export-debug", $ExportPreset, $stagedExportApkPath)
@@ -1867,7 +1905,7 @@ patched_project_renderer_rendering_method_mobile=$patchedProjectRenderingMethodM
         Move-Item -LiteralPath $stagedExportApkPath -Destination $exportApkPath -Force
 
         if (-not $projectRestored) {
-            Set-Content -Path $projectFilePath -Value $originalProjectText
+            Set-Content -Path $projectFilePath -Value $originalProjectText -NoNewline
             $projectRestored = $true
         }
 
@@ -2129,7 +2167,7 @@ patched_project_renderer_rendering_method_mobile=$patchedProjectRenderingMethodM
         }
 
         if (-not $projectRestored) {
-            Set-Content -Path $projectFilePath -Value $originalProjectText
+            Set-Content -Path $projectFilePath -Value $originalProjectText -NoNewline
         }
         Remove-Item -LiteralPath $exportStagingDir -Recurse -Force -ErrorAction SilentlyContinue
     }
