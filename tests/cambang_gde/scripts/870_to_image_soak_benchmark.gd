@@ -63,6 +63,35 @@ const EQUIPMENT := {
 				"rig_pair": ["0", "1"],
 			},
 			# hammer_construction_2_thermal, meta_quest_3: filled after the
+			{
+				"label": "hammer_construction_2_thermal",
+				"model_match": "Hammer_Construction_2_Thermal_5G",
+				"permissions": ["android.permission.CAMERA"],
+				# Stable Camera2 ids (maintainer-supplied): five cameras, with the
+				# device's real concurrent combinations. The rig drives one of them.
+				"cameras": ["0", "1"],
+				"concurrent_combinations": [],
+				"rig_pair": [],
+			},
+			{
+				"label": "meta_quest_3",
+				"model_match": "Quest 3",
+				# HEADSET_CAMERA covers the two passthrough cameras (50/51);
+				# AVATAR_CAMERA gates the virtual camera (id 1). Without the latter
+				# declared here the permission gate passes while openCamera on id 1
+				# fails with ACAMERA_ERROR_PERMISSION_DENIED (-10013), which reads as
+				# an opaque engage failure instead of a missing grant.
+				"permissions": [
+					"android.permission.CAMERA",
+					"horizonos.permission.HEADSET_CAMERA",
+					"horizonos.permission.AVATAR_CAMERA",
+				],
+				# Stable Camera2 ids (maintainer-supplied): five cameras, with the
+				# device's real concurrent combinations. The rig drives one of them.
+				"cameras": ["1", "50", "51"],
+				"concurrent_combinations": [["1", "50", "51"]],
+				"rig_pair": ["1", "51"],
+			},
 			# galaxy_s20_plus proof of concept (each needs a physical plug/unplug).
 		],
 		"Windows": [
@@ -85,7 +114,12 @@ const RIG_CAPTURE_TIMEOUT_US := 7000000
 const WARMUP_SEC_DEFAULT := 0.65
 const HUMAN_PHASE_SEC_DEFAULT := 3.00 #0.70
 const SUPERHUMAN_PHASE_SEC_DEFAULT := 0.35
-const RIG_PHASE_SEC_DEFAULT := 0.70
+# Rig captures are serialised (one in flight at a time, see _request_rig_capture)
+# and a rig result set takes ~0.9-1.5s to become ready on real hardware, so a rig
+# phase shorter than that cannot complete even one sample -- the old 0.70 default
+# meant rig phases never sampled at all and always reported under_sampled. Sized
+# for ~10 samples per rig phase at ~1.2s each.
+const RIG_PHASE_SEC_DEFAULT := 12.00
 const EXIT_VISUAL_HOLD_SEC_DEFAULT := 1.50
 const PREFLIGHT_STREAMS_ONLY_SEC := 10.00
 const STREAM_DISPLAY_REBIND_INTERVAL_US := 100000
@@ -108,6 +142,9 @@ const PHASE_PREFLIGHT := "preflight"
 const PHASE_RUNNING := "running"
 const PHASE_SETTLEMENT_PROBE := "settlement_probe"
 const PHASE_DONE := "done"
+# The bundle the acquisition-session settlement probe asserts is active. Named
+# once so the probe's guard and the skip check cannot drift apart.
+const ACQ_PROBE_BUNDLE_LABEL := "ev5_-2_-1_0_1_2"
 
 const SETTLEMENT_PROBE_SETTLE_TIMEOUT_US := 2500000
 const LOAD_PROFILE_HUMAN := "human"
@@ -190,6 +227,16 @@ var _devices := {
 	},
 }
 var _rig = null
+# Capability skips. A capability the attached hardware cannot achieve is skipped
+# LOUDLY rather than run-and-refused: the run still reports status=ok (that status
+# is reserved for real failures, and expected_unsupported is reserved for
+# output_form/renderer mismatch), but every skip is recorded here, logged at the
+# moment it is decided, named in the harness verdict's reason=, and marks the
+# run's benchmark numbers partial so a degraded run is never silently compared
+# against a full one.
+var _skips := []
+var _skip_rig := false
+var _skipped_bundle_labels := {}
 var _rig_inflight := 0
 # Unified public-API topology staging (no scenario): the setup phase drives
 # enumerate -> engage -> stream -> create_rig itself, once each.
@@ -306,11 +353,25 @@ func _bootstrap_from_known_ids(equip: Dictionary, synthetic: bool) -> void:
 	var cameras: Array = equip.get("cameras", [])
 	var combinations: Array = equip.get("concurrent_combinations", [])
 	var rig_pair: Array = equip.get("rig_pair", [])
-	if cameras.size() < 2 or rig_pair.size() < 2:
+	# Fewer than two cameras means the two-device soak cannot run at all -- that
+	# stays a whole-run bail. An absent rig_pair is different: every device-scoped
+	# phase is still valid, so run them and skip only the rig-scoped ones.
+	if cameras.size() < 2:
 		_finish(0, true, "equipment_incomplete:%s" % str(equip.get("label", _provider_arg)))
 		return
-	_devices[DEV_A]["hardware_id"] = str(rig_pair[0])
-	_devices[DEV_B]["hardware_id"] = str(rig_pair[1])
+	if rig_pair.size() < 2:
+		_skip_rig = true
+		_record_skip(
+			"rig",
+			"no_rig_pair_configured",
+			"%s declares rig_pair=%s (needs 2 camera ids)" % [
+				str(equip.get("label", _provider_arg)), str(rig_pair)
+			])
+	# The rig pair normally names the two devices to engage; without one, fall back
+	# to the first two declared cameras so the device-scoped phases still run.
+	var device_pair: Array = rig_pair if not _skip_rig else [cameras[0], cameras[1]]
+	_devices[DEV_A]["hardware_id"] = str(device_pair[0])
+	_devices[DEV_B]["hardware_id"] = str(device_pair[1])
 	CamBANGServer.stop()
 	var truth := _build_concurrency_truth(cameras, combinations)
 	if int(CamBANGServer.ingest_camera_description(truth)) != OK:
@@ -323,8 +384,10 @@ func _bootstrap_from_known_ids(equip: Dictionary, synthetic: bool) -> void:
 	if start_err != OK:
 		_fail("bootstrap failed: start(%s) returned %d" % [_provider_arg, start_err])
 		return
-	_log("bootstrap: %s started (known ids, ingest-before-start); rig pair=%s" % [
-		str(equip.get("label", _provider_arg)), str(rig_pair)
+	_log("bootstrap: %s started (known ids, ingest-before-start); devices=%s rig=%s" % [
+		str(equip.get("label", _provider_arg)),
+		str(device_pair),
+		("skipped" if _skip_rig else str(rig_pair)),
 	])
 
 
@@ -856,7 +919,8 @@ func _poll_setup() -> void:
 		return
 
 	# Stage 3: form the rig from the two engaged devices via the public API (once).
-	if _rig == null:
+	# Skipped outright when the equipment declares no authorized rig pair.
+	if _rig == null and not _skip_rig:
 		_rig = CamBANGServer.create_rig(PackedStringArray([
 			str(_devices[DEV_A].get("hardware_id", "")),
 			str(_devices[DEV_B].get("hardware_id", "")),
@@ -960,7 +1024,7 @@ func _create_setup_streams() -> bool:
 
 
 func _setup_ready() -> bool:
-	if _rig == null:
+	if _rig == null and not _skip_rig:
 		return false
 	for device_key in [DEV_A, DEV_B]:
 		var info: Dictionary = _devices[device_key]
@@ -1072,13 +1136,54 @@ func _stream_observed_fps(device_key: String) -> float:
 		return 0.0
 	return float(int(info.get("stream_observed_changes", 0))) / elapsed_sec
 
+func _record_skip(group: String, reason: String, evidence: String) -> void:
+	# One entry per skipped capability group. Logged immediately so the decision is
+	# visible in the run log at the point it was taken, not just in the summary.
+	_skips.append({
+		"group": group,
+		"reason": reason,
+		"evidence": evidence,
+		"at_us": _now_us(),
+	})
+	_log("SKIP [%s]: %s (%s)" % [group, reason, evidence])
+
+
+func _skipped_groups() -> Array:
+	var groups := []
+	for skip_v in _skips:
+		var group := str((skip_v as Dictionary).get("group", ""))
+		if group != "" and not groups.has(group):
+			groups.append(group)
+	return groups
+
+
+func _finish_reason_with_skips(base: String) -> String:
+	# The launcher parses reason= as a single \S+ token, so no whitespace here.
+	var groups := _skipped_groups()
+	if groups.is_empty():
+		return base
+	return "%s;skipped=%s" % [base, ",".join(groups)]
+
+
 func _begin_next_bundle() -> void:
 	_current_bundle_index += 1
 	if _current_bundle_index >= _bundle_definitions().size():
+		# The settlement probe is inherently bracket-dependent (it asserts the
+		# 5-member EV bundle is active), so a skipped bracket skips the probe too
+		# rather than driving it into the same deterministic refusal.
+		if _skipped_bundle_labels.has(ACQ_PROBE_BUNDLE_LABEL):
+			if not _acq_probe_attempted:
+				_acq_probe_attempted = true
+				_record_skip(
+					"settlement_probe",
+					"requires_skipped_bracket_bundle",
+					"%s was skipped, so the acquisition-session settlement probe cannot run" % ACQ_PROBE_BUNDLE_LABEL)
+			_finish(0, false, _finish_reason_with_skips("complete"))
+			return
 		if not _acq_probe_attempted:
 			_begin_acquisition_session_settlement_probe()
 			return
-		_finish(0, false)
+		_finish(0, false, _finish_reason_with_skips("complete"))
 		return
 	_current_bundle = _bundle_definitions()[_current_bundle_index]
 	_profile_requested = false
@@ -1102,7 +1207,7 @@ func _begin_acquisition_session_settlement_probe() -> void:
 	_acq_probe_bundle_label = str(_current_bundle.get("label", ""))
 	_acq_probe_required_member_count = int(_current_bundle.get("member_count", 0))
 	_acq_probe_devices = {}
-	if _acq_probe_bundle_label != "ev5_-2_-1_0_1_2" or _acq_probe_required_member_count != 5:
+	if _acq_probe_bundle_label != ACQ_PROBE_BUNDLE_LABEL or _acq_probe_required_member_count != 5:
 		_fail("settlement probe failed: EV5 bundle was not active at probe start")
 		return
 	_freeze_benchmark_metrics()
@@ -1153,7 +1258,7 @@ func _poll_acquisition_session_settlement_probe() -> void:
 	if _acq_probe_stage != "settle":
 		return
 	if _acq_probe_all_devices_settled() or _now_us() >= _acq_probe_settle_deadline_us:
-		_finish(0, false)
+		_finish(0, false, _finish_reason_with_skips("complete"))
 
 
 func _acq_probe_all_captures_finished() -> bool:
@@ -1271,12 +1376,68 @@ func _poll_profile_application() -> void:
 		_apply_current_bundle_profile()
 		return
 	if _profiles_visible_for_current_bundle():
+		_log("profile visible: %s" % str(_current_bundle.get("label", "")))
+		# Multi-member bundles are only knowable as supported by attempting one:
+		# the profile-set succeeds even where the device cannot bracket (providers
+		# advertise multi-image optimistically), so the refusal only surfaces at
+		# trigger_capture(). Probe once; on refusal skip the whole bundle rather
+		# than running every phase into the same deterministic rejection.
+		if not _probe_bundle_supported():
+			_begin_next_bundle()
+			return
 		_state = PHASE_WARMUP
 		_warmup_started_us = _now_us()
-		_log("profile visible: %s" % str(_current_bundle.get("label", "")))
 		return
 	if Time.get_ticks_msec() - _profile_started_ms > PROFILE_APPLY_TIMEOUT_MS:
 		_fail("profile timeout: expected still profile did not become visible for %s" % str(_current_bundle.get("label", "")))
+
+
+func _probe_bundle_supported() -> bool:
+	# Single-member bundles are always attemptable; only bracket bundles need the
+	# probe. Returns false when the bundle must be skipped.
+	var label := str(_current_bundle.get("label", ""))
+	if int(_current_bundle.get("member_count", 0)) <= 1:
+		return true
+	var info: Dictionary = _devices[DEV_A]
+	var device = info.get("device", null)
+	if device == null:
+		return true  # nothing to probe with; let the phases run and report normally
+	var baseline_capture_id := _device_last_capture_id(DEV_A)
+	var trigger_start := _now_us()
+	var err := int(device.trigger_capture())
+	var trigger_end := _now_us()
+	if err != OK:
+		# A refusal is synchronous and starts nothing, so there is no capture to
+		# account for here -- the device simply cannot supply this bundle.
+		_skipped_bundle_labels[label] = true
+		_record_skip(
+			"bracket",
+			"device_cannot_supply_bundle",
+			"%s (%d members) refused at trigger_capture on %s: err=%d" % [
+				label, int(_current_bundle.get("member_count", 0)), DEV_A, err
+			])
+		return false
+	# Accepted: track it the way a preflight capture is tracked (phase_index=-1)
+	# so it drains normally without being attributed to any benchmark phase.
+	info["inflight_captures"] = int(info.get("inflight_captures", 0)) + 1
+	_devices[DEV_A] = info
+	_capture_jobs.append({
+		"kind": "device_capture",
+		"device_key": DEV_A,
+		"device": device,
+		"device_id": int(info.get("device_id", 0)),
+		"request_us": trigger_start,
+		"trigger_start_us": trigger_start,
+		"trigger_end_us": trigger_end,
+		"trigger_call_us": trigger_end - trigger_start,
+		"baseline_capture_id": baseline_capture_id,
+		"bundle_label": label,
+		"expected_member_count": int(_current_bundle.get("member_count", 0)),
+		"phase_index": -1,
+		"visual_sequence": _current_phase_visual_sequence,
+		"is_preflight_capture": true,
+	})
+	return true
 
 
 func _apply_current_bundle_profile() -> void:
@@ -1576,9 +1737,12 @@ func _make_phase_matrix() -> Array:
 			phases.append(_phase_def(mode, scope, true, false, false, "Capture"))
 			phases.append(_phase_def(mode, scope, false, true, false, "Stream"))
 			phases.append(_phase_def(mode, scope, true, true, false, "Capture & Stream"))
-	phases.append(_phase_def("rig", {"scope": "rig", "devices": [DEV_A, DEV_B]}, false, false, true, "Rig-capture"))
-	phases.append(_phase_def("rig", {"scope": "rig_plus_capture", "devices": [DEV_A, DEV_B]}, true, false, true, "Rig-capture & Capture"))
-	phases.append(_phase_def("rig", {"scope": "rig_plus_capture_stream", "devices": [DEV_A, DEV_B]}, true, true, true, "Rig-capture & Capture & Stream"))
+	# Rig-scoped phases are omitted entirely when the hardware has no authorized
+	# rig pair -- the skip is recorded in the manifest, not silently absent.
+	if not _skip_rig:
+		phases.append(_phase_def("rig", {"scope": "rig", "devices": [DEV_A, DEV_B]}, false, false, true, "Rig-capture"))
+		phases.append(_phase_def("rig", {"scope": "rig_plus_capture", "devices": [DEV_A, DEV_B]}, true, false, true, "Rig-capture & Capture"))
+		phases.append(_phase_def("rig", {"scope": "rig_plus_capture_stream", "devices": [DEV_A, DEV_B]}, true, true, true, "Rig-capture & Capture & Stream"))
 	return phases
 
 
@@ -2665,6 +2829,12 @@ func _build_summary(exit_code: int, expected_unsupported: bool) -> Dictionary:
 		"scene": SCENE_LABEL,
 		"exit_code": exit_code,
 		"expected_unsupported": expected_unsupported,
+		# Capabilities the attached hardware could not achieve. Non-empty means the
+		# benchmark numbers below cover only part of the matrix and must not be
+		# compared against a full run.
+		"skipped": _skips.duplicate(true),
+		"skipped_groups": _skipped_groups(),
+		"baselines_partial": not _skips.is_empty(),
 		"harness": {
 			"status": _harness_status_for_finish(exit_code, expected_unsupported),
 			"reason": _finish_reason,
