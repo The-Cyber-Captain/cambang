@@ -7,9 +7,18 @@ const HW_B := "synthetic:1"
 const DEV_A := "device_a"
 const DEV_B := "device_b"
 const BENCH_RIG_ID := 870001
-# Distinct synthetic picture seeds per device so the two sources render visibly
-# distinct (see the picture branch in _create_setup_streams).
-const _SYNTHETIC_PICTURE_SEED := {DEV_A: 0x8701, DEV_B: 0x8702}
+# Distinct synthetic per-device pictures (full PictureConfig) so the two sources
+# render visibly distinct -- for BOTH the live streams and the captures, mirroring
+# what the removed scenario authored (checker/noise/solid + distinct colours).
+# Applied only for synthetic (platform providers reject a picture).
+const _SYNTHETIC_STREAM_PICTURE := {
+	DEV_A: {"preset": "checker", "seed": 87021, "solid_r": 255, "solid_g": 64, "solid_b": 64, "solid_a": 255, "checker_size_px": 24},
+	DEV_B: {"preset": "noise", "seed": 87022, "solid_r": 64, "solid_g": 160, "solid_b": 255, "solid_a": 255, "checker_size_px": 20},
+}
+const _SYNTHETIC_CAPTURE_PICTURE := {
+	DEV_A: {"preset": "checker", "seed": 87011, "solid_r": 16, "solid_g": 40, "solid_b": 96, "solid_a": 255, "checker_size_px": 18},
+	DEV_B: {"preset": "solid", "seed": 87012, "solid_r": 92, "solid_g": 44, "solid_b": 152, "solid_a": 255, "checker_size_px": 16},
+}
 
 # Curated testable-equipment table (maintainer-owned), keyed by the
 # --cambang-bench-provider selection. Each entry names the two devices the rig
@@ -901,12 +910,12 @@ func _create_setup_streams() -> bool:
 				"format_fourcc": CamBANGServer.PIXEL_FORMAT_RGBA,
 			},
 		}
-		# Synthetic-only: a distinct per-device picture seed so Device A and B are
+		# Synthetic-only: a distinct per-device stream picture so Device A and B are
 		# visibly distinct sources (the scenario used to author this). Platform
 		# providers reject a picture per supports_stream_picture_updates(), so it
 		# is only sent for synthetic.
 		if _provider_arg == "synthetic":
-			stream_def["picture"] = {"seed": int(_SYNTHETIC_PICTURE_SEED.get(device_key, 0))}
+			stream_def["picture"] = _SYNTHETIC_STREAM_PICTURE.get(device_key, {})
 		var stream = dev.create_stream(stream_def)
 		if stream == null:
 			_fail("setup: create_stream returned null for %s" % device_key)
@@ -918,6 +927,17 @@ func _create_setup_streams() -> bool:
 		info["stream"] = stream
 		info["stream_id"] = int(stream.get_stream_id())
 		_devices[device_key] = info
+
+		# Synthetic-only: a distinct per-device CAPTURE picture too, so the captured
+		# images (and the rig members) are visibly distinct, not just the live
+		# streams. Device-scoped, gated on supports_capture_picture_updates().
+		if _provider_arg == "synthetic":
+			var cap_picture: Dictionary = _SYNTHETIC_CAPTURE_PICTURE.get(device_key, {})
+			if not cap_picture.is_empty():
+				var cap_err := int(dev.set_capture_picture(cap_picture))
+				if cap_err != OK:
+					_fail("setup: set_capture_picture failed for %s (%d)" % [device_key, cap_err])
+					return false
 	return true
 
 
