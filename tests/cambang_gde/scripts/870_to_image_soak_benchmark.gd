@@ -7,12 +7,72 @@ const HW_B := "synthetic:1"
 const DEV_A := "device_a"
 const DEV_B := "device_b"
 const BENCH_RIG_ID := 870001
+# Distinct synthetic picture seeds per device so the two sources render visibly
+# distinct (see the picture branch in _create_setup_streams).
+const _SYNTHETIC_PICTURE_SEED := {DEV_A: 0x8701, DEV_B: 0x8702}
 
-# Core's rig admission gate fail-closes any multi-device rig capture unless a
-# camera-concurrency truth naming the exact combination has been ingested
-# (see docs/architecture -- CoreRuntime::grouped_rig_imaging_spec_admission_
-# failure_()). Mirrors 73_rig_capture_result_set_verification.gd's pattern.
-const RIG_CAMERA_DESCRIPTION_JSON := "{\"schema_version\":2,\"cameras\":[{\"camera_id\":\"synthetic:0\"},{\"camera_id\":\"synthetic:1\"}],\"concurrent_camera_support\":{\"supported\":true,\"camera_id_combinations\":[[\"synthetic:0\",\"synthetic:1\"]]}}"
+# Curated testable-equipment table (maintainer-owned), keyed by the
+# --cambang-bench-provider selection. Each entry names the two devices the rig
+# drives (by hardware_id) and whether their concurrent use is claimed to Core.
+# The rig's concurrency truth is built from this and ingested via
+# ingest_camera_description() before start(), because Core's rig admission gate
+# fail-closes any multi-device rig unless a truth naming the exact combination
+# was ingested (CoreRuntime::grouped_rig_imaging_spec_admission_failure_).
+#
+# Synthetic uses stable ids. Platform entries are added with the real equipment;
+# note that Camera2 ids are stable strings but WinRT ids are machine-specific
+# DeviceInformation symbolic links, and whether two cameras are truly concurrent
+# is discovered at runtime (a claimed-but-unusable combination surfaces as a rig
+# capture failure, not a silent wrong result).
+const EQUIPMENT := {
+	# Synthetic advertises stable ids, so it takes the ingest-before-start
+	# shortcut (no enumerate-first needed).
+	"synthetic": {
+		"hardware_ids": [HW_A, HW_B],
+		"concurrency_supported": true,
+		"permissions": [],
+	},
+	# Platform-backed equipment, grouped by OS.get_name() then matched to a curated
+	# entry at runtime -- Android by model, single-host OSes (Windows/WinRT) by the
+	# sole entry. Camera ids are NEVER listed: identity is resolved by enumeration
+	# (enumerate/map), so WinRT's machine-specific symbolic-link ids and each
+	# handset's Camera2 ids come from the device, not this table. Each entry
+	# supplies the human label, the match key, the permission prerequisites, and
+	# the concurrency CLAIM (whether the selected pair is declared concurrent to
+	# Core -- discovered true/false at runtime by whether the rig actually works).
+	# Concurrency values here are maintainer-supplied placeholders.
+	"platform_backed": {
+		"Android": [
+			{
+				"label": "galaxy_s20_plus",
+				"model_match": "SM-G986U1",
+				"permissions": ["android.permission.CAMERA"],
+				"concurrency_supported": true,  # TODO(maintainer): confirm concurrent pair
+			},
+			{
+				"label": "hammer_construction_2_thermal",
+				"model_match": "Hammer_Construction_2_Thermal_5G",
+				"permissions": ["android.permission.CAMERA"],
+				"concurrency_supported": false,  # minimum concurrency (maintainer to confirm)
+			},
+			{
+				"label": "meta_quest_3",
+				"model_match": "Quest 3",
+				# Horizon OS gates the passthrough cameras behind an extra permission.
+				"permissions": ["android.permission.CAMERA", "horizonos.permission.HEADSET_CAMERA"],
+				"concurrency_supported": true,  # TODO(maintainer): Quest passthrough pair
+			},
+		],
+		"Windows": [
+			{
+				"label": "winrt_host",
+				"model_match": "",  # single host: matched unconditionally
+				"permissions": [],  # WinRT consent model is permissive here
+				"concurrency_supported": true,  # discovered at runtime (2-cam host)
+			},
+		],
+	},
+}
 
 const SETUP_TIMEOUT_MS := 10000
 const PROFILE_APPLY_TIMEOUT_MS := 5000
@@ -229,27 +289,127 @@ func _process(delta: float) -> void:
 
 
 func _bootstrap() -> void:
-	if _provider_arg != "synthetic":
-		_finish(0, true, "provider_not_supported")
-		return
+	if _provider_arg == "synthetic":
+		_bootstrap_synthetic()
+	else:
+		_bootstrap_platform()
 
-	CamBANGServer.stop()
-	# ingest_camera_description() only accepts while stopped; must run before
-	# start() or create_rig()/the two-device rig trigger is rejected fail-closed
-	# by the admission gate for the whole run (see RIG_CAMERA_DESCRIPTION_JSON).
-	var ingest_err := int(CamBANGServer.ingest_camera_description(RIG_CAMERA_DESCRIPTION_JSON))
-	if ingest_err != OK:
-		_fail("bootstrap failed: ingest_camera_description returned %d" % ingest_err)
+
+func _bootstrap_synthetic() -> void:
+	var equip: Dictionary = EQUIPMENT.get("synthetic", {})
+	var hw_ids: Array = equip.get("hardware_ids", [])
+	if hw_ids.size() < 2:
+		_finish(0, true, "equipment_not_configured:synthetic")
 		return
-	# Unified public-API topology, no scenario: the setup phase drives
-	# enumerate -> engage -> stream -> create_rig itself (provider-agnostic).
-	# Synthetic runs on the default real-time driver so its timings/latencies are
-	# comparable to the platform providers rather than replayed on virtual time.
-	var start_err := int(CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC))
-	if start_err != OK:
-		_fail("bootstrap failed: CamBANGServer.start(synthetic) returned %d" % start_err)
+	_devices[DEV_A]["hardware_id"] = str(hw_ids[0])
+	_devices[DEV_B]["hardware_id"] = str(hw_ids[1])
+	CamBANGServer.stop()
+	# Stable ids: ingest-before-start directly (no enumerate-first needed).
+	var truth := _build_concurrency_truth_json(hw_ids, bool(equip.get("concurrency_supported", false)))
+	if int(CamBANGServer.ingest_camera_description(truth)) != OK:
+		_fail("bootstrap failed: ingest_camera_description (synthetic)")
+		return
+	if int(CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC)) != OK:
+		_fail("bootstrap failed: start(synthetic)")
 		return
 	_log("bootstrap: synthetic provider started (public-API topology, no scenario)")
+
+
+func _bootstrap_platform() -> void:
+	# Enumerate/map: identity is resolved from the device, never hardcoded. Pick
+	# the curated entry for the attached hardware, verify its permission
+	# prerequisites (pre-granted for an automated soak), then discover the rig
+	# pair by enumeration and ingest the concurrency truth naming it before the
+	# working start(): start -> enumerate -> select -> stop -> ingest -> start.
+	var equip := _resolve_platform_equipment()
+	if equip.is_empty():
+		_finish(0, true, "equipment_not_configured:%s" % _platform_identity_text())
+		return
+	if not _platform_permissions_granted(equip.get("permissions", [])):
+		_finish(0, true, "permission_not_granted:%s" % str(equip.get("label", "?")))
+		return
+	CamBANGServer.stop()
+	if int(CamBANGServer.start()) != OK:
+		_fail("platform bootstrap: initial start() failed")
+		return
+	var endpoints: Array = CamBANGServer.enumerate_devices()
+	if endpoints.size() < 2:
+		# Fewer than two cameras -> no rig here. Single-device degrade is a later
+		# refinement; for now report it plainly rather than fail hard.
+		CamBANGServer.stop()
+		_finish(0, true, "insufficient_cameras:%s:%d" % [str(equip.get("label", "?")), endpoints.size()])
+		return
+	var pair := _select_platform_pair(endpoints)
+	CamBANGServer.stop()
+	var truth := _build_concurrency_truth_json(pair, bool(equip.get("concurrency_supported", false)))
+	if int(CamBANGServer.ingest_camera_description(truth)) != OK:
+		_fail("platform bootstrap: ingest_camera_description failed")
+		return
+	if int(CamBANGServer.start()) != OK:
+		_fail("platform bootstrap: working start() after ingest failed")
+		return
+	_devices[DEV_A]["hardware_id"] = str(pair[0])
+	_devices[DEV_B]["hardware_id"] = str(pair[1])
+	_log("bootstrap: %s started; rig pair=%s concurrency_claimed=%s" % [
+		str(equip.get("label", "?")), str(pair), str(bool(equip.get("concurrency_supported", false)))
+	])
+
+
+func _platform_identity_text() -> String:
+	var model := (OS.get_model_name() if OS.has_method("get_model_name") else "?")
+	return "%s/%s" % [OS.get_name(), model]
+
+
+func _resolve_platform_equipment() -> Dictionary:
+	var os_entries: Array = EQUIPMENT.get("platform_backed", {}).get(OS.get_name(), [])
+	if os_entries.is_empty():
+		return {}
+	if OS.get_name() != "Android":
+		# Single-host OSes (e.g. Windows/WinRT): the sole entry, no model gate.
+		return os_entries[0]
+	var model := (OS.get_model_name() if OS.has_method("get_model_name") else "")
+	for e in os_entries:
+		if str((e as Dictionary).get("model_match", "")) == model:
+			return e
+	return {}
+
+
+func _platform_permissions_granted(perms: Array) -> bool:
+	# Automated soak: permissions are pre-granted out of band (run_godot.ps1
+	# -AndroidGrantPermissions). We only verify -- there is no in-scene dialog.
+	if OS.get_name() != "Android" or perms.is_empty():
+		return true
+	var granted := OS.get_granted_permissions()
+	for p in perms:
+		if not (str(p) in granted):
+			return false
+	return true
+
+
+func _select_platform_pair(endpoints: Array) -> Array:
+	# Default selection policy: the first two enumerated cameras. Extensible per
+	# equipment entry later (e.g. by facing/role) without hardcoding ids.
+	var ids := []
+	for ep in endpoints:
+		if typeof(ep) == TYPE_DICTIONARY:
+			var hw := str((ep as Dictionary).get("hardware_id", ""))
+			if hw != "":
+				ids.append(hw)
+	return ids.slice(0, 2)
+
+
+func _build_concurrency_truth_json(hardware_ids: Array, supported: bool) -> String:
+	var cameras := []
+	for hw in hardware_ids:
+		cameras.append({"camera_id": str(hw)})
+	var concurrency := {"supported": supported}
+	if supported:
+		concurrency["camera_id_combinations"] = [hardware_ids.duplicate()]
+	return JSON.stringify({
+		"schema_version": 2,
+		"cameras": cameras,
+		"concurrent_camera_support": concurrency,
+	})
 
 func _parse_args() -> void:
 	var args := OS.get_cmdline_user_args()
@@ -733,14 +893,21 @@ func _create_setup_streams() -> bool:
 			return false
 		# Intent PREVIEW at the still-capture geometry -- the live preview streams
 		# the scenario used, now created directly through the public API.
-		var stream = dev.create_stream({
+		var stream_def := {
 			"intent": CamBANGStream.INTENT_PREVIEW,
 			"profile": {
 				"width": STILL_PROFILE_WIDTH,
 				"height": STILL_PROFILE_HEIGHT,
 				"format_fourcc": CamBANGServer.PIXEL_FORMAT_RGBA,
 			},
-		})
+		}
+		# Synthetic-only: a distinct per-device picture seed so Device A and B are
+		# visibly distinct sources (the scenario used to author this). Platform
+		# providers reject a picture per supports_stream_picture_updates(), so it
+		# is only sent for synthetic.
+		if _provider_arg == "synthetic":
+			stream_def["picture"] = {"seed": int(_SYNTHETIC_PICTURE_SEED.get(device_key, 0))}
+		var stream = dev.create_stream(stream_def)
 		if stream == null:
 			_fail("setup: create_stream returned null for %s" % device_key)
 			return false
