@@ -5270,6 +5270,23 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
     effective.profile_version = effective_profile_version;
     effective.profile = has_request_profile ? request_profile_copy : tmpl.profile;
     effective.picture = has_request_picture ? request_picture_copy : tmpl.picture;
+    // Format negotiation. A requested pixel format the provider does not
+    // advertise is rejected here rather than at the provider's own start
+    // gate, so the rejection is deterministic and does not depend on a
+    // provider round-trip. A zero format still means "use the provider
+    // default" and is resolved downstream as before.
+    if (effective.profile.format_fourcc != 0) {
+      if (ICameraProvider* fmt_prov = provider_.load(std::memory_order_acquire)) {
+        const ProducerFormatCapabilities fmt_caps =
+            fmt_prov->stream_format_capabilities(effective.profile, effective.picture);
+        if (!fmt_caps.supports(effective.profile.format_fourcc) &&
+            !(fmt_caps.can_emit_packed_rgb &&
+              is_packed_rgb_format(effective.profile.format_fourcc))) {
+          return TryCreateStreamStatus::ProviderRejected;
+        }
+      }
+    }
+
     ProducerBackingCapabilities runtime_caps{};
     ProducerBackingCapabilities parent_context_caps{};
     if (!resolve_stream_backing_capabilities_(

@@ -2865,6 +2865,134 @@ int frame_starvation(VerifyCaseProviderKind provider_kind) {
 // case holds a result exactly as GDScript would (get_stream_result_by_stream_id
 // then read later), cycles the stream well past the pool size, and re-reads the
 // handle it never let go of.
+// Drives an NV12 stream end to end through SyntheticProvider.
+//
+// The planar assertions in core_result_path_smoke build a FrameView by hand,
+// which proves Core's writer but never enters the provider. This case is the
+// one that exercises SyntheticProvider's own NV12 emission: format
+// negotiation at stream start, the RGBA->NV12 conversion, PayloadLayout
+// population, and GPU suppression for a CPU-primary planar stream.
+int synthetic_nv12_stream_planar_retention(VerifyCaseProviderKind provider_kind) {
+  if (provider_kind != VerifyCaseProviderKind::Synthetic) {
+    cli::line("SKIP: verification case 'synthetic_nv12_stream_planar_retention' requires SyntheticProvider");
+    return kVerifyCaseSkipped;
+  }
+
+  constexpr uint32_t kW = 1280;
+  constexpr uint32_t kH = 720;
+
+  VerifyCaseHarness h(provider_kind);
+  std::string error;
+  if (!h.start_runtime(error) ||
+      !h.wait_for_core_snapshot([](const CamBANGStateSnapshot&) { return true; }, error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  h.tick();
+
+  CaptureProfile nv12_profile{};
+  nv12_profile.width = kW;
+  nv12_profile.height = kH;
+  nv12_profile.format_fourcc = FOURCC_NV12;
+  nv12_profile.target_fps_min = 0;
+  nv12_profile.target_fps_max = 30;
+
+  if (!h.open_device(error) ||
+      !h.create_stream_with_profile(nv12_profile, error) ||
+      !h.start_stream(error) ||
+      !h.emit_frame(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  h.tick();
+
+  SharedStreamResultData result = h.runtime().get_latest_stream_result(VerifyCaseHarness::kStreamId);
+  if (!result) {
+    fail_step(0, "no retained stream result after NV12 frame");
+    return 1;
+  }
+  cli::line("step 0 OK (retained an NV12 stream frame)");
+
+  if (result->image_format_fourcc != FOURCC_NV12) {
+    fail_step(1, "retained stream result is not NV12");
+    return 1;
+  }
+  if (result->payload_kind != ResultPayloadKind::CPU_PLANAR) {
+    fail_step(1, "retained NV12 stream result is not CPU_PLANAR");
+    return 1;
+  }
+  cli::line("step 1 OK (payload_kind=cpu_planar format=NV12)");
+
+  const CoreResultPayloadCpu& p = result->payload;
+  if (!p.is_planar() || p.plane_count != 2) {
+    fail_step(2, "retained NV12 payload does not carry two planes");
+    return 1;
+  }
+  const size_t expected_luma = static_cast<size_t>(kW) * kH;
+  const size_t expected_total = expected_luma + expected_luma / 2u;
+  if (p.size_bytes() != expected_total) {
+    fail_step(2, "retained NV12 payload size is not w*h*3/2");
+    return 1;
+  }
+  if (p.planes[0].stride_bytes != kW || p.planes[0].rows != kH ||
+      p.planes[1].stride_bytes != kW || p.planes[1].rows != kH / 2u ||
+      p.planes[0].offset_bytes != 0 || p.planes[1].offset_bytes != expected_luma) {
+    fail_step(2, "retained NV12 plane geometry is wrong");
+    return 1;
+  }
+  if (!p.plane_data(0) || !p.plane_data(1)) {
+    fail_step(2, "retained NV12 planes are not addressable");
+    return 1;
+  }
+  cli::line("step 2 OK (plane geometry: Y ", kW, "x", kH, " @0, UV ", kW, "x", kH / 2u,
+            " @", expected_luma, ", total ", expected_total, " bytes)");
+
+  // Sanity gate: a payload of correct size but all-zero would satisfy every
+  // structural check above while proving the conversion never ran.
+  bool luma_varies = false;
+  const uint8_t* y = p.plane_data(0);
+  for (size_t i = 1; i < expected_luma && !luma_varies; ++i) {
+    luma_varies = (y[i] != y[0]);
+  }
+  if (!luma_varies) {
+    fail_step(3, "retained NV12 luma plane is uniform; conversion likely did not run");
+    return 1;
+  }
+  // BT.601 limited range: luma must land inside 16..235 for in-gamut input.
+  for (size_t i = 0; i < expected_luma; ++i) {
+    if (y[i] < 16u || y[i] > 235u) {
+      fail_step(3, "retained NV12 luma sample outside BT.601 limited range");
+      return 1;
+    }
+  }
+  cli::line("step 3 OK (luma varies and stays within BT.601 limited range)");
+
+  // Fail-closed: no CPU access path may claim planar bytes.
+  if (result->retained_access_truth.to_image != ResultCapability::UNSUPPORTED ||
+      result->retained_access_truth.display_view != ResultCapability::UNSUPPORTED) {
+    fail_step(4, "planar stream result reports a CPU access capability");
+    return 1;
+  }
+  cli::line("step 4 OK (to_image and display_view both UNSUPPORTED)");
+
+  // Negative: format negotiation must reject a format the provider does not
+  // advertise. Synthetic advertises RGBA and NV12 for streams, not I420, so
+  // this proves the advertisement is load-bearing rather than decorative.
+  CaptureProfile unadvertised = nv12_profile;
+  unadvertised.format_fourcc = FOURCC_I420;
+  std::string reject_error;
+  if (h.create_stream_id_with_profile(
+          VerifyCaseHarness::kStreamId + 1, VerifyCaseHarness::kDeviceId,
+          &unadvertised, 1, reject_error)) {
+    fail_step(5, "stream create accepted a format the provider does not advertise");
+    return 1;
+  }
+  cli::line("step 5 OK (unadvertised format I420 rejected at stream create)");
+
+  cli::line("PASS synthetic_nv12_stream_planar_retention");
+  return 0;
+}
+
 int retained_stream_payload_immutability(VerifyCaseProviderKind provider_kind) {
   if (provider_kind != VerifyCaseProviderKind::Synthetic) {
     cli::line("SKIP: verification case 'retained_stream_payload_immutability' requires SyntheticProvider timeline support");
@@ -3288,6 +3416,7 @@ std::vector<VerifyCaseDefinition> verify_case_catalog(VerifyCaseProviderKind pro
       {"close_while_streaming", [provider_kind]() { return close_while_streaming(provider_kind); }},
       {"frame_starvation", [provider_kind]() { return frame_starvation(provider_kind); }},
       {"retained_stream_payload_immutability", [provider_kind]() { return retained_stream_payload_immutability(provider_kind); }},
+      {"synthetic_nv12_stream_planar_retention", [provider_kind]() { return synthetic_nv12_stream_planar_retention(provider_kind); }},
       {"provider_error_mid_stream", [provider_kind]() { return provider_error_mid_stream(provider_kind); }},
       {"redundant_stop", [provider_kind]() { return redundant_stop(provider_kind); }},
       {"multi_device_topology_change", [provider_kind]() { return multi_device_topology_change(provider_kind); }},

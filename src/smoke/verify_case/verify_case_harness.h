@@ -825,8 +825,24 @@ public:
   }
 
   bool create_stream_id(uint64_t stream_id, uint64_t device_id, uint64_t profile_version, std::string& error) {
+    return create_stream_id_with_profile(stream_id, device_id, nullptr, profile_version, error);
+  }
+
+  // Explicit-profile create, for cases that need to request a specific
+  // geometry or pixel format rather than the provider's default template.
+  bool create_stream_with_profile(const CaptureProfile& profile,
+                                  std::string& error,
+                                  uint64_t profile_version = 1) {
+    return create_stream_id_with_profile(kStreamId, kDeviceId, &profile, profile_version, error);
+  }
+
+  bool create_stream_id_with_profile(uint64_t stream_id,
+                                     uint64_t device_id,
+                                     const CaptureProfile* request_profile,
+                                     uint64_t profile_version,
+                                     std::string& error) {
     const uint64_t before = runtime_.published_seq();
-    const auto r = runtime_.try_create_stream(stream_id, device_id, StreamIntent::PREVIEW, nullptr, nullptr, profile_version);
+    const auto r = runtime_.try_create_stream(stream_id, device_id, StreamIntent::PREVIEW, request_profile, nullptr, profile_version);
     if (r != TryCreateStreamStatus::OK) {
       error = "try_create_stream failed";
       return false;
