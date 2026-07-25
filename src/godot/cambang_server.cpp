@@ -827,6 +827,8 @@ static godot::String result_payload_kind_name(ResultPayloadKind payload_kind) {
   switch (payload_kind) {
     case ResultPayloadKind::CPU_PACKED:
       return "cpu_packed";
+    case ResultPayloadKind::CPU_PLANAR:
+      return "cpu_planar";
     case ResultPayloadKind::GPU_SURFACE:
       return "gpu_surface";
     case ResultPayloadKind::ENCODED_IMAGE:

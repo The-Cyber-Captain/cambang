@@ -7,6 +7,8 @@
 #include <numeric>
 #include <utility>
 
+#include "pixels/format/pixel_format_descriptor.h"
+
 namespace cambang {
 
 namespace {
@@ -34,10 +36,9 @@ bool checked_add_size_t(size_t a, size_t b, size_t& out) {
 }
 
 uint32_t infer_bit_depth(uint32_t format_fourcc) {
-  if (format_fourcc == FOURCC_RGBA || format_fourcc == FOURCC_BGRA) {
-    return 8;
-  }
-  return 0;
+  // 0 remains "CamBANG cannot state a bit depth for this format", which is what
+  // an unnamed FourCC yields from the descriptor table.
+  return describe_pixel_format(format_fourcc).bits_per_component;
 }
 
 CoreImageFactBundle build_default_facts(uint32_t width, uint32_t height, uint32_t format_fourcc) {
@@ -57,11 +58,15 @@ CoreImageFactBundle build_default_facts(uint32_t width, uint32_t height, uint32_
   return facts;
 }
 
+// A frame's image description is usable when CamBANG can name the format and
+// therefore reason about its geometry. Whether that format can be retained,
+// displayed, or materialized is decided separately, by the paths that
+// implement it.
 bool has_valid_result_image_description(const FrameView& frame) {
   if (frame.width == 0 || frame.height == 0) {
     return false;
   }
-  return frame.format_fourcc == FOURCC_RGBA || frame.format_fourcc == FOURCC_BGRA;
+  return is_known_pixel_format(frame.format_fourcc);
 }
 
 bool has_valid_retained_cpu_packed_access_payload(
@@ -77,12 +82,20 @@ bool has_valid_retained_cpu_packed_access_payload(
       payload.format_fourcc != expected_format_fourcc) {
     return false;
   }
-  if (payload.format_fourcc != FOURCC_RGBA && payload.format_fourcc != FOURCC_BGRA) {
+  // Fail-closed gate for the CPU access paths that feed `to_image()` and the
+  // CPU display texture: both build a Godot FORMAT_RGBA8 Image directly from
+  // these bytes, so only a packed RGB-family payload is directly usable. A
+  // YUV payload reaching here must report no CPU access capability rather than
+  // be handed over as if it were RGBA.
+  if (!is_packed_rgb_format(payload.format_fourcc)) {
     return false;
   }
-  const size_t expected_size =
-      static_cast<size_t>(payload.width) * static_cast<size_t>(payload.height) * 4u;
-  return payload.stride_bytes == payload.width * 4u &&
+  const PixelFormatDescriptor desc = describe_pixel_format(payload.format_fourcc);
+  const size_t expected_size = min_tight_size_bytes(desc, payload.width, payload.height);
+  if (expected_size == 0) {
+    return false;
+  }
+  return payload.stride_bytes == plane_row_bytes(desc, 0, payload.width) &&
          payload.size_bytes() >= expected_size;
 }
 
@@ -838,7 +851,9 @@ bool CoreResultStore::has_valid_capture_image_member_payload(const CoreResultPay
   if (payload.width == 0 || payload.height == 0) {
     return false;
   }
-  if (payload.format_fourcc != FOURCC_RGBA && payload.format_fourcc != FOURCC_BGRA) {
+  // Same fail-closed gate as the stream CPU access path: `to_image_member()`
+  // builds a FORMAT_RGBA8 Image straight from these bytes.
+  if (!is_packed_rgb_format(payload.format_fourcc)) {
     return false;
   }
   if (payload.empty()) {
@@ -1185,15 +1200,22 @@ bool CoreResultStore::try_copy_cpu_packed_payload(const FrameView& frame, CoreRe
     return false;
   }
 
-  if (!(frame.format_fourcc == FOURCC_RGBA || frame.format_fourcc == FOURCC_BGRA)) {
+  // This is the single-plane packed retention path. Planar and semi-planar
+  // payloads are not retained here: they need per-plane retention, which no
+  // path implements yet, so they must fall through to no-CPU-payload rather
+  // than be copied as if plane 0 were the whole image.
+  const PixelFormatDescriptor desc = describe_pixel_format(frame.format_fourcc);
+  if (!desc.valid || desc.layout_class != PixelLayoutClass::Packed) {
     return false;
   }
-  if (frame.width > (std::numeric_limits<uint32_t>::max() / 4u)) {
+  const uint32_t bytes_per_pixel = desc.plane0_bytes_per_sample;
+  if (bytes_per_pixel == 0 ||
+      frame.width > (std::numeric_limits<uint32_t>::max() / bytes_per_pixel)) {
     return false;
   }
 
   size_t row_bytes = 0;
-  if (!checked_mul_size_t(static_cast<size_t>(frame.width), 4u, row_bytes)) {
+  if (!checked_mul_size_t(static_cast<size_t>(frame.width), bytes_per_pixel, row_bytes)) {
     return false;
   }
   const size_t src_stride = (frame.stride_bytes == 0) ? row_bytes : static_cast<size_t>(frame.stride_bytes);

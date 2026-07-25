@@ -71,13 +71,18 @@ godot::Ref<godot::Image> payload_to_image(const CoreResultPayloadCpuPacked& payl
     return godot::Ref<godot::Image>();
   }
 
-  if (payload.format_fourcc != FOURCC_RGBA && payload.format_fourcc != FOURCC_BGRA) {
+  // FORMAT_RGBA8 is built directly from these bytes, so only a packed
+  // RGB-family payload is admissible here. Anything else -- including a packed
+  // YUV payload such as YUY2 -- must fail closed rather than be reinterpreted.
+  if (!is_packed_rgb_format(payload.format_fourcc)) {
     return godot::Ref<godot::Image>();
   }
 
-  const size_t required_bytes =
-      static_cast<size_t>(payload.width) * static_cast<size_t>(payload.height) * 4u;
-  if (payload.stride_bytes != payload.width * 4u || payload.size_bytes() < required_bytes) {
+  const PixelFormatDescriptor desc = describe_pixel_format(payload.format_fourcc);
+  const size_t required_bytes = min_tight_size_bytes(desc, payload.width, payload.height);
+  if (required_bytes == 0 ||
+      payload.stride_bytes != plane_row_bytes(desc, 0, payload.width) ||
+      payload.size_bytes() < required_bytes) {
     return godot::Ref<godot::Image>();
   }
 

@@ -186,6 +186,35 @@ public:
     return ProducerBackingCapabilities{false, false};
   }
 
+  // Internal native pixel-format capability advertisement.
+  //
+  // States which formats the provider can emit WITHOUT converting, in its own
+  // preference order, and whether it will convert to packed RGBA/BGRA on
+  // request. This is acquisition capability truth, distinct from producer
+  // backing kind (CPU/GPU) and from result payload-kind policy.
+  //
+  // The default describes every provider in the tree today: packed RGBA/BGRA
+  // native, conversion available. A provider whose backend delivers YUV should
+  // override this to say so truthfully -- advertising a native format it does
+  // not actually emit is a contract violation, not an optimization hint.
+  //
+  // Core currently reads these advertisements for format selection only where
+  // a path implements the advertised format. Advertising a format does not by
+  // itself enable retention, display, or materialization of it.
+  virtual ProducerFormatCapabilities stream_format_capabilities(
+      const CaptureProfile& profile,
+      const PictureConfig& picture) const noexcept {
+    (void)profile;
+    (void)picture;
+    return ProducerFormatCapabilities::packed_rgb_only();
+  }
+
+  virtual ProducerFormatCapabilities capture_format_capabilities(
+      const CaptureRequest& req) const noexcept {
+    (void)req;
+    return ProducerFormatCapabilities::packed_rgb_only();
+  }
+
   // Internal parent-context capability truth used by parent-scoped backing-plan
   // evaluation.
   // These default to the provider/runtime envelope above; providers that can

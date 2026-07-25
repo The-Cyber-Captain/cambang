@@ -215,6 +215,99 @@ Depending on `payload_kind`, this may include:
 
 This document does not freeze exact C++ field layout, but the presence of adequate metadata is part of the contract.
 
+## 6.1 Pixel format descriptor
+
+Layout arithmetic for every format CamBANG can name lives in one truth table
+(`src/pixels/format/pixel_format_descriptor.h`): plane count, per-plane row
+bytes and row count, component depth, chroma subsampling, and whether the
+format is packed RGB-family or YUV-family.
+
+Provider, Core, and Godot layers derive size, stride, and bit-depth answers
+from that table. No layer may open-code `width * 4` or infer bit depth from a
+format name.
+
+Naming a format in the table is **not** a support claim. An entry means
+CamBANG can reason about that format's geometry. Whether a format can be
+retained, displayed, or materialized is proven by the paths that implement it,
+and every such path states its own admissible set explicitly. A format with a
+descriptor but no implementing path must fail closed, not fall through to a
+packed-RGBA reinterpretation.
+
+An unnamed FourCC yields an invalid descriptor. Callers must treat that as
+"geometry unknown" and reject, never guess.
+
+## 6.2 Payload layout and colorimetry
+
+A CPU payload is described by a plane descriptor, not a single pointer:
+
+- per-plane data pointer, byte count, stride, and row count;
+- the shared format tag and image dimensions;
+- colorimetry.
+
+`FrameView` carries this as an optional `payload_layout`. When absent, the
+frame is single-plane and the legacy scalar fields
+(`data`/`size_bytes`/`stride_bytes`/`format_fourcc`) are authoritative.
+Consumers read `FrameView::effective_payload_layout()` so both cases answer
+identically. A provider emitting a planar or semi-planar payload **must**
+populate the layout, because the scalars cannot describe more than one plane;
+a multi-plane format tag delivered through the scalars alone is malformed and
+resolves to absent.
+
+Colorimetry — range, matrix, transfer, primaries — is a first-class part of the
+payload contract, not an afterthought. Limited-vs-full range and BT.601 vs
+BT.709 matrix are facts the provider knows at acquisition and that no
+downstream layer can recover from the bytes. Getting them wrong produces an
+image that is plausible and incorrect, which is worse than a failure.
+
+`UNSPECIFIED` is truthful absence, not a default value. A consumer needing a
+concrete value must choose its fallback explicitly; it must not silently treat
+`UNSPECIFIED` as any particular colour space.
+
+## 6.3 Native format capability and selection
+
+Providers declare the formats they can emit **without converting**, in their own
+preference order, alongside whether they will convert to packed RGBA/BGRA on
+request. This is acquisition capability truth, parallel to
+`ProducerBackingCapabilities` and equally distinct from payload-kind policy.
+
+Advertising a format the provider does not actually emit is a contract
+violation, not an optimization hint.
+
+The direction this enables — and the reason the capability is declared rather
+than assumed — is that conversion should happen at the **latest** useful point,
+not the earliest:
+
+- the display path does not need CPU packed RGB at all, since subsampled YUV
+  can be uploaded as its native planes and converted by the sampling shader;
+- the materialization path (`to_image()` / `to_image_member()`) is the only
+  consumer that genuinely requires packed RGB, and it is explicit,
+  user-triggered, and already cost-classified under §11.
+
+Converting inside the provider, on the acquisition thread, before anything has
+asked for pixels, pays the cost unconditionally at the most latency-sensitive
+point in the pipeline. Where a provider's backend delivers YUV, its native
+format is the truthful advertisement and conversion belongs downstream of
+retention.
+
+### 6.3.1 Current implementation status
+
+The vocabulary above is fully expressed in the contract; the implementing
+paths are not all built yet. Recording this honestly matters, because a
+declared-but-unimplemented kind is otherwise indistinguishable from a working
+one:
+
+- `ResultPayloadKind::CPU_PLANAR` is defined and named, but **no path writes
+  it**. Planar retention is not implemented, so no result currently reports it.
+- Planar and semi-planar payloads are therefore not retained. They are
+  rejected at retention rather than copied as if plane 0 were the whole image.
+- Packed payloads are retained generically by descriptor arithmetic, but CPU
+  access capability (`to_image`, CPU display) remains gated to packed
+  RGB-family payloads, since those paths build a Godot `FORMAT_RGBA8` image
+  directly from the retained bytes.
+- Every provider in the tree advertises the default capability (RGBA/BGRA
+  native, conversion available), which describes their real behaviour: both
+  platform providers convert YUV to RGBA internally today.
+
 ## 6.x Primary backing vs sidecar backing
 
 A realized image-bearing artifact may have:
