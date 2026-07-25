@@ -44,12 +44,20 @@ out/core_thread_liveness_watchdog_verify.exe   # self-supervising death test (ab
 
 Godot scene verification runs from `tests/cambang_gde/` (PowerShell). The **only** authoritative classification is the shared harness verdict line `[CamBANG][HarnessVerdict] scene=<name> status=<ok|expected_unsupported|fail|error> ...`, checked by the launcher — never add runner-side regex exceptions; fix the scene's verdict instead.
 
+Pass `-Windowed` as the standard for development iteration. `run_godot.ps1`
+defaults to headless, which silently skips texture materialization and leaves
+the maintainer with nothing to watch — a scene that renders nothing looks the
+same as a scene that renders wrongly. Headless keeps its value for post-release
+deployment checking, where nobody is watching anyway; it is not the default to
+iterate against.
+
 ```powershell
 # Single scene (from tests/cambang_gde/)
-.\run_godot.ps1 -Scene res://scenes/66_public_lifecycle_verify.tscn -CaptureLogs -TimeoutSec 60 -RunLabel scene66
+.\run_godot.ps1 -Scene res://scenes/66_public_lifecycle_verify.tscn -Windowed -CaptureLogs -TimeoutSec 60 -RunLabel scene66
 # Android variant: add -RunPlatform android (exports APK, deploys over adb).
 # This works directly/unsandboxed on this machine — run it yourself when a
 # tranche requires Android coverage; don't defer it to the maintainer.
+# Android always runs windowed regardless; -Windowed is the Windows-side knob.
 # -Scene only (no -Script), no -QuitAfter; use -TimeoutSec ~90+.
 
 # Broad suite (scenes + status-panel fixtures)

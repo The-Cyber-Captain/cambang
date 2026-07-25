@@ -3472,14 +3472,33 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
       continue;
     }
     bool expected = false;
-    if (cand->in_use.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-      slot = cand;
-      s.pool_cursor = (idx + 1) % n;
-      break;
+    if (!cand->in_use.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+      continue;
     }
+    // Claiming the frame slot is not enough: the bytes may still be published.
+    // Core adopts cpu_payload_owner rather than copying, so a retained result
+    // -- or a CamBANGStreamResult GDScript is holding -- can still be reading
+    // these exact bytes long after the frame was released.
+    //
+    // The check is safe in one direction only, which is the direction that
+    // matters. Expired is permanent: this slot's owner can only be created
+    // here, so once the last reference is gone nothing can resurrect it, and
+    // reuse is sound. Unexpired may become expired the instant after the test,
+    // which costs at worst one needlessly dropped frame. Repeating frames are
+    // lossy by contract; publishing a later frame's pixels under a retained
+    // result's identity is not permitted at all, so the conservative direction
+    // is the correct one.
+    if (!cand->published_owner.expired()) {
+      cand->in_use.store(false, std::memory_order_release);
+      continue;
+    }
+    cand->published_owner.reset();
+    slot = cand;
+    s.pool_cursor = (idx + 1) % n;
+    break;
   }
   if (!slot) {
-    // Drop if pool exhausted.
+    // Drop if every slot is either mid-frame or still published.
     return;
   }
 
@@ -3691,8 +3710,19 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   if (publish_cpu_payload) {
     fv.data = slot->bytes.data();
     fv.size_bytes = slot->bytes.size();
-    fv.cpu_payload_owner =
-        std::shared_ptr<const std::vector<uint8_t>>(slot, &slot->bytes);
+    // The owner keeps the bytes alive by holding the slot in its deleter, and
+    // deletes nothing -- the slot owns the storage.
+    //
+    // It deliberately does NOT use the aliasing constructor
+    // (shared_ptr(slot, &slot->bytes)). That would share the slot's control
+    // block, which the pool itself holds a reference to, so a weak_ptr to it
+    // could never expire and the acquisition guard would reject every slot
+    // forever. A separate control block counts consumers and nothing else,
+    // which is exactly what the guard needs to observe.
+    auto owner = std::shared_ptr<const std::vector<uint8_t>>(
+        &slot->bytes, [slot](const std::vector<uint8_t>*) {});
+    slot->published_owner = owner;
+    fv.cpu_payload_owner = std::move(owner);
   }
   fv.stride_bytes = stride;
   const bool profile_compatible =
