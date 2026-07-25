@@ -12,7 +12,7 @@ int to_prov_int(ResultFactProvenance v) {
 }
 
 godot::PackedByteArray payload_rgba_to_pba(
-    const CoreResultPayloadCpuPacked& payload,
+    const CoreResultPayloadCpu& payload,
     size_t required_bytes) {
   godot::PackedByteArray out;
   out.resize(static_cast<int64_t>(required_bytes));
@@ -25,7 +25,7 @@ godot::PackedByteArray payload_rgba_to_pba(
 }
 
 godot::PackedByteArray payload_bgra_to_rgba_pba(
-    const CoreResultPayloadCpuPacked& payload,
+    const CoreResultPayloadCpu& payload,
     size_t required_bytes) {
   godot::PackedByteArray out;
   out.resize(static_cast<int64_t>(required_bytes));
@@ -66,7 +66,7 @@ godot::Dictionary to_dict(const ResultImagePropertiesProvenance& v) {
   return d;
 }
 
-godot::Ref<godot::Image> payload_to_image(const CoreResultPayloadCpuPacked& payload) {
+godot::Ref<godot::Image> payload_to_image(const CoreResultPayloadCpu& payload) {
   if (payload.width == 0 || payload.height == 0 || payload.empty()) {
     return godot::Ref<godot::Image>();
   }

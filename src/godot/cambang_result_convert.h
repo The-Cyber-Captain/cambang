@@ -13,6 +13,6 @@ godot::Dictionary to_dict(const ResultImagePropertiesFacts& v);
 
 godot::Dictionary to_dict(const ResultImagePropertiesProvenance& v);
 
-godot::Ref<godot::Image> payload_to_image(const CoreResultPayloadCpuPacked& payload);
+godot::Ref<godot::Image> payload_to_image(const CoreResultPayloadCpu& payload);
 
 } // namespace cambang

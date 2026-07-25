@@ -672,7 +672,7 @@ int main() {
   CoreCaptureResultData::ImageMemberData bad_payload{};
   bad_payload.image_member_index = 2;
   bad_payload.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
-  bad_payload.payload = CoreResultPayloadCpuPacked{};
+  bad_payload.payload = CoreResultPayloadCpu{};
   assert(!store.append_additional_capture_image(77, 100, bad_payload, kCaptureEpochA, requested_cpu));
   CoreCaptureResultData::ImageMemberData out_of_order{};
   out_of_order.image_member_index = 3;

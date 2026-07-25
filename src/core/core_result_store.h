@@ -25,11 +25,31 @@ namespace cambang {
 // helper code.
 constexpr uint64_t kResultAccessCheapWithinBestMultiplier = 2;
 
-struct CoreResultPayloadCpuPacked {
+// One plane's placement inside CoreResultPayloadCpu's single byte buffer.
+struct CoreResultPayloadCpuPlane {
+  size_t offset_bytes = 0;
+  uint32_t stride_bytes = 0;
+  uint32_t rows = 0;
+};
+
+// Retained CPU payload for one image.
+//
+// Packed and planar payloads share one contiguous byte buffer. That keeps the
+// retained_bytes zero-copy adoption path usable for both, and matches how
+// camera stacks actually deliver planar data (for NV12, luma then interleaved
+// chroma in a single allocation).
+//
+// plane_count == 0 means a packed payload described entirely by the scalar
+// stride below -- the shape every pre-planar path already expects. A planar
+// payload populates plane_count and planes[], and its scalar stride_bytes
+// describes plane 0 only.
+struct CoreResultPayloadCpu {
   uint32_t format_fourcc = 0;
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t stride_bytes = 0;
+  uint8_t plane_count = 0;
+  CoreResultPayloadCpuPlane planes[kMaxPixelFormatPlanes]{};
   // Legacy/self-owned byte storage. New retained-result paths may instead keep
   // immutable provider-owned bytes alive through retained_bytes to avoid an
   // extra full-frame copy. Use data()/size_bytes()/empty() for reads.
@@ -44,6 +64,27 @@ struct CoreResultPayloadCpuPacked {
   }
   bool empty() const noexcept { return size_bytes() == 0; }
   bool uses_retained_bytes() const noexcept { return static_cast<bool>(retained_bytes); }
+  bool is_planar() const noexcept { return plane_count > 1; }
+
+  // Start of `plane` within the retained buffer, or nullptr when the plane is
+  // absent or its extent does not fit the buffer. Bounds are re-checked here
+  // rather than trusted from retention time, because the buffer may be an
+  // adopted provider allocation.
+  const uint8_t* plane_data(uint32_t plane) const noexcept {
+    if (plane >= plane_count) {
+      return nullptr;
+    }
+    const CoreResultPayloadCpuPlane& p = planes[plane];
+    if (p.rows == 0 || p.stride_bytes == 0) {
+      return nullptr;
+    }
+    const size_t span = static_cast<size_t>(p.stride_bytes) * static_cast<size_t>(p.rows);
+    const size_t total = size_bytes();
+    if (span < p.stride_bytes || span > total || p.offset_bytes > (total - span)) {
+      return nullptr;
+    }
+    return data() + p.offset_bytes;
+  }
 };
 
 struct CoreResultAccessPostureKey {
@@ -146,7 +187,7 @@ struct CoreStreamResultData {
   // current for the same retained frame, classify the result as
   // GPU-primary with CPU sidecar data rather than GPU-only.
   RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
-  CoreResultPayloadCpuPacked payload{};
+  CoreResultPayloadCpu payload{};
   CoreRetainedAccessTruth retained_access_truth{};
   SharedResultAccessClassificationRecord access_classification{};
   CoreResultAccessPostureKey access_posture{};
@@ -176,7 +217,7 @@ struct CoreCaptureResultData {
     uint64_t retained_frame_id = 0;
     std::optional<SourcedFact<ImageAcquisitionTiming>> acquisition_timing;
     ResultPayloadKind payload_kind = ResultPayloadKind::CPU_PACKED;
-    CoreResultPayloadCpuPacked payload{};
+    CoreResultPayloadCpu payload{};
     std::shared_ptr<void> retained_gpu_backing{};
     RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
     CoreRetainedAccessTruth retained_access_truth{};
@@ -270,7 +311,7 @@ public:
       CoreCaptureResultData::ImageMemberData& out_member,
       CoreRetainedProductionPlan requested_retained_plan = {});
   static bool try_build_capture_image_member_data_from_frame(const FrameView& frame,
-                                                              CoreResultPayloadCpuPacked& out_payload);
+                                                              CoreResultPayloadCpu& out_payload);
 
   SharedStreamResultData get_latest_stream_result(uint64_t stream_id) const;
   SharedCaptureResultData get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
@@ -337,13 +378,16 @@ private:
 #if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
   friend struct CoreResultStoreSmokeAccess;
 #endif
-  static bool has_cpu_packed_payload(const FrameView& frame);
-  static bool try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpuPacked& out);
-  static bool has_valid_capture_image_member_payload(const CoreResultPayloadCpuPacked& payload);
+  static bool has_cpu_payload(const FrameView& frame);
+  // Retains a frame's CPU bytes, dispatching on the format's layout class.
+  static bool try_copy_cpu_payload(const FrameView& frame, CoreResultPayloadCpu& out);
+  static bool try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpu& out);
+  static bool try_copy_cpu_planar_payload(const FrameView& frame, CoreResultPayloadCpu& out);
+  static bool has_valid_capture_image_member_payload(const CoreResultPayloadCpu& payload);
   bool try_issue_retained_frame_id(uint64_t& out_id) noexcept;
   static MutableCaptureResultData build_default_image_capture_result(const FrameView& frame,
                                                                      CoreRetainedBackingPlan plan,
-                                                                     CoreResultPayloadCpuPacked payload,
+                                                                     CoreResultPayloadCpu payload,
                                                                      std::shared_ptr<void> retained_gpu_backing,
                                                                      RetainedGpuBackingDescriptor retained_gpu_backing_descriptor);
 
