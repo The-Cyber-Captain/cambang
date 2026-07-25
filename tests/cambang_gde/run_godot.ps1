@@ -339,7 +339,45 @@ function Finalize-LogRecord {
     $bucketRoot = Join-Path $LogRecord.Root $Bucket
     New-Item -ItemType Directory -Force -Path $bucketRoot | Out-Null
 
-    $finalRunDir = Join-Path $bucketRoot $LogRecord.RunDirName
+    # Android runs all carry the same "android" token, which says nothing about
+    # which handset produced them. The scene records the resolved equipment in
+    # its summary, so substitute that here -- the run is over by now, so the
+    # record exists. Substituted rather than appended: the token is redundant on
+    # Android (always windowed) and appending would push paths toward the
+    # Windows length limit. Equipment labels are kept short for the same reason.
+    #
+    # A run that died before the scene bootstrapped -- lockscreen, adb drop --
+    # has no equipment to report and keeps the plain "android" token. That
+    # absence is itself a useful signal that the run never identified itself.
+    # Read the equipment from the scene's identity banner in the captured log,
+    # NOT from its summary record: structured records are recovered from the
+    # logs later in the run (Recover-StructuredRecords), so records/ does not
+    # exist yet at this point. The banner is emitted during scene bootstrap and
+    # is therefore already present in the log written during the run.
+    $runDirName = $LogRecord.RunDirName
+    if ($runDirName.EndsWith("__android")) {
+        $equipmentLabel = ""
+        foreach ($logName in @("device_logcat.log", "stdout.log")) {
+            $logPath = Join-Path $LogRecord.RunDir $logName
+            if (-not (Test-Path -LiteralPath $logPath)) {
+                continue
+            }
+            $match = Select-String -LiteralPath $logPath -Pattern 'identity:.*\bequipment=(\S+)' |
+                Select-Object -First 1
+            if ($match) {
+                $equipmentLabel = $match.Matches[0].Groups[1].Value
+                break
+            }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($equipmentLabel)) {
+            $safeEquipment = Convert-ToSafeName $equipmentLabel
+            if (-not [string]::IsNullOrWhiteSpace($safeEquipment)) {
+                $runDirName = $runDirName.Substring(0, $runDirName.Length - "__android".Length) + "__" + $safeEquipment
+            }
+        }
+    }
+
+    $finalRunDir = Join-Path $bucketRoot $runDirName
     if (Test-Path $finalRunDir) {
         Remove-Item -LiteralPath $finalRunDir -Recurse -Force
     }
@@ -365,6 +403,7 @@ function Finalize-LogRecord {
     }
 
     $LogRecord.RunDir = $finalRunDir
+    $LogRecord.RunDirName = $runDirName
     $LogRecord.StdoutPath = Join-Path $finalRunDir "stdout.log"
     $LogRecord.StderrPath = Join-Path $finalRunDir "stderr.log"
     $LogRecord.VerdictPath = Join-Path $finalRunDir "verdict.txt"

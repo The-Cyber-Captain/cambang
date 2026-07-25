@@ -62,9 +62,13 @@ const EQUIPMENT := {
 				"concurrent_combinations": [["0", "1"], ["0", "3"]],
 				"rig_pair": ["0", "1"],
 			},
-			# hammer_construction_2_thermal, meta_quest_3: filled after the
+			# hammer_thermal, meta_quest_3: filled after the
 			{
-				"label": "hammer_construction_2_thermal",
+				# Label is identification only -- device matching keys on
+				# model_match, never on this. Kept short because it is
+				# substituted into the run-log directory name on Android, where
+				# the full model string would push paths past the Windows limit.
+				"label": "hammer_thermal",
 				"model_match": "Hammer_Construction_2_Thermal_5G",
 				"permissions": ["android.permission.CAMERA"],
 				# Stable Camera2 ids (maintainer-supplied): five cameras, with the
