@@ -1369,8 +1369,14 @@ ProviderResult SyntheticProvider::start_stream(
   if (w == 0 || h == 0 || fmt == 0) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
-  if (fmt != FOURCC_RGBA) {
-    // v1 synthetic only.
+  if (fmt != FOURCC_RGBA && fmt != FOURCC_NV12) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  if (fmt == FOURCC_NV12 &&
+      cfg_.producer_output_form_mode == SyntheticProducerOutputFormMode::GpuOnly) {
+    // Synthetic's live GPU backing is RGBA8-only, so an NV12 stream is
+    // CPU-primary. Reject the combination at start rather than starting a
+    // stream that could only ever drop frames.
     return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
   }
 
@@ -3449,6 +3455,65 @@ void SyntheticProvider::release_stream_live_gpu_backing_(StreamState& s) {
   s.live_gpu_stride_bytes = 0;
 }
 
+namespace {
+
+// Converts a packed RGBA8 buffer to NV12 (BT.601, limited range).
+//
+// Synthetic renders in packed RGBA and converts here. That is a provider-local
+// implementation detail, not a contract shortcut: the point of Synthetic
+// emitting NV12 at all is to exercise CamBANG's planar retention, upload and
+// conversion paths deterministically, without hardware in the loop.
+// Determinism matters here; throughput does not, which is why this uses plain
+// integer math and allocates its own output buffer.
+//
+// The coefficients are the standard integer BT.601 limited-range set, and the
+// colorimetry this frame declares must keep matching them.
+void synthetic_rgba_to_nv12(
+    const uint8_t* src,
+    uint32_t src_stride,
+    uint32_t w,
+    uint32_t h,
+    std::vector<uint8_t>& out) {
+  const size_t y_plane_bytes = static_cast<size_t>(w) * static_cast<size_t>(h);
+  const uint32_t chroma_rows = (h + 1u) / 2u;
+  const size_t uv_plane_bytes = static_cast<size_t>(w) * static_cast<size_t>(chroma_rows);
+  out.assign(y_plane_bytes + uv_plane_bytes, 0u);
+
+  uint8_t* y_dst = out.data();
+  uint8_t* uv_dst = out.data() + y_plane_bytes;
+
+  for (uint32_t y = 0; y < h; ++y) {
+    const uint8_t* row = src + static_cast<size_t>(src_stride) * y;
+    uint8_t* y_row = y_dst + static_cast<size_t>(w) * y;
+    for (uint32_t x = 0; x < w; ++x) {
+      const int32_t r = row[static_cast<size_t>(x) * 4u + 0u];
+      const int32_t g = row[static_cast<size_t>(x) * 4u + 1u];
+      const int32_t b = row[static_cast<size_t>(x) * 4u + 2u];
+      y_row[x] = static_cast<uint8_t>(((66 * r + 129 * g + 25 * b + 128) >> 8) + 16);
+    }
+  }
+
+  // Chroma is sampled at the top-left of each 2x2 block rather than averaged.
+  // Point sampling keeps the inverse exactly predictable for verification,
+  // which matters more here than subsampling quality.
+  for (uint32_t cy = 0; cy < chroma_rows; ++cy) {
+    const uint8_t* row = src + static_cast<size_t>(src_stride) * (cy * 2u);
+    uint8_t* uv_row = uv_dst + static_cast<size_t>(w) * cy;
+    for (uint32_t cx = 0; cx * 2u < w; ++cx) {
+      const size_t sx = static_cast<size_t>(cx) * 2u * 4u;
+      const int32_t r = row[sx + 0u];
+      const int32_t g = row[sx + 1u];
+      const int32_t b = row[sx + 2u];
+      uv_row[static_cast<size_t>(cx) * 2u + 0u] =
+          static_cast<uint8_t>(((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128);
+      uv_row[static_cast<size_t>(cx) * 2u + 1u] =
+          static_cast<uint8_t>(((112 * r - 94 * g - 18 * b + 128) >> 8) + 128);
+    }
+  }
+}
+
+} // namespace
+
 void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_capture_ns) {
   const auto emit_t0 = std::chrono::steady_clock::now();
   if (!callbacks_) {
@@ -3457,7 +3522,11 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
 
   const uint32_t w = s.req.profile.width;
   const uint32_t h = s.req.profile.height;
+  // The render slot and GPU staging are always packed RGBA; NV12 is produced
+  // from them at publication time, so this stride describes the render buffer,
+  // not necessarily the published payload.
   const uint32_t stride = w * 4u;
+  const bool emit_nv12 = s.req.profile.format_fourcc == FOURCC_NV12;
 
   // Acquire a buffer slot.
   std::shared_ptr<StreamState::BufferSlot> slot;
@@ -3522,7 +3591,8 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   const auto target_t0 = std::chrono::steady_clock::now();
   const bool publish_cpu_payload =
       s.resolved_output_form_mode != SyntheticProducerOutputFormMode::GpuOnly;
-  const bool render_direct_to_cpu_slot = publish_cpu_payload && !s.prefer_gpu_backing;
+  const bool render_direct_to_cpu_slot =
+      publish_cpu_payload && (emit_nv12 || !s.prefer_gpu_backing);
   PatternRenderTarget dst{};
   dst.data = render_direct_to_cpu_slot ? static_cast<void*>(slot->bytes.data()) : static_cast<void*>(s.gpu_staging.data());
   dst.size_bytes = render_direct_to_cpu_slot ? slot->bytes.size() : s.gpu_staging.size();
@@ -3549,7 +3619,10 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   record_timing_sample(render_ns, triage_frame_render_calls_, triage_frame_render_total_ns_, triage_frame_render_max_ns_);
   bool gpu_ok = false;
   std::shared_ptr<void> gpu_backing;
-  if (s.prefer_gpu_backing) {
+  // Synthetic's live GPU backing is RGBA8-only, so an NV12 stream is
+  // CPU-primary. start_stream_ rejects NV12 under GpuOnly, so suppressing the
+  // GPU attempt here cannot strand a mode that requires a GPU primary.
+  if (s.prefer_gpu_backing && !emit_nv12) {
     const auto ensure_t0 = std::chrono::steady_clock::now();
     const bool ensured_backing = ensure_stream_live_gpu_backing_(s, w, h, stride);
     const auto ensure_t1 = std::chrono::steady_clock::now();
@@ -3681,7 +3754,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   fv.capture_id = 0;
   fv.width = w;
   fv.height = h;
-  fv.format_fourcc = FOURCC_RGBA;
+  fv.format_fourcc = emit_nv12 ? FOURCC_NV12 : FOURCC_RGBA;
   fv.primary_backing_kind = gpu_backing ? ProducerBackingKind::GPU : ProducerBackingKind::CPU;
   if (gpu_backing) {
     fv.retained_gpu_backing_descriptor.valid = true;
@@ -3707,7 +3780,43 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   }
   fv.retain_cpu_sidecar = publish_cpu_payload;
   fv.requested_retained_plan = s.req.requested_retained_plan;
-  if (publish_cpu_payload) {
+  if (publish_cpu_payload && emit_nv12) {
+    // NV12 needs a buffer of a different size and shape from the RGBA render
+    // slot, so it gets its own allocation whose lifetime is carried by
+    // cpu_payload_owner. Deliberately NOT tied to the slot pool: the slot is
+    // only the conversion source here, and giving the NV12 buffer an
+    // independent control block keeps it clear of the pool's weak_ptr
+    // acquisition guard entirely.
+    auto nv12 = std::make_shared<std::vector<uint8_t>>();
+    synthetic_rgba_to_nv12(slot->bytes.data(), stride, w, h, *nv12);
+
+    fv.data = nv12->data();
+    fv.size_bytes = nv12->size();
+
+    PayloadLayout& layout = fv.payload_layout;
+    layout.format_fourcc = FOURCC_NV12;
+    layout.width = w;
+    layout.height = h;
+    layout.plane_count = 2;
+    // Must match the coefficients in synthetic_rgba_to_nv12().
+    layout.colorimetry.range = ColorRange::LIMITED;
+    layout.colorimetry.matrix = ColorMatrix::BT601;
+    layout.colorimetry.transfer = ColorTransfer::SRGB;
+    layout.colorimetry.primaries = ColorPrimaries::BT709;
+
+    const size_t y_plane_bytes = static_cast<size_t>(w) * static_cast<size_t>(h);
+    const uint32_t chroma_rows = (h + 1u) / 2u;
+    layout.planes[0].data = nv12->data();
+    layout.planes[0].size_bytes = y_plane_bytes;
+    layout.planes[0].stride_bytes = w;
+    layout.planes[0].rows = h;
+    layout.planes[1].data = nv12->data() + y_plane_bytes;
+    layout.planes[1].size_bytes = nv12->size() - y_plane_bytes;
+    layout.planes[1].stride_bytes = w;
+    layout.planes[1].rows = chroma_rows;
+
+    fv.cpu_payload_owner = std::move(nv12);
+  } else if (publish_cpu_payload) {
     fv.data = slot->bytes.data();
     fv.size_bytes = slot->bytes.size();
     // The owner keeps the bytes alive by holding the slot in its deleter, and
@@ -3724,7 +3833,8 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     slot->published_owner = owner;
     fv.cpu_payload_owner = std::move(owner);
   }
-  fv.stride_bytes = stride;
+  // Scalar stride describes plane 0, which for NV12 is the luma plane.
+  fv.stride_bytes = emit_nv12 ? w : stride;
   const bool profile_compatible =
       fv.width == s.req.profile.width &&
       fv.height == s.req.profile.height &&

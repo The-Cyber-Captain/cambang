@@ -930,6 +930,102 @@ int main() {
   }
 #endif
 
+  // --- Planar (NV12) retention -----------------------------------------------
+  //
+  // Proves the CPU_PLANAR writer end to end at the store boundary: a
+  // semi-planar frame retains with per-plane geometry, is classified
+  // CPU_PLANAR rather than CPU_PACKED, and reports NO CPU access capability.
+  // That last assertion is the load-bearing one -- a planar payload reaching
+  // to_image() would build a FORMAT_RGBA8 image out of chroma bytes.
+  {
+    CoreResultStore planar_store;
+
+    // 4x4 NV12: 16 luma bytes then 8 interleaved chroma bytes, with the
+    // provider padding each plane's rows to prove padding is normalized away.
+    constexpr uint32_t kW = 4;
+    constexpr uint32_t kH = 4;
+    constexpr uint32_t kSrcStride = 6;  // deliberately > width
+    std::vector<uint8_t> luma(static_cast<size_t>(kSrcStride) * kH, 0u);
+    std::vector<uint8_t> chroma(static_cast<size_t>(kSrcStride) * (kH / 2u), 0u);
+    for (uint32_t y = 0; y < kH; ++y) {
+      for (uint32_t x = 0; x < kW; ++x) {
+        luma[static_cast<size_t>(kSrcStride) * y + x] = static_cast<uint8_t>(y * 16u + x);
+      }
+    }
+    for (uint32_t y = 0; y < kH / 2u; ++y) {
+      for (uint32_t x = 0; x < kW; ++x) {
+        chroma[static_cast<size_t>(kSrcStride) * y + x] = static_cast<uint8_t>(200u + y * 4u + x);
+      }
+    }
+
+    FrameView planar_frame{};
+    planar_frame.device_instance_id = 1400;
+    planar_frame.stream_id = 1401;
+    planar_frame.width = kW;
+    planar_frame.height = kH;
+    planar_frame.format_fourcc = FOURCC_NV12;
+    PayloadLayout& pl = planar_frame.payload_layout;
+    pl.format_fourcc = FOURCC_NV12;
+    pl.width = kW;
+    pl.height = kH;
+    pl.plane_count = 2;
+    pl.colorimetry.range = ColorRange::LIMITED;
+    pl.colorimetry.matrix = ColorMatrix::BT601;
+    pl.planes[0].data = luma.data();
+    pl.planes[0].size_bytes = luma.size();
+    pl.planes[0].stride_bytes = kSrcStride;
+    pl.planes[0].rows = kH;
+    pl.planes[1].data = chroma.data();
+    pl.planes[1].size_bytes = chroma.size();
+    pl.planes[1].stride_bytes = kSrcStride;
+    pl.planes[1].rows = kH / 2u;
+
+    assert(validate_payload_layout(pl));
+    // Layout validity above is the public-facing precondition; retention below
+    // is what actually proves Core accepted it.
+
+    CoreRetainedProductionPlan requested_cpu_planar{};
+    requested_cpu_planar.valid = true;
+    requested_cpu_planar.posture = CoreProductionPostureShape::CpuPrimary;
+    assert(planar_store.retain_frame(
+        planar_frame, StreamIntent::PREVIEW, 1, 0, requested_cpu_planar));
+
+    const auto planar_result = planar_store.get_latest_stream_result(1401);
+    assert(planar_result);
+    assert(planar_result->payload_kind == ResultPayloadKind::CPU_PLANAR);
+    assert(planar_result->image_format_fourcc == FOURCC_NV12);
+
+    const CoreResultPayloadCpu& rp = planar_result->payload;
+    assert(rp.is_planar());
+    assert(rp.plane_count == 2);
+    // Retained tight: luma stride collapses from 6 to 4, chroma likewise.
+    assert(rp.planes[0].stride_bytes == kW && rp.planes[0].rows == kH);
+    assert(rp.planes[1].stride_bytes == kW && rp.planes[1].rows == kH / 2u);
+    assert(rp.planes[0].offset_bytes == 0);
+    assert(rp.planes[1].offset_bytes == static_cast<size_t>(kW) * kH);
+    assert(rp.size_bytes() == static_cast<size_t>(kW) * kH + static_cast<size_t>(kW) * (kH / 2u));
+
+    // Padding removed, sample values preserved.
+    const uint8_t* y_plane = rp.plane_data(0);
+    const uint8_t* uv_plane = rp.plane_data(1);
+    assert(y_plane && uv_plane);
+    for (uint32_t y = 0; y < kH; ++y) {
+      for (uint32_t x = 0; x < kW; ++x) {
+        assert(y_plane[static_cast<size_t>(kW) * y + x] == static_cast<uint8_t>(y * 16u + x));
+      }
+    }
+    for (uint32_t y = 0; y < kH / 2u; ++y) {
+      for (uint32_t x = 0; x < kW; ++x) {
+        assert(uv_plane[static_cast<size_t>(kW) * y + x] == static_cast<uint8_t>(200u + y * 4u + x));
+      }
+    }
+    assert(rp.plane_data(2) == nullptr);
+
+    // Fail-closed: no CPU access path may claim a planar payload.
+    assert(planar_result->retained_access_truth.to_image == ResultCapability::UNSUPPORTED);
+    assert(planar_result->retained_access_truth.display_view == ResultCapability::UNSUPPORTED);
+  }
+
   std::cout << "PASS core_result_path_smoke\n";
   return 0;
 }

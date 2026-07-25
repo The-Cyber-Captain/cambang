@@ -52,6 +52,21 @@ public:
     return kBackingPlanEvaluationSettleDelayNs;
   }
 
+  // Synthetic emits packed RGBA natively and can also emit NV12, so that
+  // CamBANG's planar retention, upload and conversion paths are exercisable
+  // deterministically without hardware. Capture remains packed-only.
+  ProducerFormatCapabilities stream_format_capabilities(
+      const CaptureProfile& profile,
+      const PictureConfig& picture) const noexcept override {
+    (void)profile;
+    (void)picture;
+    ProducerFormatCapabilities caps{};
+    caps.add(FOURCC_RGBA);
+    caps.add(FOURCC_NV12);
+    caps.can_emit_packed_rgb = true;
+    return caps;
+  }
+
   ProducerBackingCapabilities stream_backing_capabilities(
       const CaptureProfile& profile,
       const PictureConfig& picture) const noexcept override;
