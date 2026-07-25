@@ -371,6 +371,16 @@ private:
       uint64_t stream_id = 0;
       std::vector<std::uint8_t> bytes;
       std::atomic<bool> in_use{false};
+      // The payload owner most recently published for this slot, if any.
+      //
+      // in_use tracks the *frame*: Core clears it as soon as the FrameView is
+      // released. It does not track the *bytes*, which Core may still be
+      // publishing through an adopted cpu_payload_owner, and which GDScript may
+      // still reach through a retained CamBANGStreamResult. Reusing the slot on
+      // in_use alone therefore renders a later frame over pixels a live handle
+      // is still reading. Held weakly so a retained payload keeps the bytes
+      // alive without this slot keeping the payload alive.
+      std::weak_ptr<const std::vector<std::uint8_t>> published_owner;
     };
     std::vector<std::shared_ptr<BufferSlot>> pool;
     size_t pool_cursor = 0;

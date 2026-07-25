@@ -10,8 +10,10 @@
 
 #include <iostream>
 #include <chrono>
+#include <cstring>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace cambang {
 namespace {
@@ -2850,6 +2852,129 @@ int frame_starvation(VerifyCaseProviderKind provider_kind) {
   return 0;
 }
 
+// A retained stream result's CPU payload must stay byte-identical for as long
+// as a consumer holds its SharedStreamResultData. That is not a nicety: when a
+// provider sets FrameView::cpu_payload_owner, Core adopts the provider's buffer
+// instead of copying it, and the contract permits that only for bytes that
+// "will not be mutated after posting"
+// (provider_contract_datatypes.h, cpu_payload_owner).
+//
+// A provider that publishes a *pooled* buffer as that owner breaks the
+// guarantee as soon as the pool wraps: the retained result keeps reporting one
+// retained_frame_id while the bytes underneath it become a later frame's. This
+// case holds a result exactly as GDScript would (get_stream_result_by_stream_id
+// then read later), cycles the stream well past the pool size, and re-reads the
+// handle it never let go of.
+int retained_stream_payload_immutability(VerifyCaseProviderKind provider_kind) {
+  if (provider_kind != VerifyCaseProviderKind::Synthetic) {
+    cli::line("SKIP: verification case 'retained_stream_payload_immutability' requires SyntheticProvider timeline support");
+    return kVerifyCaseSkipped;
+  }
+
+  // Comfortably past any provider pool size, so a wrapping pool is certain to
+  // have handed this slot to a later frame.
+  constexpr int kFramesAfterHold = 24;
+
+  VerifyCaseHarness h(provider_kind);
+  std::string error;
+  if (!h.start_runtime(error) ||
+      !h.wait_for_core_snapshot([](const CamBANGStateSnapshot&) { return true; }, error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  h.tick();
+
+  if (!h.open_device(error) || !h.create_stream(error) || !h.start_stream(error) ||
+      !h.emit_frame(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  h.tick();
+
+  SharedStreamResultData held = h.runtime().get_latest_stream_result(VerifyCaseHarness::kStreamId);
+  if (!held) {
+    fail_step(0, "no retained stream result after first frame");
+    return 1;
+  }
+  if (held->payload_kind != ResultPayloadKind::CPU_PACKED) {
+    cli::line("SKIP: retained stream result is not CPU_PACKED; nothing to hold");
+    return kVerifyCaseSkipped;
+  }
+  const uint8_t* held_bytes = held->payload.data();
+  const size_t held_size = held->payload.size_bytes();
+  if (!held_bytes || held_size == 0) {
+    fail_step(0, "retained stream result carries no CPU payload bytes");
+    return 1;
+  }
+
+  // Which retention path Core took. Adoption is the only one this case can
+  // meaningfully test: a copied payload is immutable by construction.
+  const bool adopted = static_cast<bool>(held->payload.retained_bytes);
+  cli::line(adopted ? "retained payload path: adopted (zero-copy, provider-owned bytes)"
+                    : "retained payload path: copied (Core-owned bytes)");
+
+  const std::vector<uint8_t> at_hold(held_bytes, held_bytes + held_size);
+  const uint64_t held_frame_id = held->retained_frame_id;
+  cli::line("step 0 OK (held retained_frame_id=", held_frame_id, " bytes=", held_size, ")");
+
+  // Sanity gate. If successive frames render identical pixels, mutation of the
+  // held buffer would be invisible and a PASS here would mean nothing. Prove
+  // the payload actually varies before trusting the comparison below.
+  if (!h.emit_frame(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  h.tick();
+  SharedStreamResultData next = h.runtime().get_latest_stream_result(VerifyCaseHarness::kStreamId);
+  if (!next || next->retained_frame_id == held_frame_id) {
+    fail_step(1, "stream did not advance to a new retained frame");
+    return 1;
+  }
+  if (next->payload.size_bytes() == at_hold.size() &&
+      std::memcmp(next->payload.data(), at_hold.data(), at_hold.size()) == 0) {
+    cli::line("SKIP: successive frames render identical payloads; this case cannot detect mutation");
+    return kVerifyCaseSkipped;
+  }
+  next.reset();
+  cli::line("step 1 OK (successive frames differ; comparison is meaningful)");
+
+  for (int i = 0; i < kFramesAfterHold; ++i) {
+    if (!h.emit_frame(error)) {
+      cli::error("FAIL: ", error);
+      return 1;
+    }
+    h.tick();
+  }
+
+  // The handle was never released, so both its identity and its bytes must be
+  // exactly what they were at step 0.
+  if (held->retained_frame_id != held_frame_id) {
+    fail_step(2, "held retained_frame_id changed while the handle was alive");
+    return 1;
+  }
+  if (held->payload.size_bytes() != at_hold.size()) {
+    fail_step(2, "held retained payload changed size while the handle was alive");
+    return 1;
+  }
+  if (std::memcmp(held->payload.data(), at_hold.data(), at_hold.size()) != 0) {
+    size_t first_diff = 0;
+    while (first_diff < at_hold.size() && held->payload.data()[first_diff] == at_hold[first_diff]) {
+      ++first_diff;
+    }
+    cli::error("FAIL: retained stream payload mutated underneath a live handle");
+    cli::error("  retained_frame_id still reports ", held_frame_id,
+               " but the bytes changed after ", kFramesAfterHold, " further frames");
+    cli::error("  first differing byte offset=", first_diff, " of ", at_hold.size());
+    cli::error("  provider published mutable pooled bytes as FrameView::cpu_payload_owner,");
+    cli::error("  which the contract permits only for bytes not mutated after posting.");
+    return 1;
+  }
+  cli::line("step 2 OK (retained payload byte-identical after ", kFramesAfterHold, " further frames)");
+
+  cli::line("Verification case PASSED");
+  return 0;
+}
+
 int provider_error_mid_stream(VerifyCaseProviderKind provider_kind) {
   if (provider_kind != VerifyCaseProviderKind::Synthetic) {
     cli::line("SKIP: verification case 'provider_error_mid_stream' requires SyntheticProvider timeline support");
@@ -3162,6 +3287,7 @@ std::vector<VerifyCaseDefinition> verify_case_catalog(VerifyCaseProviderKind pro
       {"device_disconnect", [provider_kind]() { return device_disconnect(provider_kind); }},
       {"close_while_streaming", [provider_kind]() { return close_while_streaming(provider_kind); }},
       {"frame_starvation", [provider_kind]() { return frame_starvation(provider_kind); }},
+      {"retained_stream_payload_immutability", [provider_kind]() { return retained_stream_payload_immutability(provider_kind); }},
       {"provider_error_mid_stream", [provider_kind]() { return provider_error_mid_stream(provider_kind); }},
       {"redundant_stop", [provider_kind]() { return redundant_stop(provider_kind); }},
       {"multi_device_topology_change", [provider_kind]() { return multi_device_topology_change(provider_kind); }},
