@@ -161,6 +161,8 @@ var _cleanup_started := false
 var _finish_reason := "complete"
 var _is_headless := false
 var _provider_arg := "synthetic"
+var _resolved_equipment_label := ""
+var _capture_conditions_by_device := {}
 var _load_profile_arg := LOAD_PROFILE_DEFAULT
 var _seed := 870001
 var _rng := RandomNumberGenerator.new()
@@ -350,6 +352,15 @@ func _bootstrap_from_known_ids(equip: Dictionary, synthetic: bool) -> void:
 	# Known camera ids (synthetic constants, or Android's stable Camera2 id
 	# strings from the table): ingest the concurrency truth (cameras +
 	# combinations) before start(); the rig drives rig_pair. No enumerate-first.
+	_resolved_equipment_label = str(equip.get("label", ""))
+	# Emitted before anything can fail, so a run that dies before writing its
+	# summary record is still identifiable from the log alone.
+	_log("identity: provider=%s os=%s model=%s equipment=%s" % [
+		_provider_arg,
+		OS.get_name(),
+		(OS.get_model_name() if OS.has_method("get_model_name") else "?"),
+		_resolved_equipment_label,
+	])
 	var cameras: Array = equip.get("cameras", [])
 	var combinations: Array = equip.get("concurrent_combinations", [])
 	var rig_pair: Array = equip.get("rig_pair", [])
@@ -395,6 +406,7 @@ func _bootstrap_platform() -> void:
 	# Resolve the curated entry for the attached hardware, verify its permission
 	# prerequisites (pre-granted for an automated soak).
 	var equip := _resolve_platform_equipment()
+	_resolved_equipment_label = str(equip.get("label", ""))
 	if equip.is_empty():
 		_finish(0, true, "equipment_not_configured:%s" % _platform_identity_text())
 		return
@@ -408,6 +420,13 @@ func _bootstrap_platform() -> void:
 	# WinRT etc.: ids are machine-specific symbolic links -> enumerate-first
 	# (discover the pair, then ingest): start -> enumerate -> select -> stop ->
 	# ingest -> start.
+	# Identity banner for this path; the known-id path emits its own.
+	_log("identity: provider=%s os=%s model=%s equipment=%s" % [
+		_provider_arg,
+		OS.get_name(),
+		(OS.get_model_name() if OS.has_method("get_model_name") else "?"),
+		_resolved_equipment_label,
+	])
 	CamBANGServer.stop()
 	if int(CamBANGServer.start()) != OK:
 		_fail("platform bootstrap: initial start() failed")
@@ -2251,6 +2270,7 @@ func _complete_capture_result(job: Dictionary, capture_result, is_rig_member: bo
 		"image_summary": _image_summary(image),
 	}
 	_record_capture_sample_provenance(sample, job, is_rig_member)
+	_record_capture_conditions(device_key, sample, capture_result)
 	if is_rig_member:
 		_record_sample("rig_capture_member", sample)
 	else:
@@ -2872,6 +2892,7 @@ func _build_summary(exit_code: int, expected_unsupported: bool) -> Dictionary:
 		"run_frame_stats": _numeric_stats(_run_frame_ms),
 		"exit_visual_hold": _exit_visual_hold_summary(),
 		"stream_display_observation": _stream_display_observation_summary(),
+		"capture_conditions": _capture_conditions_summary(),
 		"cpu_display_refresh_observation": _cpu_display_refresh_observation_summary(
 			synthetic_metrics
 		),
@@ -3102,6 +3123,10 @@ func _benchmark_elapsed_us() -> int:
 
 
 func _run_context() -> Dictionary:
+	# provider/model/equipment are recorded here because the run-log directory
+	# name comes from the operator-supplied -RunLabel and has repeatedly
+	# disagreed with the provider that actually ran. The summary is the
+	# authority; classify runs from these fields, never from the folder name.
 	return {
 		"os_name": OS.get_name(),
 		"display_server": DisplayServer.get_name(),
@@ -3109,6 +3134,9 @@ func _run_context() -> Dictionary:
 		"cmdline_user_args": OS.get_cmdline_user_args(),
 		"frame_count": _frame_count,
 		"benchmark_frame_count": _benchmark_frame_count,
+		"provider": _provider_arg,
+		"model_name": (OS.get_model_name() if OS.has_method("get_model_name") else ""),
+		"equipment_label": _resolved_equipment_label,
 	}
 
 
@@ -3514,19 +3542,135 @@ func _capture_source_provenance_summary(capture_id: int) -> Dictionary:
 	}
 
 
-func _stream_display_observation_summary() -> Dictionary:
+func _record_capture_conditions(device_key: String, sample: Dictionary, capture_result) -> void:
+	# Capture-condition evidence, recorded rather than gated.
+	#
+	# Scene-870 stream and capture rates depend on how much light the sensor
+	# has, and the dependency is not uniform: a camera whose preview
+	# auto-exposure is exposure-priority loses stream rate in dim light, while
+	# one that is gain-priority holds its rate and instead lengthens its still
+	# exposure. Measured on two USB cameras, dark vs lit: device A's stream went
+	# 14.0 -> 28.0 fps while device B's did not move at all (23.3 -> 23.3), yet
+	# BOTH devices' capture duration responded (120.7 -> 71.8ms and
+	# 211.2 -> 144.0ms). So capture duration is the signal that tracks light on
+	# every device; stream rate is not.
+	#
+	# No threshold and no gate: "enough light" is device-specific and
+	# metric-specific (device B's stream figure is valid in pitch darkness), so
+	# any fixed limit would both over-block and under-detect, and would need
+	# per-device maintenance. Recording the conditions instead lets a later
+	# comparison ask whether two runs are comparable, from the record itself.
+	if device_key == "":
+		return
+	var entry: Dictionary = _capture_conditions_by_device.get(device_key, {
+		"capture_duration_us": [],
+		"realized_exposure_reports": 0,
+		"realized_exposure_last": null,
+		"realized_iso_last": null,
+	})
+	(entry["capture_duration_us"] as Array).append(int(sample.get("click_to_result_ready_us", 0)))
+	# Realized per-image facts where the provider supplies them. Camera2 reports
+	# ACAMERA_SENSOR_EXPOSURE_TIME and sensitivity; WinRT currently reports
+	# neither, so these stay absent there and the summary says so rather than
+	# implying the value was zero. Stored verbatim: the fact's dictionary shape
+	# is the provider's to define, and this harness must not reinterpret it.
+	if capture_result != null and capture_result.has_method("get_image_member"):
+		var member_v = capture_result.get_image_member(0)
+		if typeof(member_v) == TYPE_DICTIONARY:
+			var facts_v = (member_v as Dictionary).get("camera_facts", null)
+			if typeof(facts_v) == TYPE_DICTIONARY:
+				var facts: Dictionary = facts_v
+				if facts.has("exposure_time"):
+					entry["realized_exposure_last"] = facts["exposure_time"]
+					entry["realized_exposure_reports"] = int(entry["realized_exposure_reports"]) + 1
+				if facts.has("sensor_sensitivity_iso"):
+					entry["realized_iso_last"] = facts["sensor_sensitivity_iso"]
+	_capture_conditions_by_device[device_key] = entry
+
+
+func _capture_conditions_summary() -> Dictionary:
 	var out := {}
 	for device_key in [DEV_A, DEV_B]:
+		var entry_v: Variant = _capture_conditions_by_device.get(device_key, null)
 		var info: Dictionary = _devices[device_key]
-		out[device_key] = {
+		var rec := {
 			"label": str(info.get("label", device_key)),
-			"stream_id": int(info.get("stream_id", 0)),
+			"hardware_id": str(info.get("hardware_id", "")),
+			"capture_count": 0,
+			"realized_exposure_available": false,
+		}
+		if entry_v != null:
+			var entry: Dictionary = entry_v
+			var durations: Array = (entry["capture_duration_us"] as Array).duplicate()
+			durations.sort()
+			rec["capture_count"] = durations.size()
+			if not durations.is_empty():
+				rec["capture_duration_us_p50"] = _percentile(durations, 0.5)
+				rec["capture_duration_us_p90"] = _percentile(durations, 0.9)
+				rec["capture_duration_us_max"] = float(durations[durations.size() - 1])
+			var reports := int(entry.get("realized_exposure_reports", 0))
+			rec["realized_exposure_available"] = reports > 0
+			rec["realized_exposure_reports"] = reports
+			if entry.get("realized_exposure_last", null) != null:
+				rec["realized_exposure_last"] = entry["realized_exposure_last"]
+			if entry.get("realized_iso_last", null) != null:
+				rec["realized_sensor_sensitivity_iso_last"] = entry["realized_iso_last"]
+		out[device_key] = rec
+	return out
+
+
+func _core_stream_counters_by_stream_id() -> Dictionary:
+	# Core's own per-stream frame accounting, as published in the state
+	# snapshot. This is what distinguishes "frames never arrived" (low
+	# frames_received -> the loss is upstream of Core, in the provider or its
+	# transport) from "frames arrived and were discarded" (high frames_dropped
+	# -> the loss is inside Core's ingress). Scene-side observed_update_fps
+	# alone cannot tell those apart.
+	var out := {}
+	var snapshot = CamBANGServer.get_state_snapshot()
+	if snapshot == null:
+		return out
+	for sv in (snapshot as Dictionary).get("streams", []):
+		if typeof(sv) != TYPE_DICTIONARY:
+			continue
+		var rec: Dictionary = sv
+		var sid := int(rec.get("stream_id", 0))
+		if sid <= 0:
+			continue
+		out[sid] = {
+			"frames_received": int(rec.get("frames_received", 0)),
+			"frames_delivered": int(rec.get("frames_delivered", 0)),
+			"frames_dropped": int(rec.get("frames_dropped", 0)),
+		}
+	return out
+
+
+func _stream_display_observation_summary() -> Dictionary:
+	var out := {}
+	var core_counters := _core_stream_counters_by_stream_id()
+	for device_key in [DEV_A, DEV_B]:
+		var info: Dictionary = _devices[device_key]
+		var stream_id := int(info.get("stream_id", 0))
+		var entry := {
+			"label": str(info.get("label", device_key)),
+			"hardware_id": str(info.get("hardware_id", "")),
+			"stream_id": stream_id,
 			"device_id": int(info.get("device_id", 0)),
 			"observed_result_advancements": int(info.get("stream_observed_changes", 0)),
 			"observed_result_update_fps": _stream_observed_fps(device_key),
 			"observed_update_count": int(info.get("stream_observed_changes", 0)),
 			"display_view_bound": bool(info.get("live_display_bound", false)),
 		}
+		var counters_v: Variant = core_counters.get(stream_id, null)
+		if counters_v == null:
+			entry["core_frames_available"] = false
+		else:
+			var counters: Dictionary = counters_v
+			entry["core_frames_available"] = true
+			entry["core_frames_received"] = int(counters.get("frames_received", 0))
+			entry["core_frames_delivered"] = int(counters.get("frames_delivered", 0))
+			entry["core_frames_dropped"] = int(counters.get("frames_dropped", 0))
+		out[device_key] = entry
 	return out
 
 
