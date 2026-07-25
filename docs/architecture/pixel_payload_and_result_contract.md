@@ -308,6 +308,61 @@ one:
   native, conversion available), which describes their real behaviour: both
   platform providers convert YUV to RGBA internally today.
 
+### 6.3.2 Platform format availability
+
+Recorded so that later payload decisions inherit this grounding instead of
+re-deriving it. This describes the **shapes CamBANG must be ready to accept**,
+not a device compatibility list. Actual support is always resolved by runtime
+capability query against the attached hardware; no part of CamBANG may key
+behaviour off a device model, and nothing here licenses a hardcoded format
+assumption.
+
+**Flexible formats are a family, not a format.** Camera2's `YUV_420_888` is
+the load-bearing example: a chroma `pixelStride` of 2 means semi-planar
+(NV12/NV21), 1 means fully planar (I420/YV12), and the device decides at
+runtime. Per-plane strides are the only truthful description of what a given
+device handed over. This is why `PayloadLayout` carries strides rather than
+trusting a format tag, and why a provider emitting a flexible format must
+resolve the concrete FourCC from the strides it observes.
+
+Still-capture availability on current targets:
+
+| Still format | Windows (WinRT) | Android (Camera2) | Payload kind |
+|---|---|---|---|
+| BGRA8 | `MediaPixelFormat::Bgra8` | not a capture format | `CPU_PACKED` |
+| NV12 | `MediaPixelFormat::Nv12` | via `YUV_420_888` when semi-planar | `CPU_PLANAR` |
+| NV21 / I420 / YV12 | no | via `YUV_420_888`, device-dependent | `CPU_PLANAR` |
+| YUY2 / UYVY | stream subtypes only | no | `CPU_PACKED` |
+| JPEG | `CreateJpeg()` | guaranteed at every hardware level | `ENCODED_IMAGE` |
+| HEIC / JPEG_R | no | capability-gated | `ENCODED_IMAGE` |
+| RAW Bayer | not exposed by this surface | capability-gated | `RAW_IMAGE` |
+| Opaque GPU | n/a | `PRIVATE`, never CPU-readable | `GPU_SURFACE` |
+
+Two consequences worth carrying forward:
+
+- **Uncompressed stills are natively planar on both targets.** WinRT's
+  uncompressed photo surface offers exactly two pixel formats, BGRA8 and NV12;
+  Camera2 guarantees `YUV_420_888` stills at maximum size on LIMITED hardware
+  and above. Planar still capture is therefore well-founded, not speculative.
+- **JPEG is the only still format guaranteed on every Android device**,
+  including LEGACY, and is the natural save/export artifact. It is also the
+  one payload kind where retaining the provider's own output means performing
+  no pixel work at all, which is why §10.5 already ranks an already-encoded
+  still artifact first for capture retention.
+
+Known descriptor gaps, each breaking a different current assumption:
+
+- **Grayscale (Y8/Y16).** No descriptor exists. Thermal sensors typically
+  deliver single-plane monochrome, and radiometric Y16 is semantically not a
+  picture: its values are temperature, so any RGB rendering is a false-colour
+  palette and therefore a derived representation under §15, never the original
+  retained truth.
+- **10-bit (P010, 10-bit flexible YUV).** The descriptor fields can already
+  express it; no downstream path consumes it.
+- **Bayer RAW.** Needs a colour-filter-array concept the descriptor has no
+  vocabulary for, and packed sub-byte layouts (RAW10/RAW12) are not modelled
+  by the current per-plane row arithmetic at all.
+
 ## 6.x Primary backing vs sidecar backing
 
 A realized image-bearing artifact may have:

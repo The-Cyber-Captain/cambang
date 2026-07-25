@@ -1024,6 +1024,21 @@ int main() {
     // Fail-closed: no CPU access path may claim a planar payload.
     assert(planar_result->retained_access_truth.to_image == ResultCapability::UNSUPPORTED);
     assert(planar_result->retained_access_truth.display_view == ResultCapability::UNSUPPORTED);
+
+    // Capture must behave like stream: retain the planar member and report
+    // UNSUPPORTED access, NOT fail retention outright. Retention validity and
+    // CPU-access capability are separate questions.
+    CoreCaptureResultData::ImageMemberData planar_member{};
+    FrameView planar_capture = planar_frame;
+    planar_capture.stream_id = 0;
+    planar_capture.capture_id = 1402;
+    assert(CoreResultStore::try_build_capture_image_member_data_from_frame(
+        planar_capture, planar_member, requested_cpu_planar));
+    assert(planar_member.payload_kind == ResultPayloadKind::CPU_PLANAR);
+    assert(planar_member.payload.is_planar());
+    assert(planar_member.payload.plane_count == 2);
+    assert(planar_member.retained_access_truth.to_image == ResultCapability::UNSUPPORTED);
+    assert(planar_member.retained_access_truth.display_view == ResultCapability::UNSUPPORTED);
   }
 
   std::cout << "PASS core_result_path_smoke\n";

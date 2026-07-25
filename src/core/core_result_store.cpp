@@ -867,9 +867,17 @@ bool CoreResultStore::has_valid_capture_image_member_payload(const CoreResultPay
   if (payload.width == 0 || payload.height == 0) {
     return false;
   }
-  // Same fail-closed gate as the stream CPU access path: `to_image_member()`
-  // builds a FORMAT_RGBA8 Image straight from these bytes.
-  if (!is_packed_rgb_format(payload.format_fourcc)) {
+  // Retention validity only: can CamBANG reason about these bytes and account
+  // for them truthfully. Whether a CPU access path can *use* them is a
+  // separate, stricter question answered by
+  // build_capture_image_member_retained_access_truth(), which gates
+  // to_image_member() on is_packed_rgb_format().
+  //
+  // These were one check until planar retention landed. Conflated, a planar
+  // capture member was copied in full and then rejected here, so capture
+  // failed outright where the stream path retains the frame and reports
+  // UNSUPPORTED access. Keep the two questions separate.
+  if (!is_known_pixel_format(payload.format_fourcc)) {
     return false;
   }
   if (payload.empty()) {
