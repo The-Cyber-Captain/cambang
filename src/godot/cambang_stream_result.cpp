@@ -15,6 +15,7 @@
 #include <godot_cpp/variant/string_name.hpp>
 
 #include "core/core_runtime.h"
+#include "pixels/format/yuv_convert.h"
 #include "godot/cambang_result_convert.h"
 #include "godot/cambang_server.h"
 #include "godot/godot_gpu_display_service.h"
@@ -149,6 +150,55 @@ bool ensure_live_cpu_image_storage(
   return entry.image.is_valid();
 }
 
+// NV12 -> packed RGBA8, for runtimes with no RenderingDevice (the OpenGL
+// Compatibility driver, and any headless run). Where a RenderingDevice exists
+// this same conversion belongs on the GPU; the two must agree, so both are
+// driven by the payload's declared colorimetry and use matching coefficients.
+//
+// Integer BT.601 limited range, the inverse of the synthetic provider's
+// forward transform.
+bool write_live_cpu_rgba_from_nv12(
+    uint8_t* dst,
+    const CoreResultPayloadCpu& payload,
+    uint32_t width,
+    uint32_t height) {
+  // Refuse rather than convert with the wrong coefficients. Core's access
+  // truth applies the same gate, so this should already hold; it is repeated
+  // because materialization paths verify the concrete route they use.
+  if (!is_convertible_colorimetry(payload.colorimetry)) {
+    return false;
+  }
+  const uint8_t* y_plane = payload.plane_data(0);
+  const uint8_t* uv_plane = payload.plane_data(1);
+  if (!y_plane || !uv_plane) {
+    return false;
+  }
+  const uint32_t y_stride = payload.planes[0].stride_bytes;
+  const uint32_t uv_stride = payload.planes[1].stride_bytes;
+  if (y_stride < width || uv_stride < width ||
+      payload.planes[0].rows < height ||
+      payload.planes[1].rows < ((height + 1u) / 2u)) {
+    return false;
+  }
+
+  for (uint32_t y = 0; y < height; ++y) {
+    const uint8_t* y_row = y_plane + static_cast<size_t>(y_stride) * y;
+    const uint8_t* uv_row = uv_plane + static_cast<size_t>(uv_stride) * (y / 2u);
+    uint8_t* out = dst + static_cast<size_t>(width) * 4u * y;
+    for (uint32_t x = 0; x < width; ++x) {
+      const size_t uv_index = static_cast<size_t>(x / 2u) * 2u;
+      const RgbSample s = yuv_to_rgb_bt601_limited(
+          y_row[x], uv_row[uv_index], uv_row[uv_index + 1u]);
+
+      out[static_cast<size_t>(x) * 4u + 0u] = s.r;
+      out[static_cast<size_t>(x) * 4u + 1u] = s.g;
+      out[static_cast<size_t>(x) * 4u + 2u] = s.b;
+      out[static_cast<size_t>(x) * 4u + 3u] = 255u;
+    }
+  }
+  return true;
+}
+
 bool write_live_cpu_rgba_pixels(
     LiveCpuDisplayViewEntry& entry,
     const SharedStreamResultData& data,
@@ -157,8 +207,12 @@ bool write_live_cpu_rgba_pixels(
   if (!data || entry.image.is_null()) {
     return false;
   }
+  // Destination size: the entry image is always FORMAT_RGBA8.
   const size_t required = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
-  if (data->payload.size_bytes() < required) {
+  // Source size only coincides with destination size for packed 32bpp formats.
+  // A planar source is smaller by design, so it validates its own extents in
+  // the conversion below rather than against the destination.
+  if (!data->payload.is_planar() && data->payload.size_bytes() < required) {
     return false;
   }
   uint8_t* dst = entry.image->ptrw();
@@ -172,6 +226,9 @@ bool write_live_cpu_rgba_pixels(
   if (data->payload.format_fourcc == FOURCC_RGBA) {
     std::memcpy(dst, src, required);
     return true;
+  }
+  if (data->payload.format_fourcc == FOURCC_NV12) {
+    return write_live_cpu_rgba_from_nv12(dst, data->payload, width, height);
   }
   if (data->payload.format_fourcc == FOURCC_BGRA) {
     for (size_t i = 0; i + 3 < required; i += 4) {

@@ -25,6 +25,7 @@
 #include "imaging/synthetic/gpu_update_policy_resolver.h"
 #include "imaging/api/timeline_teardown_trace.h"
 #include "imaging/synthetic/gpu_backing_runtime.h"
+#include "pixels/format/yuv_convert.h"
 #include "pixels/pattern/pattern_render_target.h"
 #if __has_include(<godot_cpp/variant/utility_functions.hpp>)
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -3486,10 +3487,10 @@ void synthetic_rgba_to_nv12(
     const uint8_t* row = src + static_cast<size_t>(src_stride) * y;
     uint8_t* y_row = y_dst + static_cast<size_t>(w) * y;
     for (uint32_t x = 0; x < w; ++x) {
-      const int32_t r = row[static_cast<size_t>(x) * 4u + 0u];
-      const int32_t g = row[static_cast<size_t>(x) * 4u + 1u];
-      const int32_t b = row[static_cast<size_t>(x) * 4u + 2u];
-      y_row[x] = static_cast<uint8_t>(((66 * r + 129 * g + 25 * b + 128) >> 8) + 16);
+      const uint8_t r = row[static_cast<size_t>(x) * 4u + 0u];
+      const uint8_t g = row[static_cast<size_t>(x) * 4u + 1u];
+      const uint8_t b = row[static_cast<size_t>(x) * 4u + 2u];
+      y_row[x] = rgb_to_yuv_bt601_limited(r, g, b).y;
     }
   }
 
@@ -3501,13 +3502,9 @@ void synthetic_rgba_to_nv12(
     uint8_t* uv_row = uv_dst + static_cast<size_t>(w) * cy;
     for (uint32_t cx = 0; cx * 2u < w; ++cx) {
       const size_t sx = static_cast<size_t>(cx) * 2u * 4u;
-      const int32_t r = row[sx + 0u];
-      const int32_t g = row[sx + 1u];
-      const int32_t b = row[sx + 2u];
-      uv_row[static_cast<size_t>(cx) * 2u + 0u] =
-          static_cast<uint8_t>(((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128);
-      uv_row[static_cast<size_t>(cx) * 2u + 1u] =
-          static_cast<uint8_t>(((112 * r - 94 * g - 18 * b + 128) >> 8) + 128);
+      const YuvSample s = rgb_to_yuv_bt601_limited(row[sx + 0u], row[sx + 1u], row[sx + 2u]);
+      uv_row[static_cast<size_t>(cx) * 2u + 0u] = s.u;
+      uv_row[static_cast<size_t>(cx) * 2u + 1u] = s.v;
     }
   }
 }

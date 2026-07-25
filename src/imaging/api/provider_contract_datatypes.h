@@ -124,6 +124,24 @@ struct PayloadColorimetry {
   ColorPrimaries primaries = ColorPrimaries::UNSPECIFIED;
 };
 
+// Whether CamBANG has a YUV conversion implemented for this colour
+// interpretation. Every conversion path -- CPU display, GPU shader -- gates on
+// this, so adding a colour space is one edit rather than several.
+//
+// UNSPECIFIED is truthful absence, not a value, so the fallback has to be
+// chosen explicitly rather than assumed: absence resolves to BT.601 limited,
+// which is what both current targets deliver for 8-bit 4:2:0 (Camera2's
+// YUV_420_888 and WinRT's NV12). A *declared* colour space CamBANG cannot
+// convert is refused outright -- rendering BT.709 content with BT.601
+// coefficients yields a plausible image, which is worse than no image.
+inline bool is_convertible_colorimetry(const PayloadColorimetry& c) noexcept {
+  const bool matrix_ok =
+      c.matrix == ColorMatrix::UNSPECIFIED || c.matrix == ColorMatrix::BT601;
+  const bool range_ok =
+      c.range == ColorRange::UNSPECIFIED || c.range == ColorRange::LIMITED;
+  return matrix_ok && range_ok;
+}
+
 // One plane of a CPU-readable payload. The provider retains ownership; plane
 // pointers share the frame's release lifetime.
 struct PayloadPlaneView {

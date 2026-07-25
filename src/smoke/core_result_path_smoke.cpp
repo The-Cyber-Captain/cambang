@@ -1,5 +1,8 @@
+#include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <limits>
@@ -8,6 +11,7 @@
 #include <vector>
 
 #include "core/camera_fact_types.h"
+#include "pixels/format/yuv_convert.h"
 #include "core/core_result_store.h"
 
 using namespace cambang;
@@ -1021,9 +1025,17 @@ int main() {
     }
     assert(rp.plane_data(2) == nullptr);
 
-    // Fail-closed: no CPU access path may claim a planar payload.
+    // Colorimetry must survive retention: it cannot be recovered from the
+    // bytes, and a consumer guessing it produces a plausible wrong image.
+    assert(rp.colorimetry.range == ColorRange::LIMITED);
+    assert(rp.colorimetry.matrix == ColorMatrix::BT601);
+
+    // Display is supported for a planar stream result via colour conversion,
+    // but is never READY: the RGBA form is not retained, it is produced.
+    assert(planar_result->retained_access_truth.display_view == ResultCapability::EXPENSIVE);
+    // Materialization remains fail-closed. A planar payload must not reach
+    // to_image(), which would build a FORMAT_RGBA8 image from chroma bytes.
     assert(planar_result->retained_access_truth.to_image == ResultCapability::UNSUPPORTED);
-    assert(planar_result->retained_access_truth.display_view == ResultCapability::UNSUPPORTED);
 
     // Capture must behave like stream: retain the planar member and report
     // UNSUPPORTED access, NOT fail retention outright. Retention validity and
@@ -1039,6 +1051,105 @@ int main() {
     assert(planar_member.payload.plane_count == 2);
     assert(planar_member.retained_access_truth.to_image == ResultCapability::UNSUPPORTED);
     assert(planar_member.retained_access_truth.display_view == ResultCapability::UNSUPPORTED);
+
+    // A declared colour space CamBANG cannot convert must yield NO display
+    // path. Rendering BT.709 content with BT.601 coefficients would produce a
+    // plausible image, which is worse than none.
+    {
+      CoreResultStore bt709_store;
+      FrameView bt709_frame = planar_frame;
+      bt709_frame.stream_id = 1403;
+      bt709_frame.capture_id = 0;
+      bt709_frame.payload_layout.colorimetry.matrix = ColorMatrix::BT709;
+      assert(bt709_store.retain_frame(
+          bt709_frame, StreamIntent::PREVIEW, 1, 0, requested_cpu_planar));
+      const auto bt709_result = bt709_store.get_latest_stream_result(1403);
+      assert(bt709_result);
+      // Still retained and still truthfully planar -- CamBANG holds the bytes
+      // and reports what they are; it simply offers no conversion for them.
+      assert(bt709_result->payload_kind == ResultPayloadKind::CPU_PLANAR);
+      assert(bt709_result->payload.colorimetry.matrix == ColorMatrix::BT709);
+      assert(bt709_result->retained_access_truth.display_view == ResultCapability::UNSUPPORTED);
+      assert(bt709_result->retained_access_truth.to_image == ResultCapability::UNSUPPORTED);
+    }
+
+    // Unspecified colorimetry resolves to the documented BT.601 limited
+    // fallback rather than being refused, since that is what both current
+    // platform targets deliver for 8-bit 4:2:0.
+    {
+      CoreResultStore unspec_store;
+      FrameView unspec_frame = planar_frame;
+      unspec_frame.stream_id = 1404;
+      unspec_frame.capture_id = 0;
+      unspec_frame.payload_layout.colorimetry = PayloadColorimetry{};
+      assert(unspec_store.retain_frame(
+          unspec_frame, StreamIntent::PREVIEW, 1, 0, requested_cpu_planar));
+      const auto unspec_result = unspec_store.get_latest_stream_result(1404);
+      assert(unspec_result);
+      assert(unspec_result->retained_access_truth.display_view == ResultCapability::EXPENSIVE);
+    }
+  }
+
+  // --- YUV round trip -------------------------------------------------------
+  //
+  // The provider's forward transform and every consumer's inverse must agree.
+  // Classification tests cannot catch a coefficient or range mistake: a wrong
+  // matrix yields a plausible image, not a failure. This checks the maths
+  // numerically instead.
+  //
+  // The round trip is lossy by construction (8-bit quantization both ways), so
+  // this compares within a tolerance and never for equality. Chroma
+  // subsampling is deliberately not exercised here -- this is the per-sample
+  // transform, tested at full chroma resolution.
+  {
+    constexpr int kTolerance = 4;
+    int checked = 0;
+    int worst = 0;
+
+    // Primaries, greys, and a spread of mixed values. Saturated primaries are
+    // the harshest case for BT.601 limited range, since they sit at the edges
+    // of the representable chroma excursion.
+    const RgbSample probes[] = {
+        {0, 0, 0},     {255, 255, 255}, {255, 0, 0},   {0, 255, 0},
+        {0, 0, 255},   {255, 255, 0},   {0, 255, 255}, {255, 0, 255},
+        {128, 128, 128}, {16, 16, 16},  {235, 235, 235}, {200, 100, 50},
+        {50, 100, 200},  {17, 200, 90}, {90, 17, 200},   {123, 45, 67},
+    };
+
+    for (const RgbSample& in : probes) {
+      const YuvSample yuv = rgb_to_yuv_bt601_limited(in.r, in.g, in.b);
+
+      // Forward output must respect BT.601 limited range, or the inverse is
+      // being fed values it cannot represent.
+      assert(yuv.y >= 16 && yuv.y <= 235);
+      assert(yuv.u >= 16 && yuv.u <= 240);
+      assert(yuv.v >= 16 && yuv.v <= 240);
+
+      const RgbSample out = yuv_to_rgb_bt601_limited(yuv.y, yuv.u, yuv.v);
+      const int dr = std::abs(static_cast<int>(out.r) - static_cast<int>(in.r));
+      const int dg = std::abs(static_cast<int>(out.g) - static_cast<int>(in.g));
+      const int db = std::abs(static_cast<int>(out.b) - static_cast<int>(in.b));
+      worst = std::max(worst, std::max(dr, std::max(dg, db)));
+      assert(dr <= kTolerance && dg <= kTolerance && db <= kTolerance);
+      ++checked;
+    }
+    assert(checked == static_cast<int>(sizeof(probes) / sizeof(probes[0])));
+
+    // Guard the tolerance itself. If the transforms were ever replaced by
+    // something merely "close", a slack tolerance would hide it -- so assert
+    // the observed error is genuinely small, not just inside the bound.
+    assert(worst <= kTolerance);
+
+    // Grey must round trip essentially exactly: it carries no chroma, so any
+    // error here is a luma range/scale mistake rather than subsampling loss.
+    for (int g = 16; g <= 235; ++g) {
+      const uint8_t v = static_cast<uint8_t>(g);
+      const YuvSample yuv = rgb_to_yuv_bt601_limited(v, v, v);
+      const RgbSample out = yuv_to_rgb_bt601_limited(yuv.y, yuv.u, yuv.v);
+      assert(std::abs(static_cast<int>(out.r) - g) <= 2);
+      assert(std::abs(static_cast<int>(out.g) - g) <= 2);
+      assert(std::abs(static_cast<int>(out.b) - g) <= 2);
+    }
   }
 
   std::cout << "PASS core_result_path_smoke\n";

@@ -2967,13 +2967,18 @@ int synthetic_nv12_stream_planar_retention(VerifyCaseProviderKind provider_kind)
   }
   cli::line("step 3 OK (luma varies and stays within BT.601 limited range)");
 
-  // Fail-closed: no CPU access path may claim planar bytes.
-  if (result->retained_access_truth.to_image != ResultCapability::UNSUPPORTED ||
-      result->retained_access_truth.display_view != ResultCapability::UNSUPPORTED) {
-    fail_step(4, "planar stream result reports a CPU access capability");
+  // Display is supported via colour conversion, but never READY: the RGBA
+  // form is produced, not retained. Materialization stays fail-closed, since
+  // to_image() would build a FORMAT_RGBA8 image out of chroma bytes.
+  if (result->retained_access_truth.display_view != ResultCapability::EXPENSIVE) {
+    fail_step(4, "planar stream display_view is not the expected converted-path classification");
     return 1;
   }
-  cli::line("step 4 OK (to_image and display_view both UNSUPPORTED)");
+  if (result->retained_access_truth.to_image != ResultCapability::UNSUPPORTED) {
+    fail_step(4, "planar stream result claims a to_image path");
+    return 1;
+  }
+  cli::line("step 4 OK (display_view=EXPENSIVE via conversion, to_image=UNSUPPORTED)");
 
   // Negative: format negotiation must reject a format the provider does not
   // advertise. Synthetic advertises RGBA and NV12 for streams, not I420, so

@@ -99,6 +99,40 @@ bool has_valid_retained_cpu_packed_access_payload(
          payload.size_bytes() >= expected_size;
 }
 
+// A retained planar payload whose geometry matches the result and whose planes
+// are addressable. This gates the planar display path, which converts rather
+// than reading the bytes as-is, so it deliberately does NOT require a packed
+// RGB format the way the direct CPU access check does.
+bool has_valid_retained_cpu_planar_display_payload(
+    const CoreResultPayloadCpu& payload,
+    uint32_t expected_width,
+    uint32_t expected_height,
+    uint32_t expected_format_fourcc) {
+  if (!payload.is_planar() || payload.empty()) {
+    return false;
+  }
+  if (payload.width != expected_width ||
+      payload.height != expected_height ||
+      payload.format_fourcc != expected_format_fourcc) {
+    return false;
+  }
+  const PixelFormatDescriptor desc = describe_pixel_format(payload.format_fourcc);
+  if (!desc.valid || payload.plane_count != desc.plane_count) {
+    return false;
+  }
+  // Display goes through colour conversion, so a colour space CamBANG cannot
+  // convert means no display path -- not a wrongly converted one.
+  if (desc.is_yuv && !is_convertible_colorimetry(payload.colorimetry)) {
+    return false;
+  }
+  for (uint32_t plane = 0; plane < payload.plane_count; ++plane) {
+    if (payload.plane_data(plane) == nullptr) {
+      return false;
+    }
+  }
+  return true;
+}
+
 CoreRetainedAccessTruth build_stream_retained_access_truth(const CoreStreamResultData& result) {
   CoreRetainedAccessTruth truth{};
   const bool has_current_cpu_payload =
@@ -124,6 +158,22 @@ CoreRetainedAccessTruth build_stream_retained_access_truth(const CoreStreamResul
   if (result.payload_kind == ResultPayloadKind::CPU_PACKED && has_current_cpu_payload) {
     truth.display_view = ResultCapability::CHEAP;
     truth.to_image = ResultCapability::CHEAP;
+  }
+
+  if (result.payload_kind == ResultPayloadKind::CPU_PLANAR &&
+      result.payload_retained_frame_id != 0 &&
+      result.payload_retained_frame_id == result.retained_frame_id &&
+      has_valid_retained_cpu_planar_display_payload(
+          result.payload, result.image_width, result.image_height, result.image_format_fourcc)) {
+    // Never READY: the target representation is not already retained, it is
+    // produced by a full-frame colour conversion (on CPU here, on GPU where a
+    // RenderingDevice exists). EXPENSIVE is the provisional classification
+    // per the conversion example in the capability vocabulary; bounded
+    // calibration refines CHEAP vs EXPENSIVE from measured evidence.
+    truth.display_view = ResultCapability::EXPENSIVE;
+    // to_image stays UNSUPPORTED for planar until the materialization path
+    // lands; reporting a CPU image path CamBANG cannot perform would be worse
+    // than reporting none.
   }
   return truth;
 }
@@ -1344,6 +1394,10 @@ bool CoreResultStore::try_copy_cpu_planar_payload(const FrameView& frame, CoreRe
   out.width = layout.width;
   out.height = layout.height;
   out.plane_count = layout.plane_count;
+  // Carried through retention: a consumer converting these bytes later cannot
+  // infer range or matrix from them, and guessing produces a plausible-looking
+  // wrong image rather than a visible failure.
+  out.colorimetry = layout.colorimetry;
   out.retained_bytes.reset();
   out.bytes.assign(total, 0u);
 

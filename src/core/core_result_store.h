@@ -50,6 +50,10 @@ struct CoreResultPayloadCpu {
   uint32_t stride_bytes = 0;
   uint8_t plane_count = 0;
   CoreResultPayloadCpuPlane planes[kMaxPixelFormatPlanes]{};
+  // Provider-declared colour interpretation, retained with the bytes because
+  // no later layer can recover it from them. Only meaningful for YUV-family
+  // payloads; packed RGB leaves it UNSPECIFIED.
+  PayloadColorimetry colorimetry{};
   // Legacy/self-owned byte storage. New retained-result paths may instead keep
   // immutable provider-owned bytes alive through retained_bytes to avoid an
   // extra full-frame copy. Use data()/size_bytes()/empty() for reads.
