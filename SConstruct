@@ -213,7 +213,7 @@ def _create_android_gde_env(base_env, host_platform: str, arch: str, core_target
     if android_env["warnings_as_errors"]:
         android_env.Append(CXXFLAGS=["-Werror"])
     if core_target == "debug":
-        android_env.Append(CXXFLAGS=["-g", "-O0"])
+        android_env.Append(CXXFLAGS=["-g", "-Og"])
     else:
         android_env.Append(CXXFLAGS=["-O2"])
 
@@ -577,7 +577,7 @@ else:
     if env["warnings_as_errors"]:
         env.Append(CXXFLAGS=["-Werror"])
     if core_target == "debug":
-        env.Append(CXXFLAGS=["-g", "-O0"])
+        env.Append(CXXFLAGS=["-g", "-Og"])
     else:
         env.Append(CXXFLAGS=["-O2"])
     env.Append(CCFLAGS=["-pthread"])

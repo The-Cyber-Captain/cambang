@@ -101,6 +101,87 @@ Supported assignment-style variables are exactly:
 Assignment-style variables outside this declared public set are rejected by
 `SConstruct`.
 
+### 3.1 Build etiquette (standing rules)
+
+These are working rules for this repository, not just defaults. The SCons
+defaults are convention-compatible; they are not what routine iteration here
+should use.
+
+**Always pass `godot_cpp=external` for routine builds.** The `delegated`
+default invokes the `thirdparty/godot-cpp` sub-build, and that target is
+wrapped in `AlwaysBuild()` — it re-runs the sub-build on *every* invocation
+whether or not anything changed, which is the difference between a short
+incremental build and a ten-minute one. `external` validates that the prepared
+artifacts for the selected tuple exist and consumes them. Preparing a *new*
+`platform`/`target`/`arch`/`precision` tuple is the one case for `delegated`,
+and it is a deliberate, ask-first action: it writes into the submodule tree.
+`delegated` also widens `scons -c`, which then removes the `godot-cpp` outputs
+along with CamBANG's; `external` keeps them out of a clean's reach.
+
+**Always state `arch` explicitly for Android.** It defaults to `x86_64`, which
+is an emulator architecture. Hardware handsets in the validation matrix are
+`arm64`, and nothing infers this from an attached device — an unqualified
+`platform=android` silently builds an artifact that cannot run on the phone.
+
+**Do not pass `use_mingw` / `mingw_prefix` to Android builds.** They have no
+effect there (see §6.1) and imply a toolchain that was not selected.
+
+Working invocations:
+
+```sh
+# Android GDE for hardware validation (Galaxy S20+ etc.)
+scons gde platform=android arch=arm64 godot_cpp=external
+
+# Windows GDE with the WinRT provider compiled (needs MSVC)
+scons gde platform=windows use_mingw=no godot_cpp=external
+
+# Maintainer tools: host-native, platform defaults to the host
+scons gde=no godot_cpp=external
+```
+
+### 3.2 Optimization level: `-Og` is the development baseline
+
+`target=debug` builds GCC/Clang elements at **`-Og`**, not `-O0`. This is a
+deliberate, measured decision, not a default inherited from anywhere.
+
+CamBANG is performance-critical, and `-O0` does not merely make it uniformly
+slower — it **misranks causes**, because it penalises code in proportion to
+abstraction density rather than actual work. C++'s zero-cost abstractions are
+only zero-cost once the optimizer runs: at `-O0`, `std::vector<uint8_t>::resize`
+compiles to a per-element construct loop instead of lowering to `memset`, while
+an adjacent `std::memcpy` (libc, already compiled) is unaffected. Profiles taken
+at `-O0` therefore point at the wrong hotspots, and `-O0` manufactures failure
+modes that do not exist in an optimized build.
+
+Measured on Galaxy S20+, scene 870 platform-backed, arm64, same scene and export
+path throughout (only `CXXFLAGS` differed):
+
+| Metric | `-O0` | `-Og` | `-O2` |
+|---|---|---|---|
+| `trigger_call` median | 68.37 ms | 0.43 ms | 0.41 ms |
+| stream observed fps | 3.58 / 3.41 | 7.94 / 11.30 | 7.82 / 11.37 |
+| `click_to_image` median | 75.2 ms | 22.4 ms | 22.6 ms |
+| `click_to_result_ready` median | 1338.7 ms | 1280.6 ms | 1229.1 ms |
+| frame-pool exhaustion events | 18 | 0 | 0 |
+
+`-Og` captures the entire `-O2` benefit while remaining the compilers' intended
+"optimized but debuggable" level. Chronic frame-pool exhaustion — present in
+every `-O0` run — does not occur at `-Og` or `-O2`.
+
+Notes and known gaps:
+
+* `-Og` is not identical across toolchains. On Clang (Android NDK) it is
+  effectively `-O1`; on GCC (MinGW host) it is a distinct level. The intent is
+  uniform; the codegen is not exactly.
+* The **MSVC Windows GDE build is still `/Od`** (full optimization off). MSVC
+  has no `-Og` equivalent — only `/Od`, `/O1`, `/O2` — so no exact mapping
+  exists and none has been chosen or measured.
+* Release-quality validation at `-O2`/`target=release` remains a separate,
+  planned phase. See section 6 for what a `target=release` build currently
+  requires.
+* Performance numbers are only comparable between runs built at the same
+  optimization level. Record the level alongside any measurement.
+
 ---
 
 ## 4. Build aliases and default build behaviour
@@ -189,6 +270,41 @@ design.
 
 `platform=<...>` selects the GDE target platform. It does **not** select the
 host platform for maintainer tools.
+
+### 6.1 Host toolchain selection is gated on the GDE target platform
+
+Known quirk, recorded because it contradicts the stated intent next to it.
+
+`SConstruct` computes `windows_uses_mingw = gde_platform == "windows" and
+resolved_use_mingw == "yes"`, and selects the host toolchain from it
+(`tools = ["mingw"]` only when that is true). So for any non-`windows`
+`platform=`, MinGW can never be selected for the host environment: `tools`
+stays `None` and SCons falls through to its own detection, which resolves to
+MSVC on a machine with Visual Studio installed. `mingw_prefix` is likewise
+forwarded to the delegated sub-build only under `platform == "windows"`.
+
+Verified by config banner: `scons gde platform=android arch=arm64
+use_mingw=yes mingw_prefix=... godot_cpp=external` reports `toolchain=msvc`,
+byte-identical to the same command with both flags omitted. The same flags
+under `platform=windows` correctly report `toolchain=gcc/clang CXX=g++`.
+
+This does not affect the Android artifact: `_create_android_gde_env` replaces
+`CC`/`CXX`/`LINK`/`AR` with NDK Clang and resets `CCFLAGS`/`CXXFLAGS`/
+`LINKFLAGS` to empty, specifically so the host/MSVC environment is not
+inherited.
+
+It is a latent sharp edge rather than a live fault, because maintainer tools
+are built in a separate invocation (`scons gde=no`) whose `platform` defaults
+to the host and resolves MinGW correctly. The trap is a single combined
+invocation such as `scons platform=android arch=arm64 godot_cpp=external`
+(no `gde` alias): maintainer tools would then build host-native under MSVC
+with `use_mingw=yes` silently ignored.
+
+The comment above the gate states the opposite intent — "Toolchain selection
+is intentionally host-oriented. `platform=<...>` selects the GDE target
+platform and must not make host verifiers non-native." Reconciling the two
+means deriving host toolchain selection from the host, independently of
+`gde_platform`.
 
 Declared GDE platforms and provider families:
 
