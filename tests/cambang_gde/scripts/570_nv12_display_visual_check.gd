@@ -18,11 +18,6 @@ extends Control
 #
 # Press Esc to quit.
 
-# NV12 has no bound PIXEL_FORMAT_* constant. Adding one would be a change to
-# the locked public API, which this tranche does not authorize, so the FourCC
-# is written directly: 'N','V','1','2' little-endian packed.
-const FOURCC_NV12: int = 0x3231564E
-
 const STREAM_WIDTH: int = 640
 const STREAM_HEIGHT: int = 480
 
@@ -65,7 +60,7 @@ func _ready() -> void:
 		_fail("RGBA reference stream could not be created")
 		return
 
-	_nv12_stream = nv12_device.create_stream(_profile(FOURCC_NV12))
+	_nv12_stream = nv12_device.create_stream(_profile(CamBANGServer.PIXEL_FORMAT_NV12))
 	if _nv12_stream == null:
 		# Creation is where format negotiation rejects an unadvertised format,
 		# so this is the failure worth calling out specifically.

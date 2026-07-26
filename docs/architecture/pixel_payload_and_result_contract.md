@@ -289,6 +289,32 @@ point in the pipeline. Where a provider's backend delivers YUV, its native
 format is the truthful advertisement and conversion belongs downstream of
 retention.
 
+### 6.3.0 Pixel format is not a user-facing concept
+
+Choosing a pixel format is CamBANG's job, not the application's. A user asking
+for a preview stream should not have to know, or name, the format their
+hardware happens to prefer. Requiring a `format_fourcc` in a public stream
+definition puts a hardware detail in the path of an ordinary request, which
+conflicts with keeping normal user-facing APIs simple.
+
+The capability advertisement in §6.3 exists so that Core can make that choice:
+the provider states what it can emit natively, Core selects based on how the
+result will actually be consumed, and the application never names a format.
+Negotiation today only *validates* a caller-supplied format, which leaves the
+burden in the wrong place. Moving Core from validating a choice to making one
+is the intended direction.
+
+`format_fourcc` on a public stream profile is therefore transitional. Where a
+format must be pinned — maintainer harnesses, verification scenes, diagnostics
+— that is developer tooling, and belongs with the other advanced surfaces
+rather than in the ordinary path.
+
+SyntheticProvider is a deliberate exception in a different sense. For a
+generator, output format is a property of the generator itself, alongside
+pattern preset and seed, so it belongs in `PictureConfig` with the rest of the
+synthetic appearance controls rather than in a hardware-facing profile.
+Pinning a format is meaningful for Synthetic in a way it is not for a camera.
+
 ### 6.3.1 Current implementation status
 
 The vocabulary above is fully expressed in the contract; the implementing
@@ -304,9 +330,31 @@ one:
   access capability (`to_image`, CPU display) remains gated to packed
   RGB-family payloads, since those paths build a Godot `FORMAT_RGBA8` image
   directly from the retained bytes.
-- Every provider in the tree advertises the default capability (RGBA/BGRA
-  native, conversion available), which describes their real behaviour: both
-  platform providers convert YUV to RGBA internally today.
+- Both platform providers still convert YUV to RGBA internally and advertise
+  the packed-RGB default, which describes their real behaviour today.
+
+SyntheticProvider's current emission, as a **progress note only**:
+
+| Format | Synthetic streams | Synthetic captures |
+|---|---|---|
+| RGBA | yes | yes |
+| BGRA | no | yes |
+| NV12 | yes | no |
+| NV21 / I420 / YV12 / YUY2 / UYVY | no | no |
+
+This table records what has been built so far. It is **not** a restriction, a
+design limit, or a statement about what CamBANG may support: an absent entry
+means "not implemented yet", never "excluded by design". Nothing here
+constrains a future tranche, and the table is expected to fill in as the
+payload work proceeds. It exists so that declared-but-unimplemented vocabulary
+stays distinguishable from working support, which is the same reason the rest
+of this section exists.
+
+Pixel format is independent of pattern content. The synthetic stream render
+spec is packed RGBA8 regardless of the requested profile format, and format
+conversion happens after rendering, so every pattern preset works with every
+format the provider emits. Adding a format does not require revisiting the
+pattern module.
 
 ### 6.3.2 Platform format availability
 

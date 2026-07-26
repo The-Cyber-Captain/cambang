@@ -85,8 +85,18 @@ public:
   static constexpr int TIMELINE_RECONCILIATION_STRICT = 1;
 
   // Public CamBANG FourCC-style pixel format constants for Godot Dictionary profile fields.
+  // One constant per format CamBANG can name, so callers never write a raw
+  // FourCC literal. Naming a format here says CamBANG has a descriptor for it,
+  // not that any given provider emits it -- that remains runtime capability
+  // truth, resolved by negotiation.
   static constexpr int PIXEL_FORMAT_RGBA = static_cast<int>(FOURCC_RGBA);
   static constexpr int PIXEL_FORMAT_BGRA = static_cast<int>(FOURCC_BGRA);
+  static constexpr int PIXEL_FORMAT_NV12 = static_cast<int>(FOURCC_NV12);
+  static constexpr int PIXEL_FORMAT_NV21 = static_cast<int>(FOURCC_NV21);
+  static constexpr int PIXEL_FORMAT_I420 = static_cast<int>(FOURCC_I420);
+  static constexpr int PIXEL_FORMAT_YV12 = static_cast<int>(FOURCC_YV12);
+  static constexpr int PIXEL_FORMAT_YUY2 = static_cast<int>(FOURCC_YUY2);
+  static constexpr int PIXEL_FORMAT_UYVY = static_cast<int>(FOURCC_UYVY);
 
   // User-facing control of core processing.
   godot::Error start(
