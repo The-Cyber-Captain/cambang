@@ -75,14 +75,15 @@ bool has_current_retained_cpu_payload(const SharedStreamResultData& data) {
          data->payload.size_bytes() >= expected_size;
 }
 
-// Usable by the CPU display path, which CONVERTS rather than reading the bytes
-// as-is. This is the broader question: a planar payload has no direct byte
-// representation the display can use, but does have a supported conversion.
+// Usable by any CPU path that CONVERTS rather than reading the bytes as-is:
+// the live display view and explicit to_image() materialization both qualify.
+// A planar payload has no direct byte representation either can use, but does
+// have a supported conversion.
 //
 // Kept distinct from the packed check above because conflating them is exactly
 // what made Core report a display capability the Godot layer then refused to
 // honour.
-bool has_current_retained_cpu_display_payload(const SharedStreamResultData& data) {
+bool has_current_retained_cpu_convertible_payload(const SharedStreamResultData& data) {
   if (has_current_retained_cpu_payload(data)) {
     return true;
   }
@@ -125,6 +126,9 @@ const char* to_image_evidence_route(const SharedStreamResultData& data) {
       return result_access_cost_evidence::kRouteStreamToImageGpuPrimaryCpuSidecar;
     }
     return result_access_cost_evidence::kRouteStreamToImageCpuPacked;
+  }
+  if (has_current_retained_cpu_convertible_payload(data)) {
+    return result_access_cost_evidence::kRouteStreamToImageCpuPlanarConvert;
   }
   if (data->payload_kind == ResultPayloadKind::GPU_SURFACE &&
       data->retained_gpu_backing &&
@@ -410,7 +414,7 @@ bool refresh_live_cpu_display_view_entry(
     bool demand_active,
     bool persistent_live_display_view) {
   const auto total_begin = std::chrono::steady_clock::now();
-  if (!data || data->stream_id == 0 || !has_current_retained_cpu_display_payload(data)) {
+  if (!data || data->stream_id == 0 || !has_current_retained_cpu_convertible_payload(data)) {
     return false;
   }
   const uint64_t now_ns = result_access_now_ns();
@@ -542,7 +546,7 @@ bool refresh_live_cpu_display_view_entry(
 }
 
 godot::Ref<godot::Texture2D> ensure_live_cpu_display_view(const SharedStreamResultData& data) {
-  if (!data || data->stream_id == 0 || !has_current_retained_cpu_display_payload(data)) {
+  if (!data || data->stream_id == 0 || !has_current_retained_cpu_convertible_payload(data)) {
     return {};
   }
   std::shared_ptr<LiveCpuDisplayViewEntry> entry;
@@ -579,7 +583,7 @@ godot::Ref<godot::Texture2D> ensure_live_cpu_display_view(const SharedStreamResu
 }
 
 godot::Ref<godot::Texture2D> make_ephemeral_cpu_display_view(const SharedStreamResultData& data) {
-  if (!data || data->stream_id == 0 || !has_current_retained_cpu_display_payload(data)) {
+  if (!data || data->stream_id == 0 || !has_current_retained_cpu_convertible_payload(data)) {
     return {};
   }
   auto entry = std::make_shared<LiveCpuDisplayViewEntry>();
@@ -660,7 +664,7 @@ int CamBANGStreamResult::get_display_view_path_kind() const {
   if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE && data_->retained_gpu_backing) {
     return DISPLAY_PATH_RETAINED_GPU_BACKING;
   }
-  if (has_current_retained_cpu_display_payload(data_)) {
+  if (has_current_retained_cpu_convertible_payload(data_)) {
     return DISPLAY_PATH_STREAM_LIVE_CPU_DISPLAY_VIEW;
   }
   return DISPLAY_PATH_NONE;
@@ -760,7 +764,7 @@ godot::Ref<godot::Image> perform_stream_to_image_access(const SharedStreamResult
       CoreResultAccessOperation::TO_IMAGE);
   const uint64_t begin_ns = result_access_now_ns();
   godot::Ref<godot::Image> image;
-  if (has_current_retained_cpu_payload(data)) {
+  if (has_current_retained_cpu_convertible_payload(data)) {
     image = payload_to_image(data->payload);
     result_access_cost_evidence::record_stream_access(
         evidence_route,
@@ -962,7 +966,7 @@ void CamBANGStreamResult::refresh_live_stream_cpu_display_views(const CoreRuntim
     const bool cpu_primary_display =
         data->payload_kind == ResultPayloadKind::CPU_PACKED ||
         data->payload_kind == ResultPayloadKind::CPU_PLANAR;
-    if (cpu_primary_display && has_current_retained_cpu_display_payload(data)) {
+    if (cpu_primary_display && has_current_retained_cpu_convertible_payload(data)) {
       uint64_t prior_retained_frame_id = 0;
       {
         std::lock_guard<std::mutex> entry_lock(candidate.entry->mutex);

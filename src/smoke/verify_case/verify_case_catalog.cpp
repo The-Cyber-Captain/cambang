@@ -2974,11 +2974,11 @@ int synthetic_nv12_stream_planar_retention(VerifyCaseProviderKind provider_kind)
     fail_step(4, "planar stream display_view is not the expected converted-path classification");
     return 1;
   }
-  if (result->retained_access_truth.to_image != ResultCapability::UNSUPPORTED) {
-    fail_step(4, "planar stream result claims a to_image path");
+  if (result->retained_access_truth.to_image != ResultCapability::EXPENSIVE) {
+    fail_step(4, "planar stream to_image is not the expected converted-path classification");
     return 1;
   }
-  cli::line("step 4 OK (display_view=EXPENSIVE via conversion, to_image=UNSUPPORTED)");
+  cli::line("step 4 OK (display_view and to_image both EXPENSIVE via conversion)");
 
   // Negative: format negotiation must reject a format the provider does not
   // advertise. Synthetic advertises RGBA and NV12 for streams, not I420, so

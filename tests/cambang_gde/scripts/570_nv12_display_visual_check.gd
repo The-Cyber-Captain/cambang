@@ -7,9 +7,14 @@ extends Control
 # full-vs-limited range mistake all produce a plausible image that passes every
 # structural assertion. Only a human looking at it can tell.
 #
-# It shows two live streams from the same synthetic pattern, side by side:
-#   left  = RGBA  (the long-standing packed path, the reference)
-#   right = NV12  (the planar path under test)
+# It shows three views of the same synthetic pattern, side by side:
+#   left   = RGBA display view (the long-standing packed path, the reference)
+#   middle = NV12 display view (planar -> display conversion)
+#   right  = NV12 to_image()   (planar -> explicit CPU materialization)
+#
+# The two NV12 panels exercise different code. They share the colour maths, so
+# if display is right and materialization is wrong, the fault is in the
+# materialization plumbing rather than the transform.
 #
 # They are rendered from identical source pixels, so they should look the same.
 # Chroma is subsampled 2x2 in NV12, so the right image may be very slightly
@@ -25,8 +30,11 @@ var _rgba_stream: CamBANGStream = null
 var _nv12_stream: CamBANGStream = null
 var _rgba_rect: TextureRect = null
 var _nv12_rect: TextureRect = null
+var _nv12_image_rect: TextureRect = null
 var _status: Label = null
 var _bound_nv12: bool = false
+var _bound_nv12_image: bool = false
+var _failed: bool = false
 var _bound_rgba: bool = false
 
 
@@ -102,6 +110,10 @@ func _profile(format_fourcc: int) -> Dictionary:
 
 
 func _process(_delta: float) -> void:
+	# _process runs every frame; without this a single fault would repeat its
+	# report indefinitely and bury the first occurrence.
+	if _failed:
+		return
 	if _rgba_stream != null and not _bound_rgba and _rgba_stream.result_live:
 		var r: Variant = _rgba_stream.get_result()
 		if r != null and int(r.can_get_display_view()) != 0:
@@ -131,6 +143,27 @@ func _process(_delta: float) -> void:
 			_bound_nv12 = true
 			_log("NV12 display bound (%dx%d)" % [view.get_width(), view.get_height()])
 
+	# Explicit CPU materialization, a separate access path from display.
+	if _nv12_stream != null and not _bound_nv12_image and _nv12_stream.result_live:
+		var m: Variant = _nv12_stream.get_result()
+		if m != null:
+			var can_image: int = int(m.can_to_image())
+			if can_image == 0:
+				_fail("NV12 stream result reports no to_image path")
+				return
+			var img: Variant = m.to_image()
+			if img == null or not (img is Image):
+				_fail("NV12 reported to_image capability %d but to_image() returned nothing" % can_image)
+				return
+			var tex := ImageTexture.create_from_image(img)
+			if tex == null:
+				_fail("NV12 to_image() produced an Image that could not become a texture")
+				return
+			_nv12_image_rect.texture = tex
+			_bound_nv12_image = true
+			_log("NV12 to_image materialized (%dx%d can_to_image=%d)"
+				% [img.get_width(), img.get_height(), can_image])
+
 	if _bound_rgba and _bound_nv12:
 		_status.text = "Compare the two images. They should match (NV12 may be slightly softer).\nPress Esc to quit."
 
@@ -156,11 +189,12 @@ func _build_ui() -> void:
 	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	root.add_child(row)
 
-	row.add_child(_labelled_view("RGBA (reference)", true))
-	row.add_child(_labelled_view("NV12 (under test)", false))
+	row.add_child(_labelled_view("RGBA display (reference)", 0))
+	row.add_child(_labelled_view("NV12 display view", 1))
+	row.add_child(_labelled_view("NV12 to_image()", 2))
 
 
-func _labelled_view(caption: String, is_rgba: bool) -> Control:
+func _labelled_view(caption: String, slot: int) -> Control:
 	var col := VBoxContainer.new()
 	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	col.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -176,10 +210,10 @@ func _labelled_view(caption: String, is_rgba: bool) -> Control:
 	rect.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	col.add_child(rect)
 
-	if is_rgba:
-		_rgba_rect = rect
-	else:
-		_nv12_rect = rect
+	match slot:
+		0: _rgba_rect = rect
+		1: _nv12_rect = rect
+		2: _nv12_image_rect = rect
 	return col
 
 
@@ -188,6 +222,9 @@ func _log(message: String) -> void:
 
 
 func _fail(reason: String) -> void:
+	if _failed:
+		return
+	_failed = true
 	push_error("KERR " + reason)
 	_log("FAIL: " + reason)
 	if _status != null:

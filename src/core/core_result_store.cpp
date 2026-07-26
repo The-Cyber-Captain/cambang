@@ -171,9 +171,10 @@ CoreRetainedAccessTruth build_stream_retained_access_truth(const CoreStreamResul
     // per the conversion example in the capability vocabulary; bounded
     // calibration refines CHEAP vs EXPENSIVE from measured evidence.
     truth.display_view = ResultCapability::EXPENSIVE;
-    // to_image stays UNSUPPORTED for planar until the materialization path
-    // lands; reporting a CPU image path CamBANG cannot perform would be worse
-    // than reporting none.
+    // Materialization is the same full-frame conversion, performed on demand
+    // and driven by the same shared colorimetry, so it is supported and
+    // equally non-ready.
+    truth.to_image = ResultCapability::EXPENSIVE;
   }
   return truth;
 }

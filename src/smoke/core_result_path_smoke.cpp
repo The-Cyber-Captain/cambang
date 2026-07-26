@@ -1033,9 +1033,9 @@ int main() {
     // Display is supported for a planar stream result via colour conversion,
     // but is never READY: the RGBA form is not retained, it is produced.
     assert(planar_result->retained_access_truth.display_view == ResultCapability::EXPENSIVE);
-    // Materialization remains fail-closed. A planar payload must not reach
-    // to_image(), which would build a FORMAT_RGBA8 image from chroma bytes.
-    assert(planar_result->retained_access_truth.to_image == ResultCapability::UNSUPPORTED);
+    // Materialization is the same conversion on demand: supported, and
+    // equally non-ready.
+    assert(planar_result->retained_access_truth.to_image == ResultCapability::EXPENSIVE);
 
     // Capture must behave like stream: retain the planar member and report
     // UNSUPPORTED access, NOT fail retention outright. Retention validity and
@@ -1069,6 +1069,7 @@ int main() {
       // and reports what they are; it simply offers no conversion for them.
       assert(bt709_result->payload_kind == ResultPayloadKind::CPU_PLANAR);
       assert(bt709_result->payload.colorimetry.matrix == ColorMatrix::BT709);
+      // Neither path exists for a colour space CamBANG cannot convert.
       assert(bt709_result->retained_access_truth.display_view == ResultCapability::UNSUPPORTED);
       assert(bt709_result->retained_access_truth.to_image == ResultCapability::UNSUPPORTED);
     }
