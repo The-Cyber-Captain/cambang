@@ -84,6 +84,16 @@ public:
   bool supports_capture_picture_updates() const noexcept override;
   bool supports_multi_image_still_sequence() const noexcept override;
 
+  // Format capability must be forwarded like backing capability. Left to the
+  // ICameraProvider default, the broker would answer packed-RGB-only on behalf
+  // of a provider that advertises more, silently rejecting formats the real
+  // provider supports.
+  ProducerFormatCapabilities stream_format_capabilities(
+      const CaptureProfile& profile,
+      const PictureConfig& picture) const noexcept override;
+  ProducerFormatCapabilities capture_format_capabilities(
+      const CaptureRequest& req) const noexcept override;
+
   ProducerBackingCapabilities stream_backing_capabilities(
       const CaptureProfile& profile,
       const PictureConfig& picture) const noexcept override;

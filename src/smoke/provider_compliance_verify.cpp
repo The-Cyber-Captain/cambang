@@ -1321,6 +1321,25 @@ public:
   const char *provider_name() const override {
     return "BrokerPrimingForwardingRecordingProvider";
   }
+
+  // Deliberately advertises a format the ICameraProvider default does NOT, so
+  // that a forwarded answer is distinguishable from the default. Asserting only
+  // on RGBA would pass either way and prove nothing about forwarding.
+  ProducerFormatCapabilities stream_format_capabilities(
+      const CaptureProfile&, const PictureConfig&) const noexcept override {
+    ProducerFormatCapabilities caps{};
+    caps.add(FOURCC_NV12);
+    caps.can_emit_packed_rgb = false;
+    return caps;
+  }
+
+  ProducerFormatCapabilities capture_format_capabilities(
+      const CaptureRequest&) const noexcept override {
+    ProducerFormatCapabilities caps{};
+    caps.add(FOURCC_NV12);
+    caps.can_emit_packed_rgb = false;
+    return caps;
+  }
   ProviderKind provider_kind() const noexcept override {
     return ProviderKind::synthetic;
   }
@@ -7838,6 +7857,73 @@ bool run_core_capture_in_place_plan_flip_result_retrieval_check() {
   return true;
 }
 
+// The broker is an ICameraProvider that the product always sits behind, so a
+// capability it fails to forward silently becomes the ICameraProvider default
+// rather than the real provider's answer. That is invisible to any test which
+// attaches a provider directly -- which is how an unforwarded
+// stream_format_capabilities() shipped, advertising packed-RGB-only on behalf
+// of a provider that advertised more, and rejecting formats it supported.
+bool run_broker_format_capability_forwarding_check() {
+#if !defined(CAMBANG_INTERNAL_SMOKE)
+  return true;
+#else
+  ProviderBroker broker;
+  RecorderCallbacks cb;
+  auto fail_with_cleanup = [&](const char *message) {
+    std::cerr << message << "\n";
+    (void)broker.shutdown();
+    return false;
+  };
+
+  // With no active provider the broker must advertise nothing at all. A
+  // default-constructed ProducerFormatCapabilities would leave
+  // can_emit_packed_rgb true, claiming support on behalf of a provider that is
+  // not there.
+  {
+    const ProducerFormatCapabilities idle =
+        broker.stream_format_capabilities(CaptureProfile{}, PictureConfig{});
+    if (idle.count != 0 || idle.can_emit_packed_rgb) {
+      return fail_with_cleanup("FAIL broker format capability forwarding "
+                               "idle broker advertised format support");
+    }
+  }
+
+  auto probe = std::make_shared<BrokerConcurrencyProbeState>();
+  auto recording =
+      std::make_unique<BrokerPrimingForwardingRecordingProvider>(probe);
+  if (!broker.install_active_provider_for_smoke(std::move(recording), &cb)
+           .ok()) {
+    return fail_with_cleanup("FAIL broker format capability forwarding "
+                             "broker smoke install failed");
+  }
+
+  // The recording provider does not override the format capability calls, so
+  // the broker must forward through to the ICameraProvider default rather than
+  // answering on its own. Verifying the forwarded value equals the backend's
+  // own answer is what catches a missing override.
+  const ProducerFormatCapabilities via_broker =
+      broker.stream_format_capabilities(CaptureProfile{}, PictureConfig{});
+  if (!via_broker.supports(FOURCC_NV12) || via_broker.can_emit_packed_rgb) {
+    return fail_with_cleanup("FAIL broker format capability forwarding "
+                             "stream capabilities not forwarded from backend");
+  }
+
+  const ProducerFormatCapabilities capture_via_broker =
+      broker.capture_format_capabilities(CaptureRequest{});
+  if (!capture_via_broker.supports(FOURCC_NV12) ||
+      capture_via_broker.can_emit_packed_rgb) {
+    return fail_with_cleanup("FAIL broker format capability forwarding "
+                             "capture capabilities not forwarded from backend");
+  }
+
+  if (!broker.shutdown().ok()) {
+    std::cerr << "FAIL broker format capability forwarding shutdown failed\n";
+    return false;
+  }
+  return true;
+#endif
+}
+
 bool run_broker_capture_parent_priming_forwarding_check() {
 #if !(defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE)
   std::cout << "SKIP broker capture parent priming forwarding: internal smoke "
@@ -9483,6 +9569,7 @@ int main(int argc, char** argv) {
       {"run_core_capture_bracket_whole_result_scoring_check", [] { return run_core_capture_bracket_whole_result_scoring_check(); }},
       {"run_core_capture_in_place_plan_flip_result_retrieval_check", [] { return run_core_capture_in_place_plan_flip_result_retrieval_check(); }},
       {"run_core_synthetic_capture_plan_flip_with_live_stream_regression_check", [] { return run_core_synthetic_capture_plan_flip_with_live_stream_regression_check(); }},
+      {"run_broker_format_capability_forwarding_check", [] { return run_broker_format_capability_forwarding_check(); }},
       {"run_broker_capture_parent_priming_forwarding_check", [] { return run_broker_capture_parent_priming_forwarding_check(); }},
       {"run_broker_provider_call_lock_isolation_check", [] { return run_broker_provider_call_lock_isolation_check(); }},
       {"run_broker_shutdown_call_drain_check", [] { return run_broker_shutdown_call_drain_check(); }},
