@@ -803,6 +803,31 @@ int main() {
           if (!color_source) {
             note(ep_tag + "_no_color_frame_source", "true");
           } else {
+            // What the source NATIVELY offers, before any reader subtype is
+            // requested. The provider asks for Bgra8; whether that costs a
+            // conversion depends entirely on what is listed here, and that had
+            // been assumed rather than measured. Record it so payload policy
+            // is decided from evidence.
+            {
+              std::string subtypes;
+              uint32_t format_count = 0;
+              for (const auto& fmt : color_source.SupportedFormats()) {
+                const auto vf = fmt.VideoFormat();
+                std::string entry = winrt::to_string(fmt.Subtype());
+                entry += ":" + std::to_string(vf.Width()) + "x" + std::to_string(vf.Height());
+                if (!subtypes.empty()) {
+                  subtypes += ",";
+                }
+                subtypes += entry;
+                ++format_count;
+                if (format_count >= 24) {
+                  subtypes += ",...";
+                  break;
+                }
+              }
+              note(ep_tag + "_native_format_count", std::to_string(format_count));
+              note(ep_tag + "_native_subtypes", subtypes);
+            }
             // Checks the real WinRT path to relative camera pose
             // (MediaFrameSourceInfo.CoordinateSystem -> SpatialCoordinateSystem;
             // a real pose value would come from TryGetTransformTo against a
