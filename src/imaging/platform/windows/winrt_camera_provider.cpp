@@ -289,6 +289,71 @@ bool convert_software_bitmap(const wgi::SoftwareBitmap& bitmap,
   return ok;
 }
 
+// Copies an Nv12 SoftwareBitmap into dst as tightly packed NV12.
+//
+// No colour conversion happens here, which is the point. Asking WinRT for
+// Bgra8 makes its pipeline convert the camera's native NV12, and the packed
+// path then swizzles that to RGBA. Taking the planes through unconverted
+// removes both from the acquisition thread; Core converts once, and only for
+// frames something actually consumes.
+//
+// dst must hold at least width*height*3/2 bytes. Provider row padding is
+// removed so the emitted layout carries one stride rule per plane.
+bool copy_nv12_software_bitmap(const wgi::SoftwareBitmap& bitmap,
+                               uint32_t width,
+                               uint32_t height,
+                               uint8_t* dst) {
+  if (!bitmap || bitmap.BitmapPixelFormat() != wgi::BitmapPixelFormat::Nv12) {
+    return false;
+  }
+  if (static_cast<uint32_t>(bitmap.PixelWidth()) != width ||
+      static_cast<uint32_t>(bitmap.PixelHeight()) != height) {
+    return false;
+  }
+  wgi::BitmapBuffer buffer = bitmap.LockBuffer(wgi::BitmapBufferAccessMode::Read);
+  bool ok = false;
+  {
+    wf::IMemoryBufferReference reference = buffer.CreateReference();
+    auto byte_access =
+        reference.as<::Windows::Foundation::IMemoryBufferByteAccess>();
+    uint8_t* data = nullptr;
+    uint32_t capacity = 0;
+    if (SUCCEEDED(byte_access->GetBuffer(&data, &capacity)) && data) {
+      const wgi::BitmapPlaneDescription luma = buffer.GetPlaneDescription(0);
+      const wgi::BitmapPlaneDescription chroma = buffer.GetPlaneDescription(1);
+      const uint32_t chroma_rows = (height + 1u) / 2u;
+      const size_t luma_end =
+          static_cast<size_t>(luma.StartIndex) +
+          static_cast<size_t>(luma.Stride) * height;
+      const size_t chroma_end =
+          static_cast<size_t>(chroma.StartIndex) +
+          static_cast<size_t>(chroma.Stride) * chroma_rows;
+      if (luma.Stride >= static_cast<int32_t>(width) &&
+          chroma.Stride >= static_cast<int32_t>(width) &&
+          capacity >= luma_end && capacity >= chroma_end) {
+        const uint8_t* src_y = data + luma.StartIndex;
+        uint8_t* dst_y = dst;
+        for (uint32_t y = 0; y < height; ++y) {
+          std::memcpy(dst_y, src_y, width);
+          src_y += luma.Stride;
+          dst_y += width;
+        }
+        const uint8_t* src_uv = data + chroma.StartIndex;
+        uint8_t* dst_uv = dst + static_cast<size_t>(width) * height;
+        for (uint32_t y = 0; y < chroma_rows; ++y) {
+          std::memcpy(dst_uv, src_uv, width);
+          src_uv += chroma.Stride;
+          dst_uv += width;
+        }
+        ok = true;
+      }
+    }
+    reference.Close();
+  }
+  buffer.Close();
+  return ok;
+}
+
 // The reader's output subtype for a requested CamBANG format.
 //
 // Empty means CamBANG has no WinRT subtype for that format. Requesting Bgra8
@@ -520,8 +585,12 @@ void deliver_frame_locked(DeviceBackend& backend,
     return; // repeating frames are lossy
   }
 
-  if (!convert_software_bitmap(bitmap, s->width, s->height, s->fourcc,
-                               slot->bytes.data())) {
+  const bool stream_is_nv12 = (s->fourcc == FOURCC_NV12);
+  const bool copied = stream_is_nv12
+      ? copy_nv12_software_bitmap(bitmap, s->width, s->height, slot->bytes.data())
+      : convert_software_bitmap(bitmap, s->width, s->height, s->fourcc,
+                                slot->bytes.data());
+  if (!copied) {
     slot->in_use.store(false, std::memory_order_release);
     ++s->convert_failures;
     if ((s->convert_failures & (s->convert_failures - 1)) == 0) {
@@ -550,7 +619,27 @@ void deliver_frame_locked(DeviceBackend& backend,
   }
   fv.data = slot->bytes.data();
   fv.size_bytes = slot->bytes.size();
-  fv.stride_bytes = s->width * 4u;
+  fv.stride_bytes = stream_is_nv12 ? s->width : (s->width * 4u);
+  if (stream_is_nv12) {
+    PayloadLayout& layout = fv.payload_layout;
+    layout.format_fourcc = FOURCC_NV12;
+    layout.width = s->width;
+    layout.height = s->height;
+    layout.plane_count = 2;
+    // WinRT does not surface the camera's colour interpretation here, so this
+    // stays UNSPECIFIED rather than asserted. That is truthful absence, and
+    // the contract's documented fallback applies.
+    const size_t luma_bytes = static_cast<size_t>(s->width) * s->height;
+    const uint32_t chroma_rows = (s->height + 1u) / 2u;
+    layout.planes[0].data = slot->bytes.data();
+    layout.planes[0].size_bytes = luma_bytes;
+    layout.planes[0].stride_bytes = s->width;
+    layout.planes[0].rows = s->height;
+    layout.planes[1].data = slot->bytes.data() + luma_bytes;
+    layout.planes[1].size_bytes = static_cast<size_t>(s->width) * chroma_rows;
+    layout.planes[1].stride_bytes = s->width;
+    layout.planes[1].rows = chroma_rows;
+  }
   fv.requested_retained_plan = s->plan;
   fv.release = &release_stream_frame;
   fv.release_user = new StreamFrameLease{slot};
@@ -1181,7 +1270,8 @@ ProviderResult WinrtCameraProvider::ensure_reader_geometry_(
   if (width == 0 || height == 0) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
-  if (format_fourcc != FOURCC_RGBA && format_fourcc != FOURCC_BGRA) {
+  if (format_fourcc != FOURCC_RGBA && format_fourcc != FOURCC_BGRA &&
+      format_fourcc != FOURCC_NV12) {
     return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
   }
   if (!backend) {
@@ -1580,8 +1670,9 @@ ProviderResult WinrtCameraProvider::start_stream(
   production->height = profile.height;
   production->fourcc = profile.format_fourcc;
   production->plan = st.req.requested_retained_plan;
+  // Sized from the descriptor: an NV12 slot is w*h*3/2, not w*h*4.
   const size_t frame_bytes =
-      static_cast<size_t>(profile.width) * static_cast<size_t>(profile.height) * 4u;
+      min_tight_size_bytes(profile.format_fourcc, profile.width, profile.height);
   production->pool.reserve(kStreamPoolSlots);
   for (size_t i = 0; i < kStreamPoolSlots; ++i) {
     auto slot = std::make_shared<StreamProduction::BufferSlot>();
