@@ -35,6 +35,18 @@ var _status: Label = null
 var _bound_nv12: bool = false
 var _bound_nv12_image: bool = false
 var _failed: bool = false
+# A stream that never produces a result is a silent stall: nothing errors, the
+# panels simply stay blank. Without a deadline the scene looks busy while
+# proving nothing, which is how the mobile-renderer defect first read as
+# "no images" rather than "no results".
+const RESULT_DEADLINE_SEC: float = 8.0
+var _elapsed: float = 0.0
+var _deadline_reported: bool = false
+# Last observed state per path, so the deadline can say WHY nothing bound
+# rather than only that nothing did.
+var _last_rgba_state: String = "no result yet"
+var _last_nv12_state: String = "no result yet"
+var _last_image_state: String = "no result yet"
 var _bound_rgba: bool = false
 
 
@@ -109,15 +121,29 @@ func _profile(format_fourcc: int) -> Dictionary:
 	}
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	# _process runs every frame; without this a single fault would repeat its
 	# report indefinitely and bury the first occurrence.
 	if _failed:
 		return
+
+	_elapsed += delta
+	if not _deadline_reported and _elapsed > RESULT_DEADLINE_SEC:
+		_deadline_reported = true
+		_report_stall()
 	if _rgba_stream != null and not _bound_rgba and _rgba_stream.result_live:
 		var r: Variant = _rgba_stream.get_result()
-		if r != null and int(r.can_get_display_view()) != 0:
-			_rgba_rect.texture = r.get_display_view()
+		if r != null:
+			# Not fatal if the first retained result is not yet usable. Core runs
+			# a bounded backing-plan evaluation at stream start, during which a
+			# GPU-primary result can legitimately exist before its backing does.
+			# Only the deadline treats this as a failure.
+			var rgba_can: int = int(r.can_get_display_view())
+			var rgba_view: Variant = (r.get_display_view() if rgba_can != 0 else null)
+			if rgba_view == null or not (rgba_view is Texture2D):
+				_last_rgba_state = "can_get_display_view=%d payload_kind=%d" % [rgba_can, int(r.get_payload_kind())]
+				return
+			_rgba_rect.texture = rgba_view
 			_bound_rgba = true
 			_log("RGBA reference bound (payload_kind=%d)" % int(r.get_payload_kind()))
 
@@ -166,6 +192,30 @@ func _process(_delta: float) -> void:
 
 	if _bound_rgba and _bound_nv12:
 		_status.text = "Compare the two images. They should match (NV12 may be slightly softer).\nPress Esc to quit."
+
+
+# Names exactly which stage each stream reached, so a stall is attributable
+# rather than merely visible.
+func _report_stall() -> void:
+	var problems: Array[String] = []
+	for entry in [["RGBA", _rgba_stream, _bound_rgba], ["NV12", _nv12_stream, _bound_nv12]]:
+		var label: String = entry[0]
+		var stream: CamBANGStream = entry[1]
+		var bound: bool = entry[2]
+		if bound:
+			continue
+		if stream == null:
+			problems.append("%s: stream was never created" % label)
+		elif not stream.result_live:
+			problems.append("%s: result_live never became true (no frame retained)" % label)
+		else:
+			var st: String = (_last_rgba_state if label == "RGBA" else _last_nv12_state)
+			problems.append("%s: result live but never usable (%s)" % [label, st])
+	if not _bound_nv12_image and _bound_nv12:
+		problems.append("NV12 to_image: never materialized (%s)" % _last_image_state)
+	if problems.is_empty():
+		return
+	_fail("no result after %.1fs -- %s" % [RESULT_DEADLINE_SEC, "; ".join(problems)])
 
 
 func _unhandled_input(event: InputEvent) -> void:

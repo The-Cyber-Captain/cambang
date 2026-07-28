@@ -303,9 +303,19 @@ bool SyntheticProvider::has_runtime_gpu_backing_path_() noexcept {
 ProducerBackingCapabilities SyntheticProvider::query_stream_producer_capabilities_(
     const CaptureProfile& profile,
     const PictureConfig& picture) const noexcept {
-  (void)profile;
   (void)picture;
-  const bool gpu_available = has_runtime_gpu_backing_path_();
+  // Synthetic's live GPU backing is RGBA8-only, so a planar stream has no
+  // GPU-backed realization whatever the runtime offers. Reporting otherwise
+  // makes Core plan a GPU-primary posture the provider cannot satisfy: every
+  // frame then fails frame_matches_requested_retained_plan() and is dropped
+  // silently, because a plan mismatch is an ordinary drop rather than an
+  // error. That is exactly how NV12 retained nothing under the Mobile and
+  // Forward+ renderers while working under Compatibility, where no
+  // RenderingDevice exists and the question never arose.
+  const PixelFormatDescriptor stream_desc = describe_pixel_format(profile.format_fourcc);
+  const bool format_supports_gpu_backing =
+      !stream_desc.valid || stream_desc.layout_class == PixelLayoutClass::Packed;
+  const bool gpu_available = has_runtime_gpu_backing_path_() && format_supports_gpu_backing;
   switch (cfg_.producer_output_form_mode) {
     case SyntheticProducerOutputFormMode::CpuOnly:
       return ProducerBackingCapabilities{true, false, false};
