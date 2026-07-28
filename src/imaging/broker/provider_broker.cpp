@@ -252,6 +252,29 @@ ProducerFormatCapabilities ProviderBroker::capture_format_capabilities(
              : no_format_support();
 }
 
+ProducerFormatCapabilities ProviderBroker::stream_parent_context_format_capabilities(
+    uint64_t device_instance_id,
+    uint64_t stream_id,
+    StreamIntent intent,
+    const CaptureProfile& profile,
+    const PictureConfig& picture) noexcept {
+  ActiveProviderCall call;
+  return acquire_active_provider_call_(call).ok()
+             ? call.provider()->stream_parent_context_format_capabilities(
+                   device_instance_id, stream_id, intent, profile, picture)
+             : no_format_support();
+}
+
+ProducerFormatCapabilities ProviderBroker::capture_parent_context_format_capabilities(
+    uint64_t device_instance_id,
+    const CaptureRequest& req) noexcept {
+  ActiveProviderCall call;
+  return acquire_active_provider_call_(call).ok()
+             ? call.provider()->capture_parent_context_format_capabilities(
+                   device_instance_id, req)
+             : no_format_support();
+}
+
 ProducerBackingCapabilities ProviderBroker::stream_backing_capabilities(
     const CaptureProfile& profile,
     const PictureConfig& picture) const noexcept {

@@ -354,6 +354,42 @@ bool copy_nv12_software_bitmap(const wgi::SoftwareBitmap& bitmap,
   return ok;
 }
 
+// Formats the source can deliver without WinRT converting, in CamBANG terms.
+//
+// Runtime truth per device, not a provider-wide constant: the two cameras
+// measured on the maintainer's machine differ, one offering NV12/MJPG/YUY2 and
+// the other NV12 exclusively, so a fixed preference would be wrong for one of
+// them.
+ProducerFormatCapabilities native_format_capabilities_for_source(
+    const wmcf::MediaFrameSource& source) {
+  ProducerFormatCapabilities caps{};
+  if (!source) {
+    caps.can_emit_packed_rgb = false;
+    return caps;
+  }
+  try {
+    for (const auto& fmt : source.SupportedFormats()) {
+      const winrt::hstring subtype = fmt.Subtype();
+      if (subtype == wmm::MediaEncodingSubtypes::Nv12()) {
+        (void)caps.add(FOURCC_NV12);
+      } else if (subtype == wmm::MediaEncodingSubtypes::Yuy2()) {
+        (void)caps.add(FOURCC_YUY2);
+      } else if (subtype == wmm::MediaEncodingSubtypes::Bgra8()) {
+        (void)caps.add(FOURCC_BGRA);
+      }
+      // MJPG and other encoded subtypes stay unmapped: they need an
+      // ENCODED_IMAGE payload path that does not exist yet.
+    }
+  } catch (const winrt::hresult_error&) {
+    // A source that cannot be queried advertises nothing native; the packed
+    // fallback below still applies.
+  }
+  // WinRT converts to Bgra8 on request whatever the source offers, so the
+  // packed path stays available even where it is not native.
+  caps.can_emit_packed_rgb = true;
+  return caps;
+}
+
 // The reader's output subtype for a requested CamBANG format.
 //
 // Empty means CamBANG has no WinRT subtype for that format. Requesting Bgra8

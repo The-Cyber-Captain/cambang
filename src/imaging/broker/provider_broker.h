@@ -94,6 +94,16 @@ public:
   ProducerFormatCapabilities capture_format_capabilities(
       const CaptureRequest& req) const noexcept override;
 
+  ProducerFormatCapabilities stream_parent_context_format_capabilities(
+      uint64_t device_instance_id,
+      uint64_t stream_id,
+      StreamIntent intent,
+      const CaptureProfile& profile,
+      const PictureConfig& picture) noexcept override;
+  ProducerFormatCapabilities capture_parent_context_format_capabilities(
+      uint64_t device_instance_id,
+      const CaptureRequest& req) noexcept override;
+
   ProducerBackingCapabilities stream_backing_capabilities(
       const CaptureProfile& profile,
       const PictureConfig& picture) const noexcept override;

@@ -215,6 +215,36 @@ public:
     return ProducerFormatCapabilities::packed_rgb_only();
   }
 
+  // Device-scoped format capability.
+  //
+  // Format availability is a per-device fact, not a provider-wide one: two
+  // cameras behind the same provider can offer different sets, so there is no
+  // correct provider-wide answer for a heterogeneous provider. The
+  // provider-wide call above remains the truthful outer envelope; this narrows
+  // it to a specific device, exactly as the parent-context backing calls below
+  // narrow backing capability.
+  //
+  // Defaults to the provider-wide answer, so a provider whose devices are
+  // homogeneous need not override it.
+  virtual ProducerFormatCapabilities stream_parent_context_format_capabilities(
+      uint64_t device_instance_id,
+      uint64_t stream_id,
+      StreamIntent intent,
+      const CaptureProfile& profile,
+      const PictureConfig& picture) noexcept {
+    (void)device_instance_id;
+    (void)stream_id;
+    (void)intent;
+    return stream_format_capabilities(profile, picture);
+  }
+
+  virtual ProducerFormatCapabilities capture_parent_context_format_capabilities(
+      uint64_t device_instance_id,
+      const CaptureRequest& req) noexcept {
+    (void)device_instance_id;
+    return capture_format_capabilities(req);
+  }
+
   // Internal parent-context capability truth used by parent-scoped backing-plan
   // evaluation.
   // These default to the provider/runtime envelope above; providers that can
