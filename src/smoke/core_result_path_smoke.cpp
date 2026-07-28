@@ -985,6 +985,27 @@ int main() {
     pl.planes[1].rows = kH / 2u;
 
     assert(validate_payload_layout(pl));
+
+    // Pixel stride participates in extent validation. A chroma plane whose
+    // samples are interleaved spans (samples-1)*pixel_stride + 1 bytes per
+    // row, which is wider than the tightly packed row. A row stride that
+    // suffices for adjacent samples must be rejected once they are not.
+    {
+      PayloadLayout interleaved = pl;
+      interleaved.planes[1].pixel_stride_bytes = 2;
+      // kSrcStride (6) spans 4 adjacent samples but not 4 samples two bytes
+      // apart, which needs 7.
+      assert(!validate_payload_layout(interleaved));
+
+      interleaved.planes[1].stride_bytes = 8;
+      interleaved.planes[1].size_bytes = 8 * (kH / 2u);
+      std::vector<uint8_t> wide(interleaved.planes[1].size_bytes, 0u);
+      interleaved.planes[1].data = wide.data();
+      assert(validate_payload_layout(interleaved));
+
+      // Default remains 1, so every existing layout is unaffected.
+      assert(PayloadPlaneView{}.pixel_stride_bytes == 1);
+    }
     // Layout validity above is the public-facing precondition; retention below
     // is what actually proves Core accepted it.
 

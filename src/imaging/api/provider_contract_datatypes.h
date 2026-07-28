@@ -153,6 +153,23 @@ struct PayloadPlaneView {
   // Rows addressable in this plane. 0 means "the descriptor's row count at
   // this height".
   uint32_t rows = 0;
+  // Bytes between consecutive samples within a row. 1 means samples are
+  // adjacent, which is the case for every plane of a fully planar format and
+  // for the luma plane of every format.
+  //
+  // This is what distinguishes members of a flexible format family. Android's
+  // YUV_420_888 always presents three planes and documents that "the Y-plane
+  // is guaranteed not to be interleaved with the U/V planes (in particular,
+  // pixel stride is always 1 in yPlane.getPixelStride())", while the U and V
+  // planes "are guaranteed to have the same row stride and pixel stride". A
+  // chroma pixel stride of 2 means U and V are interleaved in one buffer --
+  // NV12 or NV21 -- and 1 means they are separate, I420 or YV12. The device
+  // decides at runtime and only the strides reveal which.
+  //
+  // Without this field a provider would have to resolve that privately, which
+  // is precisely the conversion knowledge this contract exists to move out of
+  // providers.
+  uint32_t pixel_stride_bytes = 1;
 };
 
 // Full CPU payload geometry for one frame.
@@ -197,15 +214,24 @@ inline bool validate_payload_layout(const PayloadLayout& layout) noexcept {
     if (row_bytes == 0 || rows == 0 || rows < plane_rows(desc, plane, layout.height)) {
       return false;
     }
-    const size_t stride = (pv.stride_bytes != 0) ? static_cast<size_t>(pv.stride_bytes) : row_bytes;
-    if (stride < row_bytes) {
+    // A row spans (samples-1)*pixel_stride + 1 sample-worth of bytes when
+    // samples are interleaved, which exceeds the tightly packed row_bytes.
+    const size_t pixel_stride =
+        (pv.pixel_stride_bytes != 0) ? static_cast<size_t>(pv.pixel_stride_bytes) : 1u;
+    if (pixel_stride == 0 || row_bytes == 0) {
+      return false;
+    }
+    const size_t row_extent =
+        (pixel_stride == 1) ? row_bytes : ((row_bytes - 1u) * pixel_stride + 1u);
+    const size_t stride = (pv.stride_bytes != 0) ? static_cast<size_t>(pv.stride_bytes) : row_extent;
+    if (stride < row_extent) {
       return false;
     }
     // Last row needs only its own row_bytes, not a full stride.
-    if (stride > ((static_cast<size_t>(-1) - row_bytes) / rows)) {
+    if (stride > ((static_cast<size_t>(-1) - row_extent) / rows)) {
       return false;
     }
-    if (pv.size_bytes < (stride * (rows - 1u)) + row_bytes) {
+    if (pv.size_bytes < (stride * (rows - 1u)) + row_extent) {
       return false;
     }
   }
