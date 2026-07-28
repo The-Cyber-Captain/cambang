@@ -42,69 +42,6 @@ bool display_demand_trace_enabled() {
   return value && value[0] != '\0' && value[0] != '0';
 }
 
-// Shared preconditions: the retained CPU payload belongs to the current frame
-// and describes the same image the result reports. Format-specific usability is
-// asked separately below, because display and materialization can answer it
-// differently.
-bool has_current_retained_cpu_bytes(const SharedStreamResultData& data) {
-  if (!data || data->payload_retained_frame_id != data->retained_frame_id) {
-    return false;
-  }
-  if (data->payload.width == 0 || data->payload.height == 0 || data->payload.empty()) {
-    return false;
-  }
-  return data->payload.width == data->image_width &&
-         data->payload.height == data->image_height &&
-         data->payload.format_fourcc == data->image_format_fourcc;
-}
-
-// Usable directly as packed RGBA/BGRA bytes: required by to_image(), which
-// builds a FORMAT_RGBA8 image straight from them, and by the packed CPU
-// display writer.
-bool has_current_retained_cpu_payload(const SharedStreamResultData& data) {
-  if (!has_current_retained_cpu_bytes(data)) {
-    return false;
-  }
-  if (!is_packed_rgb_format(data->payload.format_fourcc)) {
-    return false;
-  }
-  const PixelFormatDescriptor desc = describe_pixel_format(data->payload.format_fourcc);
-  const size_t expected_size = min_tight_size_bytes(desc, data->payload.width, data->payload.height);
-  return expected_size != 0 &&
-         data->payload.stride_bytes == plane_row_bytes(desc, 0, data->payload.width) &&
-         data->payload.size_bytes() >= expected_size;
-}
-
-// Usable by any CPU path that CONVERTS rather than reading the bytes as-is:
-// the live display view and explicit to_image() materialization both qualify.
-// A planar payload has no direct byte representation either can use, but does
-// have a supported conversion.
-//
-// Kept distinct from the packed check above because conflating them is exactly
-// what made Core report a display capability the Godot layer then refused to
-// honour.
-bool has_current_retained_cpu_convertible_payload(const SharedStreamResultData& data) {
-  if (has_current_retained_cpu_payload(data)) {
-    return true;
-  }
-  if (!has_current_retained_cpu_bytes(data) || !data->payload.is_planar()) {
-    return false;
-  }
-  const PixelFormatDescriptor desc = describe_pixel_format(data->payload.format_fourcc);
-  if (!desc.valid || data->payload.plane_count != desc.plane_count) {
-    return false;
-  }
-  if (desc.is_yuv && !is_convertible_colorimetry(data->payload.colorimetry)) {
-    return false;
-  }
-  for (uint32_t plane = 0; plane < data->payload.plane_count; ++plane) {
-    if (data->payload.plane_data(plane) == nullptr) {
-      return false;
-    }
-  }
-  return true;
-}
-
 uint64_t result_access_now_ns() {
   return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count());
@@ -121,13 +58,13 @@ const char* to_image_evidence_route(const SharedStreamResultData& data) {
   if (!data) {
     return result_access_cost_evidence::kRouteStreamAccessUnsupported;
   }
-  if (has_current_retained_cpu_payload(data)) {
+  if ((data && stream_result_has_packed_cpu_access(*data))) {
     if (data->payload_kind == ResultPayloadKind::GPU_SURFACE) {
       return result_access_cost_evidence::kRouteStreamToImageGpuPrimaryCpuSidecar;
     }
     return result_access_cost_evidence::kRouteStreamToImageCpuPacked;
   }
-  if (has_current_retained_cpu_convertible_payload(data)) {
+  if ((data && stream_result_has_convertible_cpu_access(*data))) {
     return result_access_cost_evidence::kRouteStreamToImageCpuPlanarConvert;
   }
   if (data->payload_kind == ResultPayloadKind::GPU_SURFACE &&
@@ -414,7 +351,7 @@ bool refresh_live_cpu_display_view_entry(
     bool demand_active,
     bool persistent_live_display_view) {
   const auto total_begin = std::chrono::steady_clock::now();
-  if (!data || data->stream_id == 0 || !has_current_retained_cpu_convertible_payload(data)) {
+  if (!data || data->stream_id == 0 || !(data && stream_result_has_convertible_cpu_access(*data))) {
     return false;
   }
   const uint64_t now_ns = result_access_now_ns();
@@ -546,7 +483,7 @@ bool refresh_live_cpu_display_view_entry(
 }
 
 godot::Ref<godot::Texture2D> ensure_live_cpu_display_view(const SharedStreamResultData& data) {
-  if (!data || data->stream_id == 0 || !has_current_retained_cpu_convertible_payload(data)) {
+  if (!data || data->stream_id == 0 || !(data && stream_result_has_convertible_cpu_access(*data))) {
     return {};
   }
   std::shared_ptr<LiveCpuDisplayViewEntry> entry;
@@ -583,7 +520,7 @@ godot::Ref<godot::Texture2D> ensure_live_cpu_display_view(const SharedStreamResu
 }
 
 godot::Ref<godot::Texture2D> make_ephemeral_cpu_display_view(const SharedStreamResultData& data) {
-  if (!data || data->stream_id == 0 || !has_current_retained_cpu_convertible_payload(data)) {
+  if (!data || data->stream_id == 0 || !(data && stream_result_has_convertible_cpu_access(*data))) {
     return {};
   }
   auto entry = std::make_shared<LiveCpuDisplayViewEntry>();
@@ -664,7 +601,7 @@ int CamBANGStreamResult::get_display_view_path_kind() const {
   if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE && data_->retained_gpu_backing) {
     return DISPLAY_PATH_RETAINED_GPU_BACKING;
   }
-  if (has_current_retained_cpu_convertible_payload(data_)) {
+  if (stream_result_has_convertible_cpu_access(*data_)) {
     return DISPLAY_PATH_STREAM_LIVE_CPU_DISPLAY_VIEW;
   }
   return DISPLAY_PATH_NONE;
@@ -764,7 +701,7 @@ godot::Ref<godot::Image> perform_stream_to_image_access(const SharedStreamResult
       CoreResultAccessOperation::TO_IMAGE);
   const uint64_t begin_ns = result_access_now_ns();
   godot::Ref<godot::Image> image;
-  if (has_current_retained_cpu_convertible_payload(data)) {
+  if ((data && stream_result_has_convertible_cpu_access(*data))) {
     image = payload_to_image(data->payload);
     result_access_cost_evidence::record_stream_access(
         evidence_route,
@@ -798,7 +735,7 @@ godot::Ref<godot::Image> perform_stream_to_image_access(const SharedStreamResult
 godot::Ref<godot::Image> perform_stream_to_image_cpu_payload_access(const SharedStreamResultData& data) {
   const uint64_t begin_ns = result_access_now_ns();
   godot::Ref<godot::Image> image;
-  if (!data || !has_current_retained_cpu_payload(data)) {
+  if (!data || !(data && stream_result_has_packed_cpu_access(*data))) {
     result_access_cost_evidence::record_stream_access(
         result_access_cost_evidence::kRouteStreamAccessUnsupported,
         data,
@@ -966,7 +903,7 @@ void CamBANGStreamResult::refresh_live_stream_cpu_display_views(const CoreRuntim
     const bool cpu_primary_display =
         data->payload_kind == ResultPayloadKind::CPU_PACKED ||
         data->payload_kind == ResultPayloadKind::CPU_PLANAR;
-    if (cpu_primary_display && has_current_retained_cpu_convertible_payload(data)) {
+    if (cpu_primary_display && (data && stream_result_has_convertible_cpu_access(*data))) {
       uint64_t prior_retained_frame_id = 0;
       {
         std::lock_guard<std::mutex> entry_lock(candidate.entry->mutex);

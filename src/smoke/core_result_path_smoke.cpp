@@ -1153,6 +1153,96 @@ int main() {
     }
   }
 
+  // --- Capability / admissibility agreement --------------------------------
+  //
+  // The defect this guards against: Core reports a capability from one
+  // predicate while the implementing path gates on another, so can_x() says
+  // supported and x() returns nothing. That happened four times while planar
+  // support was added, and no existing test caught any of them, because each
+  // side was consistent with itself.
+  //
+  // The invariant is one-directional. A reported capability MUST imply the
+  // operation is structurally admissible. The converse is deliberately not
+  // asserted: an admissible payload may still report UNSUPPORTED for reasons
+  // outside these predicates (payload kind, GPU backing state).
+  {
+    struct Row {
+      const char* name;
+      uint32_t fourcc;
+      ResultPayloadKind kind;
+      ColorMatrix matrix;
+      bool planar;
+    };
+    const Row rows[] = {
+        {"rgba packed",    FOURCC_RGBA, ResultPayloadKind::CPU_PACKED, ColorMatrix::UNSPECIFIED, false},
+        {"bgra packed",    FOURCC_BGRA, ResultPayloadKind::CPU_PACKED, ColorMatrix::UNSPECIFIED, false},
+        {"nv12 bt601",     FOURCC_NV12, ResultPayloadKind::CPU_PLANAR, ColorMatrix::BT601,       true},
+        {"nv12 unspec",    FOURCC_NV12, ResultPayloadKind::CPU_PLANAR, ColorMatrix::UNSPECIFIED, true},
+        {"nv12 bt709",     FOURCC_NV12, ResultPayloadKind::CPU_PLANAR, ColorMatrix::BT709,       true},
+    };
+
+    for (const Row& row : rows) {
+      CoreStreamResultData r{};
+      r.stream_id = 1500;
+      r.image_width = 4;
+      r.image_height = 4;
+      r.image_format_fourcc = row.fourcc;
+      r.payload_kind = row.kind;
+      r.retained_frame_id = 7;
+      r.payload_retained_frame_id = 7;
+      r.payload.width = 4;
+      r.payload.height = 4;
+      r.payload.format_fourcc = row.fourcc;
+      r.payload.colorimetry.matrix = row.matrix;
+      r.payload.colorimetry.range = ColorRange::LIMITED;
+      if (row.planar) {
+        r.payload.plane_count = 2;
+        r.payload.stride_bytes = 4;
+        r.payload.planes[0] = {0, 4, 4};
+        r.payload.planes[1] = {16, 4, 2};
+        r.payload.bytes.assign(24, 128u);
+      } else {
+        r.payload.stride_bytes = 16;
+        r.payload.bytes.assign(64, 128u);
+      }
+
+      const CoreRetainedAccessTruth truth = build_stream_retained_access_truth(r);
+
+      // A supported display capability implies the display path can use these
+      // bytes; likewise to_image. Both go through conversion-capable access.
+      if (truth.display_view != ResultCapability::UNSUPPORTED) {
+        assert(stream_result_has_convertible_cpu_access(r) && row.name);
+      }
+      if (truth.to_image != ResultCapability::UNSUPPORTED) {
+        assert(stream_result_has_convertible_cpu_access(r) && row.name);
+      }
+      // A packed-readable payload must never be refused by the broader
+      // convertible check; convertible is defined to subsume it.
+      if (retained_cpu_payload_is_packed_readable(r.payload)) {
+        assert(retained_cpu_payload_is_convertible(r.payload) && row.name);
+      }
+    }
+
+    // Staleness is transient, not structural: a payload from a superseded
+    // frame must report no capability at all.
+    CoreStreamResultData stale{};
+    stale.image_width = 4;
+    stale.image_height = 4;
+    stale.image_format_fourcc = FOURCC_RGBA;
+    stale.payload_kind = ResultPayloadKind::CPU_PACKED;
+    stale.retained_frame_id = 9;
+    stale.payload_retained_frame_id = 8;  // superseded
+    stale.payload.width = 4;
+    stale.payload.height = 4;
+    stale.payload.format_fourcc = FOURCC_RGBA;
+    stale.payload.stride_bytes = 16;
+    stale.payload.bytes.assign(64, 128u);
+    assert(!stream_result_has_packed_cpu_access(stale));
+    const CoreRetainedAccessTruth stale_truth = build_stream_retained_access_truth(stale);
+    assert(stale_truth.display_view == ResultCapability::UNSUPPORTED);
+    assert(stale_truth.to_image == ResultCapability::UNSUPPORTED);
+  }
+
   std::cout << "PASS core_result_path_smoke\n";
   return 0;
 }

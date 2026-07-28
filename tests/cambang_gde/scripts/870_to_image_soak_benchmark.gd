@@ -94,7 +94,7 @@ const EQUIPMENT := {
 				# device's real concurrent combinations. The rig drives one of them.
 				"cameras": ["1", "50", "51"],
 				"concurrent_combinations": [["1", "50", "51"]],
-				"rig_pair": ["1", "51"],
+				"rig_pair": ["50", "51"],
 			},
 			# galaxy_s20_plus proof of concept (each needs a physical plug/unplug).
 		],

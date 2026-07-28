@@ -267,6 +267,134 @@ using SharedStreamResultData = std::shared_ptr<const CoreStreamResultData>;
 using SharedCaptureResultData = std::shared_ptr<const CoreCaptureResultData>;
 using MutableCaptureResultData = std::shared_ptr<CoreCaptureResultData>;
 
+// --- Structural admissibility of a retained CPU payload ----------------------
+//
+// Single source of truth for "can this operation structurally use these bytes".
+//
+// Core derives Operation Support from these, and the Godot access paths gate on
+// the same functions. That coupling is the point. The contract deliberately
+// keeps two layers of checking -- capability methods consume Operation Support,
+// while materialization methods stay defensive about the concrete path they
+// take (see pixel_payload_and_result_contract.md 11.2) -- but the defensive
+// layer may only fail for TRANSIENT reasons. It must never refuse on a
+// structural ground the capability already admitted, because that makes
+// can_x() a lie: the capability reports supported and the operation returns
+// nothing.
+//
+// That exact divergence occurred four times while planar support was added,
+// once in each place these facts were independently re-derived. Independent
+// re-derivation from the same data is the defect; these functions remove it.
+
+// The retained payload belongs to the current frame and describes the same
+// image the result reports. Shared precondition, no format opinion.
+inline bool retained_cpu_bytes_are_current(const CoreStreamResultData& result) noexcept {
+  if (result.payload_retained_frame_id == 0 ||
+      result.payload_retained_frame_id != result.retained_frame_id) {
+    return false;
+  }
+  if (result.payload.width == 0 || result.payload.height == 0 || result.payload.empty()) {
+    return false;
+  }
+  return result.payload.width == result.image_width &&
+         result.payload.height == result.image_height &&
+         result.payload.format_fourcc == result.image_format_fourcc;
+}
+
+// Directly readable as packed RGBA/BGRA: required by any path that hands the
+// retained bytes to a FORMAT_RGBA8 image without converting them.
+inline bool retained_cpu_payload_is_packed_readable(const CoreResultPayloadCpu& payload) noexcept {
+  if (payload.empty() || !is_packed_rgb_format(payload.format_fourcc)) {
+    return false;
+  }
+  const PixelFormatDescriptor desc = describe_pixel_format(payload.format_fourcc);
+  const size_t expected = min_tight_size_bytes(desc, payload.width, payload.height);
+  return expected != 0 &&
+         payload.stride_bytes == plane_row_bytes(desc, 0, payload.width) &&
+         payload.size_bytes() >= expected;
+}
+
+// Usable by a path that CONVERTS rather than reading bytes as-is: the live
+// display view and explicit to_image() materialization both qualify. A planar
+// payload has no directly readable form but does have a supported conversion.
+inline bool retained_cpu_payload_is_convertible(const CoreResultPayloadCpu& payload) noexcept {
+  if (retained_cpu_payload_is_packed_readable(payload)) {
+    return true;
+  }
+  if (payload.empty() || !payload.is_planar()) {
+    return false;
+  }
+  const PixelFormatDescriptor desc = describe_pixel_format(payload.format_fourcc);
+  if (!desc.valid || payload.plane_count != desc.plane_count) {
+    return false;
+  }
+  if (desc.is_yuv && !is_convertible_colorimetry(payload.colorimetry)) {
+    return false;
+  }
+  for (uint32_t plane = 0; plane < payload.plane_count; ++plane) {
+    if (payload.plane_data(plane) == nullptr) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Operation Support for a retained stream result, derived from the
+// admissibility predicates above so a reported capability and the path that
+// implements it cannot disagree. Inline and pure, so the agreement itself is
+// directly testable.
+inline CoreRetainedAccessTruth build_stream_retained_access_truth(const CoreStreamResultData& result);
+
+// Result-level convenience: currency plus the corresponding payload question.
+inline bool stream_result_has_packed_cpu_access(const CoreStreamResultData& result) noexcept {
+  return retained_cpu_bytes_are_current(result) &&
+         retained_cpu_payload_is_packed_readable(result.payload);
+}
+
+inline bool stream_result_has_convertible_cpu_access(const CoreStreamResultData& result) noexcept {
+  return retained_cpu_bytes_are_current(result) &&
+         retained_cpu_payload_is_convertible(result.payload);
+}
+
+inline CoreRetainedAccessTruth build_stream_retained_access_truth(const CoreStreamResultData& result) {
+  CoreRetainedAccessTruth truth{};
+  const bool has_current_cpu_payload = stream_result_has_packed_cpu_access(result);
+
+  if (result.payload_kind == ResultPayloadKind::GPU_SURFACE) {
+    if (result.retained_gpu_backing) {
+      truth.display_view = ResultCapability::READY;
+    }
+    if (has_current_cpu_payload) {
+      truth.to_image = ResultCapability::CHEAP;
+    } else if (result.retained_gpu_backing &&
+               result.retained_gpu_backing_descriptor.valid &&
+               result.retained_gpu_backing_descriptor.materialization_available) {
+      truth.to_image = ResultCapability::EXPENSIVE;
+    }
+    return truth;
+  }
+
+  if (result.payload_kind == ResultPayloadKind::CPU_PACKED && has_current_cpu_payload) {
+    truth.display_view = ResultCapability::CHEAP;
+    truth.to_image = ResultCapability::CHEAP;
+  }
+
+  if (result.payload_kind == ResultPayloadKind::CPU_PLANAR &&
+      stream_result_has_convertible_cpu_access(result)) {
+    // Never READY: the target representation is not already retained, it is
+    // produced by a full-frame colour conversion (on CPU here, on GPU where a
+    // RenderingDevice exists). EXPENSIVE is the provisional classification
+    // per the conversion example in the capability vocabulary; bounded
+    // calibration refines CHEAP vs EXPENSIVE from measured evidence.
+    truth.display_view = ResultCapability::EXPENSIVE;
+    // Materialization is the same full-frame conversion, performed on demand
+    // and driven by the same shared colorimetry, so it is supported and
+    // equally non-ready.
+    truth.to_image = ResultCapability::EXPENSIVE;
+  }
+  return truth;
+}
+
+
 // Threading model note (applies also to CoreCaptureAssemblyRegistry and
 // CoreCaptureCohortRegistry): most CoreRuntime-owned registries are
 // core-thread-only with no internal lock, relying solely on CoreThread's
