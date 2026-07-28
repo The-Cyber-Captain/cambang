@@ -289,6 +289,26 @@ bool convert_software_bitmap(const wgi::SoftwareBitmap& bitmap,
   return ok;
 }
 
+// The reader's output subtype for a requested CamBANG format.
+//
+// Empty means CamBANG has no WinRT subtype for that format. Requesting Bgra8
+// unconditionally makes WinRT convert whenever the device does not natively
+// offer packed BGRA -- which is both cameras measured on the maintainer's
+// machine, one of which offers NV12 exclusively.
+winrt::hstring reader_subtype_for_fourcc(uint32_t fourcc) {
+  if (fourcc == FOURCC_NV12) {
+    return wmm::MediaEncodingSubtypes::Nv12();
+  }
+  if (fourcc == FOURCC_YUY2) {
+    return wmm::MediaEncodingSubtypes::Yuy2();
+  }
+  if (fourcc == FOURCC_RGBA || fourcc == FOURCC_BGRA) {
+    // Both packed paths take Bgra8 from WinRT; RGBA is swizzled on copy.
+    return wmm::MediaEncodingSubtypes::Bgra8();
+  }
+  return winrt::hstring{};
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -344,6 +364,9 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   bool failed = false;
   uint32_t configured_w = 0;
   uint32_t configured_h = 0;
+  // Format the current reader was created for. A reader's output subtype is
+  // fixed at creation, so a format change means creating a new one.
+  uint32_t reader_fourcc = 0;
   std::atomic<uint64_t> frame_arrived_count{0};
   std::atomic<uint64_t> frame_handler_errors{0};
 
@@ -1019,8 +1042,22 @@ ProviderResult WinrtCameraProvider::ensure_reader_realized_(
               local.error = ProviderError::ERR_PLATFORM_CONSTRAINT;
               winrt_detail::log_line("no color video frame source on device");
             } else {
-              auto op = capture.CreateFrameReaderAsync(
-                  source, wmm::MediaEncodingSubtypes::Bgra8());
+              // Ask the source for the format the stream actually wants. A
+              // reader's output subtype is fixed at creation, which is why
+              // this is resolved here rather than at device open. Zero means
+              // no stream has stated a format yet, and BGRA remains the
+              // conservative default.
+              uint32_t want_fourcc = 0;
+              {
+                std::lock_guard<std::mutex> bl(backend->m);
+                want_fourcc = backend->reader_fourcc;
+              }
+              winrt::hstring subtype =
+                  winrt_detail::reader_subtype_for_fourcc(want_fourcc);
+              if (subtype.empty()) {
+                subtype = wmm::MediaEncodingSubtypes::Bgra8();
+              }
+              auto op = capture.CreateFrameReaderAsync(source, subtype);
               if (!winrt_detail::wait_async_bounded(op, kControlJobTimeoutMs - 500)) {
                 local.error = ProviderError::ERR_TIMEOUT;
               } else {
@@ -1506,6 +1543,12 @@ ProviderResult WinrtCameraProvider::start_stream(
   }
   DeviceState& dev = dev_it->second;
 
+  // State the wanted format before the reader is realized: its output subtype
+  // is fixed at creation, so this must be known first.
+  if (dev.backend) {
+    std::lock_guard<std::mutex> bl(dev.backend->m);
+    dev.backend->reader_fourcc = profile.format_fourcc;
+  }
   ProviderResult pr = ensure_reader_realized_(dev.backend);
   if (!pr.ok()) {
     return pr;
@@ -2101,6 +2144,10 @@ void WinrtCameraProvider::run_device_capture_job_(const DeviceCaptureJob& job) n
       return;
     }
 
+    {
+      std::lock_guard<std::mutex> bl(backend->m);
+      backend->reader_fourcc = job.request.format_fourcc;
+    }
     ProviderResult pr = ensure_reader_realized_(backend);
     if (!pr.ok()) {
       fail(pr.code);
