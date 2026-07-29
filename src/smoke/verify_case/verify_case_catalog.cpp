@@ -2865,6 +2865,63 @@ int frame_starvation(VerifyCaseProviderKind provider_kind) {
 // case holds a result exactly as GDScript would (get_stream_result_by_stream_id
 // then read later), cycles the stream well past the pool size, and re-reads the
 // handle it never let go of.
+// Core selects a stream's pixel format when the caller does not name one.
+//
+// Choosing a format is CamBANG's job: an application asking for a stream
+// should never have to know, or name, the format its hardware prefers. Core
+// consults the device-scoped capability and picks the first advertised format
+// it can both retain and give access to, falling back to the provider's
+// I/O-free template only when nothing advertised is usable.
+//
+// SyntheticProvider advertises RGBA before NV12, so RGBA is expected here.
+// Confirmed non-vacuous by reversing that advertisement order, which makes the
+// selected format follow to NV12.
+int core_selects_stream_format_when_unspecified(VerifyCaseProviderKind provider_kind) {
+  if (provider_kind != VerifyCaseProviderKind::Synthetic) {
+    cli::line("SKIP: verification case 'core_selects_stream_format_when_unspecified' requires SyntheticProvider");
+    return kVerifyCaseSkipped;
+  }
+
+  VerifyCaseHarness h(provider_kind);
+  std::string error;
+  if (!h.start_runtime(error) ||
+      !h.wait_for_core_snapshot([](const CamBANGStateSnapshot&) { return true; }, error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  h.tick();
+
+  // No profile at all: the caller names neither geometry nor format.
+  if (!h.open_device(error) || !h.create_stream(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  cli::line("step 0 OK (stream created with no caller-supplied profile)");
+
+  uint32_t selected = 0;
+  if (!h.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        for (const auto& st : s.streams) {
+          if (st.stream_id == VerifyCaseHarness::kStreamId) {
+            selected = st.format;
+            return selected != 0;
+          }
+        }
+        return false;
+      }, error)) {
+    fail_step(1, "no published stream format for the created stream");
+    return 1;
+  }
+
+  if (selected != FOURCC_RGBA) {
+    fail_step(1, "Core did not select the provider's first usable advertised format");
+    return 1;
+  }
+  cli::line("step 1 OK (selected format is the provider's first usable advertised format)");
+
+  cli::line("PASS core_selects_stream_format_when_unspecified");
+  return 0;
+}
+
 // Drives an NV12 stream end to end through SyntheticProvider.
 //
 // The planar assertions in core_result_path_smoke build a FrameView by hand,
@@ -3421,6 +3478,7 @@ std::vector<VerifyCaseDefinition> verify_case_catalog(VerifyCaseProviderKind pro
       {"close_while_streaming", [provider_kind]() { return close_while_streaming(provider_kind); }},
       {"frame_starvation", [provider_kind]() { return frame_starvation(provider_kind); }},
       {"retained_stream_payload_immutability", [provider_kind]() { return retained_stream_payload_immutability(provider_kind); }},
+      {"core_selects_stream_format_when_unspecified", [provider_kind]() { return core_selects_stream_format_when_unspecified(provider_kind); }},
       {"synthetic_nv12_stream_planar_retention", [provider_kind]() { return synthetic_nv12_stream_planar_retention(provider_kind); }},
       {"provider_error_mid_stream", [provider_kind]() { return provider_error_mid_stream(provider_kind); }},
       {"redundant_stop", [provider_kind]() { return redundant_stop(provider_kind); }},

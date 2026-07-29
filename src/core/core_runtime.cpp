@@ -27,6 +27,25 @@ namespace cambang {
 
 namespace {
 
+// Formats Core can both retain and provide an access path for.
+//
+// Deliberately narrower than "CamBANG can name it": the descriptor table
+// describes geometry for formats that have no conversion, and selecting one
+// of those by default would produce a stream nothing can display or
+// materialize. Widen this as conversions land, not as descriptors are added.
+bool core_can_use_stream_format(uint32_t fourcc) noexcept {
+  if (is_packed_rgb_format(fourcc)) {
+    return true;
+  }
+  // NV12 is the only planar format with a conversion today.
+  return fourcc == FOURCC_NV12;
+}
+
+} // namespace
+
+
+namespace {
+
 constexpr uint64_t kNsPerMs = 1000000ull;
 constexpr uint64_t kCaptureObservationRetryDelayNs = 1'000'000ull;
 constexpr uint64_t kCaptureRetainedPlanOrphanRetentionWindowNs =
@@ -5270,11 +5289,48 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
     effective.profile_version = effective_profile_version;
     effective.profile = has_request_profile ? request_profile_copy : tmpl.profile;
     effective.picture = has_request_picture ? request_picture_copy : tmpl.picture;
-    // Format negotiation. A requested pixel format the provider does not
-    // advertise is rejected here rather than at the provider's own start
-    // gate, so the rejection is deterministic and does not depend on a
-    // provider round-trip. A zero format still means "use the provider
-    // default" and is resolved downstream as before.
+    // Format selection. When the caller did not name a format, Core chooses
+    // one from what this specific device natively offers rather than taking
+    // the provider's I/O-free template default. That is the point of the
+    // capability seam: choosing a pixel format is CamBANG's job, and an
+    // application asking for a stream should never have to know, or name, the
+    // format its hardware happens to prefer.
+    //
+    // The template remains the fallback when the device advertises nothing
+    // CamBANG can use, so a provider with no device-scoped answer behaves
+    // exactly as before.
+    const bool format_explicitly_requested =
+        has_request_profile && request_profile_copy.format_fourcc != 0;
+    if (!format_explicitly_requested) {
+      if (ICameraProvider* sel_prov = provider_.load(std::memory_order_acquire)) {
+        const ProducerFormatCapabilities native =
+            sel_prov->stream_parent_context_format_capabilities(
+                effective.device_instance_id,
+                effective.stream_id,
+                effective.intent,
+                effective.profile,
+                effective.picture);
+        for (uint8_t i = 0; i < native.count; ++i) {
+          const uint32_t candidate = native.formats[i];
+          // Only formats CamBANG can retain AND give access to. Retention
+          // alone is not enough: a packed YUV format such as YUY2 retains
+          // fine but has no display or materialization path, so selecting it
+          // would hand back a stream whose every access reports UNSUPPORTED.
+          // That would be worse than the conversion this selection avoids.
+          if (!core_can_use_stream_format(candidate)) {
+            continue;
+          }
+          effective.profile.format_fourcc = candidate;
+          break;
+        }
+      }
+    }
+
+    // A requested pixel format the provider does not advertise is rejected
+    // here rather than at the provider's own start gate, so the rejection is
+    // deterministic and does not depend on a provider round-trip. A zero
+    // format still means "use the provider default" and is resolved
+    // downstream as before.
     if (effective.profile.format_fourcc != 0) {
       if (ICameraProvider* fmt_prov = provider_.load(std::memory_order_acquire)) {
         const ProducerFormatCapabilities fmt_caps =
