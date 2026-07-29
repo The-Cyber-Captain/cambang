@@ -360,6 +360,25 @@ bool copy_nv12_software_bitmap(const wgi::SoftwareBitmap& bitmap,
 // measured on the maintainer's machine differ, one offering NV12/MJPG/YUY2 and
 // the other NV12 exclusively, so a fixed preference would be wrong for one of
 // them.
+// WinRT media subtype strings are compared case-insensitively. The values a
+// MediaFrameFormat reports do not necessarily match the casing of the
+// MediaEncodingSubtypes constants, so an ordinal == silently matches nothing.
+bool subtype_equals(const winrt::hstring& a, const winrt::hstring& b) {
+  const std::wstring_view av{a};
+  const std::wstring_view bv{b};
+  if (av.size() != bv.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < av.size(); ++i) {
+    const wchar_t ca = (av[i] >= L'a' && av[i] <= L'z') ? (av[i] - L'a' + L'A') : av[i];
+    const wchar_t cb = (bv[i] >= L'a' && bv[i] <= L'z') ? (bv[i] - L'a' + L'A') : bv[i];
+    if (ca != cb) {
+      return false;
+    }
+  }
+  return true;
+}
+
 ProducerFormatCapabilities native_format_capabilities_for_source(
     const wmcf::MediaFrameSource& source) {
   ProducerFormatCapabilities caps{};
@@ -370,20 +389,21 @@ ProducerFormatCapabilities native_format_capabilities_for_source(
   try {
     for (const auto& fmt : source.SupportedFormats()) {
       const winrt::hstring subtype = fmt.Subtype();
-      if (subtype == wmm::MediaEncodingSubtypes::Nv12()) {
+      if (subtype_equals(subtype, wmm::MediaEncodingSubtypes::Nv12())) {
         (void)caps.add(FOURCC_NV12);
-      } else if (subtype == wmm::MediaEncodingSubtypes::Yuy2()) {
+      } else if (subtype_equals(subtype, wmm::MediaEncodingSubtypes::Yuy2())) {
         (void)caps.add(FOURCC_YUY2);
-      } else if (subtype == wmm::MediaEncodingSubtypes::Bgra8()) {
+      } else if (subtype_equals(subtype, wmm::MediaEncodingSubtypes::Bgra8())) {
         (void)caps.add(FOURCC_BGRA);
       }
       // MJPG and other encoded subtypes stay unmapped: they need an
       // ENCODED_IMAGE payload path that does not exist yet.
     }
-  } catch (const winrt::hresult_error&) {
-    // A source that cannot be queried advertises nothing native; the packed
-    // fallback below still applies.
+  } catch (const winrt::hresult_error& e) {
+    log_line("native format enumeration threw hr=0x%08X",
+             static_cast<unsigned>(e.code()));
   }
+
   // WinRT converts to Bgra8 on request whatever the source offers, so the
   // packed path stays available even where it is not native.
   caps.can_emit_packed_rgb = true;
@@ -756,6 +776,62 @@ CaptureTemplate WinrtCameraProvider::capture_template() const {
   t.profile = stream_template().profile;
   t.picture = PictureConfig{};
   return t;
+}
+
+ProducerFormatCapabilities WinrtCameraProvider::stream_parent_context_format_capabilities(
+    uint64_t device_instance_id,
+    uint64_t stream_id,
+    StreamIntent intent,
+    const CaptureProfile& profile,
+    const PictureConfig& picture) noexcept {
+  (void)stream_id;
+  (void)intent;
+
+  std::shared_ptr<DeviceBackend> backend;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    auto it = devices_.find(device_instance_id);
+    if (it == devices_.end() || !it->second.open) {
+      return stream_format_capabilities(profile, picture);
+    }
+    backend = it->second.backend;
+  }
+  if (!backend) {
+    return stream_format_capabilities(profile, picture);
+  }
+
+  wmcf::MediaFrameSource source{nullptr};
+  wmc::MediaCapture capture{nullptr};
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    if (backend->closed) {
+      return stream_format_capabilities(profile, picture);
+    }
+    source = backend->frame_source;
+    capture = backend->capture;
+  }
+
+  // The source is only cached once a reader has been realized, but the formats
+  // are knowable as soon as the device is open. Resolving from MediaCapture
+  // here means the advertisement does not depend on a reader existing, which
+  // would otherwise make capability contingent on the very thing it gates.
+  if (!source && capture) {
+    try {
+      for (const auto& kv : capture.FrameSources()) {
+        const wmcf::MediaFrameSource candidate = kv.Value();
+        if (candidate.Info().SourceKind() == wmcf::MediaFrameSourceKind::Color) {
+          source = candidate;
+          break;
+        }
+      }
+    } catch (const winrt::hresult_error&) {
+      return stream_format_capabilities(profile, picture);
+    }
+  }
+  if (!source) {
+    return stream_format_capabilities(profile, picture);
+  }
+  return winrt_detail::native_format_capabilities_for_source(source);
 }
 
 ProducerBackingCapabilities WinrtCameraProvider::stream_backing_capabilities(

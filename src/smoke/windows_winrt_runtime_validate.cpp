@@ -287,6 +287,30 @@ int main() {
     return 1;
   }
 
+  // Device-scoped format capability must report the device's real native
+  // formats, not the provider-wide packed default. Both cameras measured here
+  // offer NV12 natively (see fb2bab3), so a device-scoped answer that omits it
+  // means the override is not resolving the source and has silently fallen
+  // back -- which would look identical to success from the outside.
+  {
+    CaptureProfile fmt_probe{};
+    fmt_probe.width = 640;
+    fmt_probe.height = 480;
+    fmt_probe.format_fourcc = FOURCC_NV12;
+    const ProducerFormatCapabilities dev_caps =
+        provider.stream_parent_context_format_capabilities(
+            kDeviceInstanceId, 0, StreamIntent::PREVIEW, fmt_probe, PictureConfig{});
+    note("device_scoped_format_count", std::to_string(dev_caps.count));
+    check(dev_caps.count > 0, "device_scoped_format_capabilities_non_empty");
+    check(dev_caps.supports(FOURCC_NV12), "device_scoped_format_reports_nv12");
+    // The provider-wide answer is the packed default, so a device-scoped
+    // result identical to it would indicate no narrowing happened at all.
+    const ProducerFormatCapabilities wide_caps =
+        provider.stream_format_capabilities(fmt_probe, PictureConfig{});
+    check(!wide_caps.supports(FOURCC_NV12),
+          "provider_wide_format_remains_packed_default");
+  }
+
   // Static camera facts (facing, sensor mounting orientation) are best-effort
   // and device-dependent (not every camera reports an EnclosureLocation), so
   // this is informational rather than pass/fail. open_device() already

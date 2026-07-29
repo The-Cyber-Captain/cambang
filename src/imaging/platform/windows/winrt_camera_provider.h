@@ -165,6 +165,16 @@ public:
     return kWorstCaseMs * 1'000'000ull;
   }
 
+  // Device-scoped format truth. The two cameras behind this provider differ in
+  // what they natively offer, so the provider-wide answer cannot be right for
+  // both; this narrows it to the device actually being used.
+  ProducerFormatCapabilities stream_parent_context_format_capabilities(
+      uint64_t device_instance_id,
+      uint64_t stream_id,
+      StreamIntent intent,
+      const CaptureProfile& profile,
+      const PictureConfig& picture) noexcept override;
+
   ProducerBackingCapabilities stream_backing_capabilities(
       const CaptureProfile& profile,
       const PictureConfig& picture) const noexcept override;
