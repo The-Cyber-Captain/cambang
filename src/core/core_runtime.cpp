@@ -5333,8 +5333,18 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
     // downstream as before.
     if (effective.profile.format_fourcc != 0) {
       if (ICameraProvider* fmt_prov = provider_.load(std::memory_order_acquire)) {
+        // Device-scoped, matching selection above. Asking the provider-wide
+        // question here would reject a format the specific device natively
+        // offers whenever the provider's outer envelope is narrower -- which
+        // is exactly the case for WinRT, whose provider-wide answer is the
+        // packed-RGB fallback while individual cameras offer NV12.
         const ProducerFormatCapabilities fmt_caps =
-            fmt_prov->stream_format_capabilities(effective.profile, effective.picture);
+            fmt_prov->stream_parent_context_format_capabilities(
+                effective.device_instance_id,
+                effective.stream_id,
+                effective.intent,
+                effective.profile,
+                effective.picture);
         if (!fmt_caps.supports(effective.profile.format_fourcc) &&
             !(fmt_caps.can_emit_packed_rgb &&
               is_packed_rgb_format(effective.profile.format_fourcc))) {

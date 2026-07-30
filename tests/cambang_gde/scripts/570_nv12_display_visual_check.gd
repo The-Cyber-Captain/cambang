@@ -55,17 +55,40 @@ func _ready() -> void:
 	_log("RUN: nv12_display_visual_check")
 	_log("ATTENDED SCENE: compare the two images, then press Esc to quit.")
 
-	CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC)
-
-	var endpoints: Array = CamBANGServer.enumerate_devices()
-	if endpoints.size() < 2:
-		_fail("need two synthetic endpoints for a side-by-side comparison, found %d" % endpoints.size())
+	# Provider is selectable so the same comparison can be run against real
+	# hardware. Hardware ids are resolved from enumeration rather than hardcoded,
+	# because a platform provider's ids are device-specific.
+	# Both lists are scanned: whether an argument lands in user args depends on
+	# the launcher placing it after "--", which varies by how it is forwarded.
+	var want_platform := false
+	for arg in OS.get_cmdline_user_args():
+		if str(arg) == "--scene570-provider=platform":
+			want_platform = true
+	for arg in OS.get_cmdline_args():
+		if str(arg) == "--scene570-provider=platform":
+			want_platform = true
+	var provider_kind: int = (CamBANGServer.PROVIDER_KIND_PLATFORM_BACKED
+		if want_platform else CamBANGServer.PROVIDER_KIND_SYNTHETIC)
+	_log("provider=%s" % ("platform_backed" if want_platform else "synthetic"))
+	var start_err: int = int(CamBANGServer.start(provider_kind))
+	if start_err != OK:
+		_fail("CamBANGServer.start failed: %d" % start_err)
 		return
 
-	var rgba_device: CamBANGDevice = CamBANGServer.get_device_for_hardware_id("synthetic:0")
-	var nv12_device: CamBANGDevice = CamBANGServer.get_device_for_hardware_id("synthetic:1")
+	var endpoints: Array = CamBANGServer.enumerate_devices()
+	_log("endpoints=%d" % endpoints.size())
+	if endpoints.size() < 2:
+		_fail("need two endpoints for a side-by-side comparison, found %d" % endpoints.size())
+		return
+
+	var id_a: String = str((endpoints[0] as Dictionary).get("hardware_id", ""))
+	var id_b: String = str((endpoints[1] as Dictionary).get("hardware_id", ""))
+	_log("endpoint_a=%s endpoint_b=%s" % [id_a, id_b])
+
+	var rgba_device: CamBANGDevice = CamBANGServer.get_device_for_hardware_id(id_a)
+	var nv12_device: CamBANGDevice = CamBANGServer.get_device_for_hardware_id(id_b)
 	if rgba_device == null or nv12_device == null:
-		_fail("could not resolve synthetic:0 / synthetic:1")
+		_fail("could not resolve devices %s / %s" % [id_a, id_b])
 		return
 
 	rgba_device.engage()
@@ -93,6 +116,9 @@ func _ready() -> void:
 
 
 func _profile(format_fourcc: int) -> Dictionary:
+	# No picture block: pattern presets are a synthetic-generator concept and a
+	# real camera has no such control. Against synthetic this means the default
+	# pattern rather than colour bars.
 	return {
 		"intent": CamBANGStream.INTENT_VIEWFINDER,
 		"profile": {
@@ -101,22 +127,6 @@ func _profile(format_fourcc: int) -> Dictionary:
 			"format_fourcc": format_fourcc,
 			"target_fps_min": 30,
 			"target_fps_max": 30,
-		},
-		# Colour bars, deliberately, not the default noise pattern.
-		#
-		# NV12 subsamples chroma 2x2, so on per-pixel random noise each block's
-		# chroma is taken from one pixel and applied to four. That pairs a
-		# pixel's luma with a neighbour's colour and reads as extra saturation
-		# -- a large artifact that appears even when the conversion is exactly
-		# right, and which swamps the matrix and range errors this scene exists
-		# to detect.
-		#
-		# Colour bars are the correct instrument: large flat areas of saturated
-		# primaries and secondaries, where subsampling changes almost nothing
-		# except at the vertical edges, and where a wrong matrix, swapped
-		# chroma pair, or range mistake is immediately obvious.
-		"picture": {
-			"preset": "color_bars",
 		},
 	}
 
