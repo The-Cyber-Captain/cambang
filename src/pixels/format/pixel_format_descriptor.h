@@ -79,6 +79,12 @@ struct PixelFormatDescriptor {
   // it is one luma sample.
   uint8_t plane0_bytes_per_sample = 0;
   bool is_yuv = false;
+  // Chroma component order. NV21 and YV12 carry V before U, and nothing in the
+  // plane geometry reveals that -- a converter reading them as NV12/I420
+  // swaps red and blue, which looks like a plausible image rather than a
+  // failure. A real Galaxy S20+ delivers NV21, so this is the common case on
+  // Android, not an exotic one.
+  bool chroma_v_first = false;
   bool has_alpha = false;
   // False for any FourCC this table does not name.
   bool valid = false;
@@ -118,6 +124,7 @@ constexpr PixelFormatDescriptor describe_pixel_format(uint32_t fourcc) noexcept 
   }
 
   if (fourcc == FOURCC_NV12 || fourcc == FOURCC_NV21) {
+    d.chroma_v_first = (fourcc == FOURCC_NV21);
     d.layout_class = PixelLayoutClass::SemiPlanar;
     d.plane_count = 2;
     d.bits_per_component = 8;
@@ -130,6 +137,7 @@ constexpr PixelFormatDescriptor describe_pixel_format(uint32_t fourcc) noexcept 
   }
 
   if (fourcc == FOURCC_I420 || fourcc == FOURCC_YV12) {
+    d.chroma_v_first = (fourcc == FOURCC_YV12);
     d.layout_class = PixelLayoutClass::Planar;
     d.plane_count = 3;
     d.bits_per_component = 8;

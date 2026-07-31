@@ -189,6 +189,22 @@ public:
     return kWorstCaseMs * 1'000'000ull;
   }
 
+  // Camera2 delivers YUV_420_888, whose concrete member the device decides at
+  // runtime. Both the semi-planar and fully planar members are advertised
+  // because either may arrive and CamBANG converts both; the packed formats
+  // remain available via the provider's own conversion.
+  ProducerFormatCapabilities stream_format_capabilities(
+      const CaptureProfile& profile,
+      const PictureConfig& picture) const noexcept override {
+    (void)profile;
+    (void)picture;
+    ProducerFormatCapabilities caps{};
+    caps.add(FOURCC_NV12);
+    caps.add(FOURCC_I420);
+    caps.can_emit_packed_rgb = true;
+    return caps;
+  }
+
   ProducerBackingCapabilities stream_backing_capabilities(
       const CaptureProfile& profile,
       const PictureConfig& picture) const noexcept override;

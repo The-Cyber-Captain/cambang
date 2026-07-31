@@ -47,6 +47,9 @@ var _deadline_reported: bool = false
 var _last_rgba_state: String = "no result yet"
 var _last_nv12_state: String = "no result yet"
 var _last_image_state: String = "no result yet"
+const IMAGE_REFRESH_SEC: float = 1.0
+var _image_refresh_elapsed: float = 0.0
+var _logged_image_once: bool = false
 var _bound_rgba: bool = false
 
 
@@ -58,18 +61,29 @@ func _ready() -> void:
 	# Provider is selectable so the same comparison can be run against real
 	# hardware. Hardware ids are resolved from enumeration rather than hardcoded,
 	# because a platform provider's ids are device-specific.
-	# Both lists are scanned: whether an argument lands in user args depends on
-	# the launcher placing it after "--", which varies by how it is forwarded.
+	# Provider selection reuses the established --cambang-bench-provider
+	# mechanism rather than inventing another. Android has no post-"--" user
+	# args, so the launcher translates that argument into the
+	# cambang/maintainer/bench_provider project setting; reading the setting
+	# means the same invocation works on Windows and on a handset.
 	var want_platform := false
-	for arg in OS.get_cmdline_user_args():
-		if str(arg) == "--scene570-provider=platform":
-			want_platform = true
+	var setting_provider := str(
+		ProjectSettings.get_setting("cambang/maintainer/bench_provider", "")
+	).strip_edges().to_lower()
+	if setting_provider == "platform":
+		want_platform = true
 	for arg in OS.get_cmdline_args():
-		if str(arg) == "--scene570-provider=platform":
+		if str(arg) == "--cambang-bench-provider=platform":
 			want_platform = true
 	var provider_kind: int = (CamBANGServer.PROVIDER_KIND_PLATFORM_BACKED
 		if want_platform else CamBANGServer.PROVIDER_KIND_SYNTHETIC)
 	_log("provider=%s" % ("platform_backed" if want_platform else "synthetic"))
+	# Driving two cameras at once is gated on an ingested camera-concurrency
+	# truth naming the exact combination, and that must be ingested BEFORE
+	# start(). Hardware ids are only known after enumeration, so this starts
+	# once to enumerate, stops, ingests the truth for the pair it will use, and
+	# starts again. Without this the second camera's stream produces no frames
+	# and nothing reports an error -- the gate is deliberately fail-closed.
 	var start_err: int = int(CamBANGServer.start(provider_kind))
 	if start_err != OK:
 		_fail("CamBANGServer.start failed: %d" % start_err)
@@ -85,8 +99,32 @@ func _ready() -> void:
 	var id_b: String = str((endpoints[1] as Dictionary).get("hardware_id", ""))
 	_log("endpoint_a=%s endpoint_b=%s" % [id_a, id_b])
 
-	var rgba_device: CamBANGDevice = CamBANGServer.get_device_for_hardware_id(id_a)
-	var nv12_device: CamBANGDevice = CamBANGServer.get_device_for_hardware_id(id_b)
+	CamBANGServer.stop()
+	var description := JSON.stringify({
+		"schema_version": 2,
+		"cameras": [{"camera_id": id_a}, {"camera_id": id_b}],
+		"concurrent_camera_support": {
+			"supported": true,
+			"camera_id_combinations": [[id_a, id_b]],
+		},
+	})
+	var ingest_err: int = int(CamBANGServer.ingest_camera_description(description))
+	if ingest_err != OK:
+		_fail("ingest_camera_description rejected: %d" % ingest_err)
+		return
+	_log("ingested concurrency truth for [%s, %s]" % [id_a, id_b])
+	start_err = int(CamBANGServer.start(provider_kind))
+	if start_err != OK:
+		_fail("restart after ingest failed: %d" % start_err)
+		return
+
+	# NV12 goes on the FIRST camera and the reference on the second. RGBA was
+	# previously proven working on the first camera while NV12 on the second
+	# produced nothing, which leaves camera and format confounded. Swapping
+	# them separates the two: if NV12 now works, the earlier failure was the
+	# camera; if it still fails here, it is the format.
+	var nv12_device: CamBANGDevice = CamBANGServer.get_device_for_hardware_id(id_a)
+	var rgba_device: CamBANGDevice = CamBANGServer.get_device_for_hardware_id(id_b)
 	if rgba_device == null or nv12_device == null:
 		_fail("could not resolve devices %s / %s" % [id_a, id_b])
 		return
@@ -110,8 +148,18 @@ func _ready() -> void:
 		_fail("NV12 stream could not be created -- format negotiation rejected it")
 		return
 
-	_rgba_stream.start()
-	_nv12_stream.start()
+	# start() returns an Error. Ignoring it meant a refused stream looked
+	# identical to one that started and produced nothing, which cost several
+	# diagnostic cycles.
+	var rgba_start: int = int(_rgba_stream.start())
+	var nv12_start: int = int(_nv12_stream.start())
+	_log("stream start: rgba=%d nv12=%d" % [rgba_start, nv12_start])
+	if nv12_start != OK:
+		_fail("NV12 stream.start() refused: %d" % nv12_start)
+		return
+	if rgba_start != OK:
+		_fail("RGBA stream.start() refused: %d" % rgba_start)
+		return
 	_log("both streams started (%dx%d)" % [STREAM_WIDTH, STREAM_HEIGHT])
 
 
@@ -180,6 +228,15 @@ func _process(delta: float) -> void:
 			_log("NV12 display bound (%dx%d)" % [view.get_width(), view.get_height()])
 
 	# Explicit CPU materialization, a separate access path from display.
+	#
+	# Re-materialized periodically rather than once. to_image() is a snapshot of
+	# the state at the time of the call, and a camera's first retained frame is
+	# typically black before exposure settles, so a single early call shows a
+	# black panel forever and looks like a conversion failure.
+	_image_refresh_elapsed += delta
+	if _bound_nv12_image and _image_refresh_elapsed >= IMAGE_REFRESH_SEC:
+		_image_refresh_elapsed = 0.0
+		_bound_nv12_image = false
 	if _nv12_stream != null and not _bound_nv12_image and _nv12_stream.result_live:
 		var m: Variant = _nv12_stream.get_result()
 		if m != null:

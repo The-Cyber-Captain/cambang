@@ -374,14 +374,20 @@ inline bool planar_payload_to_rgba8(const CoreResultPayloadCpu& payload, uint8_t
   }
 
   const bool semi_planar = (desc.layout_class == PixelLayoutClass::SemiPlanar);
-  const uint32_t v_plane_index = semi_planar ? 1u : 2u;
   // Within a semi-planar chroma row, U and V alternate; when planar they are
   // separate planes and each chroma column is one byte.
   const uint32_t chroma_sample_stride = semi_planar ? 2u : 1u;
-  const uint32_t v_byte_offset = semi_planar ? 1u : 0u;
+  // Component order follows the format. NV21 and YV12 carry V first, and
+  // reading them as NV12/I420 swaps red and blue -- a plausible-looking image
+  // rather than an obvious failure, which is exactly the class of fault this
+  // must not produce silently.
+  const uint32_t u_plane_index = semi_planar ? 1u : (desc.chroma_v_first ? 2u : 1u);
+  const uint32_t v_plane_index = semi_planar ? 1u : (desc.chroma_v_first ? 1u : 2u);
+  const uint32_t u_byte_offset = semi_planar ? (desc.chroma_v_first ? 1u : 0u) : 0u;
+  const uint32_t v_byte_offset = semi_planar ? (desc.chroma_v_first ? 0u : 1u) : 0u;
 
   const uint8_t* y_plane = payload.plane_data(0);
-  const uint8_t* u_plane = payload.plane_data(1);
+  const uint8_t* u_plane = payload.plane_data(u_plane_index);
   const uint8_t* v_plane = payload.plane_data(v_plane_index);
   if (!y_plane || !u_plane || !v_plane) {
     return false;
@@ -390,14 +396,14 @@ inline bool planar_payload_to_rgba8(const CoreResultPayloadCpu& payload, uint8_t
   const uint32_t w = payload.width;
   const uint32_t h = payload.height;
   const uint32_t y_stride = payload.planes[0].stride_bytes;
-  const uint32_t u_stride = payload.planes[1].stride_bytes;
+  const uint32_t u_stride = payload.planes[u_plane_index].stride_bytes;
   const uint32_t v_stride = payload.planes[v_plane_index].stride_bytes;
   const uint32_t chroma_rows = (h + 1u) / 2u;
   const uint32_t chroma_cols = (w + 1u) / 2u;
   if (y_stride < w || payload.planes[0].rows < h ||
       u_stride < (chroma_cols * chroma_sample_stride) ||
       v_stride < (chroma_cols * chroma_sample_stride) ||
-      payload.planes[1].rows < chroma_rows ||
+      payload.planes[u_plane_index].rows < chroma_rows ||
       payload.planes[v_plane_index].rows < chroma_rows) {
     return false;
   }
@@ -409,7 +415,8 @@ inline bool planar_payload_to_rgba8(const CoreResultPayloadCpu& payload, uint8_t
     uint8_t* out = dst + static_cast<size_t>(w) * 4u * y;
     for (uint32_t x = 0; x < w; ++x) {
       const size_t c = static_cast<size_t>(x / 2u) * chroma_sample_stride;
-      const RgbSample s = yuv_to_rgb_bt601_limited(y_row[x], u_row[c], v_row[c + v_byte_offset]);
+      const RgbSample s = yuv_to_rgb_bt601_limited(
+          y_row[x], u_row[c + u_byte_offset], v_row[c + v_byte_offset]);
       out[static_cast<size_t>(x) * 4u + 0u] = s.r;
       out[static_cast<size_t>(x) * 4u + 1u] = s.g;
       out[static_cast<size_t>(x) * 4u + 2u] = s.b;

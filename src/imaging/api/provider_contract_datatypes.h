@@ -169,6 +169,13 @@ struct PayloadPlaneView {
   // Without this field a provider would have to resolve that privately, which
   // is precisely the conversion knowledge this contract exists to move out of
   // providers.
+  //
+  // SCOPE: this describes the SOURCE buffer's sample spacing, and applies only
+  // where a plane's row is measured in single components. A semi-planar chroma
+  // plane's row_bytes already spans both interleaved components, so its pixel
+  // stride is 1 by this definition even though consecutive U samples sit two
+  // bytes apart -- the interleaving is carried by the format, not repeated
+  // here. Declaring 2 in that case double-counts and fails extent validation.
   uint32_t pixel_stride_bytes = 1;
 };
 

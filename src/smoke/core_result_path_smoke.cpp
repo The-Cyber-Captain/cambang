@@ -1314,6 +1314,48 @@ int main() {
     assert(!planar_payload_to_rgba8(bt709, rgba.data()));
   }
 
+  // --- NV21 / YV12 chroma order ---------------------------------------------
+  //
+  // A real Galaxy S20+ delivers NV21, so V-before-U is the common Android case
+  // rather than an exotic one. Reading it as NV12 swaps red and blue, which
+  // produces a plausible image instead of a failure -- it showed up on device
+  // as blue where yellow should be.
+  {
+    constexpr uint32_t kNW = 2;
+    constexpr uint32_t kNH = 2;
+    const YuvSample probe = rgb_to_yuv_bt601_limited(220, 200, 40);  // yellow-ish
+    const RgbSample expect = yuv_to_rgb_bt601_limited(probe.y, probe.u, probe.v);
+
+    // NV12 lays chroma out U,V; NV21 lays it out V,U. Same bytes, opposite
+    // meaning, so a converter ignoring order returns the swapped colour.
+    for (int variant = 0; variant < 2; ++variant) {
+      const bool v_first = (variant == 1);
+      CoreResultPayloadCpu p{};
+      p.format_fourcc = v_first ? FOURCC_NV21 : FOURCC_NV12;
+      p.width = kNW;
+      p.height = kNH;
+      p.plane_count = 2;
+      p.stride_bytes = kNW;
+      p.colorimetry.range = ColorRange::LIMITED;
+      p.colorimetry.matrix = ColorMatrix::BT601;
+      const size_t luma = static_cast<size_t>(kNW) * kNH;
+      p.planes[0] = {0, kNW, kNH};
+      p.planes[1] = {luma, kNW, kNH / 2u};
+      p.bytes.assign(luma + static_cast<size_t>(kNW) * (kNH / 2u), 0u);
+      for (size_t i = 0; i < luma; ++i) {
+        p.bytes[i] = probe.y;
+      }
+      p.bytes[luma + 0] = v_first ? probe.v : probe.u;
+      p.bytes[luma + 1] = v_first ? probe.u : probe.v;
+
+      std::vector<uint8_t> rgba(luma * 4u, 0u);
+      assert(planar_payload_to_rgba8(p, rgba.data()));
+      assert(rgba[0] == expect.r);
+      assert(rgba[1] == expect.g);
+      assert(rgba[2] == expect.b);
+    }
+  }
+
   std::cout << "PASS core_result_path_smoke\n";
   return 0;
 }

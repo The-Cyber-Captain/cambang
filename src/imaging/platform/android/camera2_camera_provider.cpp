@@ -169,6 +169,37 @@ void BoundedControlExecutor::thread_main_() noexcept {
 }
 
 // ---------------------------------------------------------------------------
+// Which member of the YUV_420_888 family a device actually handed over.
+//
+// The format is a family and the device decides at runtime. AOSP documents the
+// invariants this relies on: images "are always represented by three separate
+// buffers", "plane #0 is always Y, plane #1 is always U (Cb), and plane #2 is
+// always V (Cr)", and the U/V planes "are guaranteed to have the same row
+// stride and pixel stride".
+//
+// A chroma pixel stride of 2 means U and V are interleaved in one buffer; which
+// of NV12 and NV21 that is depends on which plane's data pointer comes first.
+// A pixel stride of 1 means they are separate planes: I420 when U precedes V,
+// YV12 when V precedes U.
+//
+// Returns 0 when the layout matches nothing CamBANG names, so the caller fails
+// closed rather than guessing.
+uint32_t resolve_yuv420_family_member(const uint8_t* u_data,
+                                      const uint8_t* v_data,
+                                      int32_t uv_pixel_stride) noexcept {
+  if (!u_data || !v_data) {
+    return 0;
+  }
+  const bool u_first = (u_data < v_data);
+  if (uv_pixel_stride == 2) {
+    return u_first ? FOURCC_NV12 : FOURCC_NV21;
+  }
+  if (uv_pixel_stride == 1) {
+    return u_first ? FOURCC_I420 : FOURCC_YV12;
+  }
+  return 0;
+}
+
 // Frame conversion (YUV_420_888 -> packed RGBA/BGRA)
 // ---------------------------------------------------------------------------
 
@@ -231,6 +262,93 @@ void convert_yuv420_to_packed(const uint8_t* y_plane,
 // fourcc). Returns false without touching dst on any shape mismatch, so a
 // device that silently substituted geometry can never be published as if it
 // had honoured the request.
+// Copies an acquired YUV_420_888 image into dst as tightly packed planes,
+// without colour conversion, and reports which family member it turned out to
+// be plus the resulting CamBANG plane count.
+//
+// Semi-planar sources collapse to two CamBANG planes: the interleaved chroma
+// buffer is taken as one plane starting at whichever of U/V comes first, which
+// is exactly the NV12/NV21 layout. Fully planar sources keep three.
+//
+// dst must hold min_tight_size_bytes() for the resolved format.
+bool copy_acquired_image_planar(AImage* image,
+                                uint32_t width,
+                                uint32_t height,
+                                uint8_t* dst,
+                                uint32_t* out_fourcc,
+                                uint8_t* out_plane_count) {
+  if (!image || !dst || !out_fourcc || !out_plane_count) {
+    return false;
+  }
+  int32_t img_w = 0, img_h = 0, img_format = 0;
+  if (AImage_getWidth(image, &img_w) != AMEDIA_OK ||
+      AImage_getHeight(image, &img_h) != AMEDIA_OK ||
+      AImage_getFormat(image, &img_format) != AMEDIA_OK ||
+      static_cast<uint32_t>(img_w) != width ||
+      static_cast<uint32_t>(img_h) != height ||
+      img_format != AIMAGE_FORMAT_YUV_420_888) {
+    return false;
+  }
+
+  uint8_t* y_data = nullptr;
+  uint8_t* u_data = nullptr;
+  uint8_t* v_data = nullptr;
+  int y_len = 0, u_len = 0, v_len = 0;
+  int32_t y_row_stride = 0, uv_row_stride = 0, uv_pixel_stride = 0;
+  if (AImage_getPlaneData(image, 0, &y_data, &y_len) != AMEDIA_OK ||
+      AImage_getPlaneData(image, 1, &u_data, &u_len) != AMEDIA_OK ||
+      AImage_getPlaneData(image, 2, &v_data, &v_len) != AMEDIA_OK ||
+      AImage_getPlaneRowStride(image, 0, &y_row_stride) != AMEDIA_OK ||
+      AImage_getPlaneRowStride(image, 1, &uv_row_stride) != AMEDIA_OK ||
+      AImage_getPlanePixelStride(image, 1, &uv_pixel_stride) != AMEDIA_OK) {
+    return false;
+  }
+  if (!y_data || !u_data || !v_data || y_row_stride <= 0 || uv_row_stride <= 0) {
+    return false;
+  }
+
+  const uint32_t resolved = resolve_yuv420_family_member(u_data, v_data, uv_pixel_stride);
+  if (resolved == 0) {
+    return false;
+  }
+  const bool semi_planar = (uv_pixel_stride == 2);
+  const uint32_t chroma_rows = (height + 1u) / 2u;
+  const uint32_t chroma_cols = (width + 1u) / 2u;
+
+  // Luma is always pixel stride 1 per the format's guarantees.
+  uint8_t* out = dst;
+  for (uint32_t row = 0; row < height; ++row) {
+    std::memcpy(out, y_data + static_cast<ptrdiff_t>(y_row_stride) * row, width);
+    out += width;
+  }
+
+  if (semi_planar) {
+    // One interleaved chroma plane, starting at whichever pointer is lower.
+    const uint8_t* chroma = (u_data < v_data) ? u_data : v_data;
+    const uint32_t chroma_row_bytes = chroma_cols * 2u;
+    for (uint32_t row = 0; row < chroma_rows; ++row) {
+      std::memcpy(out, chroma + static_cast<ptrdiff_t>(uv_row_stride) * row,
+                  chroma_row_bytes);
+      out += chroma_row_bytes;
+    }
+    *out_plane_count = 2;
+  } else {
+    const uint8_t* first = (u_data < v_data) ? u_data : v_data;
+    const uint8_t* second = (u_data < v_data) ? v_data : u_data;
+    for (uint32_t row = 0; row < chroma_rows; ++row) {
+      std::memcpy(out, first + static_cast<ptrdiff_t>(uv_row_stride) * row, chroma_cols);
+      out += chroma_cols;
+    }
+    for (uint32_t row = 0; row < chroma_rows; ++row) {
+      std::memcpy(out, second + static_cast<ptrdiff_t>(uv_row_stride) * row, chroma_cols);
+      out += chroma_cols;
+    }
+    *out_plane_count = 3;
+  }
+  *out_fourcc = resolved;
+  return true;
+}
+
 bool convert_acquired_image(AImage* image,
                             uint32_t width,
                             uint32_t height,
@@ -710,7 +828,18 @@ void deliver_stream_image_locked(DeviceBackend& backend, AImage* image) {
     return; // repeating frames are lossy
   }
 
-  if (!convert_acquired_image(image, s->width, s->height, s->fourcc, slot->bytes.data())) {
+  // Planar streams take the device's planes through unconverted; the concrete
+  // family member is whatever the device presented and is reported per frame.
+  const PixelFormatDescriptor stream_desc = describe_pixel_format(s->fourcc);
+  const bool stream_is_planar =
+      stream_desc.valid && stream_desc.layout_class != PixelLayoutClass::Packed;
+  uint32_t delivered_fourcc = s->fourcc;
+  uint8_t delivered_planes = 0;
+  const bool copied = stream_is_planar
+      ? copy_acquired_image_planar(image, s->width, s->height, slot->bytes.data(),
+                                   &delivered_fourcc, &delivered_planes)
+      : convert_acquired_image(image, s->width, s->height, s->fourcc, slot->bytes.data());
+  if (!copied) {
     slot->in_use.store(false, std::memory_order_release);
     ++s->convert_failures;
     if ((s->convert_failures & (s->convert_failures - 1)) == 0) {
@@ -734,14 +863,52 @@ void deliver_stream_image_locked(DeviceBackend& backend, AImage* image) {
   fv.capture_id = 0;
   fv.width = s->width;
   fv.height = s->height;
-  fv.format_fourcc = s->fourcc;
+  fv.format_fourcc = delivered_fourcc;
   if (timestamp_ns >= 0) {
     fv.acquisition_timing =
         make_acquisition_timing(timestamp_ns, backend.chars.timestamp_source_realtime);
   }
   fv.data = slot->bytes.data();
   fv.size_bytes = slot->bytes.size();
-  fv.stride_bytes = s->width * 4u;
+  fv.stride_bytes = stream_is_planar ? s->width : (s->width * 4u);
+  if (stream_is_planar && delivered_planes >= 2) {
+    PayloadLayout& layout = fv.payload_layout;
+    layout.format_fourcc = delivered_fourcc;
+    layout.width = s->width;
+    layout.height = s->height;
+    layout.plane_count = delivered_planes;
+    // Camera2 does not surface the colour interpretation here, so this stays
+    // UNSPECIFIED and the contract's documented fallback applies.
+    const size_t luma_bytes = static_cast<size_t>(s->width) * s->height;
+    const uint32_t chroma_rows = (s->height + 1u) / 2u;
+    const uint32_t chroma_cols = (s->width + 1u) / 2u;
+    layout.planes[0].data = slot->bytes.data();
+    layout.planes[0].size_bytes = luma_bytes;
+    layout.planes[0].stride_bytes = s->width;
+    layout.planes[0].rows = s->height;
+    if (delivered_planes == 2) {
+      layout.planes[1].data = slot->bytes.data() + luma_bytes;
+      layout.planes[1].size_bytes = static_cast<size_t>(chroma_cols) * 2u * chroma_rows;
+      layout.planes[1].stride_bytes = chroma_cols * 2u;
+      layout.planes[1].rows = chroma_rows;
+      // pixel_stride_bytes stays 1 here. It describes sample spacing where a
+      // plane's row_bytes counts one component, but plane_row_bytes() for a
+      // semi-planar chroma plane already returns the full interleaved row, so
+      // declaring 2 would double-count and fail extent validation. The
+      // interleaving is carried by the format being semi-planar; the emitted
+      // buffer is tightly packed either way.
+    } else {
+      const size_t plane_bytes = static_cast<size_t>(chroma_cols) * chroma_rows;
+      layout.planes[1].data = slot->bytes.data() + luma_bytes;
+      layout.planes[1].size_bytes = plane_bytes;
+      layout.planes[1].stride_bytes = chroma_cols;
+      layout.planes[1].rows = chroma_rows;
+      layout.planes[2].data = slot->bytes.data() + luma_bytes + plane_bytes;
+      layout.planes[2].size_bytes = plane_bytes;
+      layout.planes[2].stride_bytes = chroma_cols;
+      layout.planes[2].rows = chroma_rows;
+    }
+  }
   fv.requested_retained_plan = s->plan;
   fv.release = &release_stream_frame;
   fv.release_user = new StreamFrameLease{slot};
@@ -2303,7 +2470,8 @@ ProviderResult Camera2CameraProvider::start_stream(
   if (profile.width == 0 || profile.height == 0) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
-  if (profile.format_fourcc != FOURCC_RGBA && profile.format_fourcc != FOURCC_BGRA) {
+  if (profile.format_fourcc != FOURCC_RGBA && profile.format_fourcc != FOURCC_BGRA &&
+      profile.format_fourcc != FOURCC_NV12 && profile.format_fourcc != FOURCC_I420) {
     return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
   }
 
@@ -2351,8 +2519,9 @@ ProviderResult Camera2CameraProvider::start_stream(
   production->height = profile.height;
   production->fourcc = profile.format_fourcc;
   production->plan = st.req.requested_retained_plan;
+  // Sized from the descriptor: a planar slot is w*h*3/2, not w*h*4.
   const size_t frame_bytes =
-      static_cast<size_t>(profile.width) * static_cast<size_t>(profile.height) * 4u;
+      min_tight_size_bytes(profile.format_fourcc, profile.width, profile.height);
   production->pool.reserve(kStreamPoolSlots);
   for (size_t i = 0; i < kStreamPoolSlots; ++i) {
     auto slot = std::make_shared<StreamProduction::BufferSlot>();
