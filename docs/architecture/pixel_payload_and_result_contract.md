@@ -317,38 +317,45 @@ Pinning a format is meaningful for Synthetic in a way it is not for a camera.
 
 ### 6.3.1 Current implementation status
 
-The vocabulary above is fully expressed in the contract; the implementing
-paths are not all built yet. Recording this honestly matters, because a
-declared-but-unimplemented kind is otherwise indistinguishable from a working
-one:
+Recorded so a declared-but-unimplemented kind stays distinguishable from a
+working one. This section describes what is built, not what CamBANG may
+support; an absent entry means "not implemented yet", never "excluded by
+design".
 
-- `ResultPayloadKind::CPU_PLANAR` is defined and named, but **no path writes
-  it**. Planar retention is not implemented, so no result currently reports it.
-- Planar and semi-planar payloads are therefore not retained. They are
-  rejected at retention rather than copied as if plane 0 were the whole image.
-- Packed payloads are retained generically by descriptor arithmetic, but CPU
-  access capability (`to_image`, CPU display) remains gated to packed
-  RGB-family payloads, since those paths build a Godot `FORMAT_RGBA8` image
-  directly from the retained bytes.
-- Both platform providers still convert YUV to RGBA internally and advertise
-  the packed-RGB default, which describes their real behaviour today.
+- `ResultPayloadKind::CPU_PLANAR` is written by the retention path and
+  reported by results. Semi-planar and fully planar payloads are retained in
+  the layout the producer delivered.
+- Conversion to packed RGBA happens in Core (`planar_payload_to_rgba8`), at
+  the point a caller asks for CPU display bytes or a Godot `Image` -- not in
+  the provider, and not at all if no caller asks.
+- Neither platform provider converts YUV for delivery any more. Both take the
+  camera's native planar buffer through unconverted when Core selects a planar
+  format. Their packed-conversion paths remain, and are reached only when a
+  caller explicitly names RGBA or BGRA.
+- Chroma order is carried by the descriptor (`chroma_v_first`), because
+  NV21/YV12 are indistinguishable from NV12/I420 by geometry alone and a
+  mis-read produces a plausible-looking red/blue swap rather than a failure.
 
-SyntheticProvider's current emission, as a **progress note only**:
+Emission by provider, as a **progress note only**:
 
-| Format | Synthetic streams | Synthetic captures |
-|---|---|---|
-| RGBA | yes | yes |
-| BGRA | no | yes |
-| NV12 | yes | no |
-| NV21 / I420 / YV12 / YUY2 / UYVY | no | no |
+| Format | Synthetic stream | Synthetic capture | WinRT stream | WinRT capture | Camera2 stream | Camera2 capture |
+|---|---|---|---|---|---|---|
+| RGBA | yes | yes | yes | yes | yes | yes |
+| BGRA | no | yes | yes | yes | yes | yes |
+| NV12 | yes | no | yes | yes | yes | yes |
+| NV21 / I420 / YV12 | no | no | no | no | yes, device-resolved | yes, device-resolved |
+| YUY2 / UYVY | no | no | no | no | no | no |
 
-This table records what has been built so far. It is **not** a restriction, a
-design limit, or a statement about what CamBANG may support: an absent entry
-means "not implemented yet", never "excluded by design". Nothing here
-constrains a future tranche, and the table is expected to fill in as the
-payload work proceeds. It exists so that declared-but-unimplemented vocabulary
-stays distinguishable from working support, which is the same reason the rest
-of this section exists.
+Two gaps this table makes visible:
+
+- **Synthetic cannot capture planar.** Its capture path accepts only RGBA and
+  BGRA, so planar still-capture has no provider-independent verification case
+  and is proven only on hardware.
+- **Camera2 requests NV12 or I420 but may deliver NV21 or YV12.** The provider
+  resolves the concrete family member from the observed strides and pointer
+  order, and the retained payload carries the delivered FourCC, so payload
+  truth is correct. The stream *profile* still records the requested tag, so
+  profile and payload can name different formats for the same stream.
 
 Pixel format is independent of pattern content. The synthetic stream render
 spec is packed RGBA8 regardless of the requested profile format, and format
