@@ -141,7 +141,12 @@ func _ready() -> void:
 		_fail("RGBA reference stream could not be created")
 		return
 
-	_nv12_stream = nv12_device.create_stream(_profile(CamBANGServer.PIXEL_FORMAT_NV12))
+	# Deliberately NO format named. This is the path an ordinary caller takes,
+	# and the whole point of the format-selection work: Core should choose the
+	# device's native format from its advertised capability, so the application
+	# never handles a FourCC. Naming NV12 here would exercise negotiation but
+	# not selection, which is the distinction this run exists to close.
+	_nv12_stream = nv12_device.create_stream(_default_profile())
 	if _nv12_stream == null:
 		# Creation is where format negotiation rejects an unadvertised format,
 		# so this is the failure worth calling out specifically.
@@ -161,6 +166,19 @@ func _ready() -> void:
 		_fail("RGBA stream.start() refused: %d" % rgba_start)
 		return
 	_log("both streams started (%dx%d)" % [STREAM_WIDTH, STREAM_HEIGHT])
+
+
+# Geometry only, no format. Core fills the format from device capability.
+func _default_profile() -> Dictionary:
+	return {
+		"intent": CamBANGStream.INTENT_VIEWFINDER,
+		"profile": {
+			"width": STREAM_WIDTH,
+			"height": STREAM_HEIGHT,
+			"target_fps_min": 30,
+			"target_fps_max": 30,
+		},
+	}
 
 
 func _profile(format_fourcc: int) -> Dictionary:
@@ -332,6 +350,17 @@ func _labelled_view(caption: String, slot: int) -> Control:
 		1: _nv12_rect = rect
 		2: _nv12_image_rect = rect
 	return col
+
+
+# Renders a FourCC as its four characters so the log states which family
+# member Core actually selected rather than a bare integer.
+func _fourcc_name(fourcc: int) -> String:
+	if fourcc == 0:
+		return "none"
+	var out := ""
+	for i in range(4):
+		out += char((fourcc >> (i * 8)) & 0xFF)
+	return out
 
 
 func _log(message: String) -> void:

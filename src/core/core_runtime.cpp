@@ -5326,6 +5326,11 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
           break;
         }
       }
+      // Nothing usable advertised: fall back to the provider's template so a
+      // caller who named no format still gets a working stream.
+      if (effective.profile.format_fourcc == 0) {
+        effective.profile.format_fourcc = tmpl.profile.format_fourcc;
+      }
     }
 
     // A requested pixel format the provider does not advertise is rejected

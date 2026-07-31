@@ -167,6 +167,14 @@ static bool parse_stream_profile_definition(const godot::Variant& value,
     return false;
   }
   out_profile = template_profile;
+  // An omitted format means "CamBANG chooses", not "use the template's".
+  // Inheriting it here made an unspecified format indistinguishable from an
+  // explicitly requested one, so Core skipped device-native selection and every
+  // caller silently got the template's packed default -- which is the burden
+  // the selection work exists to remove. Zero flows through; Core fills it from
+  // the device's advertised capability, falling back to the template only if
+  // nothing usable is advertised.
+  out_profile.format_fourcc = 0;
   if (!parse_stream_definition_u32_field(profile, "width", out_profile.width, true) ||
       !parse_stream_definition_u32_field(profile, "height", out_profile.height, true) ||
       !parse_stream_definition_u32_field(profile, "format_fourcc", out_profile.format_fourcc, true)) {
@@ -190,7 +198,9 @@ static bool parse_stream_profile_definition(const godot::Variant& value,
     }
   }
 
-  if (out_profile.width == 0 || out_profile.height == 0 || out_profile.format_fourcc == 0) {
+  // format_fourcc may legitimately be zero here: it means the caller did not
+  // name one and Core will select. Geometry still has to be concrete.
+  if (out_profile.width == 0 || out_profile.height == 0) {
     return false;
   }
   if (out_profile.target_fps_min != 0 && out_profile.target_fps_max != 0 &&
