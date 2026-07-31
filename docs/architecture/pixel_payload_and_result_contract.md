@@ -517,6 +517,45 @@ CPU-backed realization is actually available.
 
 ---
 
+### 6.x.5 Backing form by provider and platform, as observed
+
+Recorded because a plausible inference about this was wrong, and the wrong
+version is the one anybody would reach for again.
+
+**Only SyntheticProvider has a GPU-backed path.** Both platform providers
+report `ProducerBackingCapabilities{cpu=true, gpu=false, both=false}` --
+`WinrtCameraProvider::stream_backing_capabilities` and the Camera2 equivalent.
+Camera2's `PRIVATE` (opaque GPU) form is not implemented. So on hardware,
+every CamBANG payload today is CPU-backed, and the renderer in use does not
+change that.
+
+**Synthetic's GPU backing IS reachable on Android.** The inference that it is
+not -- because the Godot project pins `renderer/rendering_method.mobile` to
+`gl_compatibility`, and `RenderingServer::get_rendering_device()` returns null
+under Compatibility -- is wrong in practice. A scene 570 run on a Galaxy S20+
+against SyntheticProvider retained an RGBA stream result reporting
+`payload_kind=2` (GPU_SURFACE). Whatever the project setting says, the GPU
+backing path was taken. Do not reason about which backing form applies from
+the renderer setting alone; read the retained result's `payload_kind`.
+
+This matters because of an open defect it exposes. In that same run the RGBA
+stream reported `can_get_display_view() == 0` indefinitely and the planar
+stream reported `result_live` true while `get_result()` returned null
+throughout, so nothing ever displayed. That is the display-demand deadlock:
+the synthetic GPU backing only refreshes while display demand is active,
+demand is established by *calling* `get_display_view()`, and a caller that
+gates on `can_get_display_view()` before calling it therefore never
+establishes demand. It is not specific to Windows under Mobile/Forward+, which
+is where it was first seen; it is reachable wherever the synthetic GPU backing
+is taken, Android included.
+
+Planar formats are excluded from GPU backing on both the stream and capture
+sides (`query_stream_producer_capabilities_`,
+`query_capture_producer_capabilities_`) because that backing is RGBA8-only, so
+a planar Synthetic stream takes the CPU path and is unaffected by the above.
+
+---
+
 ## 7. Ownership and deterministic release
 
 ## 7.1 General rule

@@ -11,6 +11,11 @@ extends Control
 #
 #   --cambang-planar-format=nv12|nv21|i420|yv12   (default nv12)
 #
+# The request is a request. Camera2's YUV_420_888 is a family and the device
+# picks the member -- an S20+ answers NV12 with NV21 -- so the panel may show
+# a sibling of what was asked for. The run logs SUBSTITUTED when that happens
+# and judges what was actually delivered. Only a PACKED payload fails.
+#
 # All four exist because chroma order is invisible to plane geometry: NV21 and
 # YV12 carry V before U, and reading them as NV12/I420 swaps red and blue,
 # which looks like a plausible image rather than a failure. The native suite
@@ -323,13 +328,24 @@ func _process(delta: float) -> void:
 			var sel_fmt: int = int(n.get_format())
 			_log("planar result: payload_kind=%d format=%d (%s) can_get_display_view=%d"
 				% [kind, sel_fmt, _fourcc_name(sel_fmt), can_display])
-			# The format was named explicitly, so anything else coming back means
-			# the request was not honoured. That must fail rather than be noted:
-			# three packed panels look exactly like a passing planar run.
-			if sel_fmt != _planar_format:
-				_fail("asked for %s but the retained result is %s"
-					% [_planar_format_name, _fourcc_name(sel_fmt)])
+			# A packed payload against an explicit planar request means the
+			# request was not honoured, and that must fail: three packed panels
+			# look exactly like a passing planar run.
+			#
+			# A DIFFERENT 4:2:0 member must not fail, though. Camera2's
+			# YUV_420_888 is a family, and the device decides which member it
+			# hands over: a Galaxy S20+ answers an NV12 request with NV21. The
+			# provider resolves that from the observed strides and the payload
+			# carries what was actually delivered, so the substitution is
+			# correct behaviour, not a broken promise. It is reported loudly
+			# because it changes what this run is evidence FOR.
+			if kind != 1:
+				_fail("asked for %s but the retained payload is not planar (kind=%d, format=%s)"
+					% [_planar_format_name, kind, _fourcc_name(sel_fmt)])
 				return
+			if sel_fmt != _planar_format:
+				_log("SUBSTITUTED: asked for %s, device delivered %s -- this run judges %s"
+					% [_planar_format_name.to_upper(), _fourcc_name(sel_fmt), _fourcc_name(sel_fmt)])
 			if can_display == 0:
 				_fail("planar stream result reports no display path")
 				return
@@ -403,9 +419,12 @@ func _process(delta: float) -> void:
 				got = "yes %dx%d" % [member_img.get_width(), member_img.get_height()]
 			_log("CAPTURE: format=%d (%s) payload_kind=%d can_to_image_member=%d materialized=%s"
 				% [cfmt, _fourcc_name(cfmt), int(cap.get_payload_kind()), can_img, got])
-			if cfmt != _planar_format:
-				_log("NOTICE: capture came back %s, not %s -- the planar CAPTURE path is NOT exercised in this run"
-					% [_fourcc_name(cfmt), _planar_format_name.to_upper()])
+			if int(cap.get_payload_kind()) != 1:
+				_log("NOTICE: capture came back %s (packed) -- the planar CAPTURE path is NOT exercised in this run"
+					% _fourcc_name(cfmt))
+			elif cfmt != _planar_format:
+				_log("CAPTURE SUBSTITUTED: asked for %s, device delivered %s"
+					% [_planar_format_name.to_upper(), _fourcc_name(cfmt)])
 
 	if _bound_rgba and _bound_planar:
 		_status.text = ("Compare %s (middle) against its to_image() (right) -- these always match.\n"
