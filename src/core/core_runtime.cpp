@@ -1059,9 +1059,18 @@ uint64_t warm_delay_ns(uint32_t warm_hold_ms) {
   return static_cast<uint64_t>(warm_hold_ms) * kNsPerMs;
 }
 
+// Seeds the device's retained still profile at open time.
+//
+// The format is selected from what this device natively captures rather than
+// taken from the provider's I/O-free template. Seeding the template's packed
+// default here silently pre-decides every later capture: the request builder
+// sees a non-zero retained format and skips selection, so the provider
+// converts every still even on a device whose native output CamBANG can
+// retain directly.
 bool seed_retained_device_still_profile_from_template(CoreDeviceRegistry& devices,
                                                       uint64_t device_instance_id,
-                                                      const CaptureTemplate& capture_tmpl) {
+                                                      const CaptureTemplate& capture_tmpl,
+                                                      ICameraProvider* prov) {
   if (device_instance_id == 0) {
     return false;
   }
@@ -1074,9 +1083,26 @@ bool seed_retained_device_still_profile_from_template(CoreDeviceRegistry& device
     }
   }
 
-  const uint32_t format = capture_tmpl.profile.format_fourcc == 0
-      ? FOURCC_RGBA
-      : capture_tmpl.profile.format_fourcc;
+  uint32_t format = 0;
+  if (prov) {
+    CaptureRequest probe{};
+    probe.device_instance_id = device_instance_id;
+    probe.width = capture_tmpl.profile.width;
+    probe.height = capture_tmpl.profile.height;
+    const ProducerFormatCapabilities native =
+        prov->capture_parent_context_format_capabilities(device_instance_id, probe);
+    for (uint8_t i = 0; i < native.count; ++i) {
+      if (core_can_use_stream_format(native.formats[i])) {
+        format = native.formats[i];
+        break;
+      }
+    }
+  }
+  if (format == 0) {
+    format = capture_tmpl.profile.format_fourcc == 0
+        ? FOURCC_RGBA
+        : capture_tmpl.profile.format_fourcc;
+  }
   return devices.retain_capture_profile(device_instance_id,
                                          capture_tmpl.profile.width,
                                          capture_tmpl.profile.height,
@@ -1558,8 +1584,10 @@ bool CoreRuntime::build_effective_capture_request_without_retained_plan_(
   out.rig_id = 0;
   out.width = tmpl.profile.width;
   out.height = tmpl.profile.height;
-  out.format_fourcc =
-      tmpl.profile.format_fourcc == 0 ? FOURCC_RGBA : tmpl.profile.format_fourcc;
+  // Left zero deliberately: "not yet chosen". Selection below fills it from
+  // device capability, falling back to the template only if nothing usable is
+  // advertised.
+  out.format_fourcc = 0;
   out.profile_version = 0;
   out.picture = tmpl.picture;
   out.still_image_bundle = make_default_metered_still_image_bundle();
@@ -1577,6 +1605,30 @@ bool CoreRuntime::build_effective_capture_request_without_retained_plan_(
     out.profile_version = rec->capture_profile_version;
     out.picture = rec->capture_picture;
     out.still_image_bundle = rec->capture_still_image_bundle;
+    if (rec->capture_format == 0) {
+      // No retained per-device format: let Core select from what this device
+      // natively captures, exactly as stream creation does. Without this a
+      // capture always takes the template's packed default and the provider
+      // converts every still, which is the cost this work removes.
+      out.format_fourcc = 0;
+    }
+  }
+
+  if (out.format_fourcc == 0) {
+    const ProducerFormatCapabilities native =
+        prov->capture_parent_context_format_capabilities(device_instance_id, out);
+    for (uint8_t i = 0; i < native.count; ++i) {
+      if (core_can_use_stream_format(native.formats[i])) {
+        out.format_fourcc = native.formats[i];
+        break;
+      }
+    }
+    if (out.format_fourcc == 0) {
+      // Nothing usable advertised: fall back to the template so a capture
+      // still works on a provider with no device-scoped answer.
+      out.format_fourcc =
+          tmpl.profile.format_fourcc == 0 ? FOURCC_RGBA : tmpl.profile.format_fourcc;
+    }
   }
 
   if (!(out.width > 0 && out.height > 0)) {
@@ -5118,7 +5170,8 @@ CoreThread::PostResult CoreRuntime::retain_device_identity(uint64_t device_insta
         spec_state_.camera_spec_version(hardware_id));
     if (has_capture_template) {
       (void)seed_retained_device_still_profile_from_template(
-          devices_, device_instance_id, capture_tmpl);
+          devices_, device_instance_id, capture_tmpl,
+          provider_.load(std::memory_order_acquire));
     }
     request_publish_from_core_unchecked();
   });
@@ -5622,7 +5675,9 @@ TryOpenDeviceStatus CoreRuntime::try_open_device(
     // submission was accepted. A provider-refused open must not publish a
     // speculative CREATED device record.
     (void)devices_.note_device_identity(device_instance_id, hardware_id);
-    (void)seed_retained_device_still_profile_from_template(devices_, device_instance_id, capture_tmpl);
+    (void)seed_retained_device_still_profile_from_template(
+        devices_, device_instance_id, capture_tmpl,
+        provider_.load(std::memory_order_acquire));
     (void)devices_.set_capture_picture(device_instance_id, capture_tmpl.picture);
     const bool state_changed = devices_.on_device_opened(device_instance_id);
     (void)refresh_capture_retained_plan_state_(

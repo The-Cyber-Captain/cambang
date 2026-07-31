@@ -19,18 +19,31 @@ uint64_t result_access_now_ns() {
       std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
+// Usable by a capture access path that may convert. Delegates to the shared
+// predicate rather than re-deriving the format rule: this was the seventh
+// place in this area deciding independently what "usable CPU payload" means,
+// and every previous one drifted from the capability that reports it.
 bool capture_member_has_cpu_payload(const CoreCaptureResultData::ImageMemberData& member) {
-  return !member.payload.empty() && member.payload.width != 0 && member.payload.height != 0 &&
-         (member.payload.format_fourcc == FOURCC_RGBA || member.payload.format_fourcc == FOURCC_BGRA);
+  return member.payload.width != 0 && member.payload.height != 0 &&
+         retained_cpu_payload_is_convertible(member.payload);
+}
+
+// Directly readable packed bytes, for evidence routing that distinguishes a
+// straight copy from a full-frame conversion.
+bool capture_member_has_packed_cpu_payload(const CoreCaptureResultData::ImageMemberData& member) {
+  return retained_cpu_payload_is_packed_readable(member.payload);
 }
 
 const char* capture_to_image_evidence_route(const CoreCaptureResultData::ImageMemberData* member) {
   if (!member) return result_access_cost_evidence::kRouteCaptureAccessUnsupported;
-  if (capture_member_has_cpu_payload(*member)) {
+  if (capture_member_has_packed_cpu_payload(*member)) {
     if (member->payload_kind == ResultPayloadKind::GPU_SURFACE) {
       return result_access_cost_evidence::kRouteCaptureToImageGpuPrimaryCpuSidecar;
     }
     return result_access_cost_evidence::kRouteCaptureToImageCpuPacked;
+  }
+  if (capture_member_has_cpu_payload(*member)) {
+    return result_access_cost_evidence::kRouteCaptureToImageCpuPlanarConvert;
   }
   if (member->payload_kind == ResultPayloadKind::GPU_SURFACE && member->retained_gpu_backing &&
       member->retained_gpu_backing_descriptor.valid &&
@@ -476,9 +489,7 @@ godot::Ref<godot::Image> perform_capture_to_image_member_cpu_payload_access(
   }
   image = payload_to_image(member->payload);
   result_access_cost_evidence::record_capture_member_access(
-      member->payload_kind == ResultPayloadKind::GPU_SURFACE
-          ? result_access_cost_evidence::kRouteCaptureToImageGpuPrimaryCpuSidecar
-          : result_access_cost_evidence::kRouteCaptureToImageCpuPacked,
+      capture_to_image_evidence_route(member),
       data,
       member,
       result_access_now_ns() - begin_ns,

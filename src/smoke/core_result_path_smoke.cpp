@@ -1070,8 +1070,11 @@ int main() {
     assert(planar_member.payload_kind == ResultPayloadKind::CPU_PLANAR);
     assert(planar_member.payload.is_planar());
     assert(planar_member.payload.plane_count == 2);
-    assert(planar_member.retained_access_truth.to_image == ResultCapability::UNSUPPORTED);
-    assert(planar_member.retained_access_truth.display_view == ResultCapability::UNSUPPORTED);
+    // A planar capture member converts on demand, exactly as a planar stream
+    // result does. Retaining it truthfully and then reporting no route to the
+    // pixels would make the retention pointless.
+    assert(planar_member.retained_access_truth.to_image == ResultCapability::EXPENSIVE);
+    assert(planar_member.retained_access_truth.display_view == ResultCapability::EXPENSIVE);
 
     // A declared colour space CamBANG cannot convert must yield NO display
     // path. Rendering BT.709 content with BT.601 coefficients would produce a

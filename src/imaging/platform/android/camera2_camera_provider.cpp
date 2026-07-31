@@ -628,6 +628,10 @@ struct BurstCollector {
     std::shared_ptr<std::vector<uint8_t>> bytes;
     bool has_timestamp = false;
     int64_t timestamp_ns = 0;
+    // Which family member the device actually delivered, and how many CamBANG
+    // planes it collapsed to. Only meaningful for planar captures.
+    uint32_t fourcc = 0;
+    uint8_t plane_count = 0;
   };
   std::vector<Image> images;      // arrival order == capture order
   size_t failed_count = 0;        // onCaptureFailed, per member
@@ -998,11 +1002,21 @@ void on_still_image_available(void* context, AImageReader* reader) {
     return;
   }
 
+  // Planar capture takes the device's planes through unconverted, exactly as
+  // the stream path does. Sized from the descriptor so a planar buffer is
+  // w*h*3/2 rather than w*h*4.
+  const PixelFormatDescriptor burst_desc = describe_pixel_format(burst->fourcc);
+  const bool burst_is_planar =
+      burst_desc.valid && burst_desc.layout_class != PixelLayoutClass::Packed;
   auto bytes = std::make_shared<std::vector<uint8_t>>(
-      static_cast<size_t>(burst->width) * burst->height * 4u);
-  const bool converted =
-      convert_acquired_image(image, burst->width, burst->height, burst->fourcc,
-                             bytes->data());
+      min_tight_size_bytes(burst->fourcc, burst->width, burst->height));
+  uint32_t member_fourcc = burst->fourcc;
+  uint8_t member_planes = 0;
+  const bool converted = burst_is_planar
+      ? copy_acquired_image_planar(image, burst->width, burst->height,
+                                   bytes->data(), &member_fourcc, &member_planes)
+      : convert_acquired_image(image, burst->width, burst->height, burst->fourcc,
+                               bytes->data());
   int64_t timestamp_ns = -1;
   if (AImage_getTimestamp(image, &timestamp_ns) != AMEDIA_OK) {
     timestamp_ns = -1;
@@ -1017,6 +1031,8 @@ void on_still_image_available(void* context, AImageReader* reader) {
     if (converted) {
       BurstCollector::Image item;
       item.bytes = std::move(bytes);
+      item.fourcc = member_fourcc;
+      item.plane_count = member_planes;
       item.has_timestamp = (timestamp_ns >= 0);
       item.timestamp_ns = timestamp_ns;
       burst->images.push_back(std::move(item));
@@ -1383,6 +1399,8 @@ struct Camera2CameraProvider::CapturedMemberFrame {
   bool ok = false;
   ProviderError error = ProviderError::ERR_PROVIDER_FAILED;
   std::shared_ptr<std::vector<uint8_t>> bytes;
+  uint32_t fourcc = 0;
+  uint8_t plane_count = 0;
   bool has_timestamp = false;
   int64_t timestamp_ns = 0;
   bool has_facts = false;
@@ -3070,6 +3088,8 @@ bool Camera2CameraProvider::capture_burst_(
     }
     out_frames[i].ok = true;
     out_frames[i].bytes = img.bytes;
+    out_frames[i].fourcc = img.fourcc;
+    out_frames[i].plane_count = img.plane_count;
     out_frames[i].has_timestamp = img.has_timestamp;
     out_frames[i].timestamp_ns = img.timestamp_ns;
 
@@ -3683,14 +3703,49 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
       fv.capture_image.realized_exposure_compensation_milli_ev = realized_milli_ev;
       fv.width = job.request.width;
       fv.height = job.request.height;
-      fv.format_fourcc = job.request.format_fourcc;
+      // For a planar capture the delivered member reports the concrete family
+      // member the device produced, which may differ from what was requested.
+      const bool member_is_planar = (captured.plane_count >= 2);
+      fv.format_fourcc = member_is_planar ? captured.fourcc : job.request.format_fourcc;
       if (captured.has_timestamp) {
         fv.acquisition_timing = camera2_detail::make_acquisition_timing(
             captured.timestamp_ns, chars.timestamp_source_realtime);
       }
       fv.data = captured.bytes->data();
       fv.size_bytes = captured.bytes->size();
-      fv.stride_bytes = job.request.width * 4u;
+      fv.stride_bytes = member_is_planar ? job.request.width : (job.request.width * 4u);
+      if (member_is_planar) {
+        PayloadLayout& layout = fv.payload_layout;
+        layout.format_fourcc = captured.fourcc;
+        layout.width = job.request.width;
+        layout.height = job.request.height;
+        layout.plane_count = captured.plane_count;
+        const size_t luma_bytes =
+            static_cast<size_t>(job.request.width) * job.request.height;
+        const uint32_t chroma_rows = (job.request.height + 1u) / 2u;
+        const uint32_t chroma_cols = (job.request.width + 1u) / 2u;
+        uint8_t* base = captured.bytes->data();
+        layout.planes[0].data = base;
+        layout.planes[0].size_bytes = luma_bytes;
+        layout.planes[0].stride_bytes = job.request.width;
+        layout.planes[0].rows = job.request.height;
+        if (captured.plane_count == 2) {
+          layout.planes[1].data = base + luma_bytes;
+          layout.planes[1].size_bytes = static_cast<size_t>(chroma_cols) * 2u * chroma_rows;
+          layout.planes[1].stride_bytes = chroma_cols * 2u;
+          layout.planes[1].rows = chroma_rows;
+        } else {
+          const size_t plane_bytes = static_cast<size_t>(chroma_cols) * chroma_rows;
+          layout.planes[1].data = base + luma_bytes;
+          layout.planes[1].size_bytes = plane_bytes;
+          layout.planes[1].stride_bytes = chroma_cols;
+          layout.planes[1].rows = chroma_rows;
+          layout.planes[2].data = base + luma_bytes + plane_bytes;
+          layout.planes[2].size_bytes = plane_bytes;
+          layout.planes[2].stride_bytes = chroma_cols;
+          layout.planes[2].rows = chroma_rows;
+        }
+      }
       // Fresh immutable allocation: publish for zero-copy retention (brief §4).
       fv.cpu_payload_owner = captured.bytes;
       fv.requested_retained_plan = job.request.requested_retained_plan;
@@ -3946,7 +4001,8 @@ ProviderResult Camera2CameraProvider::validate_and_admit_submission_locked_(
     if (req.width == 0 || req.height == 0) {
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
-    if (req.format_fourcc != FOURCC_RGBA && req.format_fourcc != FOURCC_BGRA) {
+    if (req.format_fourcc != FOURCC_RGBA && req.format_fourcc != FOURCC_BGRA &&
+        req.format_fourcc != FOURCC_NV12 && req.format_fourcc != FOURCC_I420) {
       return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
     }
     if (!is_valid_capture_still_image_bundle(req.still_image_bundle,

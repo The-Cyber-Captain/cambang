@@ -77,6 +77,14 @@ CoreRetainedAccessTruth build_capture_image_member_retained_access_truth(
     truth.to_image = ResultCapability::CHEAP;
     return truth;
   }
+  // A planar member converts on demand through the same shared routine the
+  // stream paths use, so it is supported and equally non-ready. Without this
+  // a planar capture retains truthfully and then reports no way to reach it.
+  if (retained_cpu_payload_is_convertible(member.payload)) {
+    truth.display_view = ResultCapability::EXPENSIVE;
+    truth.to_image = ResultCapability::EXPENSIVE;
+    return truth;
+  }
   if (member.payload_kind == ResultPayloadKind::GPU_SURFACE &&
       member.retained_gpu_backing &&
       member.retained_gpu_backing_descriptor.valid &&

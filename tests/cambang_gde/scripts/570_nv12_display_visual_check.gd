@@ -50,6 +50,13 @@ var _last_image_state: String = "no result yet"
 const IMAGE_REFRESH_SEC: float = 1.0
 var _image_refresh_elapsed: float = 0.0
 var _logged_image_once: bool = false
+# Still capture is a separate path from streaming: a different provider code
+# path, a different Core retention route, and a different access surface. It
+# gets its own step rather than being assumed to follow from the stream result.
+var _capture_device: CamBANGDevice = null
+var _capture_requested: bool = false
+var _capture_reported: bool = false
+var _capture_settle: float = 0.0
 var _bound_rgba: bool = false
 
 
@@ -156,6 +163,7 @@ func _ready() -> void:
 	# start() returns an Error. Ignoring it meant a refused stream looked
 	# identical to one that started and produced nothing, which cost several
 	# diagnostic cycles.
+	_capture_device = nv12_device
 	var rgba_start: int = int(_rgba_stream.start())
 	var nv12_start: int = int(_nv12_stream.start())
 	_log("stream start: rgba=%d nv12=%d" % [rgba_start, nv12_start])
@@ -274,6 +282,31 @@ func _process(delta: float) -> void:
 			_bound_nv12_image = true
 			_log("NV12 to_image materialized (%dx%d can_to_image=%d)"
 				% [img.get_width(), img.get_height(), can_image])
+
+	# Still capture is a separate provider path, Core route and access surface
+	# from streaming, so it is checked explicitly. A provider that silently fell
+	# back to packed here would look identical from the stream panels.
+	if _bound_nv12 and not _capture_requested:
+		_capture_settle += delta
+		if _capture_settle >= 2.0:
+			_capture_requested = true
+			var trig: int = int(_capture_device.trigger_capture())
+			if trig != OK:
+				_capture_reported = true
+				_log("CAPTURE: trigger refused (%d)" % trig)
+
+	if _capture_requested and not _capture_reported:
+		var cap: Variant = _capture_device.get_result()
+		if cap != null:
+			_capture_reported = true
+			var cfmt: int = int(cap.get_format())
+			var can_img: int = int(cap.can_to_image_member(0))
+			var member_img: Variant = (cap.to_image_member(0) if can_img != 0 else null)
+			var got := "no"
+			if member_img != null and member_img is Image:
+				got = "yes %dx%d" % [member_img.get_width(), member_img.get_height()]
+			_log("CAPTURE: format=%d (%s) payload_kind=%d can_to_image_member=%d materialized=%s"
+				% [cfmt, _fourcc_name(cfmt), int(cap.get_payload_kind()), can_img, got])
 
 	if _bound_rgba and _bound_nv12:
 		_status.text = "Compare the two images. They should match (NV12 may be slightly softer).\nPress Esc to quit."

@@ -205,6 +205,18 @@ public:
     return caps;
   }
 
+  // Still capture takes the same YUV_420_888 output as streams, so it can
+  // deliver the planar family unconverted too.
+  ProducerFormatCapabilities capture_format_capabilities(
+      const CaptureRequest& req) const noexcept override {
+    (void)req;
+    ProducerFormatCapabilities caps{};
+    caps.add(FOURCC_NV12);
+    caps.add(FOURCC_I420);
+    caps.can_emit_packed_rgb = true;
+    return caps;
+  }
+
   ProducerBackingCapabilities stream_backing_capabilities(
       const CaptureProfile& profile,
       const PictureConfig& picture) const noexcept override;
