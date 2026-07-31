@@ -3750,10 +3750,6 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
       std::chrono::duration_cast<std::chrono::nanoseconds>(render_t1 - render_t0).count());
   record_timing_sample(render_ns, triage_frame_render_calls_, triage_frame_render_total_ns_, triage_frame_render_max_ns_);
   bool gpu_ok = false;
-  // Set when the live backing is published without a fresh upload because
-  // the demand policy skipped it. The backing is usable; its pixels are not
-  // newer than the previous frame's.
-  bool published_stale_gpu_backing = false;
   std::shared_ptr<void> gpu_backing;
   // Synthetic's live GPU backing is RGBA8-only, so an NV12 stream is
   // CPU-primary. start_stream_ rejects NV12 under GpuOnly, so suppressing the
@@ -3857,23 +3853,6 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
       }
       if (gpu_ok) {
         gpu_backing = s.live_gpu_backing;
-      } else if (skip_gpu_update_for_demand && s.live_gpu_backing) {
-        // The demand policy governs whether this frame's pixels are UPLOADED,
-        // not whether the stream keeps the backing form Core planned for it.
-        //
-        // Dropping to a CPU-primary frame here was a deadlock. Core rejects a
-        // CPU frame against a GPU-primary plan
-        // (frame_matches_requested_retained_plan), so every frame was silently
-        // discarded as an ordinary drop; the stream kept reporting result_live
-        // against a stale result while get_result() returned nothing. And
-        // because display demand is established only by CALLING
-        // get_display_view(), a caller that reasonably gates that call on
-        // can_get_display_view() could never re-establish demand -- nothing
-        // could restart the flow. Publishing the existing live backing keeps
-        // the plan contract intact: content may be one frame stale while
-        // nobody is looking, which is exactly the saving the policy is for.
-        gpu_backing = s.live_gpu_backing;
-        published_stale_gpu_backing = true;
       }
     }
   }
@@ -3920,8 +3899,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     fv.retained_gpu_backing_descriptor.format_fourcc = FOURCC_RGBA;
     fv.retained_gpu_backing_descriptor.display_available = true;
     fv.retained_gpu_backing_descriptor.materialization_available =
-        (gpu_ok || published_stale_gpu_backing) &&
-        synthetic_gpu_backing_can_materialize_to_image(gpu_backing);
+        gpu_ok && synthetic_gpu_backing_can_materialize_to_image(gpu_backing);
     fv.retained_gpu_backing_descriptor.materialization_requires_gpu_readback = false;
   }
   fv.primary_backing_artifact = std::move(gpu_backing);
