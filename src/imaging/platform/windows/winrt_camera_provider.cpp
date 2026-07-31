@@ -488,6 +488,9 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   // Format the current reader was created for. A reader's output subtype is
   // fixed at creation, so a format change means creating a new one.
   uint32_t reader_fourcc = 0;
+  // Same for the still-photo pipeline: the pixel format is fixed at
+  // PrepareLowLagPhotoCaptureAsync, so it has to be known before preparing.
+  uint32_t photo_fourcc = 0;
   std::atomic<uint64_t> frame_arrived_count{0};
   std::atomic<uint64_t> frame_handler_errors{0};
 
@@ -2122,12 +2125,20 @@ ProviderResult WinrtCameraProvider::ensure_low_lag_photo_realized_(
           if (!capture) {
             local.error = ProviderError::ERR_BAD_STATE;
           } else {
-            // Uncompressed Bgra8: the delivered CapturedFrame then carries a
-            // SoftwareBitmap in exactly the format convert_software_bitmap
-            // already consumes for stream frames, so stills need no second
-            // conversion path.
+            // MediaPixelFormat offers exactly two uncompressed choices,
+            // Bgra8 and Nv12, and the format is fixed at prepare time. NV12 is
+            // taken through unconverted; Bgra8 remains the default when no
+            // planar capture was asked for.
+            uint32_t want_photo = 0;
+            {
+              std::lock_guard<std::mutex> bl(backend->m);
+              want_photo = backend->photo_fourcc;
+            }
+            const auto photo_pixel_format = (want_photo == FOURCC_NV12)
+                ? wmm::MediaPixelFormat::Nv12
+                : wmm::MediaPixelFormat::Bgra8;
             auto op = capture.PrepareLowLagPhotoCaptureAsync(
-                wmm::ImageEncodingProperties::CreateUncompressed(wmm::MediaPixelFormat::Bgra8));
+                wmm::ImageEncodingProperties::CreateUncompressed(photo_pixel_format));
             if (!winrt_detail::wait_async_bounded(op, kControlJobTimeoutMs - 500)) {
               local.error = ProviderError::ERR_TIMEOUT;
             } else {
@@ -2181,6 +2192,10 @@ WinrtCameraProvider::CapturedMemberFrame WinrtCameraProvider::capture_one_member
   CapturedMemberFrame result{};
   if (!backend) {
     return result;
+  }
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    backend->photo_fourcc = format_fourcc;
   }
   const ProviderResult prepared = ensure_low_lag_photo_realized_(backend);
   if (!prepared.ok()) {
@@ -2241,11 +2256,17 @@ WinrtCameraProvider::CapturedMemberFrame WinrtCameraProvider::capture_one_member
                     bitmap.PixelWidth(), bitmap.PixelHeight(), width, height);
                 local.error = ProviderError::ERR_PLATFORM_CONSTRAINT;
               } else {
+                const bool photo_is_planar = (format_fourcc == FOURCC_NV12);
                 auto bytes = std::make_shared<std::vector<uint8_t>>(
-                    static_cast<size_t>(width) * height * 4u);
-                if (winrt_detail::convert_software_bitmap(bitmap, width, height, format_fourcc,
-                                                          bytes->data())) {
+                    min_tight_size_bytes(format_fourcc, width, height));
+                const bool photo_copied = photo_is_planar
+                    ? winrt_detail::copy_nv12_software_bitmap(bitmap, width, height,
+                                                              bytes->data())
+                    : winrt_detail::convert_software_bitmap(bitmap, width, height,
+                                                            format_fourcc, bytes->data());
+                if (photo_copied) {
                   local.bytes = std::move(bytes);
+                  local.planar = photo_is_planar;
                   local.ok = true;
                 } else {
                   local.error = ProviderError::ERR_PROVIDER_FAILED;
@@ -2498,7 +2519,28 @@ void WinrtCameraProvider::run_device_capture_job_(const DeviceCaptureJob& job) n
       }
       fv.data = captured.bytes->data();
       fv.size_bytes = captured.bytes->size();
-      fv.stride_bytes = job.request.width * 4u;
+      fv.stride_bytes = captured.planar ? job.request.width : (job.request.width * 4u);
+      if (captured.planar) {
+        PayloadLayout& layout = fv.payload_layout;
+        layout.format_fourcc = FOURCC_NV12;
+        layout.width = job.request.width;
+        layout.height = job.request.height;
+        layout.plane_count = 2;
+        // WinRT does not surface the colour interpretation here, so this stays
+        // UNSPECIFIED and the contract's documented fallback applies.
+        const size_t luma_bytes =
+            static_cast<size_t>(job.request.width) * job.request.height;
+        const uint32_t chroma_rows = (job.request.height + 1u) / 2u;
+        uint8_t* base = captured.bytes->data();
+        layout.planes[0].data = base;
+        layout.planes[0].size_bytes = luma_bytes;
+        layout.planes[0].stride_bytes = job.request.width;
+        layout.planes[0].rows = job.request.height;
+        layout.planes[1].data = base + luma_bytes;
+        layout.planes[1].size_bytes = static_cast<size_t>(job.request.width) * chroma_rows;
+        layout.planes[1].stride_bytes = job.request.width;
+        layout.planes[1].rows = chroma_rows;
+      }
       // Fresh immutable allocation: publish for zero-copy retention (brief §4).
       fv.cpu_payload_owner = captured.bytes;
       fv.requested_retained_plan = job.request.requested_retained_plan;
@@ -2590,7 +2632,8 @@ ProviderResult WinrtCameraProvider::validate_and_admit_submission_locked_(
     if (req.width == 0 || req.height == 0) {
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
-    if (req.format_fourcc != FOURCC_RGBA && req.format_fourcc != FOURCC_BGRA) {
+    if (req.format_fourcc != FOURCC_RGBA && req.format_fourcc != FOURCC_BGRA &&
+        req.format_fourcc != FOURCC_NV12) {
       return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
     }
     if (!is_valid_capture_still_image_bundle(req.still_image_bundle,

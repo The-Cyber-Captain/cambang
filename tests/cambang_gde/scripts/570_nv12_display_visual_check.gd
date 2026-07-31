@@ -79,7 +79,10 @@ func _ready() -> void:
 	).strip_edges().to_lower()
 	if setting_provider == "platform":
 		want_platform = true
-	for arg in OS.get_cmdline_args():
+	# The launcher passes this after "--", which Godot routes to the user-arg
+	# list rather than the engine one. Scan both: reading only engine args
+	# silently ran this scene on Synthetic while the invocation named platform.
+	for arg in (OS.get_cmdline_args() + OS.get_cmdline_user_args()):
 		if str(arg) == "--cambang-bench-provider=platform":
 			want_platform = true
 	var provider_kind: int = (CamBANGServer.PROVIDER_KIND_PLATFORM_BACKED
