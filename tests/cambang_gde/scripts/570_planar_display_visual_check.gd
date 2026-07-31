@@ -103,6 +103,19 @@ var _capture_requested: bool = false
 var _capture_reported: bool = false
 var _capture_settle: float = 0.0
 var _bound_rgba: bool = false
+# Freeze detection. A panel that stops updating is invisible to every
+# structural check -- capability still reports READY, result_live stays
+# true, nothing errors -- so it takes a human noticing, which is exactly how
+# it was caught. Sampling the retained content turns that into log evidence.
+# It reports; it never fails a run, because a legitimately static source
+# (a synthetic pattern with a still base, a camera on a motionless scene)
+# is indistinguishable from a frozen one by content alone.
+const CONTENT_SAMPLE_SEC: float = 2.0
+var _content_sample_elapsed: float = 0.0
+var _last_rgba_hash: int = 0
+var _last_planar_hash: int = 0
+var _rgba_static_samples: int = 0
+var _planar_static_samples: int = 0
 # Resolved in _ready() from the command line; drives the middle/right pair.
 var _planar_format: int = 0
 var _planar_format_name: String = "nv12"
@@ -426,11 +439,66 @@ func _process(delta: float) -> void:
 				_log("CAPTURE SUBSTITUTED: asked for %s, device delivered %s"
 					% [_planar_format_name.to_upper(), _fourcc_name(cfmt)])
 
+	_sample_content_change(delta)
+
 	if _bound_rgba and _bound_planar:
 		_status.text = ("Compare %s (middle) against its to_image() (right) -- these always match.\n"
 			+ ("Left is the same pattern in packed RGBA; all three should agree.\n" if _on_synthetic
 			else "Left is a DIFFERENT camera: liveness only, not a colour reference.\n")
 			+ "Planar looks more saturated on noise (point-sampled chroma); judge flat colour. Press Esc to quit.") % _planar_format_name.to_upper()
+
+
+# Reports whether each panel's retained content is still changing.
+#
+# Uses to_image() rather than reading the displayed texture, because that is the
+# retained truth the panel is drawn from; if this says the content changed and
+# the panel did not, the fault is in the display wrapper rather than upstream,
+# which narrows the search considerably.
+func _sample_content_change(delta: float) -> void:
+	if not (_bound_rgba and _bound_planar):
+		return
+	_content_sample_elapsed += delta
+	if _content_sample_elapsed < CONTENT_SAMPLE_SEC:
+		return
+	_content_sample_elapsed = 0.0
+	var rgba_state := _sample_one(_rgba_stream, _last_rgba_hash)
+	if rgba_state[0] != 0:
+		if rgba_state[1]:
+			_rgba_static_samples += 1
+		else:
+			_rgba_static_samples = 0
+		_last_rgba_hash = rgba_state[0]
+	var planar_state := _sample_one(_planar_stream, _last_planar_hash)
+	if planar_state[0] != 0:
+		if planar_state[1]:
+			_planar_static_samples += 1
+		else:
+			_planar_static_samples = 0
+		_last_planar_hash = planar_state[0]
+	# Two consecutive unchanged samples is ~4s of identical content, which is
+	# worth saying out loud even though it can be legitimate.
+	if _rgba_static_samples == 2 or _planar_static_samples == 2:
+		_log("CONTENT: rgba_static=%d planar_static=%d (consecutive unchanged samples; a frozen panel and a still scene look alike here)"
+			% [_rgba_static_samples, _planar_static_samples])
+
+
+# Returns [hash, unchanged]. A zero hash means no sample was taken.
+func _sample_one(stream: CamBANGStream, previous: int) -> Array:
+	if stream == null or not stream.result_live:
+		return [0, false]
+	var r: Variant = stream.get_result()
+	if r == null or int(r.can_to_image()) == 0:
+		return [0, false]
+	var img: Variant = r.to_image()
+	if img == null or not (img is Image):
+		return [0, false]
+	# PackedByteArray has no hash() method in Godot 4.5; the global hash() does.
+	var h: int = hash(img.get_data())
+	if h == 0:
+		# Distinguishable from "no sample" only by accident; treat as no sample
+		# rather than silently comparing against the sentinel.
+		return [0, false]
+	return [h, previous != 0 and h == previous]
 
 
 # Names exactly which stage each stream reached, so a stall is attributable
