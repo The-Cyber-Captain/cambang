@@ -239,8 +239,16 @@ func _process(delta: float) -> void:
 		if n != null:
 			var kind: int = int(n.get_payload_kind())
 			var can_display: int = int(n.can_get_display_view())
-			_log("NV12 result: payload_kind=%d format=%d can_get_display_view=%d"
-				% [kind, int(n.get_format()), can_display])
+			var sel_fmt: int = int(n.get_format())
+			_log("NV12 result: payload_kind=%d format=%d (%s) can_get_display_view=%d"
+				% [kind, sel_fmt, _fourcc_name(sel_fmt), can_display])
+			# This panel takes whatever Core selects, and a provider whose
+			# native form is packed RGB will legitimately be given packed RGB.
+			# Say so out loud: a scene called nv12_display_visual_check that
+			# quietly shows RGBA on both panels looks exactly like a passing
+			# planar run, which is how a planar regression would go unseen here.
+			if kind == 0:
+				_log("NOTICE: provider selected a packed format -- this run does NOT exercise the planar path")
 			if can_display == 0:
 				_fail("NV12 stream result reports no display path")
 				return

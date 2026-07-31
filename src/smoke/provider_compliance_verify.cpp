@@ -9346,6 +9346,303 @@ bool run_core_stream_partial_reporting_check() {
   return true;
 }
 
+// Synthetic planar still capture, across every 4:2:0 member CamBANG names.
+//
+// This exists because Synthetic could stream NV12 but could not capture planar
+// at all, which left planar still-capture provable only on hardware: the whole
+// native suite would have stayed green through a regression in it. NV21 and
+// YV12 are included deliberately -- chroma order is invisible to plane
+// geometry, so a swapped-chroma bug produces a plausible image rather than a
+// failure, and until now the only thing between that bug and a release was
+// someone noticing the colours looked wrong on a handset.
+struct PlanarCaptureSink final : IProviderCallbacks {
+  struct Captured {
+    uint32_t format_fourcc = 0;
+    std::vector<uint8_t> bytes;
+    PayloadLayout layout{};
+    uint32_t stride_bytes = 0;
+  };
+
+  uint64_t core_monotonic_now_ns() override {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+  }
+  bool is_stream_display_demand_active(uint64_t) override { return false; }
+  uint64_t allocate_native_id(NativeObjectType) override {
+    return next_native_id_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  void on_frame(const FrameView& frame) override {
+    if (frame.capture_id == 0 || !frame.data || frame.size_bytes == 0) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(m_);
+    Captured c{};
+    c.format_fourcc = frame.format_fourcc;
+    const uint8_t* p = static_cast<const uint8_t*>(frame.data);
+    c.bytes.assign(p, p + frame.size_bytes);
+    c.layout = frame.payload_layout;
+    c.stride_bytes = frame.stride_bytes;
+    frames_.push_back(std::move(c));
+  }
+  void on_capture_completed(uint64_t, uint64_t) override {
+    completed_.store(true, std::memory_order_release);
+  }
+
+  void on_device_opened(uint64_t) override {}
+  void on_device_closed(uint64_t) override {}
+  void on_stream_created(uint64_t) override {}
+  void on_stream_destroyed(uint64_t) override {}
+  void on_stream_started(uint64_t) override {}
+  void on_stream_stopped(uint64_t, ProviderError) override {}
+  void on_capture_started(uint64_t, uint64_t) override {}
+  void on_capture_failed(uint64_t, uint64_t, ProviderError) override {}
+  void on_device_error(uint64_t, ProviderError) override {}
+  void on_stream_error(uint64_t, ProviderError) override {}
+  void on_native_object_created(const NativeObjectCreateInfo&) override {}
+  void on_native_object_destroyed(const NativeObjectDestroyInfo&) override {}
+
+  bool wait_for_one(Captured& out) {
+    for (int i = 0; i < kMaxIters; ++i) {
+      {
+        std::lock_guard<std::mutex> lock(m_);
+        if (!frames_.empty() && completed_.load(std::memory_order_acquire)) {
+          out = frames_.front();
+          return true;
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+    return false;
+  }
+
+ private:
+  mutable std::mutex m_;
+  std::vector<Captured> frames_;
+  std::atomic<bool> completed_{false};
+  std::atomic<uint64_t> next_native_id_{1};
+};
+
+bool capture_one_synthetic_still(uint32_t fourcc,
+                                 uint32_t w,
+                                 uint32_t h,
+                                 uint64_t device_instance_id,
+                                 PlanarCaptureSink::Captured& out) {
+  PlanarCaptureSink sink;
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = w;
+  cfg.nominal.height = h;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(cfg);
+  if (!provider.initialize(&sink).ok() ||
+      !provider.open_device("synthetic:0", device_instance_id,
+                            device_instance_id * 100u).ok()) {
+    std::cerr << "FAIL synthetic planar capture setup failed\n";
+    return false;
+  }
+  CaptureRequest req = make_direct_provider_default_still_capture_request(
+      9000 + device_instance_id, device_instance_id, w, h, fourcc);
+  // Colour bars, not the default XOR pattern: flat saturated regions are what
+  // make a colour claim judgeable at all, and their red and blue bars are what
+  // a chroma-order mistake would visibly exchange.
+  req.picture.preset = PatternPreset::ColorBars;
+  if (!provider.capture_format_capabilities(req).supports(fourcc)) {
+    std::cerr << "FAIL synthetic does not advertise capture format\n";
+    return false;
+  }
+  if (!provider.trigger_capture(req).ok()) {
+    std::cerr << "FAIL synthetic planar capture trigger rejected\n";
+    return false;
+  }
+  const bool got = sink.wait_for_one(out);
+  (void)provider.close_device(device_instance_id);
+  (void)provider.shutdown();
+  if (!got) {
+    std::cerr << "FAIL synthetic planar capture frame never arrived\n";
+    return false;
+  }
+  return true;
+}
+
+bool run_synthetic_planar_capture_family_check() {
+  constexpr uint32_t kW = 64;
+  constexpr uint32_t kH = 64;
+  const size_t luma = static_cast<size_t>(kW) * kH;
+
+  PlanarCaptureSink::Captured rgba_ref{};
+  if (!capture_one_synthetic_still(FOURCC_RGBA, kW, kH, 91, rgba_ref)) {
+    return false;
+  }
+  if (rgba_ref.bytes.size() != luma * 4u) {
+    std::cerr << "FAIL synthetic planar capture rgba reference size mismatch\n";
+    return false;
+  }
+
+  const uint32_t formats[] = {FOURCC_NV12, FOURCC_NV21, FOURCC_I420, FOURCC_YV12};
+  std::vector<std::vector<uint8_t>> got_bytes;
+  uint64_t device_id = 92;
+  for (const uint32_t fourcc : formats) {
+    PlanarCaptureSink::Captured got{};
+    if (!capture_one_synthetic_still(fourcc, kW, kH, device_id++, got)) {
+      return false;
+    }
+    const PixelFormatDescriptor desc = describe_pixel_format(fourcc);
+    if (got.format_fourcc != fourcc ||
+        got.bytes.size() != min_tight_size_bytes(desc, kW, kH) ||
+        got.stride_bytes != kW) {
+      std::cerr << "FAIL synthetic planar capture geometry mismatch\n";
+      return false;
+    }
+    if (!validate_payload_layout(got.layout) ||
+        got.layout.plane_count != desc.plane_count ||
+        got.layout.format_fourcc != fourcc) {
+      std::cerr << "FAIL synthetic planar capture layout invalid\n";
+      return false;
+    }
+    if (got.layout.colorimetry.matrix != ColorMatrix::BT601 ||
+        got.layout.colorimetry.range != ColorRange::LIMITED) {
+      std::cerr << "FAIL synthetic planar capture colorimetry does not match its coefficients\n";
+      return false;
+    }
+    got_bytes.push_back(std::move(got.bytes));
+  }
+  const std::vector<uint8_t>& nv12 = got_bytes[0];
+  const std::vector<uint8_t>& nv21 = got_bytes[1];
+  const std::vector<uint8_t>& i420 = got_bytes[2];
+  const std::vector<uint8_t>& yv12 = got_bytes[3];
+
+  // Chroma order, anchored to the format definition rather than to a shared
+  // assumption between emitter and converter: NV21 must be NV12 with each
+  // chroma pair swapped, and YV12 must be I420 with the two chroma planes
+  // exchanged. A convention inverted in both places at once would still pass a
+  // round-trip check; it fails here.
+  if (nv12.size() != nv21.size() || nv12.size() < luma + 2u) {
+    std::cerr << "FAIL synthetic planar capture semi-planar sizes disagree\n";
+    return false;
+  }
+  if (std::memcmp(nv12.data(), nv21.data(), luma) != 0) {
+    std::cerr << "FAIL synthetic planar capture luma differs between NV12 and NV21\n";
+    return false;
+  }
+  for (size_t i = luma; i + 1u < nv12.size(); i += 2u) {
+    if (nv12[i] != nv21[i + 1u] || nv12[i + 1u] != nv21[i]) {
+      std::cerr << "FAIL synthetic NV21 chroma is not NV12 pairs swapped\n";
+      return false;
+    }
+  }
+  const size_t chroma_plane =
+      static_cast<size_t>((kW + 1u) / 2u) * static_cast<size_t>((kH + 1u) / 2u);
+  if (i420.size() != yv12.size() || i420.size() != luma + 2u * chroma_plane) {
+    std::cerr << "FAIL synthetic planar capture fully-planar sizes disagree\n";
+    return false;
+  }
+  if (std::memcmp(i420.data() + luma, yv12.data() + luma + chroma_plane,
+                  chroma_plane) != 0 ||
+      std::memcmp(i420.data() + luma + chroma_plane, yv12.data() + luma,
+                  chroma_plane) != 0) {
+    std::cerr << "FAIL synthetic YV12 chroma planes are not I420 exchanged\n";
+    return false;
+  }
+
+  // Every member must convert back to the same picture, through the same Core
+  // conversion the product uses.
+  //
+  // Two claims, neither needing a tolerance pulled out of the air. First, all
+  // four members must decode bit-identically to each other: they encode one
+  // scene, so any difference is a chroma-order or plane-offset mistake.
+  // Second, on 2x2 blocks that are uniform in the source, 4:2:0 subsampling is
+  // lossless, so the only error left is the YUV round trip's own rounding --
+  // bounded by the same tolerance core_result_path_smoke asserts for the
+  // transforms in isolation. Comparing every pixel against the reference
+  // instead would fold in edge subsampling loss, which is real, expected, and
+  // large enough (~40/255 on this pattern) that a bound accommodating it would
+  // no longer detect a swapped red and blue channel.
+  constexpr int kRoundTripTolerance = 4;
+  std::vector<std::vector<uint8_t>> decoded;
+  for (size_t f = 0; f < 4; ++f) {
+    const uint32_t fourcc = formats[f];
+    const PixelFormatDescriptor desc = describe_pixel_format(fourcc);
+    CoreResultPayloadCpu payload{};
+    payload.format_fourcc = fourcc;
+    payload.width = kW;
+    payload.height = kH;
+    payload.stride_bytes = kW;
+    payload.plane_count = desc.plane_count;
+    payload.colorimetry.range = ColorRange::LIMITED;
+    payload.colorimetry.matrix = ColorMatrix::BT601;
+    payload.colorimetry.transfer = ColorTransfer::SRGB;
+    payload.colorimetry.primaries = ColorPrimaries::BT709;
+    size_t offset = 0;
+    for (uint32_t plane = 0; plane < desc.plane_count; ++plane) {
+      const uint32_t row_bytes = plane_row_bytes(desc, plane, kW);
+      const uint32_t rows = plane_rows(desc, plane, kH);
+      payload.planes[plane].offset_bytes = offset;
+      payload.planes[plane].stride_bytes = row_bytes;
+      payload.planes[plane].rows = rows;
+      offset += static_cast<size_t>(row_bytes) * rows;
+    }
+    payload.bytes = got_bytes[f];
+
+    std::vector<uint8_t> rgba(luma * 4u, 0u);
+    if (!planar_payload_to_rgba8(payload, rgba.data())) {
+      std::cerr << "FAIL synthetic planar capture payload did not convert to rgba\n";
+      return false;
+    }
+    decoded.push_back(std::move(rgba));
+  }
+  for (size_t f = 1; f < decoded.size(); ++f) {
+    if (decoded[f] != decoded[0]) {
+      std::cerr << "FAIL synthetic planar capture members do not decode identically\n";
+      return false;
+    }
+  }
+
+  size_t uniform_blocks = 0;
+  int worst_uniform = 0;
+  for (uint32_t by = 0; by + 1u < kH; by += 2u) {
+    for (uint32_t bx = 0; bx + 1u < kW; bx += 2u) {
+      bool uniform = true;
+      const size_t base = (static_cast<size_t>(by) * kW + bx) * 4u;
+      for (uint32_t dy = 0; dy < 2u && uniform; ++dy) {
+        for (uint32_t dx = 0; dx < 2u && uniform; ++dx) {
+          const size_t at = ((static_cast<size_t>(by) + dy) * kW + bx + dx) * 4u;
+          for (size_t c = 0; c < 3; ++c) {
+            if (rgba_ref.bytes[at + c] != rgba_ref.bytes[base + c]) {
+              uniform = false;
+              break;
+            }
+          }
+        }
+      }
+      if (!uniform) {
+        continue;
+      }
+      ++uniform_blocks;
+      for (size_t c = 0; c < 3; ++c) {
+        const int a = static_cast<int>(rgba_ref.bytes[base + c]);
+        const int b = static_cast<int>(decoded[0][base + c]);
+        worst_uniform = std::max(worst_uniform, std::abs(a - b));
+      }
+    }
+  }
+  // A pattern with no uniform 2x2 block anywhere would make the check above
+  // vacuous, so require it to have found real evidence.
+  if (uniform_blocks < 16) {
+    std::cerr << "FAIL synthetic planar capture found too few uniform blocks to judge colour ("
+              << uniform_blocks << ")\n";
+    return false;
+  }
+  if (worst_uniform > kRoundTripTolerance) {
+    std::cerr << "FAIL synthetic planar capture colour diverged on uniform blocks (worst="
+              << worst_uniform << ")\n";
+    return false;
+  }
+  return true;
+}
+
 bool run_core_capture_observation_after_device_close_check() {
   auto plan_equals = [](CoreRetainedProductionPlan plan,
                         CoreProductionPostureShape posture) {
@@ -9577,6 +9874,7 @@ int main(int argc, char** argv) {
       {"run_core_capture_parent_replacement_regression_check", [] { return run_core_capture_parent_replacement_regression_check(); }},
       {"run_core_stream_partial_reporting_check", [] { return run_core_stream_partial_reporting_check(); }},
       {"run_core_capture_observation_after_device_close_check", [] { return run_core_capture_observation_after_device_close_check(); }},
+      {"run_synthetic_planar_capture_family_check", [] { return run_synthetic_planar_capture_family_check(); }},
   };
 
   if (!opt.only_check.empty()) {

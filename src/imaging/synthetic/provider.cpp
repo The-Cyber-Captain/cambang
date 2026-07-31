@@ -36,6 +36,118 @@
 
 namespace cambang {
 
+namespace {
+
+// The coefficients are the standard integer BT.601 limited-range set, and the
+// colorimetry this frame declares must keep matching them.
+// Covers every 4:2:0 member CamBANG names: NV12/NV21 (semi-planar) and
+// I420/YV12 (fully planar). Chroma order comes from the descriptor rather
+// than the call site, because NV21 and YV12 are indistinguishable from their
+// siblings by geometry alone -- the whole reason a synthetic emitter for them
+// is worth having is that it makes a swapped-chroma bug fail a test instead
+// of merely looking odd on a handset.
+bool synthetic_rgba_to_planar_420(
+    uint32_t fourcc,
+    const uint8_t* src,
+    uint32_t src_stride,
+    uint32_t w,
+    uint32_t h,
+    std::vector<uint8_t>& out) {
+  const PixelFormatDescriptor desc = describe_pixel_format(fourcc);
+  if (!desc.valid || !desc.is_yuv ||
+      desc.layout_class == PixelLayoutClass::Packed) {
+    return false;
+  }
+  const bool semi_planar = (desc.layout_class == PixelLayoutClass::SemiPlanar);
+  const size_t y_plane_bytes = static_cast<size_t>(w) * static_cast<size_t>(h);
+  const uint32_t chroma_rows = (h + 1u) / 2u;
+  const uint32_t chroma_cols = (w + 1u) / 2u;
+  out.assign(min_tight_size_bytes(desc, w, h), 0u);
+
+  uint8_t* y_dst = out.data();
+  uint8_t* uv_dst = out.data() + y_plane_bytes;
+  // Fully planar: second chroma plane follows the first. Which of U/V lands
+  // in which plane is the descriptor's call.
+  const size_t chroma_plane_bytes =
+      static_cast<size_t>(chroma_cols) * static_cast<size_t>(chroma_rows);
+  uint8_t* u_dst = semi_planar
+      ? nullptr
+      : (uv_dst + (desc.chroma_v_first ? chroma_plane_bytes : 0u));
+  uint8_t* v_dst = semi_planar
+      ? nullptr
+      : (uv_dst + (desc.chroma_v_first ? 0u : chroma_plane_bytes));
+
+  for (uint32_t y = 0; y < h; ++y) {
+    const uint8_t* row = src + static_cast<size_t>(src_stride) * y;
+    uint8_t* y_row = y_dst + static_cast<size_t>(w) * y;
+    for (uint32_t x = 0; x < w; ++x) {
+      const uint8_t r = row[static_cast<size_t>(x) * 4u + 0u];
+      const uint8_t g = row[static_cast<size_t>(x) * 4u + 1u];
+      const uint8_t b = row[static_cast<size_t>(x) * 4u + 2u];
+      y_row[x] = rgb_to_yuv_bt601_limited(r, g, b).y;
+    }
+  }
+
+  // Chroma is sampled at the top-left of each 2x2 block rather than averaged.
+  // Point sampling keeps the inverse exactly predictable for verification,
+  // which matters more here than subsampling quality.
+  for (uint32_t cy = 0; cy < chroma_rows; ++cy) {
+    const uint8_t* row = src + static_cast<size_t>(src_stride) * (cy * 2u);
+    uint8_t* uv_row = semi_planar
+        ? (uv_dst + static_cast<size_t>(chroma_cols) * 2u * cy)
+        : nullptr;
+    for (uint32_t cx = 0; cx < chroma_cols; ++cx) {
+      const size_t sx = static_cast<size_t>(cx) * 2u * 4u;
+      const YuvSample s = rgb_to_yuv_bt601_limited(row[sx + 0u], row[sx + 1u], row[sx + 2u]);
+      if (semi_planar) {
+        const size_t first = static_cast<size_t>(cx) * 2u;
+        uv_row[first + (desc.chroma_v_first ? 1u : 0u)] = s.u;
+        uv_row[first + (desc.chroma_v_first ? 0u : 1u)] = s.v;
+      } else {
+        const size_t at = static_cast<size_t>(chroma_cols) * cy + cx;
+        u_dst[at] = s.u;
+        v_dst[at] = s.v;
+      }
+    }
+  }
+  return true;
+}
+
+// Describes an already-packed 4:2:0 buffer produced by
+// synthetic_rgba_to_planar_420(). Shared by the stream and capture emitters so
+// the two cannot drift into describing the same bytes differently.
+void synthetic_fill_planar_420_layout(uint32_t fourcc,
+                                      uint8_t* base,
+                                      size_t size_bytes,
+                                      uint32_t w,
+                                      uint32_t h,
+                                      PayloadLayout& layout) {
+  const PixelFormatDescriptor desc = describe_pixel_format(fourcc);
+  layout.format_fourcc = fourcc;
+  layout.width = w;
+  layout.height = h;
+  layout.plane_count = desc.plane_count;
+  // Must match the coefficients in rgb_to_yuv_bt601_limited().
+  layout.colorimetry.range = ColorRange::LIMITED;
+  layout.colorimetry.matrix = ColorMatrix::BT601;
+  layout.colorimetry.transfer = ColorTransfer::SRGB;
+  layout.colorimetry.primaries = ColorPrimaries::BT709;
+
+  size_t offset = 0;
+  for (uint32_t plane = 0; plane < desc.plane_count; ++plane) {
+    const uint32_t row_bytes = plane_row_bytes(desc, plane, w);
+    const uint32_t rows = plane_rows(desc, plane, h);
+    layout.planes[plane].data = base + offset;
+    layout.planes[plane].size_bytes = static_cast<size_t>(row_bytes) * rows;
+    layout.planes[plane].stride_bytes = row_bytes;
+    layout.planes[plane].rows = rows;
+    offset += static_cast<size_t>(row_bytes) * rows;
+  }
+  (void)size_bytes;
+}
+
+} // namespace
+
 ProviderAccessStatus SyntheticProvider::check_access_readiness() noexcept {
   return ProviderAccessStatus::ready("synthetic_provider_ready");
 }
@@ -333,8 +445,14 @@ ProducerBackingCapabilities SyntheticProvider::query_stream_producer_capabilitie
 
 ProducerBackingCapabilities SyntheticProvider::query_capture_producer_capabilities_(
     const CaptureRequest& req) const noexcept {
-  (void)req;
-  const bool gpu_available = has_runtime_gpu_backing_path_();
+  // Same constraint as the stream side: Synthetic's GPU backing is RGBA8-only,
+  // so a planar capture has no GPU-backed realization and reporting one would
+  // make Core plan a posture every member then fails silently.
+  const PixelFormatDescriptor desc = describe_pixel_format(req.format_fourcc);
+  const bool format_supports_gpu_backing =
+      !desc.valid || desc.layout_class == PixelLayoutClass::Packed;
+  const bool gpu_available =
+      has_runtime_gpu_backing_path_() && format_supports_gpu_backing;
   switch (cfg_.producer_output_form_mode) {
     case SyntheticProducerOutputFormMode::CpuOnly:
       return ProducerBackingCapabilities{true, false, false};
@@ -1380,10 +1498,15 @@ ProviderResult SyntheticProvider::start_stream(
   if (w == 0 || h == 0 || fmt == 0) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
-  if (fmt != FOURCC_RGBA && fmt != FOURCC_NV12) {
+  const PixelFormatDescriptor fmt_desc = describe_pixel_format(fmt);
+  const bool fmt_is_planar_420 =
+      fmt_desc.valid && fmt_desc.is_yuv && fmt_desc.chroma_shift_x == 1 &&
+      fmt_desc.chroma_shift_y == 1 &&
+      fmt_desc.layout_class != PixelLayoutClass::Packed;
+  if (fmt != FOURCC_RGBA && !fmt_is_planar_420) {
     return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
   }
-  if (fmt == FOURCC_NV12 &&
+  if (fmt_is_planar_420 &&
       cfg_.producer_output_form_mode == SyntheticProducerOutputFormMode::GpuOnly) {
     // Synthetic's live GPU backing is RGBA8-only, so an NV12 stream is
     // CPU-primary. Reject the combination at start rather than starting a
@@ -1699,7 +1822,12 @@ ProviderResult SyntheticProvider::validate_and_admit_capture_submission_locked_(
     }
 
     const uint32_t fmt = req.format_fourcc == 0 ? FOURCC_RGBA : req.format_fourcc;
-    if (!(fmt == FOURCC_RGBA || fmt == FOURCC_BGRA)) {
+    const PixelFormatDescriptor fmt_desc = describe_pixel_format(fmt);
+    const bool fmt_is_planar_420 =
+        fmt_desc.valid && fmt_desc.is_yuv && fmt_desc.chroma_shift_x == 1 &&
+        fmt_desc.chroma_shift_y == 1 &&
+        fmt_desc.layout_class != PixelLayoutClass::Packed;
+    if (!(fmt == FOURCC_RGBA || fmt == FOURCC_BGRA || fmt_is_planar_420)) {
       set_failure_info("unsupported_capture_format", req.device_instance_id, &dev_it->second);
       return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
     }
@@ -2210,10 +2338,18 @@ bool SyntheticProvider::generate_device_capture_payloads_(
     uint64_t member_frame_assembly_sample_ns = 0;
     uint64_t member_post_sample_ns = 0;
     const auto& member = members[i];
+    // A planar member reads the base render as a conversion source and never
+    // writes to it, so it can share the base buffer too. Forcing it down the
+    // copy branch would put a full RGBA frame memcpy on the trigger->result
+    // path for no benefit.
+    const PixelFormatDescriptor job_desc = describe_pixel_format(job.format_fourcc);
+    const bool job_is_planar =
+        job_desc.valid && job_desc.is_yuv &&
+        job_desc.layout_class != PixelLayoutClass::Packed;
     const bool can_reuse_base_for_default =
         i == 0 &&
         member.intended_exposure_compensation_milli_ev == 0 &&
-        job.format_fourcc == FOURCC_RGBA;
+        (job.format_fourcc == FOURCC_RGBA || job_is_planar);
     std::shared_ptr<std::vector<std::uint8_t>> bytes;
     if (can_reuse_base_for_default) {
       bytes = base_bytes;
@@ -2374,12 +2510,35 @@ bool SyntheticProvider::generate_device_capture_payloads_(
         provider_monotonic_now_ns();
     fv.retain_cpu_sidecar = retain_cpu_payload;
     fv.requested_retained_plan = req.requested_retained_plan;
-    if (retain_cpu_payload) {
-      fv.data = bytes->data();
-      fv.size_bytes = bytes->size();
-      fv.cpu_payload_owner = bytes;
+    // Members are rendered and bracket-adjusted as packed RGBA -- that is the
+    // pattern renderer's only output form -- so a planar capture converts once
+    // per member here, at publication, exactly as the stream path does. The
+    // RGBA buffer stays alive through the lease; the planar buffer gets its
+    // own allocation because it is a different size and shape.
+    std::shared_ptr<std::vector<std::uint8_t>> planar_bytes;
+    if (retain_cpu_payload && job_is_planar) {
+      planar_bytes = std::make_shared<std::vector<std::uint8_t>>();
+      synthetic_rgba_to_planar_420(job.format_fourcc, bytes->data(),
+                                   job.stride_bytes, req.width, req.height,
+                                   *planar_bytes);
     }
-    fv.stride_bytes = job.stride_bytes;
+    if (retain_cpu_payload) {
+      if (planar_bytes) {
+        fv.data = planar_bytes->data();
+        fv.size_bytes = planar_bytes->size();
+        synthetic_fill_planar_420_layout(job.format_fourcc,
+                                         planar_bytes->data(),
+                                         planar_bytes->size(), req.width,
+                                         req.height, fv.payload_layout);
+        fv.cpu_payload_owner = planar_bytes;
+      } else {
+        fv.data = bytes->data();
+        fv.size_bytes = bytes->size();
+        fv.cpu_payload_owner = bytes;
+      }
+    }
+    // Scalar stride describes plane 0, which for a 4:2:0 format is luma.
+    fv.stride_bytes = planar_bytes ? req.width : job.stride_bytes;
     auto* lease = new FrameReleaseLease();
     lease->bytes = bytes;
     fv.release = &SyntheticProvider::release_frame_;
@@ -3477,47 +3636,6 @@ namespace {
 // Determinism matters here; throughput does not, which is why this uses plain
 // integer math and allocates its own output buffer.
 //
-// The coefficients are the standard integer BT.601 limited-range set, and the
-// colorimetry this frame declares must keep matching them.
-void synthetic_rgba_to_nv12(
-    const uint8_t* src,
-    uint32_t src_stride,
-    uint32_t w,
-    uint32_t h,
-    std::vector<uint8_t>& out) {
-  const size_t y_plane_bytes = static_cast<size_t>(w) * static_cast<size_t>(h);
-  const uint32_t chroma_rows = (h + 1u) / 2u;
-  const size_t uv_plane_bytes = static_cast<size_t>(w) * static_cast<size_t>(chroma_rows);
-  out.assign(y_plane_bytes + uv_plane_bytes, 0u);
-
-  uint8_t* y_dst = out.data();
-  uint8_t* uv_dst = out.data() + y_plane_bytes;
-
-  for (uint32_t y = 0; y < h; ++y) {
-    const uint8_t* row = src + static_cast<size_t>(src_stride) * y;
-    uint8_t* y_row = y_dst + static_cast<size_t>(w) * y;
-    for (uint32_t x = 0; x < w; ++x) {
-      const uint8_t r = row[static_cast<size_t>(x) * 4u + 0u];
-      const uint8_t g = row[static_cast<size_t>(x) * 4u + 1u];
-      const uint8_t b = row[static_cast<size_t>(x) * 4u + 2u];
-      y_row[x] = rgb_to_yuv_bt601_limited(r, g, b).y;
-    }
-  }
-
-  // Chroma is sampled at the top-left of each 2x2 block rather than averaged.
-  // Point sampling keeps the inverse exactly predictable for verification,
-  // which matters more here than subsampling quality.
-  for (uint32_t cy = 0; cy < chroma_rows; ++cy) {
-    const uint8_t* row = src + static_cast<size_t>(src_stride) * (cy * 2u);
-    uint8_t* uv_row = uv_dst + static_cast<size_t>(w) * cy;
-    for (uint32_t cx = 0; cx * 2u < w; ++cx) {
-      const size_t sx = static_cast<size_t>(cx) * 2u * 4u;
-      const YuvSample s = rgb_to_yuv_bt601_limited(row[sx + 0u], row[sx + 1u], row[sx + 2u]);
-      uv_row[static_cast<size_t>(cx) * 2u + 0u] = s.u;
-      uv_row[static_cast<size_t>(cx) * 2u + 1u] = s.v;
-    }
-  }
-}
 
 } // namespace
 
@@ -3533,7 +3651,14 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   // from them at publication time, so this stride describes the render buffer,
   // not necessarily the published payload.
   const uint32_t stride = w * 4u;
-  const bool emit_nv12 = s.req.profile.format_fourcc == FOURCC_NV12;
+  // Any 4:2:0 member the descriptor table names, not NV12 alone: NV21 and
+  // YV12 exist here so chroma-order handling has a deterministic test
+  // rather than only an eyeball check against a handset that happens to
+  // deliver them.
+  const uint32_t stream_fourcc = s.req.profile.format_fourcc;
+  const PixelFormatDescriptor stream_desc = describe_pixel_format(stream_fourcc);
+  const bool emit_planar = stream_desc.valid && stream_desc.is_yuv &&
+      stream_desc.layout_class != PixelLayoutClass::Packed;
 
   // Acquire a buffer slot.
   std::shared_ptr<StreamState::BufferSlot> slot;
@@ -3599,7 +3724,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   const bool publish_cpu_payload =
       s.resolved_output_form_mode != SyntheticProducerOutputFormMode::GpuOnly;
   const bool render_direct_to_cpu_slot =
-      publish_cpu_payload && (emit_nv12 || !s.prefer_gpu_backing);
+      publish_cpu_payload && (emit_planar || !s.prefer_gpu_backing);
   PatternRenderTarget dst{};
   dst.data = render_direct_to_cpu_slot ? static_cast<void*>(slot->bytes.data()) : static_cast<void*>(s.gpu_staging.data());
   dst.size_bytes = render_direct_to_cpu_slot ? slot->bytes.size() : s.gpu_staging.size();
@@ -3629,7 +3754,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   // Synthetic's live GPU backing is RGBA8-only, so an NV12 stream is
   // CPU-primary. start_stream_ rejects NV12 under GpuOnly, so suppressing the
   // GPU attempt here cannot strand a mode that requires a GPU primary.
-  if (s.prefer_gpu_backing && !emit_nv12) {
+  if (s.prefer_gpu_backing && !emit_planar) {
     const auto ensure_t0 = std::chrono::steady_clock::now();
     const bool ensured_backing = ensure_stream_live_gpu_backing_(s, w, h, stride);
     const auto ensure_t1 = std::chrono::steady_clock::now();
@@ -3761,7 +3886,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   fv.capture_id = 0;
   fv.width = w;
   fv.height = h;
-  fv.format_fourcc = emit_nv12 ? FOURCC_NV12 : FOURCC_RGBA;
+  fv.format_fourcc = emit_planar ? stream_fourcc : FOURCC_RGBA;
   fv.primary_backing_kind = gpu_backing ? ProducerBackingKind::GPU : ProducerBackingKind::CPU;
   if (gpu_backing) {
     fv.retained_gpu_backing_descriptor.valid = true;
@@ -3787,42 +3912,23 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   }
   fv.retain_cpu_sidecar = publish_cpu_payload;
   fv.requested_retained_plan = s.req.requested_retained_plan;
-  if (publish_cpu_payload && emit_nv12) {
+  if (publish_cpu_payload && emit_planar) {
     // NV12 needs a buffer of a different size and shape from the RGBA render
     // slot, so it gets its own allocation whose lifetime is carried by
     // cpu_payload_owner. Deliberately NOT tied to the slot pool: the slot is
     // only the conversion source here, and giving the NV12 buffer an
     // independent control block keeps it clear of the pool's weak_ptr
     // acquisition guard entirely.
-    auto nv12 = std::make_shared<std::vector<uint8_t>>();
-    synthetic_rgba_to_nv12(slot->bytes.data(), stride, w, h, *nv12);
+    auto planar = std::make_shared<std::vector<uint8_t>>();
+    synthetic_rgba_to_planar_420(stream_fourcc, slot->bytes.data(), stride, w, h,
+                                 *planar);
 
-    fv.data = nv12->data();
-    fv.size_bytes = nv12->size();
+    fv.data = planar->data();
+    fv.size_bytes = planar->size();
+    synthetic_fill_planar_420_layout(stream_fourcc, planar->data(),
+                                     planar->size(), w, h, fv.payload_layout);
 
-    PayloadLayout& layout = fv.payload_layout;
-    layout.format_fourcc = FOURCC_NV12;
-    layout.width = w;
-    layout.height = h;
-    layout.plane_count = 2;
-    // Must match the coefficients in synthetic_rgba_to_nv12().
-    layout.colorimetry.range = ColorRange::LIMITED;
-    layout.colorimetry.matrix = ColorMatrix::BT601;
-    layout.colorimetry.transfer = ColorTransfer::SRGB;
-    layout.colorimetry.primaries = ColorPrimaries::BT709;
-
-    const size_t y_plane_bytes = static_cast<size_t>(w) * static_cast<size_t>(h);
-    const uint32_t chroma_rows = (h + 1u) / 2u;
-    layout.planes[0].data = nv12->data();
-    layout.planes[0].size_bytes = y_plane_bytes;
-    layout.planes[0].stride_bytes = w;
-    layout.planes[0].rows = h;
-    layout.planes[1].data = nv12->data() + y_plane_bytes;
-    layout.planes[1].size_bytes = nv12->size() - y_plane_bytes;
-    layout.planes[1].stride_bytes = w;
-    layout.planes[1].rows = chroma_rows;
-
-    fv.cpu_payload_owner = std::move(nv12);
+    fv.cpu_payload_owner = std::move(planar);
   } else if (publish_cpu_payload) {
     fv.data = slot->bytes.data();
     fv.size_bytes = slot->bytes.size();
@@ -3840,8 +3946,8 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     slot->published_owner = owner;
     fv.cpu_payload_owner = std::move(owner);
   }
-  // Scalar stride describes plane 0, which for NV12 is the luma plane.
-  fv.stride_bytes = emit_nv12 ? w : stride;
+  // Scalar stride describes plane 0, which for a 4:2:0 format is luma.
+  fv.stride_bytes = emit_planar ? w : stride;
   const bool profile_compatible =
       fv.width == s.req.profile.width &&
       fv.height == s.req.profile.height &&

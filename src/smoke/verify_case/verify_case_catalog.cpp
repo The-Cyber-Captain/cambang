@@ -3038,10 +3038,12 @@ int synthetic_nv12_stream_planar_retention(VerifyCaseProviderKind provider_kind)
   cli::line("step 4 OK (display_view and to_image both EXPENSIVE via conversion)");
 
   // Negative: format negotiation must reject a format the provider does not
-  // advertise. Synthetic advertises RGBA and NV12 for streams, not I420, so
-  // this proves the advertisement is load-bearing rather than decorative.
+  // advertise. Synthetic advertises RGBA and the 4:2:0 family; YUY2 is a
+  // format CamBANG names in its descriptor table but no provider emits, which
+  // is exactly what makes it a fair negative -- the request is well-formed and
+  // the geometry is computable, so only the advertisement can reject it.
   CaptureProfile unadvertised = nv12_profile;
-  unadvertised.format_fourcc = FOURCC_I420;
+  unadvertised.format_fourcc = FOURCC_YUY2;
   std::string reject_error;
   if (h.create_stream_id_with_profile(
           VerifyCaseHarness::kStreamId + 1, VerifyCaseHarness::kDeviceId,
