@@ -16,6 +16,7 @@
 #include "core/result_payload_kind.h"
 #include "core/result_capability.h"
 #include "imaging/api/provider_contract_datatypes.h"
+#include "pixels/format/yuv_convert.h"
 
 namespace cambang {
 
@@ -343,6 +344,80 @@ inline bool retained_cpu_payload_is_convertible(const CoreResultPayloadCpu& payl
 // implements it cannot disagree. Inline and pure, so the agreement itself is
 // directly testable.
 inline CoreRetainedAccessTruth build_stream_retained_access_truth(const CoreStreamResultData& result);
+
+// Converts a retained planar/semi-planar YUV payload to packed RGBA8.
+//
+// One implementation for every consumer. The display path and to_image() each
+// had their own copy of this loop, which is the duplication that repeatedly
+// let capability and behaviour drift apart in this area.
+//
+// Chroma addressing comes from the format descriptor rather than the format
+// tag, so semi-planar (two planes, U and V interleaved in plane 1) and fully
+// planar (three planes, U and V separate) are handled by the same code.
+// Retained payloads are normalized to tight packing at retention, so no
+// per-sample pixel stride is needed here -- that is a provider-boundary
+// concern, carried by PayloadPlaneView, and already resolved by the time
+// bytes are retained.
+//
+// dst must hold width*height*4 bytes. Returns false when the payload cannot
+// be addressed as its descriptor claims.
+inline bool planar_payload_to_rgba8(const CoreResultPayloadCpu& payload, uint8_t* dst) noexcept {
+  if (dst == nullptr || !payload.is_planar()) {
+    return false;
+  }
+  if (!is_convertible_colorimetry(payload.colorimetry)) {
+    return false;
+  }
+  const PixelFormatDescriptor desc = describe_pixel_format(payload.format_fourcc);
+  if (!desc.valid || !desc.is_yuv || payload.plane_count != desc.plane_count) {
+    return false;
+  }
+
+  const bool semi_planar = (desc.layout_class == PixelLayoutClass::SemiPlanar);
+  const uint32_t v_plane_index = semi_planar ? 1u : 2u;
+  // Within a semi-planar chroma row, U and V alternate; when planar they are
+  // separate planes and each chroma column is one byte.
+  const uint32_t chroma_sample_stride = semi_planar ? 2u : 1u;
+  const uint32_t v_byte_offset = semi_planar ? 1u : 0u;
+
+  const uint8_t* y_plane = payload.plane_data(0);
+  const uint8_t* u_plane = payload.plane_data(1);
+  const uint8_t* v_plane = payload.plane_data(v_plane_index);
+  if (!y_plane || !u_plane || !v_plane) {
+    return false;
+  }
+
+  const uint32_t w = payload.width;
+  const uint32_t h = payload.height;
+  const uint32_t y_stride = payload.planes[0].stride_bytes;
+  const uint32_t u_stride = payload.planes[1].stride_bytes;
+  const uint32_t v_stride = payload.planes[v_plane_index].stride_bytes;
+  const uint32_t chroma_rows = (h + 1u) / 2u;
+  const uint32_t chroma_cols = (w + 1u) / 2u;
+  if (y_stride < w || payload.planes[0].rows < h ||
+      u_stride < (chroma_cols * chroma_sample_stride) ||
+      v_stride < (chroma_cols * chroma_sample_stride) ||
+      payload.planes[1].rows < chroma_rows ||
+      payload.planes[v_plane_index].rows < chroma_rows) {
+    return false;
+  }
+
+  for (uint32_t y = 0; y < h; ++y) {
+    const uint8_t* y_row = y_plane + static_cast<size_t>(y_stride) * y;
+    const uint8_t* u_row = u_plane + static_cast<size_t>(u_stride) * (y / 2u);
+    const uint8_t* v_row = v_plane + static_cast<size_t>(v_stride) * (y / 2u);
+    uint8_t* out = dst + static_cast<size_t>(w) * 4u * y;
+    for (uint32_t x = 0; x < w; ++x) {
+      const size_t c = static_cast<size_t>(x / 2u) * chroma_sample_stride;
+      const RgbSample s = yuv_to_rgb_bt601_limited(y_row[x], u_row[c], v_row[c + v_byte_offset]);
+      out[static_cast<size_t>(x) * 4u + 0u] = s.r;
+      out[static_cast<size_t>(x) * 4u + 1u] = s.g;
+      out[static_cast<size_t>(x) * 4u + 2u] = s.b;
+      out[static_cast<size_t>(x) * 4u + 3u] = 255u;
+    }
+  }
+  return true;
+}
 
 // Result-level convenience: currency plus the corresponding payload question.
 inline bool stream_result_has_packed_cpu_access(const CoreStreamResultData& result) noexcept {

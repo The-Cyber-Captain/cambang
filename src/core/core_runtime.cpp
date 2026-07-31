@@ -37,8 +37,10 @@ bool core_can_use_stream_format(uint32_t fourcc) noexcept {
   if (is_packed_rgb_format(fourcc)) {
     return true;
   }
-  // NV12 is the only planar format with a conversion today.
-  return fourcc == FOURCC_NV12;
+  // Planar formats with a shared conversion. Both are members of the
+  // YUV_420_888 family a Camera2 device may present, and which one arrives is
+  // decided by the device at runtime, so both must be usable.
+  return fourcc == FOURCC_NV12 || fourcc == FOURCC_I420;
 }
 
 } // namespace

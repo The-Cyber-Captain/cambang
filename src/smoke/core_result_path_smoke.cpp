@@ -1264,6 +1264,56 @@ int main() {
     assert(stale_truth.to_image == ResultCapability::UNSUPPORTED);
   }
 
+  // --- I420 (fully planar) conversion ---------------------------------------
+  //
+  // Camera2's YUV_420_888 is a family: chroma pixel stride 2 means U and V are
+  // interleaved (NV12/NV21), 1 means they are separate planes (I420/YV12). The
+  // device decides at runtime, so both members must convert through the same
+  // routine rather than one being special-cased.
+  {
+    constexpr uint32_t kIW = 4;
+    constexpr uint32_t kIH = 4;
+    CoreResultPayloadCpu i420{};
+    i420.format_fourcc = FOURCC_I420;
+    i420.width = kIW;
+    i420.height = kIH;
+    i420.plane_count = 3;
+    i420.stride_bytes = kIW;
+    i420.colorimetry.range = ColorRange::LIMITED;
+    i420.colorimetry.matrix = ColorMatrix::BT601;
+    const size_t i_luma = static_cast<size_t>(kIW) * kIH;
+    const size_t i_chroma = static_cast<size_t>(kIW / 2u) * (kIH / 2u);
+    i420.planes[0] = {0, kIW, kIH};
+    i420.planes[1] = {i_luma, kIW / 2u, kIH / 2u};
+    i420.planes[2] = {i_luma + i_chroma, kIW / 2u, kIH / 2u};
+    i420.bytes.assign(i_luma + 2u * i_chroma, 0u);
+
+    const YuvSample probe = rgb_to_yuv_bt601_limited(200, 60, 60);
+    for (size_t i = 0; i < i_luma; ++i) {
+      i420.bytes[i] = probe.y;
+    }
+    for (size_t i = 0; i < i_chroma; ++i) {
+      i420.bytes[i_luma + i] = probe.u;
+      i420.bytes[i_luma + i_chroma + i] = probe.v;
+    }
+
+    std::vector<uint8_t> rgba(static_cast<size_t>(kIW) * kIH * 4u, 0u);
+    assert(planar_payload_to_rgba8(i420, rgba.data()));
+
+    const RgbSample expect = yuv_to_rgb_bt601_limited(probe.y, probe.u, probe.v);
+    for (size_t px = 0; px < static_cast<size_t>(kIW) * kIH; ++px) {
+      assert(rgba[px * 4u + 0u] == expect.r);
+      assert(rgba[px * 4u + 1u] == expect.g);
+      assert(rgba[px * 4u + 2u] == expect.b);
+      assert(rgba[px * 4u + 3u] == 255u);
+    }
+
+    // Same colorimetry gate as NV12: unconvertible means no conversion.
+    CoreResultPayloadCpu bt709 = i420;
+    bt709.colorimetry.matrix = ColorMatrix::BT709;
+    assert(!planar_payload_to_rgba8(bt709, rgba.data()));
+  }
+
   std::cout << "PASS core_result_path_smoke\n";
   return 0;
 }
