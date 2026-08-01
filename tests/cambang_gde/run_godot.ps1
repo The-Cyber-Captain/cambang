@@ -1242,6 +1242,22 @@ function Get-AndroidLaunchSettingsFromExtraArgs {
     return [PSCustomObject]$result
 }
 
+function Get-ProjectRenderingMethodValue {
+    param([Parameter(Mandatory)][string]$ProjectText)
+
+    # Prefer the mobile-tagged override, since that is the one an Android run
+    # would resolve; fall back to the base key, then to Godot's own default.
+    foreach ($prefix in @('renderer/rendering_method.mobile=', 'renderer/rendering_method=')) {
+        $match = [regex]::Match(
+            $ProjectText,
+            ('(?m)^\s*' + [regex]::Escape($prefix) + '\s*"([^"]*)"\s*$'))
+        if ($match.Success -and -not [string]::IsNullOrWhiteSpace($match.Groups[1].Value)) {
+            return $match.Groups[1].Value
+        }
+    }
+    return "gl_compatibility"
+}
+
 function Get-PatchedAndroidProjectText {
     param(
         [Parameter(Mandatory)][string]$ProjectText,
@@ -1269,11 +1285,20 @@ function Get-PatchedAndroidProjectText {
             -NewValue ('"{0}"' -f $AndroidLaunchSettings.BenchProvider) `
             -InsertAfterLinePrefix 'maintainer/synthetic_producer_output_form='
     }
+    # With no explicit -ExtraArgs "--rendering-method=...", follow what the
+    # project already declares for mobile rather than substituting a different
+    # default. This defaulted to "mobile" (Vulkan), which silently overrode the
+    # project's gl_compatibility on every Android run: the handset ran a
+    # renderer with a RenderingDevice while project.godot -- the thing a
+    # maintainer reads to answer "what does Android run?" -- said otherwise.
+    # That made GPU-backed payloads appear on Android where the settings
+    # predicted none, and left the Compatibility path, a required target,
+    # unexercised there.
     $renderingMethod = if ($AndroidLaunchSettings.HasRenderingMethod) {
         $AndroidLaunchSettings.RenderingMethod
     }
     else {
-        "mobile"
+        Get-ProjectRenderingMethodValue -ProjectText $ProjectText
     }
     $updated = Set-SingleLineValue -Text $updated -LinePrefix 'renderer/rendering_method=' -NewValue ('"{0}"' -f $renderingMethod)
     $updated = Set-OrInsertSingleLineValue `

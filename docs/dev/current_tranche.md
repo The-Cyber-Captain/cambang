@@ -23,18 +23,20 @@ Stated so this tranche's scope is unambiguous; the git history is the record.
   on both the stream and capture sides, so a planar stream currently takes the
   CPU path everywhere.
 
-### Correction to the previous draft's premise
+### Where the RD path is actually reachable
 
-The earlier draft reasoned that the project pinning
-`renderer/rendering_method.mobile=gl_compatibility` means no `RenderingDevice`
-on Android, so Android would only ever exercise the no-RD path.
+The Windows project default is `gl_compatibility`, which has no
+`RenderingDevice`, so a default Windows run exercises only the CPU path. The RD
+path needs an explicit `--rendering-method mobile` or `forward_plus`.
 
-**That is false in practice.** A scene 570 run on a Galaxy S20+ against
-SyntheticProvider retained an RGBA stream result reporting `payload_kind=2`
-(`GPU_SURFACE`), which requires GPU backing, which requires an RD. Backing form
-must be read from the retained result, never inferred from the renderer
-setting. The RD path is therefore reachable on Android and must be validated
-there rather than assumed absent.
+Android now matches: the harness previously substituted `"mobile"` on every
+Android export regardless of the project setting, so every Android run to date
+used Vulkan and had an RD. That default is fixed and an unqualified Android run
+is Compatibility, verified on an S20+ (`usesVulkan(): false`, `opengl3`).
+
+Both targets therefore need a deliberate renderer argument to exercise this
+tranche, and neither gets it by accident. Do not infer backing form from the
+renderer setting either way -- read `payload_kind` off the retained result.
 
 ### Scope
 

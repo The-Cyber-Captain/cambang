@@ -529,14 +529,20 @@ Camera2's `PRIVATE` (opaque GPU) form is not implemented. So on hardware,
 every CamBANG payload today is CPU-backed, and the renderer in use does not
 change that.
 
-**Synthetic's GPU backing IS reachable on Android.** The inference that it is
-not -- because the Godot project pins `renderer/rendering_method.mobile` to
-`gl_compatibility`, and `RenderingServer::get_rendering_device()` returns null
-under Compatibility -- is wrong in practice. A scene 570 run on a Galaxy S20+
-against SyntheticProvider retained an RGBA stream result reporting
-`payload_kind=2` (GPU_SURFACE). Whatever the project setting says, the GPU
-backing path was taken. Do not reason about which backing form applies from
-the renderer setting alone; read the retained result's `payload_kind`.
+**Backing form must be read from the retained result, not inferred from the
+renderer setting.** An S20+ run against SyntheticProvider retained an RGBA
+stream result reporting `payload_kind=2` (GPU_SURFACE) while `project.godot`
+declared `gl_compatibility` for mobile. The cause was the harness: the Android
+export path substituted `"mobile"` whenever no explicit `--rendering-method`
+was given, so the handset ran Vulkan and had a RenderingDevice. That default is
+fixed -- the export now follows what the project declares -- and an Android run
+with no renderer argument reports `usesVulkan(): false`, `opengl3`,
+`GodotGLRenderView`.
+
+The guidance stands regardless of the cause. Anything that can rewrite project
+settings before an export sits between the file a maintainer reads and the
+renderer a device runs, so the retained result is the only reliable answer to
+which backing form applied.
 
 **ResultCapability is READY=0, CHEAP=1, EXPENSIVE=2, UNSUPPORTED=3.** Zero is
 the BEST answer, not the absent one, and a GPU-backed stream's display view is
