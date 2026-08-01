@@ -325,13 +325,22 @@ func _process(delta: float) -> void:
 			# GPU-primary result can legitimately exist before its backing does.
 			# Only the deadline treats this as a failure.
 			var rgba_can: int = int(r.can_get_display_view())
-			var rgba_view: Variant = (r.get_display_view() if rgba_can != 0 else null)
+			# ResultCapability is READY=0, CHEAP=1, EXPENSIVE=2, UNSUPPORTED=3.
+			# Zero is the BEST case, not the absent one. Reading it as "no path"
+			# meant a GPU-backed stream -- whose display view is exactly the READY
+			# case -- was skipped as unusable.
+			var rgba_view: Variant = (r.get_display_view()
+				if rgba_can != CamBANGStreamResult.CAPABILITY_UNSUPPORTED else null)
 			if rgba_view == null or not (rgba_view is Texture2D):
 				_last_rgba_state = "can_get_display_view=%d payload_kind=%d" % [rgba_can, int(r.get_payload_kind())]
-				return
-			_rgba_rect.texture = rgba_view
-			_bound_rgba = true
-			_log("RGBA reference bound (payload_kind=%d)" % int(r.get_payload_kind()))
+				# Deliberately NOT a return. Returning here starved every block
+				# below it, so one unbound panel presented as all three failing
+				# and the planar stream was reported stalled when it had never
+				# been asked for a result.
+			else:
+				_rgba_rect.texture = rgba_view
+				_bound_rgba = true
+				_log("RGBA reference bound (payload_kind=%d)" % int(r.get_payload_kind()))
 
 	if _planar_stream != null and not _bound_planar and _planar_stream.result_live:
 		var n: Variant = _planar_stream.get_result()
@@ -359,7 +368,7 @@ func _process(delta: float) -> void:
 			if sel_fmt != _planar_format:
 				_log("SUBSTITUTED: asked for %s, device delivered %s -- this run judges %s"
 					% [_planar_format_name.to_upper(), _fourcc_name(sel_fmt), _fourcc_name(sel_fmt)])
-			if can_display == 0:
+			if can_display == CamBANGStreamResult.CAPABILITY_UNSUPPORTED:
 				_fail("planar stream result reports no display path")
 				return
 			_last_planar_state = "can_get_display_view=%d payload_kind=%d format=%s" % [
@@ -392,7 +401,7 @@ func _process(delta: float) -> void:
 			var can_image: int = int(m.can_to_image())
 			_last_image_state = "can_to_image=%d payload_kind=%d" % [
 				can_image, int(m.get_payload_kind())]
-			if can_image == 0:
+			if can_image == CamBANGStreamResult.CAPABILITY_UNSUPPORTED:
 				_fail("planar stream result reports no to_image path")
 				return
 			var img: Variant = m.to_image()
@@ -426,7 +435,8 @@ func _process(delta: float) -> void:
 			_capture_reported = true
 			var cfmt: int = int(cap.get_format())
 			var can_img: int = int(cap.can_to_image_member(0))
-			var member_img: Variant = (cap.to_image_member(0) if can_img != 0 else null)
+			var member_img: Variant = (cap.to_image_member(0)
+				if can_img != CamBANGCaptureResult.CAPABILITY_UNSUPPORTED else null)
 			var got := "no"
 			if member_img != null and member_img is Image:
 				got = "yes %dx%d" % [member_img.get_width(), member_img.get_height()]
@@ -487,7 +497,7 @@ func _sample_one(stream: CamBANGStream, previous: int) -> Array:
 	if stream == null or not stream.result_live:
 		return [0, false]
 	var r: Variant = stream.get_result()
-	if r == null or int(r.can_to_image()) == 0:
+	if r == null or int(r.can_to_image()) == CamBANGStreamResult.CAPABILITY_UNSUPPORTED:
 		return [0, false]
 	var img: Variant = r.to_image()
 	if img == null or not (img is Image):
