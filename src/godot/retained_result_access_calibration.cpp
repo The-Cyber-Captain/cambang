@@ -46,6 +46,18 @@ void refine_stream_to_image_classification(const SharedStreamResultData& data) {
       measurement && measurement->success) {
     candidates.push_back(CandidateMeasurement{*measurement});
   }
+  // The CPU-primary planar route. A retained payload is packed or planar, never
+  // both, so this and the packed route above are mutually exclusive for any one
+  // posture -- but omitting it meant a planar payload contributed no candidate
+  // at all, and refinement could never see the only measurement that exists for
+  // it. Added when CPU_PLANAR retention was introduced and the refiners were
+  // not revisited.
+  if (auto measurement = result_access_cost_evidence::latest_stream_measurement(
+          result_access_cost_evidence::kRouteStreamToImageCpuPlanarConvert,
+          data->access_posture.posture_id);
+      measurement && measurement->success) {
+    candidates.push_back(CandidateMeasurement{*measurement});
+  }
   if (auto measurement = result_access_cost_evidence::latest_stream_measurement(
           result_access_cost_evidence::kRouteStreamToImageGpuPrimaryCpuSidecar,
           data->access_posture.posture_id);
@@ -73,6 +85,15 @@ void refine_capture_to_image_classification(
   std::vector<CandidateMeasurement> candidates;
   if (auto measurement = result_access_cost_evidence::latest_capture_measurement(
           result_access_cost_evidence::kRouteCaptureToImageCpuPacked,
+          member.access_posture.posture_id,
+          member.image_member_index);
+      measurement && measurement->success) {
+    candidates.push_back(CandidateMeasurement{*measurement});
+  }
+  // Capture-side counterpart of the planar stream route above; same omission,
+  // same consequence.
+  if (auto measurement = result_access_cost_evidence::latest_capture_measurement(
+          result_access_cost_evidence::kRouteCaptureToImageCpuPlanarConvert,
           member.access_posture.posture_id,
           member.image_member_index);
       measurement && measurement->success) {
