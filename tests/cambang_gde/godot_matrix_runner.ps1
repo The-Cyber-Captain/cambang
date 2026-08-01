@@ -71,10 +71,15 @@ param(
     [string]$LogRoot = "",
     [string]$LabelPrefix = "",
 
-    # Applied to synthetic-backed runs only, where a fixed seed makes a run
-    # reproducible. The original hand-rolled loop keyed this on windows; keying
-    # it on the backing is the same intent expressed against the axis that
-    # actually determines whether a seed means anything.
+    # Windows runs only, and that is a hard constraint rather than a preference:
+    # Android mode translates exactly five ExtraArgs -- --rendering-method,
+    # --cambang-bench-provider, --cambang-synth-producer-output-form and the two
+    # capability-downgrade knobs -- and THROWS on anything else
+    # ("Android mode does not know how to translate these ExtraArgs").
+    # --cambang-bench-seed is not in that set, so sending it to an Android run
+    # aborts the run before it starts. The original hand-rolled loop keyed this
+    # on windows for exactly that reason; re-keying it on the provider backing
+    # broke every Android synthetic combination.
     [string]$BenchSeed = "",
 
     # Android device axis. Multiplies the android combinations only; windows
@@ -209,6 +214,12 @@ if ($ProviderBackings -contains "platform" -and $ProviderOutputForms.Count -gt 1
 if ($TargetOs -contains "platform") {
     Write-Host "  note: 'platform' is a provider backing, not a target OS" -ForegroundColor DarkYellow
 }
+if ($TargetOs -contains "android" -and -not [string]::IsNullOrWhiteSpace($BenchSeed)) {
+    Write-Host "  note: -BenchSeed is applied to windows runs only; Android mode cannot translate --cambang-bench-seed and would abort the run" -ForegroundColor DarkYellow
+}
+if ($TargetOs.Count -gt 1 -and $TargetOs[0] -ne "android" -and $TargetOs -contains "android") {
+    Write-Host "  note: android runs come after windows here. A handset can doze during a long windows leg, and the pre-flight device check then refuses the run. Put android first in -TargetOs, or keep the device awake." -ForegroundColor DarkYellow
+}
 if ($TargetOs -contains "android" -and $AndroidDeviceSerials.Count -gt 0) {
     Write-Host ("  androidDevices={0}" -f (($deviceAxis | ForEach-Object { "$($_.Tag)=$($_.Serial)" }) -join ", "))
 }
@@ -231,7 +242,7 @@ foreach ($c in $combinations) {
     $extra = @("--rendering-method=$($c.Renderer)", "--cambang-bench-provider=$($c.Backing)")
     if ($c.Backing -eq "synthetic") {
         $extra += "--cambang-synth-producer-output-form=$($c.Form)"
-        if (-not [string]::IsNullOrWhiteSpace($BenchSeed)) {
+        if (-not [string]::IsNullOrWhiteSpace($BenchSeed) -and $c.TargetOs -eq "windows") {
             $extra += "--cambang-bench-seed=$BenchSeed"
         }
     }
