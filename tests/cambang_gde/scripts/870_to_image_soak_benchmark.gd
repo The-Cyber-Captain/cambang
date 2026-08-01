@@ -117,7 +117,23 @@ const CAPTURE_TIMEOUT_US := 5000000
 const RIG_CAPTURE_TIMEOUT_US := 7000000
 const WARMUP_SEC_DEFAULT := 0.65
 const HUMAN_PHASE_SEC_DEFAULT := 3.00 #0.70
-const SUPERHUMAN_PHASE_SEC_DEFAULT := 0.35
+# Same defect the rig phase above had, in a different phase mode. A superhuman
+# phase must still be able to complete at least one device capture, and on a
+# Galaxy S20+ that round trip measures p50 384ms / p90 2200ms
+# (click_to_result_ready_us, n=132) with the tail reaching the 5s capture
+# timeout. At 0.35s the phase was shorter than the MEDIAN capture, so it
+# scheduled 1-2 attempts, completed none, and reported under_sampled on every
+# Android run -- pre-dating the payload work.
+#
+# Sized to clear p90 with margin: ~6 attempts per device at
+# device_capture_requests_per_sec_per_device 2.2, and several completions at
+# p50. Superhuman remains distinguished from human by
+# superhuman_actions_per_tick, which is the burst intensity, not by being too
+# short to measure anything.
+#
+# WinRT completes inside 0.35s and was unaffected, which is why Windows always
+# reported healthy_baseline while Android never did.
+const SUPERHUMAN_PHASE_SEC_DEFAULT := 2.50
 # Rig captures are serialised (one in flight at a time, see _request_rig_capture)
 # and a rig result set takes ~0.9-1.5s to become ready on real hardware, so a rig
 # phase shorter than that cannot complete even one sample -- the old 0.70 default
@@ -3080,8 +3096,28 @@ func _baseline_validity_summary(exit_code: int, load_delivery: Dictionary) -> Di
 		var phase: Dictionary = phase_v
 		var status := str(phase.get("completion_status", ""))
 		if status == "under_sampled":
-			saw_under_sampled = true
-			reasons.append("phase_under_sampled:%s_%d" % [str(phase.get("bundle_label", "")), int(phase.get("phase_index", -1))])
+			# completion_status is "under_sampled" whenever minimums_met is false, and
+			# those minimums are RELATIVE: minimum_completions is
+			# ceil(expected_attempts * 0.5), and expected_attempts scales with the
+			# phase duration. So a phase that produced a perfectly usable sample count
+			# still misses the bar whenever the device cannot keep up with the rate the
+			# load model scheduled -- which is overload, not under-sampling. The
+			# measurement exists; there was simply less of it than was asked for, and
+			# lengthening the phase cannot help because the bar scales with it.
+			#
+			# Only an ABSOLUTE shortfall is genuinely under-sampled: fewer completions
+			# than the configured floor, or too few frames to characterise the phase.
+			# Conflating the two made every Android baseline read under_sampled when
+			# most of its signal was throughput, and under_sampled outranks
+			# overload_diagnostic, so the more actionable label was the one hidden.
+			var phase_completed := int(phase.get("completed", 0))
+			var phase_frames := int(phase.get("frame_count", 0))
+			if phase_completed < _minimum_completions_per_phase or phase_frames < _minimum_frames_per_phase:
+				saw_under_sampled = true
+				reasons.append("phase_under_sampled:%s_%d" % [str(phase.get("bundle_label", "")), int(phase.get("phase_index", -1))])
+			else:
+				saw_overload = true
+				reasons.append("phase_completion_below_expected:%s_%d" % [str(phase.get("bundle_label", "")), int(phase.get("phase_index", -1))])
 		elif status == "timeout":
 			saw_overload = true
 			reasons.append("phase_timeout:%s_%d" % [str(phase.get("bundle_label", "")), int(phase.get("phase_index", -1))])
