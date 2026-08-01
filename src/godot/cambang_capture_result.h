@@ -75,4 +75,9 @@ private:
   CamBANGServer* server_ = nullptr;
 };
 
+// Diagnostic: capture member materialisation counts, split by whether the
+// conversion was performed for the application or by the access-cost
+// calibration probe. Both are recorded under one evidence route.
+godot::Dictionary capture_materialization_stats();
+
 } // namespace cambang

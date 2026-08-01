@@ -4,6 +4,7 @@
 #include "godot/cambang_stream.h"
 #include "godot/cambang_stream_result.h"
 #include "godot/cambang_stream_result_internal.h"
+#include "godot/cambang_capture_result.h"
 #include "godot/result_access_cost_evidence.h"
 #include "godot/retained_result_access_calibration.h"
 #include "godot/synthetic_gpu_backing_bridge.h"
@@ -3700,7 +3701,9 @@ godot::Variant CamBANGServer::get_backing_plan_evaluation_diagnostics() const {
 }
 
 godot::Dictionary CamBANGServer::get_result_access_timing_evidence() const {
-  return result_access_cost_evidence::snapshot();
+  godot::Dictionary d = result_access_cost_evidence::snapshot();
+  d["capture_materializations"] = capture_materialization_stats();
+  return d;
 }
 
 godot::Variant CamBANGServer::get_synthetic_metrics_snapshot() const {

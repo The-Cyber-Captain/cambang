@@ -6,6 +6,7 @@
 #include "godot/result_access_cost_evidence.h"
 
 #include <chrono>
+#include <mutex>
 #include <type_traits>
 #include <variant>
 
@@ -14,6 +15,30 @@
 namespace cambang {
 
 namespace {
+
+// Capture materialisation is reached from two places, and the access-cost
+// evidence records both under one route, which hid the fact that every member
+// is converted twice: once by the application through to_image_member(), and
+// once by calibrate_capture_result() probing the real cost so it can classify
+// the access CHEAP vs EXPENSIVE.
+//
+// That was invisible and free while capture payloads were packed (~1.3ms per
+// conversion). With planar payloads it is ~24ms, so the probe alone accounted
+// for ~5s of Godot-thread work in an 87s soak. Splitting the counts is what
+// made it findable; keeping them split is what will make a regression here
+// findable again.
+std::mutex g_capture_materialization_counter_mutex;
+uint64_t g_capture_materializations_application = 0;
+uint64_t g_capture_materializations_calibration = 0;
+
+void note_capture_materialization(bool calibration) {
+  std::lock_guard<std::mutex> lock(g_capture_materialization_counter_mutex);
+  if (calibration) {
+    ++g_capture_materializations_calibration;
+  } else {
+    ++g_capture_materializations_application;
+  }
+}
 uint64_t result_access_now_ns() {
   return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count());
@@ -444,6 +469,7 @@ godot::Ref<godot::Image> perform_capture_to_image_member_access(const SharedCapt
   const uint64_t begin_ns = result_access_now_ns();
   godot::Ref<godot::Image> image;
   if (capture_member_has_cpu_payload(*member)) {
+    note_capture_materialization(/*calibration=*/false);
     image = payload_to_image(member->payload);
   } else if (member->payload_kind == ResultPayloadKind::GPU_SURFACE &&
              member->retained_gpu_backing) {
@@ -487,6 +513,7 @@ godot::Ref<godot::Image> perform_capture_to_image_member_cpu_payload_access(
         member ? member->retained_access_truth.to_image : ResultCapability::UNSUPPORTED);
     return image;
   }
+  note_capture_materialization(/*calibration=*/true);
   image = payload_to_image(member->payload);
   result_access_cost_evidence::record_capture_member_access(
       capture_to_image_evidence_route(member),
@@ -628,6 +655,14 @@ void CamBANGCaptureResult::_bind_methods() {
   BIND_CONSTANT(CAPABILITY_UNSUPPORTED);
   BIND_CONSTANT(IMAGE_ROLE_DEFAULT_METERED);
   BIND_CONSTANT(IMAGE_ROLE_ADDITIONAL_BRACKET);
+}
+
+godot::Dictionary capture_materialization_stats() {
+  std::lock_guard<std::mutex> lock(g_capture_materialization_counter_mutex);
+  godot::Dictionary d;
+  d["application"] = static_cast<uint64_t>(g_capture_materializations_application);
+  d["calibration"] = static_cast<uint64_t>(g_capture_materializations_calibration);
+  return d;
 }
 
 } // namespace cambang
