@@ -11,6 +11,9 @@ export_presets.cfg
 
 # Build outputs
 bin/*.dll
+# Windows leaves these behind when a build replaces a DLL that Godot still
+# has open; they accumulate silently and are never wanted.
+bin/~*.TMP
 bin/*.a
 bin/*.so
 bin/*.dylib

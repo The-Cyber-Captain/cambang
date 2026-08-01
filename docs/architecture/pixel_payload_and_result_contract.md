@@ -342,15 +342,15 @@ Emission by provider, as a **progress note only**:
 |---|---|---|---|---|---|---|
 | RGBA | yes | yes | yes | yes | yes | yes |
 | BGRA | no | yes | yes | yes | yes | yes |
-| NV12 | yes | no | yes | yes | yes | yes |
-| NV21 / I420 / YV12 | no | no | no | no | yes, device-resolved | yes, device-resolved |
+| NV12 | yes | yes | yes | yes | yes | yes |
+| NV21 / I420 / YV12 | yes | yes | no | no | yes, device-resolved | yes, device-resolved |
 | YUY2 / UYVY | no | no | no | no | no | no |
 
-Two gaps this table makes visible:
+WinRT is NV12-only among planar formats because `MediaPixelFormat` has exactly
+two uncompressed members, Bgra8 and Nv12. That is the API's limit, not a
+CamBANG one.
 
-- **Synthetic cannot capture planar.** Its capture path accepts only RGBA and
-  BGRA, so planar still-capture has no provider-independent verification case
-  and is proven only on hardware.
+One gap this table makes visible:
 - **Camera2 requests NV12 or I420 but may deliver NV21 or YV12.** The provider
   resolves the concrete family member from the observed strides and pointer
   order, and the retained payload carries the delivered FourCC, so payload
