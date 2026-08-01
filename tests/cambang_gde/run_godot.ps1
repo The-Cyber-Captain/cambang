@@ -2476,8 +2476,51 @@ $scriptParseLoadFailurePatterns = @(
     "Parse Error",
     "Failed to load script"
 )
-$scriptParseLoadFailureObserved = Test-PatternMatch -Text $combinedText -Patterns $scriptParseLoadFailurePatterns
-$hardFailureObserved = Test-PatternMatch -Text $combinedText -Patterns $HardFailurePatterns
+# Failure patterns describe text the SCENE emits, so they are matched against
+# the scene's own output rather than everything captured.
+#
+# On android the scene writes to logcat and nowhere else: stdout.log and
+# stderr.log hold harness narrative and adb tooling output. Matching those
+# too meant the harness could flag itself -- "Failed to read adb logcat.
+# Exit code: 255" satisfies the default (?im)^\s*FAIL(?:ED)? pattern, so a
+# lost adb transport was reported as hard_failure_pattern alongside
+# runner_exception and read like a scene failure during triage.
+#
+# On windows the Godot process's own stdout/stderr ARE those logs, so they
+# stay in scope. The harness verdict marker is still searched everywhere,
+# since finding it is never a false positive.
+# Failure patterns describe text the SCENE emits, so they are matched against
+# the scene's own output rather than everything captured.
+#
+# On android that means the app's logcat lines specifically, not the whole
+# device buffer and not the harness logs, for two separate reasons:
+#
+#   - stdout.log and stderr.log hold harness narrative and adb tooling output.
+#     Matching those let the harness flag itself: "Failed to read adb logcat.
+#     Exit code: 255" satisfies the default (?im)^\s*FAIL(?:ED)? pattern, so a
+#     lost adb transport was reported as hard_failure_pattern and read like a
+#     scene failure during triage.
+#
+#   - device_logcat.log is the whole device buffer, and every line carries a
+#     date/level/tag/pid prefix. An anchored pattern therefore never matched a
+#     scene's own FAIL text -- that backstop has never fired on android -- while
+#     simply stripping the prefix would expose unrelated system chatter to it
+#     ("Failed to delete /data/app/vmdl...tmp" matches perfectly well).
+#
+# Taking the godot-tagged lines and dropping their prefix gives the same text
+# the scene actually printed, so the patterns mean the same thing on both
+# targets. On windows the Godot process's own stdout/stderr already are that
+# text. The harness verdict marker is still searched everywhere, since finding
+# it is never a false positive.
+$sceneFailureText = if ($TargetOs -eq "android") {
+    $appLogPattern = '(?m)^\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\s+[VDIWEFS]/godot\s*\(\s*\d+\):\s?(.*)$'
+    (([regex]::Matches($deviceLogcatText, $appLogPattern) | ForEach-Object { $_.Groups[1].Value }) -join "`n")
+}
+else {
+    "$stdoutText`n$stderrText"
+}
+$scriptParseLoadFailureObserved = Test-PatternMatch -Text $sceneFailureText -Patterns $scriptParseLoadFailurePatterns
+$hardFailureObserved = Test-PatternMatch -Text $sceneFailureText -Patterns $HardFailurePatterns
 
 if ($null -eq $processExitCode -or [string]::IsNullOrWhiteSpace([string]$processExitCode)) {
     $processExitCode = $null
