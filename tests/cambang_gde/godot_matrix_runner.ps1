@@ -14,7 +14,9 @@
     Four axes, each a list:
 
       -TargetOs              windows | android      (the OS, not the provider)
-      -Renderers             compatibility | gl_compatibility | mobile | forward_plus
+      -Renderers             compatibility | gl_compatibility | mobile
+                             (forward_plus is rejected by run_godot.ps1 on every
+                              target; it needs a direct Godot invocation)
       -ProviderBackings      synthetic | platform   (Synthetic vs platform-backed)
       -ProviderOutputForms   auto | cpu_only | gpu_only | cpu_and_gpu
 
@@ -43,7 +45,13 @@ param(
     [ValidateSet("windows", "android")]
     [string[]]$TargetOs = @("windows"),
 
-    [ValidateSet("compatibility", "gl_compatibility", "mobile", "forward_plus")]
+    # run_godot.ps1 normalises these through Normalize-RenderingMethodValue and
+    # THROWS on anything else, on every target and not just Android -- so
+    # forward_plus is not offered here. Reaching it needs a direct Godot
+    # invocation, outside the launcher and therefore outside run-log capture.
+    # compatibility and gl_compatibility are the same value after
+    # normalisation and are de-duplicated below.
+    [ValidateSet("compatibility", "gl_compatibility", "mobile")]
     [string[]]$Renderers = @("compatibility"),
 
     [ValidateSet("synthetic", "platform")]
@@ -88,10 +96,20 @@ function Get-SceneTag {
     return $leaf
 }
 
+# Same renderer under two spellings would otherwise run twice for one result.
+$normalisedRenderers = @()
+foreach ($r in $Renderers) {
+    $n = if ($r -eq "compatibility") { "gl_compatibility" } else { $r }
+    if ($normalisedRenderers -notcontains $n) { $normalisedRenderers += $n }
+}
+if ($normalisedRenderers.Count -ne $Renderers.Count) {
+    Write-Host ("  note: renderers de-duplicated after normalisation: {0} -> {1}" -f ($Renderers -join ", "), ($normalisedRenderers -join ", ")) -ForegroundColor DarkYellow
+}
+
 $combinations = New-Object System.Collections.Generic.List[object]
 foreach ($scene in $Scenes) {
     foreach ($os in $TargetOs) {
-        foreach ($renderer in $Renderers) {
+        foreach ($renderer in $normalisedRenderers) {
             foreach ($backing in $ProviderBackings) {
                 foreach ($form in $ProviderOutputForms) {
                     $redundant = ($backing -eq "platform" -and $ProviderOutputForms.Count -gt 1)
@@ -120,7 +138,7 @@ foreach ($scene in $Scenes) {
 Write-Host ""
 Write-Host ("Matrix: {0} combination(s)" -f $combinations.Count) -ForegroundColor Cyan
 Write-Host ("  scenes={0}" -f ($Scenes -join ", "))
-Write-Host ("  targetOs={0}  renderers={1}" -f ($TargetOs -join ", "), ($Renderers -join ", "))
+Write-Host ("  targetOs={0}  renderers={1}" -f ($TargetOs -join ", "), ($normalisedRenderers -join ", "))
 Write-Host ("  providerBackings={0}  providerOutputForms={1}" -f ($ProviderBackings -join ", "), ($ProviderOutputForms -join ", "))
 if ($ProviderBackings -contains "platform" -and $ProviderOutputForms.Count -gt 1 -and -not $NoSkipRedundant) {
     Write-Host "  note: ProviderOutputForm variations skipped under platform backing (provider ignores them); -NoSkipRedundant to include" -ForegroundColor DarkYellow
