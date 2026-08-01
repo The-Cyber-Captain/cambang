@@ -18,6 +18,26 @@ struct CandidateMeasurement final {
   result_access_cost_evidence::RecordedAccessMeasurement measurement{};
 };
 
+// How many distinct routes could yield a measurement for this posture.
+//
+// Calibration exists solely to split CHEAP from EXPENSIVE among supported
+// non-ready candidates (contract 11.7), and
+// classify_supported_non_ready_result_access_from_normalized_costs returns the
+// provisional unchanged when fewer than two costs are supplied -- the
+// single-candidate rule. So when only one route can produce a measurement, the
+// probe cannot alter the outcome, and running it is pure cost. An unrefined
+// record resolves to the provisional anyway (refined < 0), so skipping
+// refinement lands on the identical answer.
+//
+// This matters now because a planar CPU payload's probe is a full-frame
+// conversion (~24ms at 1280x720) rather than the ~1.3ms a packed one cost.
+int countable_to_image_candidate_routes(bool has_retained_cpu_payload,
+                                        bool has_retained_gpu_backing,
+                                        bool gpu_materialization_available) noexcept {
+  return (has_retained_cpu_payload ? 1 : 0) +
+         ((has_retained_gpu_backing && gpu_materialization_available) ? 1 : 0);
+}
+
 ResultCapability classify_supported_non_ready_from_measurements(
     ResultCapability provisional,
     const std::vector<CandidateMeasurement>& candidates) noexcept {
@@ -242,6 +262,13 @@ void calibrate_stream_result(const SharedStreamResultData& data,
   }
 
   if (data->retained_access_truth.to_image != ResultCapability::UNSUPPORTED) {
+    if (countable_to_image_candidate_routes(
+            data->access_posture.has_retained_cpu_payload,
+            data->access_posture.has_retained_gpu_backing,
+            data->access_posture.gpu_materialization_available) < 2) {
+      report_stream_to_image_observation(data, runtime);
+      return;
+    }
     if (data->access_posture.has_retained_cpu_payload) {
       (void)CamBANGStreamResult::calibrate_to_image_cpu_payload_for_retained_access(data);
     }
@@ -284,6 +311,13 @@ void calibrate_capture_result(const SharedCaptureResultData& data,
     // A posture_id of 0 means the store could not resolve one, so that member
     // falls back to being measured on its own rather than sharing a stranger's
     // answer.
+    if (countable_to_image_candidate_routes(
+            member->access_posture.has_retained_cpu_payload,
+            member->access_posture.has_retained_gpu_backing,
+            member->access_posture.gpu_materialization_available) < 2) {
+      report_capture_to_image_observation(data, *member, runtime);
+      continue;
+    }
     const uint64_t posture_id = member->access_posture.posture_id;
     const auto already = posture_to_image_classification.find(posture_id);
     if (posture_id != 0 && already != posture_to_image_classification.end()) {
