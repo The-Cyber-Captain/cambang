@@ -538,16 +538,30 @@ against SyntheticProvider retained an RGBA stream result reporting
 backing path was taken. Do not reason about which backing form applies from
 the renderer setting alone; read the retained result's `payload_kind`.
 
-This matters because of an open defect it exposes. In that same run the RGBA
-stream reported `can_get_display_view() == 0` indefinitely and the planar
-stream reported `result_live` true while `get_result()` returned null
-throughout, so nothing ever displayed. That is the display-demand deadlock:
-the synthetic GPU backing only refreshes while display demand is active,
-demand is established by *calling* `get_display_view()`, and a caller that
-gates on `can_get_display_view()` before calling it therefore never
-establishes demand. It is not specific to Windows under Mobile/Forward+, which
-is where it was first seen; it is reachable wherever the synthetic GPU backing
-is taken, Android included.
+**ResultCapability is READY=0, CHEAP=1, EXPENSIVE=2, UNSUPPORTED=3.** Zero is
+the BEST answer, not the absent one, and a GPU-backed stream's display view is
+exactly the READY case. This is stated here because an earlier revision of this
+section recorded, as a defect, that a GPU-backed stream "reported
+`can_get_display_view() == 0` indefinitely and nothing ever displayed". There
+was no such defect: the result was READY throughout. The caller -- scene 570 --
+tested the value against 0 as though it meant unsupported, skipped a usable
+display view, and returned from its per-frame block, which starved the panels
+below it so one mis-skipped panel presented as three failing. See b22d261 and
+the revert in 7f139d8.
+
+Two things made that inversion durable, and both are worth avoiding. The
+comparison used a bare `0` rather than the bound `CAPABILITY_UNSUPPORTED`
+constant, so nothing at the call site said what the number meant. And because
+only a GPU-backed stream reports READY for display, while the project pins
+`gl_compatibility` where no GPU backing arises, it never fired in ordinary runs
+-- it appeared only under a renderer with a RenderingDevice, which made it look
+like a platform-specific fault in Core or the provider.
+
+The display-demand mechanism itself is sound. Demand is established by calling
+`get_display_view()`, and the returned texture holds a persistent demand token
+for as long as the caller keeps it, so uploads continue for a bound panel; a
+demand trace under `--rendering-method mobile` shows demand going active once
+and never lapsing.
 
 Planar formats are excluded from GPU backing on both the stream and capture
 sides (`query_stream_producer_capabilities_`,
