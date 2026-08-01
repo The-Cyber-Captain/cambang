@@ -449,16 +449,28 @@ const char* expected_abort_evidence(const ChildRunResult& result) {
 // lines were indistinguishable in the transcript: every [CamBANG] line came
 // from a separate spawned process, and nothing said so or said that one of
 // those processes was killed part-way through.
-void replay_child_output(const char* child_label, const std::string& output) {
+// Detail is buffered, not printed. A green run says one line, matching
+// core_spine_smoke and provider_compliance_verify. The spawned-child
+// narrative is exactly what is wanted when a check fails and noise when it
+// passes; --verbose forces it.
+bool g_verbose = false;
+std::string g_log;
+
+void buffer_line(const std::string& text) {
+  g_log += text;
+  g_log += '\n';
+}
+
+void buffer_child_output(const char* child_label, const std::string& output) {
+  const std::string prefix = std::string("[watchdog_verify][") + child_label + "] ";
   if (output.empty()) {
-    std::fprintf(stdout, "[watchdog_verify][%s] (child produced no output)\n", child_label);
-    std::fflush(stdout);
+    buffer_line(prefix + "(child produced no output)");
     return;
   }
   std::string line;
   for (const char c : output) {
     if (c == '\n') {
-      std::fprintf(stdout, "[watchdog_verify][%s] %s\n", child_label, line.c_str());
+      buffer_line(prefix + line);
       line.clear();
       continue;
     }
@@ -467,8 +479,15 @@ void replay_child_output(const char* child_label, const std::string& output) {
     }
   }
   if (!line.empty()) {
-    std::fprintf(stdout, "[watchdog_verify][%s] %s\n", child_label, line.c_str());
+    buffer_line(prefix + line);
   }
+}
+
+void flush_log_if_wanted(bool failed) {
+  if (!failed && !g_verbose) {
+    return;
+  }
+  std::fwrite(g_log.data(), 1, g_log.size(), stdout);
   std::fflush(stdout);
 }
 
@@ -712,7 +731,18 @@ int main(int argc, char** argv) {
   if (argc == 2 && std::strcmp(argv[1], kFailedLatchChildArgument) == 0) {
     return run_failed_latch_child();
   }
-  if (argc != 1) {
+
+  // Parent mode only: child processes always narrate, since the parent captures
+  // their output and decides whether it is wanted.
+  bool unrecognised_argument = false;
+  for (int i = 1; i < argc; ++i) {
+    if (std::strcmp(argv[i], "--verbose") == 0) {
+      g_verbose = true;
+      continue;
+    }
+    unrecognised_argument = true;
+  }
+  if (unrecognised_argument) {
     std::fprintf(stdout,
                  "FAIL core_thread_liveness_watchdog_verify reason=invalid_arguments\n");
     return 1;
@@ -721,20 +751,25 @@ int main(int argc, char** argv) {
   // Mode 1: maintainer abort death test (unchanged contract).
   const ChildRunResult child =
       run_death_child_process(argv[0], kDeathChildArgument, kDeathChildTimeout);
-  std::fprintf(stdout,
-               "[watchdog_verify] check 1/2 abort_death_test: spawned a child process, "
-               "expecting the watchdog to abort it\n");
-  replay_child_output("abort_child", child.output);
+  buffer_line(
+      "[watchdog_verify] check 1/2 abort_death_test: spawned a child process, "
+      "expecting the watchdog to abort it");
+  buffer_child_output("abort_child", child.output);
 
   const bool stale_log_seen =
       child.output.find("[CamBANG][CoreThread] stale task detected:") != std::string::npos;
   const bool expected_abort = child_terminated_via_expected_abort(child);
-  std::fprintf(stdout,
-               "[watchdog_verify] abort_child terminated: exit_code=%llu evidence=%s\n",
-               static_cast<unsigned long long>(child.exit_code),
-               expected_abort_evidence(child));
+  {
+    char line[256];
+    std::snprintf(line, sizeof(line),
+                  "[watchdog_verify] abort_child terminated: exit_code=%llu evidence=%s",
+                  static_cast<unsigned long long>(child.exit_code),
+                  expected_abort_evidence(child));
+    buffer_line(line);
+  }
   if (!child.launched || child.timed_out || !child.launch_error.empty() ||
       !stale_log_seen || !expected_abort) {
+    flush_log_if_wanted(/*failed=*/true);
     std::fprintf(
         stdout,
         "FAIL core_thread_liveness_watchdog_verify run=2 ok=0 failed=1 launched=%s timed_out=%s "
@@ -751,10 +786,10 @@ int main(int argc, char** argv) {
   // Mode 2: production failed-latch semantics (abort suppressed in child).
   const ChildRunResult latch_child = run_death_child_process(
       argv[0], kFailedLatchChildArgument, kFailedLatchChildTimeout);
-  std::fprintf(stdout,
-               "[watchdog_verify] check 2/2 failed_latch: spawned a child process with the "
-               "maintainer abort suppressed, expecting the 15s hard-threshold latch\n");
-  replay_child_output("latch_child", latch_child.output);
+  buffer_line(
+      "[watchdog_verify] check 2/2 failed_latch: spawned a child process with the "
+      "maintainer abort suppressed, expecting the 15s hard-threshold latch");
+  buffer_child_output("latch_child", latch_child.output);
 
   const bool latch_log_seen =
       latch_child.output.find("[CamBANG][CoreThread] runtime declared FAILED") !=
@@ -763,6 +798,7 @@ int main(int argc, char** argv) {
       latch_child.output.find("failed-latch child assertions satisfied") != std::string::npos;
   if (!latch_child.launched || latch_child.timed_out || !latch_child.launch_error.empty() ||
       latch_child.exit_code != 0 || !latch_log_seen || !latch_assertions_seen) {
+    flush_log_if_wanted(/*failed=*/true);
     std::fprintf(
         stdout,
         "FAIL core_thread_liveness_watchdog_verify run=2 ok=1 failed=1 mode=failed_latch launched=%s "
@@ -777,8 +813,7 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  std::fprintf(stdout, "check 1/2 OK (abort death test)\n");
-  std::fprintf(stdout, "check 2/2 OK (failed-latch semantics)\n");
+  flush_log_if_wanted(/*failed=*/false);
   // Tally first, matching core_spine_smoke and provider_compliance_verify;
   // the diagnostic keys follow it rather than replace it.
   std::fprintf(stdout,

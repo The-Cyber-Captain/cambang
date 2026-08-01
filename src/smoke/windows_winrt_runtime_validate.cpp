@@ -237,21 +237,50 @@ struct HarnessCallbacks final : IProviderCallbacks {
 };
 
 int g_failures = 0;
+int g_checks = 0;
+bool g_verbose = false;
+
+// Per-check detail is buffered rather than printed. A green run says one
+// line, matching core_spine_smoke and provider_compliance_verify; the
+// intermediate detail is what you want when something fails, and noise the
+// rest of the time. --verbose forces it, as it does in
+// provider_compliance_verify.
+std::string g_log;
+
+void log_line(const std::string& text) {
+  g_log += text;
+  g_log += '\n';
+}
 
 void check(bool ok, const char* label) {
-  std::printf("[winrt_runtime_validate] %s %s\n", ok ? "PASS" : "FAIL", label);
+  ++g_checks;
   if (!ok) {
     ++g_failures;
   }
+  log_line(std::string("[winrt_runtime_validate] ") + (ok ? "PASS " : "FAIL ") + label);
 }
 
 void note(const std::string& label, const std::string& detail) {
-  std::printf("[winrt_runtime_validate] INFO %s %s\n", label.c_str(), detail.c_str());
+  log_line("[winrt_runtime_validate] INFO " + label + " " + detail);
+}
+
+// Replays buffered detail when it is wanted, before the verdict line.
+void flush_log_if_wanted() {
+  if (g_failures == 0 && !g_verbose) {
+    return;
+  }
+  std::fwrite(g_log.data(), 1, g_log.size(), stdout);
+  std::fflush(stdout);
 }
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  for (int i = 1; i < argc; ++i) {
+    if (std::string(argv[i]) == "--verbose") {
+      g_verbose = true;
+    }
+  }
   const ProviderAccessStatus access = WinrtCameraProvider::check_access_readiness();
   note("access_readiness", access.stable_reason);
   if (!access.ok()) {
@@ -275,8 +304,10 @@ int main() {
     note("endpoint", ep.name + " [" + ep.hardware_id + "]");
   }
   if (endpoints.empty()) {
-    std::printf("[winrt_runtime_validate] SKIP no_camera_endpoint_present\n");
+    log_line("[winrt_runtime_validate] SKIP no_camera_endpoint_present");
     (void)provider.shutdown();
+    flush_log_if_wanted();
+    std::printf("SKIP windows_winrt_runtime_validate reason=no_camera_endpoint_present\n");
     return 2;
   }
 
@@ -935,7 +966,11 @@ int main() {
     diag_thread.join();
   }
 
-  std::printf("[winrt_runtime_validate] %s failures=%d\n",
-              g_failures == 0 ? "RESULT PASS" : "RESULT FAIL", g_failures);
+  flush_log_if_wanted();
+  std::printf("%s windows_winrt_runtime_validate run=%d ok=%d failed=%d\n",
+              g_failures == 0 ? "PASS" : "FAIL",
+              g_checks,
+              g_checks - g_failures,
+              g_failures);
   return g_failures == 0 ? 0 : 1;
 }
