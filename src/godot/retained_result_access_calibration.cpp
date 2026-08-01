@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 #include "core/core_runtime.h"
@@ -239,12 +240,36 @@ void calibrate_capture_result(const SharedCaptureResultData& data,
   if (!data) {
     return;
   }
+  std::unordered_map<uint64_t, ResultCapability> posture_to_image_classification;
   for (uint32_t i = 0; i < data->image_member_count(); ++i) {
     const auto* member = data->image_member_at(i);
     if (!member) {
       continue;
     }
     if (member->retained_access_truth.to_image == ResultCapability::UNSUPPORTED) {
+      report_capture_to_image_observation(data, *member, runtime);
+      continue;
+    }
+    // One measurement per posture, not per member.
+    //
+    // A posture already encodes everything that determines access cost --
+    // payload kind, dimensions, format, which backings are retained -- so
+    // every member sharing one has the same answer. Probing each member ran a
+    // full materialisation per member to re-derive an identical result: a
+    // five-member bracket paid five conversions to classify one posture. That
+    // was free while capture payloads were packed (~1.3ms) and became ~24ms
+    // each once captures carried planar payloads.
+    //
+    // A posture_id of 0 means the store could not resolve one, so that member
+    // falls back to being measured on its own rather than sharing a stranger's
+    // answer.
+    const uint64_t posture_id = member->access_posture.posture_id;
+    const auto already = posture_to_image_classification.find(posture_id);
+    if (posture_id != 0 && already != posture_to_image_classification.end()) {
+      refine_result_access_classification(
+          member->access_classification,
+          CoreResultAccessOperation::TO_IMAGE,
+          already->second);
       report_capture_to_image_observation(data, *member, runtime);
       continue;
     }
@@ -258,6 +283,14 @@ void calibrate_capture_result(const SharedCaptureResultData& data,
           data, member->image_member_index);
     }
     refine_capture_to_image_classification(*member);
+    if (posture_id != 0 && member->access_classification) {
+      const int refined = member->access_classification->to_image.load(
+          std::memory_order_acquire);
+      if (refined >= 0) {
+        posture_to_image_classification.emplace(
+            posture_id, static_cast<ResultCapability>(refined));
+      }
+    }
     report_capture_to_image_observation(data, *member, runtime);
   }
 }
