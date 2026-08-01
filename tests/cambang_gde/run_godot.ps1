@@ -1,7 +1,13 @@
 param(
     [string]$GodotExe = "C:\Program Files\Godot4.5\Godot_v4.5.1-stable_win64_console.exe",
     [string]$ProjectPath = $PSScriptRoot,
-    [ValidateSet("windows", "android")][string]$RunPlatform = "windows",
+    # The OS this run targets. Named TargetOs rather than RunPlatform because
+    # "platform" already means something else here -- a platform-BACKED provider
+    # (WinRT, Camera2) as opposed to Synthetic -- and a matrix run varies both
+    # independently. RunPlatform remains as an alias so existing invocations and
+    # documented examples keep working.
+    [Alias("RunPlatform")]
+    [ValidateSet("windows", "android")][string]$TargetOs = "windows",
     [string]$Scene = "",
     [string]$Script = "",
     [int]$QuitAfter = 0,
@@ -2277,7 +2283,7 @@ $runIdentity = Get-RunIdentity `
     -ExplicitLabel $RunLabel `
     -ScenePath $Scene `
     -ScriptPath $Script `
-    -Platform $RunPlatform `
+    -Platform $TargetOs `
     -IsWindowed:$Windowed
 
 $commandText = ""
@@ -2291,7 +2297,7 @@ $androidHarnessVerdict = $null
 $androidSawAppRunning = $false
 $runnerErrorMessage = ""
 
-if ($RunPlatform -eq "windows") {
+if ($TargetOs -eq "windows") {
     $arguments = New-Object System.Collections.Generic.List[string]
     $extraArgBuckets = Get-WindowsGodotExtraArgBuckets -ExtraArgValues $ExtraArgs
 
@@ -2490,7 +2496,7 @@ if (-not [string]::IsNullOrWhiteSpace($runnerErrorMessage)) {
     $verdictReasons.Add("runner_exception")
 }
 
-if ($RunPlatform -eq "android" -and -not $androidSawAppRunning -and -not $harnessVerdictObserved) {
+if ($TargetOs -eq "android" -and -not $androidSawAppRunning -and -not $harnessVerdictObserved) {
     $verdictReasons.Add("app_never_observed_running")
 }
 
@@ -2564,7 +2570,7 @@ else {
     1
 }
 $logRecord = Finalize-LogRecord -LogRecord $logRecord -Bucket $bucket
-$finalDeviceLogcatPath = if ($RunPlatform -eq "android") {
+$finalDeviceLogcatPath = if ($TargetOs -eq "android") {
     Join-Path $logRecord.RunDir "device_logcat.log"
 }
 else {
@@ -2578,7 +2584,7 @@ if (-not [string]::IsNullOrWhiteSpace($logRecord.StdoutPath)) {
 if (-not [string]::IsNullOrWhiteSpace($logRecord.StderrPath)) {
     $structuredRecordSourceLogs[$logRecord.StderrPath] = $true
 }
-if ($RunPlatform -eq "android") {
+if ($TargetOs -eq "android") {
     $deviceLogcatPath = $finalDeviceLogcatPath
 }
 if (-not [string]::IsNullOrWhiteSpace($deviceLogcatPath) -and (Test-Path $deviceLogcatPath)) {
@@ -2590,7 +2596,7 @@ $androidRecordFileResult = [ordered]@{
     StructuredRecords = @()
     Scene870SummaryJson = $null
 }
-if ($RunPlatform -eq "android" -and -not [string]::IsNullOrWhiteSpace($deviceLogcatText) -and -not [string]::IsNullOrWhiteSpace($androidPackageName)) {
+if ($TargetOs -eq "android" -and -not [string]::IsNullOrWhiteSpace($deviceLogcatText) -and -not [string]::IsNullOrWhiteSpace($androidPackageName)) {
     $androidRecordFileResult = Recover-AndroidStructuredRecordFiles `
         -RunDir $logRecord.RunDir `
         -LogText $deviceLogcatText `
@@ -2616,7 +2622,7 @@ if ($null -ne $androidRecordFileResult.Scene870SummaryJson -and -not [string]::I
 
 $meta = [ordered]@{
     timestamp_utc = $logRecord.TimestampUtc.ToString("o")
-    run_platform = $RunPlatform
+    run_platform = $TargetOs
     run_identity = $runIdentity
     run_label = $RunLabel
     verdict = $finalVerdict
@@ -2643,7 +2649,7 @@ $meta = [ordered]@{
     structured_records = @($combinedStructuredRecords.ToArray())
 }
 
-if ($RunPlatform -eq "android") {
+if ($TargetOs -eq "android") {
     $meta["android_sdk_root"] = $(Resolve-AndroidSdkRootPath -ExplicitSdkRoot $AndroidSdkRoot)
     $meta["adb_exe"] = $(Resolve-AdbExePath -ExplicitAdbExe $AdbExe -SdkRoot $meta["android_sdk_root"])
     $meta["android_export_preset"] = $AndroidExportPreset

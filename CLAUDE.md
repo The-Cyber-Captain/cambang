@@ -54,7 +54,7 @@ iterate against.
 ```powershell
 # Single scene (from tests/cambang_gde/)
 .\run_godot.ps1 -Scene res://scenes/66_public_lifecycle_verify.tscn -Windowed -CaptureLogs -TimeoutSec 60 -RunLabel scene66
-# Android variant: add -RunPlatform android (exports APK, deploys over adb).
+# Android variant: add -TargetOs android (exports APK, deploys over adb).
 # This works directly/unsandboxed on this machine — run it yourself when a
 # tranche requires Android coverage; don't defer it to the maintainer.
 # Android always runs windowed regardless; -Windowed is the Windows-side knob.
@@ -62,6 +62,15 @@ iterate against.
 
 # Broad suite (scenes + status-panel fixtures)
 .\godot_test_suite.ps1
+
+# Matrix across target OS / renderer / provider backing / producer output form.
+# One child process per combination; -DryRun prints the matrix without running.
+# "platform" means a platform-BACKED provider here, never the OS -- the OS axis
+# is -TargetOs, which is also run_godot.ps1's parameter name (was -RunPlatform).
+.\godot_matrix_runner.ps1 -Scenes res://scenes/870_to_image_soak_benchmark.tscn `
+  -TargetOs windows,android -Renderers compatibility,mobile `
+  -ProviderBackings synthetic,platform -ProviderOutputForms cpu_only,gpu_only `
+  -TimeoutSec 600 -AndroidDeviceSerial <serial>
 
 # Render-teardown stress gates
 .\run_cpu_display_teardown_race_stress.ps1 -Iterations 25 -TimeoutSec 30
