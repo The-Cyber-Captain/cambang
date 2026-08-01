@@ -3699,6 +3699,10 @@ godot::Variant CamBANGServer::get_backing_plan_evaluation_diagnostics() const {
   return godot::Variant(evaluation_reports);
 }
 
+godot::Dictionary CamBANGServer::get_result_access_timing_evidence() const {
+  return result_access_cost_evidence::snapshot();
+}
+
 godot::Variant CamBANGServer::get_synthetic_metrics_snapshot() const {
   if (!runtime_.is_running()) {
     return godot::Variant();
@@ -4288,6 +4292,7 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("advance_timeline", "dt_ns"), &CamBANGServer::advance_timeline);
   godot::ClassDB::bind_method(godot::D_METHOD("get_state_snapshot"), &CamBANGServer::get_state_snapshot);
   godot::ClassDB::bind_method(godot::D_METHOD("get_synthetic_metrics_snapshot"), &CamBANGServer::get_synthetic_metrics_snapshot);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_result_access_timing_evidence"), &CamBANGServer::get_result_access_timing_evidence);
   godot::ClassDB::bind_method(godot::D_METHOD("get_backing_plan_evaluation_diagnostics"), &CamBANGServer::get_backing_plan_evaluation_diagnostics);
   godot::ClassDB::bind_method(godot::D_METHOD("enumerate_devices"), &CamBANGServer::enumerate_devices);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device_for_hardware_id", "hardware_id"), &CamBANGServer::get_device_for_hardware_id);

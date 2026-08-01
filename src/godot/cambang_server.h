@@ -111,6 +111,12 @@ public:
   godot::Variant get_active_provider_config() const;
   godot::Dictionary get_provider_support() const;
   godot::Variant get_synthetic_metrics_snapshot() const;
+  // Per-access cost evidence, provider-neutral. The same evidence is also
+  // embedded in get_synthetic_metrics_snapshot(), but that accessor returns
+  // nothing unless a SyntheticProvider snapshot is available, which made the
+  // measurement unreachable on exactly the platform-backed runs where access
+  // cost matters most.
+  godot::Dictionary get_result_access_timing_evidence() const;
   // Provider-neutral view of Core's backing-plan evaluation reports, sourced
   // directly from CoreRuntime rather than through the synthetic-metrics crutch,
   // so it is available under every provider. Returns a NIL Variant when the

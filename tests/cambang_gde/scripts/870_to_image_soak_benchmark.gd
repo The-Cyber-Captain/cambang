@@ -2900,6 +2900,11 @@ func _build_summary(exit_code: int, expected_unsupported: bool) -> Dictionary:
 		"cpu_display_refresh_observation": _cpu_display_refresh_observation_summary(
 			synthetic_metrics
 		),
+		# Per-access cost, provider-neutral. Separates fresh_result_* (first access
+		# to a given retained result) from repeat_* (a later access to the same
+		# one), which is the only direct evidence of whether memoising the
+		# conversion would ever hit on a real access pattern.
+		"result_access_timing_evidence": CamBANGServer.get_result_access_timing_evidence(),
 		"acquisition_session_settlement_probe": acquisition_session_settlement_probe,
 		"run_quality_warnings": _run_quality_warnings_summary(
 			acquisition_session_settlement_probe,
