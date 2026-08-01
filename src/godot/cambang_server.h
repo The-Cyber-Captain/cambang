@@ -324,6 +324,11 @@ private:
     uint64_t capture_id = 0;
     uint64_t acquisition_session_id = 0;
     uint64_t member_identity_signature = 0;
+    // Shape only: member count, per-member index, posture id and to_image
+    // truth. Deliberately excludes capture_id and retained_frame_id, which
+    // member_identity_signature above mixes in, so this survives across
+    // captures of the same access domain.
+    uint64_t member_shape_signature = 0;
     uint64_t evaluation_identity = 0;
     uint64_t due_after_ns = 0;
   };

@@ -1287,6 +1287,37 @@ static uint64_t mix_identity_u64(uint64_t seed, uint64_t value) noexcept {
   return seed;
 }
 
+// Access-domain shape of a capture result, independent of which capture it is.
+//
+// build_capture_member_identity_signature() below mixes in capture_id and each
+// member's retained_frame_id, both unique per capture, so any equality test
+// using it is false for every subsequent capture by construction. That is
+// correct for asking "is the result I armed against still in front of me?" and
+// wrong for asking "have I already calibrated this access domain?" -- the
+// second question is what contract 11.7 answers with the backing-plan
+// live-acceptance boundary, and using the per-capture signature for it made
+// calibration re-arm on every capture.
+static uint64_t build_capture_member_shape_signature(
+    const SharedCaptureResultData& data) noexcept {
+  if (!data) {
+    return 0;
+  }
+  uint64_t signature = 0;
+  signature = mix_identity_u64(signature, data->image_member_count());
+  for (uint32_t i = 0; i < data->image_member_count(); ++i) {
+    const auto* member = data->image_member_at(i);
+    if (!member) {
+      continue;
+    }
+    signature = mix_identity_u64(signature, member->image_member_index);
+    signature = mix_identity_u64(signature, member->access_posture.posture_id);
+    signature = mix_identity_u64(
+        signature,
+        static_cast<uint64_t>(member->retained_access_truth.to_image));
+  }
+  return signature;
+}
+
 static uint64_t build_capture_member_identity_signature(
     const SharedCaptureResultData& data) noexcept {
   if (!data) {
@@ -3195,6 +3226,7 @@ void CamBANGServer::_arm_live_retained_result_access_calibration_from_snapshot_(
     armed.acquisition_session_id = result->acquisition_session_id;
     armed.member_identity_signature =
         build_capture_member_identity_signature(result);
+    armed.member_shape_signature = build_capture_member_shape_signature(result);
     bool needs_settle_delay = false;
     for (uint32_t i = 0; i < result->image_member_count(); ++i) {
       const auto* member = result->image_member_at(i);
@@ -3212,11 +3244,20 @@ void CamBANGServer::_arm_live_retained_result_access_calibration_from_snapshot_(
         same_capture_identity(pending_it->second, result, armed.evaluation_identity)) {
       continue;
     }
+    // Suppression keys on the access domain -- device, acquisition session,
+    // backing-plan evaluation, and member shape -- not on the capture. Per
+    // contract 11.7 renewal is launched from the backing-plan live-acceptance
+    // boundary, so a session recalibrates when the realized backing
+    // state/access domain changes and not once per capture.
     const auto completed_it =
         completed_live_capture_retained_result_calibrations_.find(
             session.device_instance_id);
     if (completed_it != completed_live_capture_retained_result_calibrations_.end() &&
-        same_capture_identity(completed_it->second, result, armed.evaluation_identity)) {
+        completed_it->second.device_instance_id == armed.device_instance_id &&
+        completed_it->second.acquisition_session_id == armed.acquisition_session_id &&
+        completed_it->second.evaluation_identity == armed.evaluation_identity &&
+        completed_it->second.member_shape_signature == armed.member_shape_signature &&
+        armed.member_shape_signature != 0) {
       continue;
     }
     pending_live_capture_retained_result_calibrations_[session.device_instance_id] =
