@@ -19,6 +19,7 @@
                               target; it needs a direct Godot invocation)
       -ProviderBackings      synthetic | platform   (Synthetic vs platform-backed)
       -ProviderOutputForms   auto | cpu_only | gpu_only | cpu_and_gpu
+      -AndroidDeviceSerials  adb serials, or tag=serial (android only)
 
     "platform" is deliberately confined to -ProviderBackings. The OS axis is
     -TargetOs, matching the parameter of the same name on run_godot.ps1, which
@@ -70,7 +71,20 @@ param(
     # actually determines whether a seed means anything.
     [string]$BenchSeed = "",
 
-    [string]$AndroidDeviceSerial = "",
+    # Android device axis. Multiplies the android combinations only; windows
+    # runs ignore it. Each entry is either a bare adb serial or "tag=serial",
+    # where the tag is used in the run label.
+    #
+    # A wireless endpoint is a valid serial ("192.168.32.223:5555"), but its
+    # punctuation cannot go in a run-directory name and run labels are already
+    # close to the Windows path limit -- see the hammer_thermal note in scene
+    # 870. Bare serials are therefore sanitised and shortened for the label;
+    # supply "quest3=192.168.32.223:5555" when you want a label you chose.
+    #
+    # Left empty, run_godot.ps1 resolves the device itself, which succeeds only
+    # when exactly one device is in adb "device" state and throws otherwise.
+    [Alias("AndroidDeviceSerial")]
+    [string[]]$AndroidDeviceSerials = @(),
 
     # Print the matrix and the exact run_godot.ps1 arguments without running.
     [switch]$DryRun,
@@ -96,6 +110,41 @@ function Get-SceneTag {
     return $leaf
 }
 
+function Get-DeviceAxisEntries {
+    param([string[]]$Entries)
+
+    $parsed = New-Object System.Collections.Generic.List[object]
+    if ($Entries.Count -eq 0) {
+        # No device axis: one android run per other-axis combination, with
+        # run_godot.ps1 resolving the device (single attached device only).
+        $parsed.Add([pscustomobject]@{ Tag = ""; Serial = "" })
+        return $parsed
+    }
+    foreach ($entry in $Entries) {
+        $tag = ""
+        $serial = $entry
+        $split = $entry.IndexOf("=")
+        if ($split -gt 0) {
+            $tag = $entry.Substring(0, $split).Trim()
+            $serial = $entry.Substring($split + 1).Trim()
+        }
+        if ([string]::IsNullOrWhiteSpace($serial)) {
+            throw "Empty adb serial in -AndroidDeviceSerials entry: '$entry'"
+        }
+        if ([string]::IsNullOrWhiteSpace($tag)) {
+            # Sanitise for a directory name, then keep the tail, which is the
+            # distinctive part of both a hardware serial and a host:port.
+            $tag = ($serial -replace "[^A-Za-z0-9]", "_")
+            if ($tag.Length -gt 12) { $tag = $tag.Substring($tag.Length - 12) }
+            $tag = $tag.Trim("_")
+        }
+        $parsed.Add([pscustomobject]@{ Tag = $tag; Serial = $serial })
+    }
+    return $parsed
+}
+
+$deviceAxis = Get-DeviceAxisEntries -Entries $AndroidDeviceSerials
+
 # Same renderer under two spellings would otherwise run twice for one result.
 $normalisedRenderers = @()
 foreach ($r in $Renderers) {
@@ -116,19 +165,27 @@ foreach ($scene in $Scenes) {
                     if ($redundant -and -not $NoSkipRedundant -and $form -ne $ProviderOutputForms[0]) {
                         continue
                     }
-                    $tag = Get-SceneTag -ScenePath $scene
-                    $labelParts = @()
-                    if (-not [string]::IsNullOrWhiteSpace($LabelPrefix)) { $labelParts += $LabelPrefix }
-                    $labelParts += @("scene$tag", $os, $renderer, $backing)
-                    if ($backing -eq "synthetic") { $labelParts += $form }
-                    $combinations.Add([pscustomobject]@{
-                        Scene    = $scene
-                        TargetOs = $os
-                        Renderer = $renderer
-                        Backing  = $backing
-                        Form     = $form
-                        Label    = ($labelParts -join "_")
-                    })
+                    # The device axis multiplies android only; a windows run has
+                    # no adb device, so it takes a single empty entry.
+                    $devicesForOs = if ($os -eq "android") { $deviceAxis } else { @([pscustomobject]@{ Tag = ""; Serial = "" }) }
+                    foreach ($device in $devicesForOs) {
+                        $tag = Get-SceneTag -ScenePath $scene
+                        $labelParts = @()
+                        if (-not [string]::IsNullOrWhiteSpace($LabelPrefix)) { $labelParts += $LabelPrefix }
+                        $labelParts += @("scene$tag", $os)
+                        if (-not [string]::IsNullOrWhiteSpace($device.Tag)) { $labelParts += $device.Tag }
+                        $labelParts += @($renderer, $backing)
+                        if ($backing -eq "synthetic") { $labelParts += $form }
+                        $combinations.Add([pscustomobject]@{
+                            Scene    = $scene
+                            TargetOs = $os
+                            Renderer = $renderer
+                            Backing  = $backing
+                            Form     = $form
+                            Serial   = $device.Serial
+                            Label    = ($labelParts -join "_")
+                        })
+                    }
                 }
             }
         }
@@ -145,6 +202,16 @@ if ($ProviderBackings -contains "platform" -and $ProviderOutputForms.Count -gt 1
 }
 if ($TargetOs -contains "platform") {
     Write-Host "  note: 'platform' is a provider backing, not a target OS" -ForegroundColor DarkYellow
+}
+if ($TargetOs -contains "android" -and $AndroidDeviceSerials.Count -gt 0) {
+    Write-Host ("  androidDevices={0}" -f (($deviceAxis | ForEach-Object { "$($_.Tag)=$($_.Serial)" }) -join ", "))
+}
+elseif ($TargetOs -contains "android") {
+    Write-Host "  androidDevices=(auto-resolved; run_godot.ps1 throws unless exactly one device is attached)" -ForegroundColor DarkYellow
+}
+$longest = ($combinations | ForEach-Object { $_.Label.Length } | Measure-Object -Maximum).Maximum
+if ($longest -gt 70) {
+    Write-Host ("  note: longest run label is {0} chars; run directory names also carry a timestamp and scene name, and Windows paths cap at 260" -f $longest) -ForegroundColor DarkYellow
 }
 
 $passed = 0
@@ -175,8 +242,8 @@ foreach ($c in $combinations) {
     if (-not [string]::IsNullOrWhiteSpace($LogRoot)) {
         $paramLines += ('    LogRoot = "{0}"' -f $LogRoot)
     }
-    if ($c.TargetOs -eq "android" -and -not [string]::IsNullOrWhiteSpace($AndroidDeviceSerial)) {
-        $paramLines += ('    AndroidDeviceSerial = "{0}"' -f $AndroidDeviceSerial)
+    if ($c.TargetOs -eq "android" -and -not [string]::IsNullOrWhiteSpace($c.Serial)) {
+        $paramLines += ('    AndroidDeviceSerial = "{0}"' -f $c.Serial)
     }
     $paramLines += '}'
     if ($c.TargetOs -eq "windows") {
