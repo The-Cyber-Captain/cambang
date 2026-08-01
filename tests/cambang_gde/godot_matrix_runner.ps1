@@ -18,7 +18,7 @@
                              (forward_plus is rejected by run_godot.ps1 on every
                               target; it needs a direct Godot invocation)
       -ProviderBackings      synthetic | platform   (Synthetic vs platform-backed)
-      -ProviderOutputForms   auto | cpu_only | gpu_only | cpu_and_gpu
+      -ProviderOutputForms   runtime_default | cpu_only | cpu_gpu | gpu_only
       -AndroidDeviceSerials  adb serials, or tag=serial (android only)
 
     "platform" is deliberately confined to -ProviderBackings. The OS axis is
@@ -58,8 +58,14 @@ param(
     [ValidateSet("synthetic", "platform")]
     [string[]]$ProviderBackings = @("synthetic"),
 
-    [ValidateSet("auto", "cpu_only", "gpu_only", "cpu_and_gpu")]
-    [string[]]$ProviderOutputForms = @("auto"),
+    # The wire vocabulary, not the C++ enum names: parse_synthetic_producer_
+    # output_form_mode (imaging/synthetic/config.h) accepts exactly these four
+    # strings and nothing else. "auto" and "cpu_and_gpu" look right -- they are
+    # the enum spellings -- and are rejected, which surfaces as
+    # "bootstrap failed: start(synthetic) returned 1" rather than an argument
+    # error, because the parse failure happens inside start().
+    [ValidateSet("runtime_default", "cpu_only", "cpu_gpu", "gpu_only")]
+    [string[]]$ProviderOutputForms = @("runtime_default"),
 
     [int]$TimeoutSec = 180,
     [string]$LogRoot = "",
