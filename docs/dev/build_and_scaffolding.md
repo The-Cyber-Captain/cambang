@@ -49,11 +49,16 @@ Windows-specific selection remains explicit:
 ### 2.2 No silent ABI surprise
 
 On Windows systems where both MSVC and MinGW are present, the selected toolchain
-must be explicit or clearly reported. **State `use_mingw` explicitly**; do not
-rely on `auto`, which resolves from the *shell* (`_looks_like_msys_or_bash()`),
-so the same command means different things in Git Bash and PowerShell. For
-anything targeting the Windows platform provider that resolution must be
-`use_mingw=no` — see §2.2.1.
+must be explicit or clearly reported. **`use_mingw=auto` resolves to MSVC on
+every host**, so the default is the toolchain that can compile the Windows
+platform provider (§2.2.1), and the config banner always reports the resolved
+choice.
+
+Until 2026-08-02 `auto` sniffed the shell (`MSYSTEM` / `SHELL=bash`) and chose
+MinGW from Git Bash. That made one command build two different artifacts
+depending on where it was typed, and the MinGW answer silently dropped the
+WinRT provider. MinGW is now reached only by an explicit `use_mingw=yes`
+(§9.1).
 
 ### 2.2.1 The Windows platform provider requires MSVC
 
@@ -131,7 +136,7 @@ Supported assignment-style variables are exactly:
 | `godot_cpp` | `delegated`, `external` | `delegated` | Select root handling for selected `godot-cpp` artifacts. |
 | `platform_runtime_validate` | `yes`, `no` | `no` | Include selected platform-backed runtime validation artifacts. |
 | `COMPDB_PATH` | path | `compile_commands.json` | Compilation database output path. |
-| `use_mingw` | `yes`, `no`, `auto` | `auto` | Windows MinGW selection, mirrored to `godot-cpp` when applicable. |
+| `use_mingw` | `yes`, `no`, `auto` | `auto` | Windows MinGW selection, mirrored to `godot-cpp` when applicable. `auto` resolves to MSVC (`no`) on every host; `yes` is a deliberate opt-in — see §2.2 and §9.1. |
 | `use_llvm` | `yes`, `no`, `auto` | `auto` | Windows MinGW-LLVM selection, meaningful with MinGW. |
 | `mingw_prefix` | path | empty | Optional MinGW installation prefix forwarded to `godot-cpp`. |
 | `windows_mingw_static_runtime` | `auto`, `yes`, `no` | `auto` | Windows MinGW GDE static-runtime link mode. `auto` enables it for Windows MinGW GDE builds. |
@@ -354,12 +359,14 @@ This does not affect the Android artifact: `_create_android_gde_env` replaces
 `LINKFLAGS` to empty, specifically so the host/MSVC environment is not
 inherited.
 
-It is a latent sharp edge rather than a live fault, because maintainer tools
-are built in a separate invocation (`scons gde=no`) whose `platform` defaults
-to the host and resolves MinGW correctly. The trap is a single combined
-invocation such as `scons platform=android arch=arm64 godot_cpp=external`
-(no `gde` alias): maintainer tools would then build host-native under MSVC
-with `use_mingw=yes` silently ignored.
+Since 2026-08-02 this is close to inert: `use_mingw=auto` resolves to MSVC on
+every host (§2.2), so the host toolchain is MSVC whatever `platform=` says, and
+maintainer tools compile cleanly under it. The residue is that an explicit
+`use_mingw=yes` is silently ignored for the host environment whenever
+`platform=` is not `windows` — for example `scons platform=android arch=arm64
+use_mingw=yes godot_cpp=external` (no `gde` alias) builds host-native tools
+under MSVC regardless. The flag is inert there rather than wrong, which is why
+§3.1 says not to pass it to Android builds at all.
 
 The comment above the gate states the opposite intent — "Toolchain selection
 is intentionally host-oriented. `platform=<...>` selects the GDE target
@@ -666,9 +673,10 @@ Both artifact families at once:
 scons use_mingw=no godot_cpp=external -j8
 ```
 
-State `use_mingw` explicitly rather than leaning on `auto`: it resolves from the
-shell, so the identical command selects MinGW under Git Bash and MSVC under
-PowerShell, and the MinGW resolution silently yields a synthetic-only plugin.
+`use_mingw=no` above is explicitness, not necessity: `auto` resolves to MSVC on
+every host (§2.2). Keeping it stated makes the intended toolchain visible in
+the command itself, which matters when the same shell history also contains
+§9.1's MinGW invocations.
 
 ### 9.1 MinGW diagnostic path
 

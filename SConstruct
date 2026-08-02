@@ -70,17 +70,6 @@ def _detect_host_platform():
     return "linux"
 
 
-def _looks_like_msys_or_bash():
-    # Heuristic only; users can always override with use_mingw=...
-    env = os.environ
-    if env.get("MSYSTEM") or env.get("MINGW_PREFIX") or env.get("MSYS2_PATH_TYPE"):
-        return True
-    sh = env.get("SHELL", "")
-    if "bash" in sh.lower():
-        return True
-    return False
-
-
 def _processor_architecture_for_arch(arch: str) -> str:
     return {
         "x86_64": "AMD64",
@@ -497,7 +486,14 @@ selected_provider = GDE_PROVIDER_RESOLUTION[gde_platform]
 # target platform and must not make host verifiers non-native.
 resolved_use_mingw = tmp_env["use_mingw"]
 if resolved_use_mingw == "auto":
-    resolved_use_mingw = "yes" if (host_platform == "windows" and _looks_like_msys_or_bash()) else "no"
+    # auto resolves to MSVC everywhere. It used to sniff the shell (MSYSTEM /
+    # SHELL=bash) and pick MinGW from Git Bash, which meant one command built
+    # two different artifacts depending on where it was typed -- and the MinGW
+    # answer silently drops the C++/WinRT provider, so an unqualified
+    # `scons gde` from Git Bash produced a synthetic-only Windows plugin that
+    # announced itself only in the config banner. Windows is an MSVC target;
+    # MinGW is now a deliberate opt-in via use_mingw=yes.
+    resolved_use_mingw = "no"
 
 windows_uses_mingw = gde_platform == "windows" and resolved_use_mingw == "yes"
 windows_mingw_static_runtime_mode = str(tmp_env["windows_mingw_static_runtime"])
