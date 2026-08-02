@@ -15,22 +15,13 @@
 #include "pixels/pattern/pattern_registry.h"
 #include "pixels/pattern/pattern_spec.h"
 
+// `make_fourcc`, the `FOURCC_*` tags, and all pixel-layout arithmetic live in
+// the pixel-format truth table. They are in namespace cambang, so every
+// existing `FOURCC_RGBA` / `make_fourcc(...)` use in this header and its
+// includers resolves unchanged.
+#include "pixels/format/pixel_format_descriptor.h"
+
 namespace cambang {
-
-// --- FourCC helpers ---------------------------------------------------------
-// Canonical CamBANG pixel formats use a FourCC-style 32-bit tag.
-// Use these helpers instead of ad-hoc literals to keep format handling stable.
-constexpr uint32_t make_fourcc(char a, char b, char c, char d) {
-  return (static_cast<uint32_t>(static_cast<unsigned char>(a))      ) |
-         (static_cast<uint32_t>(static_cast<unsigned char>(b)) <<  8) |
-         (static_cast<uint32_t>(static_cast<unsigned char>(c)) << 16) |
-         (static_cast<uint32_t>(static_cast<unsigned char>(d)) << 24);
-}
-
-// Common formats used by dev scaffolding.
-// NOTE: Do not assume these are the only formats CamBANG will ever support.
-inline constexpr uint32_t FOURCC_RGBA = make_fourcc('R', 'G', 'B', 'A');
-inline constexpr uint32_t FOURCC_BGRA = make_fourcc('B', 'G', 'R', 'A');
 
 // Public semantics for repeating streams.
 enum class StreamIntent : uint8_t {
@@ -85,6 +76,222 @@ struct CoreRetainedProductionPlan {
            posture == CoreProductionPostureShape::GpuPrimaryWithCpuSidecar;
   }
   constexpr bool retain_gpu_display() const noexcept { return primary_gpu(); }
+};
+
+// --- Payload layout and colorimetry -----------------------------------------
+//
+// A payload's pixel format alone does not describe a YUV buffer. Range, matrix,
+// transfer, and primaries are facts the provider knows at acquisition time and
+// that nothing downstream can recover from the bytes. They travel with the
+// payload so that any later conversion is correct rather than assumed.
+//
+// UNSPECIFIED is a truthful "the provider did not tell us", not a default
+// value. Consumers must decide their own fallback explicitly rather than
+// treating UNSPECIFIED as BT.601 (or anything else) silently.
+
+enum class ColorRange : uint8_t {
+  UNSPECIFIED = 0,
+  LIMITED = 1,  // studio swing (Y 16-235, C 16-240 at 8-bit)
+  FULL = 2,     // full swing (0-255 at 8-bit)
+};
+
+enum class ColorMatrix : uint8_t {
+  UNSPECIFIED = 0,
+  BT601 = 1,
+  BT709 = 2,
+  BT2020_NCL = 3,
+};
+
+enum class ColorTransfer : uint8_t {
+  UNSPECIFIED = 0,
+  BT709 = 1,
+  SRGB = 2,
+  PQ = 3,
+  HLG = 4,
+};
+
+enum class ColorPrimaries : uint8_t {
+  UNSPECIFIED = 0,
+  BT709 = 1,
+  BT2020 = 2,
+  P3_D65 = 3,
+};
+
+struct PayloadColorimetry {
+  ColorRange range = ColorRange::UNSPECIFIED;
+  ColorMatrix matrix = ColorMatrix::UNSPECIFIED;
+  ColorTransfer transfer = ColorTransfer::UNSPECIFIED;
+  ColorPrimaries primaries = ColorPrimaries::UNSPECIFIED;
+};
+
+// Whether CamBANG has a YUV conversion implemented for this colour
+// interpretation. Every conversion path -- CPU display, GPU shader -- gates on
+// this, so adding a colour space is one edit rather than several.
+//
+// UNSPECIFIED is truthful absence, not a value, so the fallback has to be
+// chosen explicitly rather than assumed: absence resolves to BT.601 limited,
+// which is what both current targets deliver for 8-bit 4:2:0 (Camera2's
+// YUV_420_888 and WinRT's NV12). A *declared* colour space CamBANG cannot
+// convert is refused outright -- rendering BT.709 content with BT.601
+// coefficients yields a plausible image, which is worse than no image.
+inline bool is_convertible_colorimetry(const PayloadColorimetry& c) noexcept {
+  const bool matrix_ok =
+      c.matrix == ColorMatrix::UNSPECIFIED || c.matrix == ColorMatrix::BT601;
+  const bool range_ok =
+      c.range == ColorRange::UNSPECIFIED || c.range == ColorRange::LIMITED;
+  return matrix_ok && range_ok;
+}
+
+// One plane of a CPU-readable payload. The provider retains ownership; plane
+// pointers share the frame's release lifetime.
+struct PayloadPlaneView {
+  const uint8_t* data = nullptr;
+  size_t size_bytes = 0;
+  // Bytes between the start of consecutive rows. 0 means "tightly packed for
+  // this plane at this width", i.e. the descriptor's row_bytes.
+  uint32_t stride_bytes = 0;
+  // Rows addressable in this plane. 0 means "the descriptor's row count at
+  // this height".
+  uint32_t rows = 0;
+  // Bytes between consecutive samples within a row. 1 means samples are
+  // adjacent, which is the case for every plane of a fully planar format and
+  // for the luma plane of every format.
+  //
+  // This is what distinguishes members of a flexible format family. Android's
+  // YUV_420_888 always presents three planes and documents that "the Y-plane
+  // is guaranteed not to be interleaved with the U/V planes (in particular,
+  // pixel stride is always 1 in yPlane.getPixelStride())", while the U and V
+  // planes "are guaranteed to have the same row stride and pixel stride". A
+  // chroma pixel stride of 2 means U and V are interleaved in one buffer --
+  // NV12 or NV21 -- and 1 means they are separate, I420 or YV12. The device
+  // decides at runtime and only the strides reveal which.
+  //
+  // Without this field a provider would have to resolve that privately, which
+  // is precisely the conversion knowledge this contract exists to move out of
+  // providers.
+  //
+  // SCOPE: this describes the SOURCE buffer's sample spacing, and applies only
+  // where a plane's row is measured in single components. A semi-planar chroma
+  // plane's row_bytes already spans both interleaved components, so its pixel
+  // stride is 1 by this definition even though consecutive U samples sit two
+  // bytes apart -- the interleaving is carried by the format, not repeated
+  // here. Declaring 2 in that case double-counts and fails extent validation.
+  uint32_t pixel_stride_bytes = 1;
+};
+
+// Full CPU payload geometry for one frame.
+//
+// `plane_count == 0` means the layout is absent and the legacy single-plane
+// FrameView scalars (data/size_bytes/stride_bytes/format_fourcc) are
+// authoritative. Providers that emit only packed RGB need not populate this.
+struct PayloadLayout {
+  uint32_t format_fourcc = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint8_t plane_count = 0;
+  PayloadColorimetry colorimetry{};
+  PayloadPlaneView planes[kMaxPixelFormatPlanes]{};
+
+  constexpr bool present() const noexcept { return plane_count != 0; }
+};
+
+// Structural validation of a populated layout against its format descriptor.
+//
+// Checks that the plane count matches the format, every plane has bytes, and
+// each plane's stride and size actually span the rows the format requires.
+// This is geometry validation only: it says the buffer is addressable as
+// claimed, not that any CamBANG path can retain or display it.
+inline bool validate_payload_layout(const PayloadLayout& layout) noexcept {
+  if (!layout.present() || layout.width == 0 || layout.height == 0) {
+    return false;
+  }
+  const PixelFormatDescriptor desc = describe_pixel_format(layout.format_fourcc);
+  if (!desc.valid || layout.plane_count != desc.plane_count) {
+    return false;
+  }
+  for (uint32_t plane = 0; plane < layout.plane_count; ++plane) {
+    const PayloadPlaneView& pv = layout.planes[plane];
+    if (pv.data == nullptr || pv.size_bytes == 0) {
+      return false;
+    }
+    const size_t row_bytes = static_cast<size_t>(plane_row_bytes(desc, plane, layout.width));
+    const size_t rows = (pv.rows != 0)
+        ? static_cast<size_t>(pv.rows)
+        : static_cast<size_t>(plane_rows(desc, plane, layout.height));
+    if (row_bytes == 0 || rows == 0 || rows < plane_rows(desc, plane, layout.height)) {
+      return false;
+    }
+    // A row spans (samples-1)*pixel_stride + 1 sample-worth of bytes when
+    // samples are interleaved, which exceeds the tightly packed row_bytes.
+    const size_t pixel_stride =
+        (pv.pixel_stride_bytes != 0) ? static_cast<size_t>(pv.pixel_stride_bytes) : 1u;
+    if (pixel_stride == 0 || row_bytes == 0) {
+      return false;
+    }
+    const size_t row_extent =
+        (pixel_stride == 1) ? row_bytes : ((row_bytes - 1u) * pixel_stride + 1u);
+    const size_t stride = (pv.stride_bytes != 0) ? static_cast<size_t>(pv.stride_bytes) : row_extent;
+    if (stride < row_extent) {
+      return false;
+    }
+    // Last row needs only its own row_bytes, not a full stride.
+    if (stride > ((static_cast<size_t>(-1) - row_extent) / rows)) {
+      return false;
+    }
+    if (pv.size_bytes < (stride * (rows - 1u)) + row_extent) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Provider-declared native pixel formats for a stream or capture shape.
+//
+// This is acquisition capability truth, parallel to ProducerBackingCapabilities
+// and equally distinct from payload-kind policy: it states what the provider
+// can emit without converting, in the provider's own preference order.
+//
+// `can_emit_packed_rgb` records whether the provider will convert to a packed
+// RGBA/BGRA buffer on request. The default advertisement below describes every
+// provider in the tree today: RGBA/BGRA native, conversion available.
+struct ProducerFormatCapabilities {
+  static constexpr uint8_t kMaxFormats = 8;
+
+  uint32_t formats[kMaxFormats]{};
+  uint8_t count = 0;
+  bool can_emit_packed_rgb = true;
+
+  constexpr bool supports(uint32_t fourcc) const noexcept {
+    for (uint8_t i = 0; i < count; ++i) {
+      if (formats[i] == fourcc) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Appends a format if there is room and it is not already advertised.
+  // Returns false when the entry was dropped, so a provider advertising more
+  // than kMaxFormats fails visibly rather than silently truncating.
+  constexpr bool add(uint32_t fourcc) noexcept {
+    if (supports(fourcc)) {
+      return true;
+    }
+    if (count >= kMaxFormats) {
+      return false;
+    }
+    formats[count++] = fourcc;
+    return true;
+  }
+
+  static constexpr ProducerFormatCapabilities packed_rgb_only() noexcept {
+    ProducerFormatCapabilities caps{};
+    caps.formats[0] = FOURCC_RGBA;
+    caps.formats[1] = FOURCC_BGRA;
+    caps.count = 2;
+    caps.can_emit_packed_rgb = true;
+    return caps;
+  }
 };
 
 struct ProducerBackingCapabilities {
@@ -456,6 +663,57 @@ struct FrameView {
 
   // Optional per-row stride (0 if tightly packed/unknown)
   uint32_t stride_bytes = 0;
+
+  // Optional multi-plane CPU payload geometry plus colorimetry.
+  //
+  // Absent (plane_count == 0) means this frame is single-plane and the scalar
+  // fields above are authoritative -- that is the case for every provider in
+  // the tree today, so no existing provider needs to populate this. A provider
+  // emitting a planar or semi-planar payload must populate it, because the
+  // scalars cannot describe more than one plane.
+  //
+  // Read through effective_payload_layout() rather than directly, so callers
+  // get the same answer for legacy and layout-bearing frames.
+  PayloadLayout payload_layout{};
+
+  // Resolved CPU payload geometry for this frame.
+  //
+  // Returns the populated layout when present, otherwise synthesizes the
+  // equivalent single-plane layout from the scalar fields. Colorimetry is
+  // carried only by an explicit layout; a synthesized one reports UNSPECIFIED,
+  // which is truthful -- a legacy frame never stated it.
+  PayloadLayout effective_payload_layout() const {
+    if (payload_layout.present()) {
+      PayloadLayout out = payload_layout;
+      // Tolerate a layout that carries planes but leaves the shared image
+      // description to the scalars.
+      if (out.format_fourcc == 0) out.format_fourcc = format_fourcc;
+      if (out.width == 0) out.width = width;
+      if (out.height == 0) out.height = height;
+      return out;
+    }
+
+    PayloadLayout out{};
+    if (data == nullptr || size_bytes == 0) {
+      return out;
+    }
+    const PixelFormatDescriptor desc = describe_pixel_format(format_fourcc);
+    if (!desc.valid || desc.plane_count != 1) {
+      // A multi-plane format delivered through the single-plane scalars is
+      // malformed; report absence rather than a layout that claims one plane
+      // holds all of it.
+      return out;
+    }
+    out.format_fourcc = format_fourcc;
+    out.width = width;
+    out.height = height;
+    out.plane_count = 1;
+    out.planes[0].data = data;
+    out.planes[0].size_bytes = size_bytes;
+    out.planes[0].stride_bytes = stride_bytes;
+    out.planes[0].rows = height;
+    return out;
+  }
 
   // Release hook.
   //

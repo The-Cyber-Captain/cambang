@@ -16,6 +16,7 @@
 #include "core/result_payload_kind.h"
 #include "core/result_capability.h"
 #include "imaging/api/provider_contract_datatypes.h"
+#include "pixels/format/yuv_convert.h"
 
 namespace cambang {
 
@@ -25,11 +26,35 @@ namespace cambang {
 // helper code.
 constexpr uint64_t kResultAccessCheapWithinBestMultiplier = 2;
 
-struct CoreResultPayloadCpuPacked {
+// One plane's placement inside CoreResultPayloadCpu's single byte buffer.
+struct CoreResultPayloadCpuPlane {
+  size_t offset_bytes = 0;
+  uint32_t stride_bytes = 0;
+  uint32_t rows = 0;
+};
+
+// Retained CPU payload for one image.
+//
+// Packed and planar payloads share one contiguous byte buffer. That keeps the
+// retained_bytes zero-copy adoption path usable for both, and matches how
+// camera stacks actually deliver planar data (for NV12, luma then interleaved
+// chroma in a single allocation).
+//
+// plane_count == 0 means a packed payload described entirely by the scalar
+// stride below -- the shape every pre-planar path already expects. A planar
+// payload populates plane_count and planes[], and its scalar stride_bytes
+// describes plane 0 only.
+struct CoreResultPayloadCpu {
   uint32_t format_fourcc = 0;
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t stride_bytes = 0;
+  uint8_t plane_count = 0;
+  CoreResultPayloadCpuPlane planes[kMaxPixelFormatPlanes]{};
+  // Provider-declared colour interpretation, retained with the bytes because
+  // no later layer can recover it from them. Only meaningful for YUV-family
+  // payloads; packed RGB leaves it UNSPECIFIED.
+  PayloadColorimetry colorimetry{};
   // Legacy/self-owned byte storage. New retained-result paths may instead keep
   // immutable provider-owned bytes alive through retained_bytes to avoid an
   // extra full-frame copy. Use data()/size_bytes()/empty() for reads.
@@ -44,6 +69,27 @@ struct CoreResultPayloadCpuPacked {
   }
   bool empty() const noexcept { return size_bytes() == 0; }
   bool uses_retained_bytes() const noexcept { return static_cast<bool>(retained_bytes); }
+  bool is_planar() const noexcept { return plane_count > 1; }
+
+  // Start of `plane` within the retained buffer, or nullptr when the plane is
+  // absent or its extent does not fit the buffer. Bounds are re-checked here
+  // rather than trusted from retention time, because the buffer may be an
+  // adopted provider allocation.
+  const uint8_t* plane_data(uint32_t plane) const noexcept {
+    if (plane >= plane_count) {
+      return nullptr;
+    }
+    const CoreResultPayloadCpuPlane& p = planes[plane];
+    if (p.rows == 0 || p.stride_bytes == 0) {
+      return nullptr;
+    }
+    const size_t span = static_cast<size_t>(p.stride_bytes) * static_cast<size_t>(p.rows);
+    const size_t total = size_bytes();
+    if (span < p.stride_bytes || span > total || p.offset_bytes > (total - span)) {
+      return nullptr;
+    }
+    return data() + p.offset_bytes;
+  }
 };
 
 struct CoreResultAccessPostureKey {
@@ -146,7 +192,7 @@ struct CoreStreamResultData {
   // current for the same retained frame, classify the result as
   // GPU-primary with CPU sidecar data rather than GPU-only.
   RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
-  CoreResultPayloadCpuPacked payload{};
+  CoreResultPayloadCpu payload{};
   CoreRetainedAccessTruth retained_access_truth{};
   SharedResultAccessClassificationRecord access_classification{};
   CoreResultAccessPostureKey access_posture{};
@@ -176,7 +222,7 @@ struct CoreCaptureResultData {
     uint64_t retained_frame_id = 0;
     std::optional<SourcedFact<ImageAcquisitionTiming>> acquisition_timing;
     ResultPayloadKind payload_kind = ResultPayloadKind::CPU_PACKED;
-    CoreResultPayloadCpuPacked payload{};
+    CoreResultPayloadCpu payload{};
     std::shared_ptr<void> retained_gpu_backing{};
     RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
     CoreRetainedAccessTruth retained_access_truth{};
@@ -221,6 +267,215 @@ struct CoreCaptureResultData {
 using SharedStreamResultData = std::shared_ptr<const CoreStreamResultData>;
 using SharedCaptureResultData = std::shared_ptr<const CoreCaptureResultData>;
 using MutableCaptureResultData = std::shared_ptr<CoreCaptureResultData>;
+
+// --- Structural admissibility of a retained CPU payload ----------------------
+//
+// Single source of truth for "can this operation structurally use these bytes".
+//
+// Core derives Operation Support from these, and the Godot access paths gate on
+// the same functions. That coupling is the point. The contract deliberately
+// keeps two layers of checking -- capability methods consume Operation Support,
+// while materialization methods stay defensive about the concrete path they
+// take (see pixel_payload_and_result_contract.md 11.2) -- but the defensive
+// layer may only fail for TRANSIENT reasons. It must never refuse on a
+// structural ground the capability already admitted, because that makes
+// can_x() a lie: the capability reports supported and the operation returns
+// nothing.
+//
+// That exact divergence occurred four times while planar support was added,
+// once in each place these facts were independently re-derived. Independent
+// re-derivation from the same data is the defect; these functions remove it.
+
+// The retained payload belongs to the current frame and describes the same
+// image the result reports. Shared precondition, no format opinion.
+inline bool retained_cpu_bytes_are_current(const CoreStreamResultData& result) noexcept {
+  if (result.payload_retained_frame_id == 0 ||
+      result.payload_retained_frame_id != result.retained_frame_id) {
+    return false;
+  }
+  if (result.payload.width == 0 || result.payload.height == 0 || result.payload.empty()) {
+    return false;
+  }
+  return result.payload.width == result.image_width &&
+         result.payload.height == result.image_height &&
+         result.payload.format_fourcc == result.image_format_fourcc;
+}
+
+// Directly readable as packed RGBA/BGRA: required by any path that hands the
+// retained bytes to a FORMAT_RGBA8 image without converting them.
+inline bool retained_cpu_payload_is_packed_readable(const CoreResultPayloadCpu& payload) noexcept {
+  if (payload.empty() || !is_packed_rgb_format(payload.format_fourcc)) {
+    return false;
+  }
+  const PixelFormatDescriptor desc = describe_pixel_format(payload.format_fourcc);
+  const size_t expected = min_tight_size_bytes(desc, payload.width, payload.height);
+  return expected != 0 &&
+         payload.stride_bytes == plane_row_bytes(desc, 0, payload.width) &&
+         payload.size_bytes() >= expected;
+}
+
+// Usable by a path that CONVERTS rather than reading bytes as-is: the live
+// display view and explicit to_image() materialization both qualify. A planar
+// payload has no directly readable form but does have a supported conversion.
+inline bool retained_cpu_payload_is_convertible(const CoreResultPayloadCpu& payload) noexcept {
+  if (retained_cpu_payload_is_packed_readable(payload)) {
+    return true;
+  }
+  if (payload.empty() || !payload.is_planar()) {
+    return false;
+  }
+  const PixelFormatDescriptor desc = describe_pixel_format(payload.format_fourcc);
+  if (!desc.valid || payload.plane_count != desc.plane_count) {
+    return false;
+  }
+  if (desc.is_yuv && !is_convertible_colorimetry(payload.colorimetry)) {
+    return false;
+  }
+  for (uint32_t plane = 0; plane < payload.plane_count; ++plane) {
+    if (payload.plane_data(plane) == nullptr) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Operation Support for a retained stream result, derived from the
+// admissibility predicates above so a reported capability and the path that
+// implements it cannot disagree. Inline and pure, so the agreement itself is
+// directly testable.
+inline CoreRetainedAccessTruth build_stream_retained_access_truth(const CoreStreamResultData& result);
+
+// Converts a retained planar/semi-planar YUV payload to packed RGBA8.
+//
+// One implementation for every consumer. The display path and to_image() each
+// had their own copy of this loop, which is the duplication that repeatedly
+// let capability and behaviour drift apart in this area.
+//
+// Chroma addressing comes from the format descriptor rather than the format
+// tag, so semi-planar (two planes, U and V interleaved in plane 1) and fully
+// planar (three planes, U and V separate) are handled by the same code.
+// Retained payloads are normalized to tight packing at retention, so no
+// per-sample pixel stride is needed here -- that is a provider-boundary
+// concern, carried by PayloadPlaneView, and already resolved by the time
+// bytes are retained.
+//
+// dst must hold width*height*4 bytes. Returns false when the payload cannot
+// be addressed as its descriptor claims.
+inline bool planar_payload_to_rgba8(const CoreResultPayloadCpu& payload, uint8_t* dst) noexcept {
+  if (dst == nullptr || !payload.is_planar()) {
+    return false;
+  }
+  if (!is_convertible_colorimetry(payload.colorimetry)) {
+    return false;
+  }
+  const PixelFormatDescriptor desc = describe_pixel_format(payload.format_fourcc);
+  if (!desc.valid || !desc.is_yuv || payload.plane_count != desc.plane_count) {
+    return false;
+  }
+
+  const bool semi_planar = (desc.layout_class == PixelLayoutClass::SemiPlanar);
+  // Within a semi-planar chroma row, U and V alternate; when planar they are
+  // separate planes and each chroma column is one byte.
+  const uint32_t chroma_sample_stride = semi_planar ? 2u : 1u;
+  // Component order follows the format. NV21 and YV12 carry V first, and
+  // reading them as NV12/I420 swaps red and blue -- a plausible-looking image
+  // rather than an obvious failure, which is exactly the class of fault this
+  // must not produce silently.
+  const uint32_t u_plane_index = semi_planar ? 1u : (desc.chroma_v_first ? 2u : 1u);
+  const uint32_t v_plane_index = semi_planar ? 1u : (desc.chroma_v_first ? 1u : 2u);
+  const uint32_t u_byte_offset = semi_planar ? (desc.chroma_v_first ? 1u : 0u) : 0u;
+  const uint32_t v_byte_offset = semi_planar ? (desc.chroma_v_first ? 0u : 1u) : 0u;
+
+  const uint8_t* y_plane = payload.plane_data(0);
+  const uint8_t* u_plane = payload.plane_data(u_plane_index);
+  const uint8_t* v_plane = payload.plane_data(v_plane_index);
+  if (!y_plane || !u_plane || !v_plane) {
+    return false;
+  }
+
+  const uint32_t w = payload.width;
+  const uint32_t h = payload.height;
+  const uint32_t y_stride = payload.planes[0].stride_bytes;
+  const uint32_t u_stride = payload.planes[u_plane_index].stride_bytes;
+  const uint32_t v_stride = payload.planes[v_plane_index].stride_bytes;
+  const uint32_t chroma_rows = (h + 1u) / 2u;
+  const uint32_t chroma_cols = (w + 1u) / 2u;
+  if (y_stride < w || payload.planes[0].rows < h ||
+      u_stride < (chroma_cols * chroma_sample_stride) ||
+      v_stride < (chroma_cols * chroma_sample_stride) ||
+      payload.planes[u_plane_index].rows < chroma_rows ||
+      payload.planes[v_plane_index].rows < chroma_rows) {
+    return false;
+  }
+
+  for (uint32_t y = 0; y < h; ++y) {
+    const uint8_t* y_row = y_plane + static_cast<size_t>(y_stride) * y;
+    const uint8_t* u_row = u_plane + static_cast<size_t>(u_stride) * (y / 2u);
+    const uint8_t* v_row = v_plane + static_cast<size_t>(v_stride) * (y / 2u);
+    uint8_t* out = dst + static_cast<size_t>(w) * 4u * y;
+    for (uint32_t x = 0; x < w; ++x) {
+      const size_t c = static_cast<size_t>(x / 2u) * chroma_sample_stride;
+      const RgbSample s = yuv_to_rgb_bt601_limited(
+          y_row[x], u_row[c + u_byte_offset], v_row[c + v_byte_offset]);
+      out[static_cast<size_t>(x) * 4u + 0u] = s.r;
+      out[static_cast<size_t>(x) * 4u + 1u] = s.g;
+      out[static_cast<size_t>(x) * 4u + 2u] = s.b;
+      out[static_cast<size_t>(x) * 4u + 3u] = 255u;
+    }
+  }
+  return true;
+}
+
+// Result-level convenience: currency plus the corresponding payload question.
+inline bool stream_result_has_packed_cpu_access(const CoreStreamResultData& result) noexcept {
+  return retained_cpu_bytes_are_current(result) &&
+         retained_cpu_payload_is_packed_readable(result.payload);
+}
+
+inline bool stream_result_has_convertible_cpu_access(const CoreStreamResultData& result) noexcept {
+  return retained_cpu_bytes_are_current(result) &&
+         retained_cpu_payload_is_convertible(result.payload);
+}
+
+inline CoreRetainedAccessTruth build_stream_retained_access_truth(const CoreStreamResultData& result) {
+  CoreRetainedAccessTruth truth{};
+  const bool has_current_cpu_payload = stream_result_has_packed_cpu_access(result);
+
+  if (result.payload_kind == ResultPayloadKind::GPU_SURFACE) {
+    if (result.retained_gpu_backing) {
+      truth.display_view = ResultCapability::READY;
+    }
+    if (has_current_cpu_payload) {
+      truth.to_image = ResultCapability::CHEAP;
+    } else if (result.retained_gpu_backing &&
+               result.retained_gpu_backing_descriptor.valid &&
+               result.retained_gpu_backing_descriptor.materialization_available) {
+      truth.to_image = ResultCapability::EXPENSIVE;
+    }
+    return truth;
+  }
+
+  if (result.payload_kind == ResultPayloadKind::CPU_PACKED && has_current_cpu_payload) {
+    truth.display_view = ResultCapability::CHEAP;
+    truth.to_image = ResultCapability::CHEAP;
+  }
+
+  if (result.payload_kind == ResultPayloadKind::CPU_PLANAR &&
+      stream_result_has_convertible_cpu_access(result)) {
+    // Never READY: the target representation is not already retained, it is
+    // produced by a full-frame colour conversion (on CPU here, on GPU where a
+    // RenderingDevice exists). EXPENSIVE is the provisional classification
+    // per the conversion example in the capability vocabulary; bounded
+    // calibration refines CHEAP vs EXPENSIVE from measured evidence.
+    truth.display_view = ResultCapability::EXPENSIVE;
+    // Materialization is the same full-frame conversion, performed on demand
+    // and driven by the same shared colorimetry, so it is supported and
+    // equally non-ready.
+    truth.to_image = ResultCapability::EXPENSIVE;
+  }
+  return truth;
+}
+
 
 // Threading model note (applies also to CoreCaptureAssemblyRegistry and
 // CoreCaptureCohortRegistry): most CoreRuntime-owned registries are
@@ -270,7 +525,7 @@ public:
       CoreCaptureResultData::ImageMemberData& out_member,
       CoreRetainedProductionPlan requested_retained_plan = {});
   static bool try_build_capture_image_member_data_from_frame(const FrameView& frame,
-                                                              CoreResultPayloadCpuPacked& out_payload);
+                                                              CoreResultPayloadCpu& out_payload);
 
   SharedStreamResultData get_latest_stream_result(uint64_t stream_id) const;
   SharedCaptureResultData get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
@@ -337,13 +592,16 @@ private:
 #if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
   friend struct CoreResultStoreSmokeAccess;
 #endif
-  static bool has_cpu_packed_payload(const FrameView& frame);
-  static bool try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpuPacked& out);
-  static bool has_valid_capture_image_member_payload(const CoreResultPayloadCpuPacked& payload);
+  static bool has_cpu_payload(const FrameView& frame);
+  // Retains a frame's CPU bytes, dispatching on the format's layout class.
+  static bool try_copy_cpu_payload(const FrameView& frame, CoreResultPayloadCpu& out);
+  static bool try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpu& out);
+  static bool try_copy_cpu_planar_payload(const FrameView& frame, CoreResultPayloadCpu& out);
+  static bool has_valid_capture_image_member_payload(const CoreResultPayloadCpu& payload);
   bool try_issue_retained_frame_id(uint64_t& out_id) noexcept;
   static MutableCaptureResultData build_default_image_capture_result(const FrameView& frame,
                                                                      CoreRetainedBackingPlan plan,
-                                                                     CoreResultPayloadCpuPacked payload,
+                                                                     CoreResultPayloadCpu payload,
                                                                      std::shared_ptr<void> retained_gpu_backing,
                                                                      RetainedGpuBackingDescriptor retained_gpu_backing_descriptor);
 

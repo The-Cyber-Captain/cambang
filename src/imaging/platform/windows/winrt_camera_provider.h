@@ -165,6 +165,28 @@ public:
     return kWorstCaseMs * 1'000'000ull;
   }
 
+  // Device-scoped format truth. The two cameras behind this provider differ in
+  // what they natively offer, so the provider-wide answer cannot be right for
+  // both; this narrows it to the device actually being used.
+  ProducerFormatCapabilities stream_parent_context_format_capabilities(
+      uint64_t device_instance_id,
+      uint64_t stream_id,
+      StreamIntent intent,
+      const CaptureProfile& profile,
+      const PictureConfig& picture) noexcept override;
+
+  // Uncompressed WinRT stills are exactly Bgra8 or Nv12 (MediaPixelFormat has
+  // no other members), so NV12 is the only planar still option and this is
+  // provider-wide truth rather than a per-device question.
+  ProducerFormatCapabilities capture_format_capabilities(
+      const CaptureRequest& req) const noexcept override {
+    (void)req;
+    ProducerFormatCapabilities caps{};
+    caps.add(FOURCC_NV12);
+    caps.can_emit_packed_rgb = true;
+    return caps;
+  }
+
   ProducerBackingCapabilities stream_backing_capabilities(
       const CaptureProfile& profile,
       const PictureConfig& picture) const noexcept override;
@@ -353,6 +375,9 @@ private:
     bool ok = false;
     ProviderError error = ProviderError::ERR_PROVIDER_FAILED;
     std::shared_ptr<std::vector<uint8_t>> bytes;
+    // True when bytes hold NV12 planes taken through unconverted rather than
+    // a packed buffer.
+    bool planar = false;
     bool has_sample_time = false;
     int64_t sample_time_100ns = 0;
 

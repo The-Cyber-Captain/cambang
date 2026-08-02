@@ -223,7 +223,7 @@ Android export/deploy uses the same launcher and harness-verdict classification:
 
 ```powershell
 .\run_godot.ps1 `
-  -RunPlatform android `
+  -TargetOs android `
   -Scene res://scenes/568_backing_plan_evaluation_verify.tscn `
   -CaptureLogs `
   -TimeoutSec 25 `

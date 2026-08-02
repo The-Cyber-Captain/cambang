@@ -237,21 +237,50 @@ struct HarnessCallbacks final : IProviderCallbacks {
 };
 
 int g_failures = 0;
+int g_checks = 0;
+bool g_verbose = false;
+
+// Per-check detail is buffered rather than printed. A green run says one
+// line, matching core_spine_smoke and provider_compliance_verify; the
+// intermediate detail is what you want when something fails, and noise the
+// rest of the time. --verbose forces it, as it does in
+// provider_compliance_verify.
+std::string g_log;
+
+void log_line(const std::string& text) {
+  g_log += text;
+  g_log += '\n';
+}
 
 void check(bool ok, const char* label) {
-  std::printf("[winrt_runtime_validate] %s %s\n", ok ? "PASS" : "FAIL", label);
+  ++g_checks;
   if (!ok) {
     ++g_failures;
   }
+  log_line(std::string("[winrt_runtime_validate] ") + (ok ? "PASS " : "FAIL ") + label);
 }
 
 void note(const std::string& label, const std::string& detail) {
-  std::printf("[winrt_runtime_validate] INFO %s %s\n", label.c_str(), detail.c_str());
+  log_line("[winrt_runtime_validate] INFO " + label + " " + detail);
+}
+
+// Replays buffered detail when it is wanted, before the verdict line.
+void flush_log_if_wanted() {
+  if (g_failures == 0 && !g_verbose) {
+    return;
+  }
+  std::fwrite(g_log.data(), 1, g_log.size(), stdout);
+  std::fflush(stdout);
 }
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  for (int i = 1; i < argc; ++i) {
+    if (std::string(argv[i]) == "--verbose") {
+      g_verbose = true;
+    }
+  }
   const ProviderAccessStatus access = WinrtCameraProvider::check_access_readiness();
   note("access_readiness", access.stable_reason);
   if (!access.ok()) {
@@ -275,8 +304,10 @@ int main() {
     note("endpoint", ep.name + " [" + ep.hardware_id + "]");
   }
   if (endpoints.empty()) {
-    std::printf("[winrt_runtime_validate] SKIP no_camera_endpoint_present\n");
+    log_line("[winrt_runtime_validate] SKIP no_camera_endpoint_present");
     (void)provider.shutdown();
+    flush_log_if_wanted();
+    std::printf("SKIP windows_winrt_runtime_validate reason=no_camera_endpoint_present\n");
     return 2;
   }
 
@@ -285,6 +316,30 @@ int main() {
   if (!pr.ok()) {
     (void)provider.shutdown();
     return 1;
+  }
+
+  // Device-scoped format capability must report the device's real native
+  // formats, not the provider-wide packed default. Both cameras measured here
+  // offer NV12 natively (see fb2bab3), so a device-scoped answer that omits it
+  // means the override is not resolving the source and has silently fallen
+  // back -- which would look identical to success from the outside.
+  {
+    CaptureProfile fmt_probe{};
+    fmt_probe.width = 640;
+    fmt_probe.height = 480;
+    fmt_probe.format_fourcc = FOURCC_NV12;
+    const ProducerFormatCapabilities dev_caps =
+        provider.stream_parent_context_format_capabilities(
+            kDeviceInstanceId, 0, StreamIntent::PREVIEW, fmt_probe, PictureConfig{});
+    note("device_scoped_format_count", std::to_string(dev_caps.count));
+    check(dev_caps.count > 0, "device_scoped_format_capabilities_non_empty");
+    check(dev_caps.supports(FOURCC_NV12), "device_scoped_format_reports_nv12");
+    // The provider-wide answer is the packed default, so a device-scoped
+    // result identical to it would indicate no narrowing happened at all.
+    const ProducerFormatCapabilities wide_caps =
+        provider.stream_format_capabilities(fmt_probe, PictureConfig{});
+    check(!wide_caps.supports(FOURCC_NV12),
+          "provider_wide_format_remains_packed_default");
   }
 
   // Static camera facts (facing, sensor mounting orientation) are best-effort
@@ -803,6 +858,31 @@ int main() {
           if (!color_source) {
             note(ep_tag + "_no_color_frame_source", "true");
           } else {
+            // What the source NATIVELY offers, before any reader subtype is
+            // requested. The provider asks for Bgra8; whether that costs a
+            // conversion depends entirely on what is listed here, and that had
+            // been assumed rather than measured. Record it so payload policy
+            // is decided from evidence.
+            {
+              std::string subtypes;
+              uint32_t format_count = 0;
+              for (const auto& fmt : color_source.SupportedFormats()) {
+                const auto vf = fmt.VideoFormat();
+                std::string entry = winrt::to_string(fmt.Subtype());
+                entry += ":" + std::to_string(vf.Width()) + "x" + std::to_string(vf.Height());
+                if (!subtypes.empty()) {
+                  subtypes += ",";
+                }
+                subtypes += entry;
+                ++format_count;
+                if (format_count >= 24) {
+                  subtypes += ",...";
+                  break;
+                }
+              }
+              note(ep_tag + "_native_format_count", std::to_string(format_count));
+              note(ep_tag + "_native_subtypes", subtypes);
+            }
             // Checks the real WinRT path to relative camera pose
             // (MediaFrameSourceInfo.CoordinateSystem -> SpatialCoordinateSystem;
             // a real pose value would come from TryGetTransformTo against a
@@ -886,7 +966,11 @@ int main() {
     diag_thread.join();
   }
 
-  std::printf("[winrt_runtime_validate] %s failures=%d\n",
-              g_failures == 0 ? "RESULT PASS" : "RESULT FAIL", g_failures);
+  flush_log_if_wanted();
+  std::printf("%s windows_winrt_runtime_validate run=%d ok=%d failed=%d\n",
+              g_failures == 0 ? "PASS" : "FAIL",
+              g_checks,
+              g_checks - g_failures,
+              g_failures);
   return g_failures == 0 ? 0 : 1;
 }

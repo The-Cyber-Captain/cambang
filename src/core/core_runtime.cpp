@@ -27,6 +27,27 @@ namespace cambang {
 
 namespace {
 
+// Formats Core can both retain and provide an access path for.
+//
+// Deliberately narrower than "CamBANG can name it": the descriptor table
+// describes geometry for formats that have no conversion, and selecting one
+// of those by default would produce a stream nothing can display or
+// materialize. Widen this as conversions land, not as descriptors are added.
+bool core_can_use_stream_format(uint32_t fourcc) noexcept {
+  if (is_packed_rgb_format(fourcc)) {
+    return true;
+  }
+  // Planar formats with a shared conversion. Both are members of the
+  // YUV_420_888 family a Camera2 device may present, and which one arrives is
+  // decided by the device at runtime, so both must be usable.
+  return fourcc == FOURCC_NV12 || fourcc == FOURCC_I420;
+}
+
+} // namespace
+
+
+namespace {
+
 constexpr uint64_t kNsPerMs = 1000000ull;
 constexpr uint64_t kCaptureObservationRetryDelayNs = 1'000'000ull;
 constexpr uint64_t kCaptureRetainedPlanOrphanRetentionWindowNs =
@@ -1038,9 +1059,18 @@ uint64_t warm_delay_ns(uint32_t warm_hold_ms) {
   return static_cast<uint64_t>(warm_hold_ms) * kNsPerMs;
 }
 
+// Seeds the device's retained still profile at open time.
+//
+// The format is selected from what this device natively captures rather than
+// taken from the provider's I/O-free template. Seeding the template's packed
+// default here silently pre-decides every later capture: the request builder
+// sees a non-zero retained format and skips selection, so the provider
+// converts every still even on a device whose native output CamBANG can
+// retain directly.
 bool seed_retained_device_still_profile_from_template(CoreDeviceRegistry& devices,
                                                       uint64_t device_instance_id,
-                                                      const CaptureTemplate& capture_tmpl) {
+                                                      const CaptureTemplate& capture_tmpl,
+                                                      ICameraProvider* prov) {
   if (device_instance_id == 0) {
     return false;
   }
@@ -1053,9 +1083,26 @@ bool seed_retained_device_still_profile_from_template(CoreDeviceRegistry& device
     }
   }
 
-  const uint32_t format = capture_tmpl.profile.format_fourcc == 0
-      ? FOURCC_RGBA
-      : capture_tmpl.profile.format_fourcc;
+  uint32_t format = 0;
+  if (prov) {
+    CaptureRequest probe{};
+    probe.device_instance_id = device_instance_id;
+    probe.width = capture_tmpl.profile.width;
+    probe.height = capture_tmpl.profile.height;
+    const ProducerFormatCapabilities native =
+        prov->capture_parent_context_format_capabilities(device_instance_id, probe);
+    for (uint8_t i = 0; i < native.count; ++i) {
+      if (core_can_use_stream_format(native.formats[i])) {
+        format = native.formats[i];
+        break;
+      }
+    }
+  }
+  if (format == 0) {
+    format = capture_tmpl.profile.format_fourcc == 0
+        ? FOURCC_RGBA
+        : capture_tmpl.profile.format_fourcc;
+  }
   return devices.retain_capture_profile(device_instance_id,
                                          capture_tmpl.profile.width,
                                          capture_tmpl.profile.height,
@@ -1537,8 +1584,10 @@ bool CoreRuntime::build_effective_capture_request_without_retained_plan_(
   out.rig_id = 0;
   out.width = tmpl.profile.width;
   out.height = tmpl.profile.height;
-  out.format_fourcc =
-      tmpl.profile.format_fourcc == 0 ? FOURCC_RGBA : tmpl.profile.format_fourcc;
+  // Left zero deliberately: "not yet chosen". Selection below fills it from
+  // device capability, falling back to the template only if nothing usable is
+  // advertised.
+  out.format_fourcc = 0;
   out.profile_version = 0;
   out.picture = tmpl.picture;
   out.still_image_bundle = make_default_metered_still_image_bundle();
@@ -1556,6 +1605,30 @@ bool CoreRuntime::build_effective_capture_request_without_retained_plan_(
     out.profile_version = rec->capture_profile_version;
     out.picture = rec->capture_picture;
     out.still_image_bundle = rec->capture_still_image_bundle;
+    if (rec->capture_format == 0) {
+      // No retained per-device format: let Core select from what this device
+      // natively captures, exactly as stream creation does. Without this a
+      // capture always takes the template's packed default and the provider
+      // converts every still, which is the cost this work removes.
+      out.format_fourcc = 0;
+    }
+  }
+
+  if (out.format_fourcc == 0) {
+    const ProducerFormatCapabilities native =
+        prov->capture_parent_context_format_capabilities(device_instance_id, out);
+    for (uint8_t i = 0; i < native.count; ++i) {
+      if (core_can_use_stream_format(native.formats[i])) {
+        out.format_fourcc = native.formats[i];
+        break;
+      }
+    }
+    if (out.format_fourcc == 0) {
+      // Nothing usable advertised: fall back to the template so a capture
+      // still works on a provider with no device-scoped answer.
+      out.format_fourcc =
+          tmpl.profile.format_fourcc == 0 ? FOURCC_RGBA : tmpl.profile.format_fourcc;
+    }
   }
 
   if (!(out.width > 0 && out.height > 0)) {
@@ -5097,7 +5170,8 @@ CoreThread::PostResult CoreRuntime::retain_device_identity(uint64_t device_insta
         spec_state_.camera_spec_version(hardware_id));
     if (has_capture_template) {
       (void)seed_retained_device_still_profile_from_template(
-          devices_, device_instance_id, capture_tmpl);
+          devices_, device_instance_id, capture_tmpl,
+          provider_.load(std::memory_order_acquire));
     }
     request_publish_from_core_unchecked();
   });
@@ -5270,6 +5344,75 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
     effective.profile_version = effective_profile_version;
     effective.profile = has_request_profile ? request_profile_copy : tmpl.profile;
     effective.picture = has_request_picture ? request_picture_copy : tmpl.picture;
+    // Format selection. When the caller did not name a format, Core chooses
+    // one from what this specific device natively offers rather than taking
+    // the provider's I/O-free template default. That is the point of the
+    // capability seam: choosing a pixel format is CamBANG's job, and an
+    // application asking for a stream should never have to know, or name, the
+    // format its hardware happens to prefer.
+    //
+    // The template remains the fallback when the device advertises nothing
+    // CamBANG can use, so a provider with no device-scoped answer behaves
+    // exactly as before.
+    const bool format_explicitly_requested =
+        has_request_profile && request_profile_copy.format_fourcc != 0;
+    if (!format_explicitly_requested) {
+      if (ICameraProvider* sel_prov = provider_.load(std::memory_order_acquire)) {
+        const ProducerFormatCapabilities native =
+            sel_prov->stream_parent_context_format_capabilities(
+                effective.device_instance_id,
+                effective.stream_id,
+                effective.intent,
+                effective.profile,
+                effective.picture);
+        for (uint8_t i = 0; i < native.count; ++i) {
+          const uint32_t candidate = native.formats[i];
+          // Only formats CamBANG can retain AND give access to. Retention
+          // alone is not enough: a packed YUV format such as YUY2 retains
+          // fine but has no display or materialization path, so selecting it
+          // would hand back a stream whose every access reports UNSUPPORTED.
+          // That would be worse than the conversion this selection avoids.
+          if (!core_can_use_stream_format(candidate)) {
+            continue;
+          }
+          effective.profile.format_fourcc = candidate;
+          break;
+        }
+      }
+      // Nothing usable advertised: fall back to the provider's template so a
+      // caller who named no format still gets a working stream.
+      if (effective.profile.format_fourcc == 0) {
+        effective.profile.format_fourcc = tmpl.profile.format_fourcc;
+      }
+    }
+
+    // A requested pixel format the provider does not advertise is rejected
+    // here rather than at the provider's own start gate, so the rejection is
+    // deterministic and does not depend on a provider round-trip. A zero
+    // format still means "use the provider default" and is resolved
+    // downstream as before.
+    if (effective.profile.format_fourcc != 0) {
+      if (ICameraProvider* fmt_prov = provider_.load(std::memory_order_acquire)) {
+        // Device-scoped, matching selection above. Asking the provider-wide
+        // question here would reject a format the specific device natively
+        // offers whenever the provider's outer envelope is narrower -- which
+        // is exactly the case for WinRT, whose provider-wide answer is the
+        // packed-RGB fallback while individual cameras offer NV12.
+        const ProducerFormatCapabilities fmt_caps =
+            fmt_prov->stream_parent_context_format_capabilities(
+                effective.device_instance_id,
+                effective.stream_id,
+                effective.intent,
+                effective.profile,
+                effective.picture);
+        if (!fmt_caps.supports(effective.profile.format_fourcc) &&
+            !(fmt_caps.can_emit_packed_rgb &&
+              is_packed_rgb_format(effective.profile.format_fourcc))) {
+          return TryCreateStreamStatus::ProviderRejected;
+        }
+      }
+    }
+
     ProducerBackingCapabilities runtime_caps{};
     ProducerBackingCapabilities parent_context_caps{};
     if (!resolve_stream_backing_capabilities_(
@@ -5532,7 +5675,9 @@ TryOpenDeviceStatus CoreRuntime::try_open_device(
     // submission was accepted. A provider-refused open must not publish a
     // speculative CREATED device record.
     (void)devices_.note_device_identity(device_instance_id, hardware_id);
-    (void)seed_retained_device_still_profile_from_template(devices_, device_instance_id, capture_tmpl);
+    (void)seed_retained_device_still_profile_from_template(
+        devices_, device_instance_id, capture_tmpl,
+        provider_.load(std::memory_order_acquire));
     (void)devices_.set_capture_picture(device_instance_id, capture_tmpl.picture);
     const bool state_changed = devices_.on_device_opened(device_instance_id);
     (void)refresh_capture_retained_plan_state_(

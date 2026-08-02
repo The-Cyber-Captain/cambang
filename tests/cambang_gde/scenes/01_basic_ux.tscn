@@ -149,19 +149,19 @@ func _ready():
 		}
 	}))
 	
-	#stream_00.start()
+	stream_00.start()
 	#stream_00_b.start()
 
-	#while not stream_00.result_live:
-		#await stream_00.result_live_changed
-		#
-	#var stream_result := stream_00.get_result()
-	#if stream_result == null:
-		#push_error(\"KERR stream result unexpectedly null after result_live\")
-		#return
-#
-	#%StreamDisplayTexture.texture = stream_result.get_display_view()
-	#
+	while not stream_00.result_live:
+		await stream_00.result_live_changed
+		
+	var stream_result := stream_00.get_result()
+	if stream_result == null:
+		push_error(\"KERR stream result unexpectedly null after result_live\")
+		return
+
+	%StreamDisplayTexture.texture = stream_result.get_display_view()
+	
 	
 	##-------------------------
 	#await get_tree().create_timer(50.0).timeout

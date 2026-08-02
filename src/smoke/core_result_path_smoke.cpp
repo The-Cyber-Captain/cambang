@@ -1,5 +1,8 @@
+#include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <limits>
@@ -8,6 +11,7 @@
 #include <vector>
 
 #include "core/camera_fact_types.h"
+#include "pixels/format/yuv_convert.h"
 #include "core/core_result_store.h"
 
 using namespace cambang;
@@ -672,7 +676,7 @@ int main() {
   CoreCaptureResultData::ImageMemberData bad_payload{};
   bad_payload.image_member_index = 2;
   bad_payload.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
-  bad_payload.payload = CoreResultPayloadCpuPacked{};
+  bad_payload.payload = CoreResultPayloadCpu{};
   assert(!store.append_additional_capture_image(77, 100, bad_payload, kCaptureEpochA, requested_cpu));
   CoreCaptureResultData::ImageMemberData out_of_order{};
   out_of_order.image_member_index = 3;
@@ -929,6 +933,431 @@ int main() {
            std::numeric_limits<uint64_t>::max());
   }
 #endif
+
+  // --- Planar (NV12) retention -----------------------------------------------
+  //
+  // Proves the CPU_PLANAR writer end to end at the store boundary: a
+  // semi-planar frame retains with per-plane geometry, is classified
+  // CPU_PLANAR rather than CPU_PACKED, and reports NO CPU access capability.
+  // That last assertion is the load-bearing one -- a planar payload reaching
+  // to_image() would build a FORMAT_RGBA8 image out of chroma bytes.
+  {
+    CoreResultStore planar_store;
+
+    // 4x4 NV12: 16 luma bytes then 8 interleaved chroma bytes, with the
+    // provider padding each plane's rows to prove padding is normalized away.
+    constexpr uint32_t kW = 4;
+    constexpr uint32_t kH = 4;
+    constexpr uint32_t kSrcStride = 6;  // deliberately > width
+    std::vector<uint8_t> luma(static_cast<size_t>(kSrcStride) * kH, 0u);
+    std::vector<uint8_t> chroma(static_cast<size_t>(kSrcStride) * (kH / 2u), 0u);
+    for (uint32_t y = 0; y < kH; ++y) {
+      for (uint32_t x = 0; x < kW; ++x) {
+        luma[static_cast<size_t>(kSrcStride) * y + x] = static_cast<uint8_t>(y * 16u + x);
+      }
+    }
+    for (uint32_t y = 0; y < kH / 2u; ++y) {
+      for (uint32_t x = 0; x < kW; ++x) {
+        chroma[static_cast<size_t>(kSrcStride) * y + x] = static_cast<uint8_t>(200u + y * 4u + x);
+      }
+    }
+
+    FrameView planar_frame{};
+    planar_frame.device_instance_id = 1400;
+    planar_frame.stream_id = 1401;
+    planar_frame.width = kW;
+    planar_frame.height = kH;
+    planar_frame.format_fourcc = FOURCC_NV12;
+    PayloadLayout& pl = planar_frame.payload_layout;
+    pl.format_fourcc = FOURCC_NV12;
+    pl.width = kW;
+    pl.height = kH;
+    pl.plane_count = 2;
+    pl.colorimetry.range = ColorRange::LIMITED;
+    pl.colorimetry.matrix = ColorMatrix::BT601;
+    pl.planes[0].data = luma.data();
+    pl.planes[0].size_bytes = luma.size();
+    pl.planes[0].stride_bytes = kSrcStride;
+    pl.planes[0].rows = kH;
+    pl.planes[1].data = chroma.data();
+    pl.planes[1].size_bytes = chroma.size();
+    pl.planes[1].stride_bytes = kSrcStride;
+    pl.planes[1].rows = kH / 2u;
+
+    assert(validate_payload_layout(pl));
+
+    // Pixel stride participates in extent validation. A chroma plane whose
+    // samples are interleaved spans (samples-1)*pixel_stride + 1 bytes per
+    // row, which is wider than the tightly packed row. A row stride that
+    // suffices for adjacent samples must be rejected once they are not.
+    {
+      PayloadLayout interleaved = pl;
+      interleaved.planes[1].pixel_stride_bytes = 2;
+      // kSrcStride (6) spans 4 adjacent samples but not 4 samples two bytes
+      // apart, which needs 7.
+      assert(!validate_payload_layout(interleaved));
+
+      interleaved.planes[1].stride_bytes = 8;
+      interleaved.planes[1].size_bytes = 8 * (kH / 2u);
+      std::vector<uint8_t> wide(interleaved.planes[1].size_bytes, 0u);
+      interleaved.planes[1].data = wide.data();
+      assert(validate_payload_layout(interleaved));
+
+      // Default remains 1, so every existing layout is unaffected.
+      assert(PayloadPlaneView{}.pixel_stride_bytes == 1);
+    }
+    // Layout validity above is the public-facing precondition; retention below
+    // is what actually proves Core accepted it.
+
+    CoreRetainedProductionPlan requested_cpu_planar{};
+    requested_cpu_planar.valid = true;
+    requested_cpu_planar.posture = CoreProductionPostureShape::CpuPrimary;
+    assert(planar_store.retain_frame(
+        planar_frame, StreamIntent::PREVIEW, 1, 0, requested_cpu_planar));
+
+    const auto planar_result = planar_store.get_latest_stream_result(1401);
+    assert(planar_result);
+    assert(planar_result->payload_kind == ResultPayloadKind::CPU_PLANAR);
+    assert(planar_result->image_format_fourcc == FOURCC_NV12);
+
+    const CoreResultPayloadCpu& rp = planar_result->payload;
+    assert(rp.is_planar());
+    assert(rp.plane_count == 2);
+    // Retained tight: luma stride collapses from 6 to 4, chroma likewise.
+    assert(rp.planes[0].stride_bytes == kW && rp.planes[0].rows == kH);
+    assert(rp.planes[1].stride_bytes == kW && rp.planes[1].rows == kH / 2u);
+    assert(rp.planes[0].offset_bytes == 0);
+    assert(rp.planes[1].offset_bytes == static_cast<size_t>(kW) * kH);
+    assert(rp.size_bytes() == static_cast<size_t>(kW) * kH + static_cast<size_t>(kW) * (kH / 2u));
+
+    // Padding removed, sample values preserved.
+    const uint8_t* y_plane = rp.plane_data(0);
+    const uint8_t* uv_plane = rp.plane_data(1);
+    assert(y_plane && uv_plane);
+    for (uint32_t y = 0; y < kH; ++y) {
+      for (uint32_t x = 0; x < kW; ++x) {
+        assert(y_plane[static_cast<size_t>(kW) * y + x] == static_cast<uint8_t>(y * 16u + x));
+      }
+    }
+    for (uint32_t y = 0; y < kH / 2u; ++y) {
+      for (uint32_t x = 0; x < kW; ++x) {
+        assert(uv_plane[static_cast<size_t>(kW) * y + x] == static_cast<uint8_t>(200u + y * 4u + x));
+      }
+    }
+    assert(rp.plane_data(2) == nullptr);
+
+    // Colorimetry must survive retention: it cannot be recovered from the
+    // bytes, and a consumer guessing it produces a plausible wrong image.
+    assert(rp.colorimetry.range == ColorRange::LIMITED);
+    assert(rp.colorimetry.matrix == ColorMatrix::BT601);
+
+    // Display is supported for a planar stream result via colour conversion,
+    // but is never READY: the RGBA form is not retained, it is produced.
+    assert(planar_result->retained_access_truth.display_view == ResultCapability::EXPENSIVE);
+    // Materialization is the same conversion on demand: supported, and
+    // equally non-ready.
+    assert(planar_result->retained_access_truth.to_image == ResultCapability::EXPENSIVE);
+
+    // Capture must behave like stream: retain the planar member and report
+    // UNSUPPORTED access, NOT fail retention outright. Retention validity and
+    // CPU-access capability are separate questions.
+    CoreCaptureResultData::ImageMemberData planar_member{};
+    FrameView planar_capture = planar_frame;
+    planar_capture.stream_id = 0;
+    planar_capture.capture_id = 1402;
+    assert(CoreResultStore::try_build_capture_image_member_data_from_frame(
+        planar_capture, planar_member, requested_cpu_planar));
+    assert(planar_member.payload_kind == ResultPayloadKind::CPU_PLANAR);
+    assert(planar_member.payload.is_planar());
+    assert(planar_member.payload.plane_count == 2);
+    // A planar capture member converts on demand, exactly as a planar stream
+    // result does. Retaining it truthfully and then reporting no route to the
+    // pixels would make the retention pointless.
+    assert(planar_member.retained_access_truth.to_image == ResultCapability::EXPENSIVE);
+    assert(planar_member.retained_access_truth.display_view == ResultCapability::EXPENSIVE);
+
+    // A declared colour space CamBANG cannot convert must yield NO display
+    // path. Rendering BT.709 content with BT.601 coefficients would produce a
+    // plausible image, which is worse than none.
+    {
+      CoreResultStore bt709_store;
+      FrameView bt709_frame = planar_frame;
+      bt709_frame.stream_id = 1403;
+      bt709_frame.capture_id = 0;
+      bt709_frame.payload_layout.colorimetry.matrix = ColorMatrix::BT709;
+      assert(bt709_store.retain_frame(
+          bt709_frame, StreamIntent::PREVIEW, 1, 0, requested_cpu_planar));
+      const auto bt709_result = bt709_store.get_latest_stream_result(1403);
+      assert(bt709_result);
+      // Still retained and still truthfully planar -- CamBANG holds the bytes
+      // and reports what they are; it simply offers no conversion for them.
+      assert(bt709_result->payload_kind == ResultPayloadKind::CPU_PLANAR);
+      assert(bt709_result->payload.colorimetry.matrix == ColorMatrix::BT709);
+      // Neither path exists for a colour space CamBANG cannot convert.
+      assert(bt709_result->retained_access_truth.display_view == ResultCapability::UNSUPPORTED);
+      assert(bt709_result->retained_access_truth.to_image == ResultCapability::UNSUPPORTED);
+    }
+
+    // Unspecified colorimetry resolves to the documented BT.601 limited
+    // fallback rather than being refused, since that is what both current
+    // platform targets deliver for 8-bit 4:2:0.
+    {
+      CoreResultStore unspec_store;
+      FrameView unspec_frame = planar_frame;
+      unspec_frame.stream_id = 1404;
+      unspec_frame.capture_id = 0;
+      unspec_frame.payload_layout.colorimetry = PayloadColorimetry{};
+      assert(unspec_store.retain_frame(
+          unspec_frame, StreamIntent::PREVIEW, 1, 0, requested_cpu_planar));
+      const auto unspec_result = unspec_store.get_latest_stream_result(1404);
+      assert(unspec_result);
+      assert(unspec_result->retained_access_truth.display_view == ResultCapability::EXPENSIVE);
+    }
+  }
+
+  // --- YUV round trip -------------------------------------------------------
+  //
+  // The provider's forward transform and every consumer's inverse must agree.
+  // Classification tests cannot catch a coefficient or range mistake: a wrong
+  // matrix yields a plausible image, not a failure. This checks the maths
+  // numerically instead.
+  //
+  // The round trip is lossy by construction (8-bit quantization both ways), so
+  // this compares within a tolerance and never for equality. Chroma
+  // subsampling is deliberately not exercised here -- this is the per-sample
+  // transform, tested at full chroma resolution.
+  {
+    constexpr int kTolerance = 4;
+    int checked = 0;
+    int worst = 0;
+
+    // Primaries, greys, and a spread of mixed values. Saturated primaries are
+    // the harshest case for BT.601 limited range, since they sit at the edges
+    // of the representable chroma excursion.
+    const RgbSample probes[] = {
+        {0, 0, 0},     {255, 255, 255}, {255, 0, 0},   {0, 255, 0},
+        {0, 0, 255},   {255, 255, 0},   {0, 255, 255}, {255, 0, 255},
+        {128, 128, 128}, {16, 16, 16},  {235, 235, 235}, {200, 100, 50},
+        {50, 100, 200},  {17, 200, 90}, {90, 17, 200},   {123, 45, 67},
+    };
+
+    for (const RgbSample& in : probes) {
+      const YuvSample yuv = rgb_to_yuv_bt601_limited(in.r, in.g, in.b);
+
+      // Forward output must respect BT.601 limited range, or the inverse is
+      // being fed values it cannot represent.
+      assert(yuv.y >= 16 && yuv.y <= 235);
+      assert(yuv.u >= 16 && yuv.u <= 240);
+      assert(yuv.v >= 16 && yuv.v <= 240);
+
+      const RgbSample out = yuv_to_rgb_bt601_limited(yuv.y, yuv.u, yuv.v);
+      const int dr = std::abs(static_cast<int>(out.r) - static_cast<int>(in.r));
+      const int dg = std::abs(static_cast<int>(out.g) - static_cast<int>(in.g));
+      const int db = std::abs(static_cast<int>(out.b) - static_cast<int>(in.b));
+      worst = std::max(worst, std::max(dr, std::max(dg, db)));
+      assert(dr <= kTolerance && dg <= kTolerance && db <= kTolerance);
+      ++checked;
+    }
+    assert(checked == static_cast<int>(sizeof(probes) / sizeof(probes[0])));
+
+    // Guard the tolerance itself. If the transforms were ever replaced by
+    // something merely "close", a slack tolerance would hide it -- so assert
+    // the observed error is genuinely small, not just inside the bound.
+    assert(worst <= kTolerance);
+
+    // Grey must round trip essentially exactly: it carries no chroma, so any
+    // error here is a luma range/scale mistake rather than subsampling loss.
+    for (int g = 16; g <= 235; ++g) {
+      const uint8_t v = static_cast<uint8_t>(g);
+      const YuvSample yuv = rgb_to_yuv_bt601_limited(v, v, v);
+      const RgbSample out = yuv_to_rgb_bt601_limited(yuv.y, yuv.u, yuv.v);
+      assert(std::abs(static_cast<int>(out.r) - g) <= 2);
+      assert(std::abs(static_cast<int>(out.g) - g) <= 2);
+      assert(std::abs(static_cast<int>(out.b) - g) <= 2);
+    }
+  }
+
+  // --- Capability / admissibility agreement --------------------------------
+  //
+  // The defect this guards against: Core reports a capability from one
+  // predicate while the implementing path gates on another, so can_x() says
+  // supported and x() returns nothing. That happened four times while planar
+  // support was added, and no existing test caught any of them, because each
+  // side was consistent with itself.
+  //
+  // The invariant is one-directional. A reported capability MUST imply the
+  // operation is structurally admissible. The converse is deliberately not
+  // asserted: an admissible payload may still report UNSUPPORTED for reasons
+  // outside these predicates (payload kind, GPU backing state).
+  {
+    struct Row {
+      const char* name;
+      uint32_t fourcc;
+      ResultPayloadKind kind;
+      ColorMatrix matrix;
+      bool planar;
+    };
+    const Row rows[] = {
+        {"rgba packed",    FOURCC_RGBA, ResultPayloadKind::CPU_PACKED, ColorMatrix::UNSPECIFIED, false},
+        {"bgra packed",    FOURCC_BGRA, ResultPayloadKind::CPU_PACKED, ColorMatrix::UNSPECIFIED, false},
+        {"nv12 bt601",     FOURCC_NV12, ResultPayloadKind::CPU_PLANAR, ColorMatrix::BT601,       true},
+        {"nv12 unspec",    FOURCC_NV12, ResultPayloadKind::CPU_PLANAR, ColorMatrix::UNSPECIFIED, true},
+        {"nv12 bt709",     FOURCC_NV12, ResultPayloadKind::CPU_PLANAR, ColorMatrix::BT709,       true},
+    };
+
+    for (const Row& row : rows) {
+      CoreStreamResultData r{};
+      r.stream_id = 1500;
+      r.image_width = 4;
+      r.image_height = 4;
+      r.image_format_fourcc = row.fourcc;
+      r.payload_kind = row.kind;
+      r.retained_frame_id = 7;
+      r.payload_retained_frame_id = 7;
+      r.payload.width = 4;
+      r.payload.height = 4;
+      r.payload.format_fourcc = row.fourcc;
+      r.payload.colorimetry.matrix = row.matrix;
+      r.payload.colorimetry.range = ColorRange::LIMITED;
+      if (row.planar) {
+        r.payload.plane_count = 2;
+        r.payload.stride_bytes = 4;
+        r.payload.planes[0] = {0, 4, 4};
+        r.payload.planes[1] = {16, 4, 2};
+        r.payload.bytes.assign(24, 128u);
+      } else {
+        r.payload.stride_bytes = 16;
+        r.payload.bytes.assign(64, 128u);
+      }
+
+      const CoreRetainedAccessTruth truth = build_stream_retained_access_truth(r);
+
+      // A supported display capability implies the display path can use these
+      // bytes; likewise to_image. Both go through conversion-capable access.
+      if (truth.display_view != ResultCapability::UNSUPPORTED) {
+        assert(stream_result_has_convertible_cpu_access(r) && row.name);
+      }
+      if (truth.to_image != ResultCapability::UNSUPPORTED) {
+        assert(stream_result_has_convertible_cpu_access(r) && row.name);
+      }
+      // A packed-readable payload must never be refused by the broader
+      // convertible check; convertible is defined to subsume it.
+      if (retained_cpu_payload_is_packed_readable(r.payload)) {
+        assert(retained_cpu_payload_is_convertible(r.payload) && row.name);
+      }
+    }
+
+    // Staleness is transient, not structural: a payload from a superseded
+    // frame must report no capability at all.
+    CoreStreamResultData stale{};
+    stale.image_width = 4;
+    stale.image_height = 4;
+    stale.image_format_fourcc = FOURCC_RGBA;
+    stale.payload_kind = ResultPayloadKind::CPU_PACKED;
+    stale.retained_frame_id = 9;
+    stale.payload_retained_frame_id = 8;  // superseded
+    stale.payload.width = 4;
+    stale.payload.height = 4;
+    stale.payload.format_fourcc = FOURCC_RGBA;
+    stale.payload.stride_bytes = 16;
+    stale.payload.bytes.assign(64, 128u);
+    assert(!stream_result_has_packed_cpu_access(stale));
+    const CoreRetainedAccessTruth stale_truth = build_stream_retained_access_truth(stale);
+    assert(stale_truth.display_view == ResultCapability::UNSUPPORTED);
+    assert(stale_truth.to_image == ResultCapability::UNSUPPORTED);
+  }
+
+  // --- I420 (fully planar) conversion ---------------------------------------
+  //
+  // Camera2's YUV_420_888 is a family: chroma pixel stride 2 means U and V are
+  // interleaved (NV12/NV21), 1 means they are separate planes (I420/YV12). The
+  // device decides at runtime, so both members must convert through the same
+  // routine rather than one being special-cased.
+  {
+    constexpr uint32_t kIW = 4;
+    constexpr uint32_t kIH = 4;
+    CoreResultPayloadCpu i420{};
+    i420.format_fourcc = FOURCC_I420;
+    i420.width = kIW;
+    i420.height = kIH;
+    i420.plane_count = 3;
+    i420.stride_bytes = kIW;
+    i420.colorimetry.range = ColorRange::LIMITED;
+    i420.colorimetry.matrix = ColorMatrix::BT601;
+    const size_t i_luma = static_cast<size_t>(kIW) * kIH;
+    const size_t i_chroma = static_cast<size_t>(kIW / 2u) * (kIH / 2u);
+    i420.planes[0] = {0, kIW, kIH};
+    i420.planes[1] = {i_luma, kIW / 2u, kIH / 2u};
+    i420.planes[2] = {i_luma + i_chroma, kIW / 2u, kIH / 2u};
+    i420.bytes.assign(i_luma + 2u * i_chroma, 0u);
+
+    const YuvSample probe = rgb_to_yuv_bt601_limited(200, 60, 60);
+    for (size_t i = 0; i < i_luma; ++i) {
+      i420.bytes[i] = probe.y;
+    }
+    for (size_t i = 0; i < i_chroma; ++i) {
+      i420.bytes[i_luma + i] = probe.u;
+      i420.bytes[i_luma + i_chroma + i] = probe.v;
+    }
+
+    std::vector<uint8_t> rgba(static_cast<size_t>(kIW) * kIH * 4u, 0u);
+    assert(planar_payload_to_rgba8(i420, rgba.data()));
+
+    const RgbSample expect = yuv_to_rgb_bt601_limited(probe.y, probe.u, probe.v);
+    for (size_t px = 0; px < static_cast<size_t>(kIW) * kIH; ++px) {
+      assert(rgba[px * 4u + 0u] == expect.r);
+      assert(rgba[px * 4u + 1u] == expect.g);
+      assert(rgba[px * 4u + 2u] == expect.b);
+      assert(rgba[px * 4u + 3u] == 255u);
+    }
+
+    // Same colorimetry gate as NV12: unconvertible means no conversion.
+    CoreResultPayloadCpu bt709 = i420;
+    bt709.colorimetry.matrix = ColorMatrix::BT709;
+    assert(!planar_payload_to_rgba8(bt709, rgba.data()));
+  }
+
+  // --- NV21 / YV12 chroma order ---------------------------------------------
+  //
+  // A real Galaxy S20+ delivers NV21, so V-before-U is the common Android case
+  // rather than an exotic one. Reading it as NV12 swaps red and blue, which
+  // produces a plausible image instead of a failure -- it showed up on device
+  // as blue where yellow should be.
+  {
+    constexpr uint32_t kNW = 2;
+    constexpr uint32_t kNH = 2;
+    const YuvSample probe = rgb_to_yuv_bt601_limited(220, 200, 40);  // yellow-ish
+    const RgbSample expect = yuv_to_rgb_bt601_limited(probe.y, probe.u, probe.v);
+
+    // NV12 lays chroma out U,V; NV21 lays it out V,U. Same bytes, opposite
+    // meaning, so a converter ignoring order returns the swapped colour.
+    for (int variant = 0; variant < 2; ++variant) {
+      const bool v_first = (variant == 1);
+      CoreResultPayloadCpu p{};
+      p.format_fourcc = v_first ? FOURCC_NV21 : FOURCC_NV12;
+      p.width = kNW;
+      p.height = kNH;
+      p.plane_count = 2;
+      p.stride_bytes = kNW;
+      p.colorimetry.range = ColorRange::LIMITED;
+      p.colorimetry.matrix = ColorMatrix::BT601;
+      const size_t luma = static_cast<size_t>(kNW) * kNH;
+      p.planes[0] = {0, kNW, kNH};
+      p.planes[1] = {luma, kNW, kNH / 2u};
+      p.bytes.assign(luma + static_cast<size_t>(kNW) * (kNH / 2u), 0u);
+      for (size_t i = 0; i < luma; ++i) {
+        p.bytes[i] = probe.y;
+      }
+      p.bytes[luma + 0] = v_first ? probe.v : probe.u;
+      p.bytes[luma + 1] = v_first ? probe.u : probe.v;
+
+      std::vector<uint8_t> rgba(luma * 4u, 0u);
+      assert(planar_payload_to_rgba8(p, rgba.data()));
+      assert(rgba[0] == expect.r);
+      assert(rgba[1] == expect.g);
+      assert(rgba[2] == expect.b);
+    }
+  }
 
   std::cout << "PASS core_result_path_smoke\n";
   return 0;

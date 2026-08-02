@@ -85,8 +85,18 @@ public:
   static constexpr int TIMELINE_RECONCILIATION_STRICT = 1;
 
   // Public CamBANG FourCC-style pixel format constants for Godot Dictionary profile fields.
+  // One constant per format CamBANG can name, so callers never write a raw
+  // FourCC literal. Naming a format here says CamBANG has a descriptor for it,
+  // not that any given provider emits it -- that remains runtime capability
+  // truth, resolved by negotiation.
   static constexpr int PIXEL_FORMAT_RGBA = static_cast<int>(FOURCC_RGBA);
   static constexpr int PIXEL_FORMAT_BGRA = static_cast<int>(FOURCC_BGRA);
+  static constexpr int PIXEL_FORMAT_NV12 = static_cast<int>(FOURCC_NV12);
+  static constexpr int PIXEL_FORMAT_NV21 = static_cast<int>(FOURCC_NV21);
+  static constexpr int PIXEL_FORMAT_I420 = static_cast<int>(FOURCC_I420);
+  static constexpr int PIXEL_FORMAT_YV12 = static_cast<int>(FOURCC_YV12);
+  static constexpr int PIXEL_FORMAT_YUY2 = static_cast<int>(FOURCC_YUY2);
+  static constexpr int PIXEL_FORMAT_UYVY = static_cast<int>(FOURCC_UYVY);
 
   // User-facing control of core processing.
   godot::Error start(
@@ -101,6 +111,12 @@ public:
   godot::Variant get_active_provider_config() const;
   godot::Dictionary get_provider_support() const;
   godot::Variant get_synthetic_metrics_snapshot() const;
+  // Per-access cost evidence, provider-neutral. The same evidence is also
+  // embedded in get_synthetic_metrics_snapshot(), but that accessor returns
+  // nothing unless a SyntheticProvider snapshot is available, which made the
+  // measurement unreachable on exactly the platform-backed runs where access
+  // cost matters most.
+  godot::Dictionary get_result_access_timing_evidence() const;
   // Provider-neutral view of Core's backing-plan evaluation reports, sourced
   // directly from CoreRuntime rather than through the synthetic-metrics crutch,
   // so it is available under every provider. Returns a NIL Variant when the
@@ -308,6 +324,11 @@ private:
     uint64_t capture_id = 0;
     uint64_t acquisition_session_id = 0;
     uint64_t member_identity_signature = 0;
+    // Shape only: member count, per-member index, posture id and to_image
+    // truth. Deliberately excludes capture_id and retained_frame_id, which
+    // member_identity_signature above mixes in, so this survives across
+    // captures of the same access domain.
+    uint64_t member_shape_signature = 0;
     uint64_t evaluation_identity = 0;
     uint64_t due_after_ns = 0;
   };

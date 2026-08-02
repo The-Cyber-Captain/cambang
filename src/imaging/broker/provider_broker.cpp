@@ -221,6 +221,60 @@ bool ProviderBroker::supports_multi_image_still_sequence() const noexcept {
              : false;
 }
 
+namespace {
+
+// With no active provider there is nothing to advertise. A default-constructed
+// ProducerFormatCapabilities is NOT that: it leaves can_emit_packed_rgb true,
+// which would claim packed RGB support on behalf of a provider that is not
+// there.
+ProducerFormatCapabilities no_format_support() noexcept {
+  ProducerFormatCapabilities caps{};
+  caps.can_emit_packed_rgb = false;
+  return caps;
+}
+
+} // namespace
+
+ProducerFormatCapabilities ProviderBroker::stream_format_capabilities(
+    const CaptureProfile& profile,
+    const PictureConfig& picture) const noexcept {
+  ActiveProviderCall call;
+  return acquire_active_provider_call_(call).ok()
+             ? call.provider()->stream_format_capabilities(profile, picture)
+             : no_format_support();
+}
+
+ProducerFormatCapabilities ProviderBroker::capture_format_capabilities(
+    const CaptureRequest& req) const noexcept {
+  ActiveProviderCall call;
+  return acquire_active_provider_call_(call).ok()
+             ? call.provider()->capture_format_capabilities(req)
+             : no_format_support();
+}
+
+ProducerFormatCapabilities ProviderBroker::stream_parent_context_format_capabilities(
+    uint64_t device_instance_id,
+    uint64_t stream_id,
+    StreamIntent intent,
+    const CaptureProfile& profile,
+    const PictureConfig& picture) noexcept {
+  ActiveProviderCall call;
+  return acquire_active_provider_call_(call).ok()
+             ? call.provider()->stream_parent_context_format_capabilities(
+                   device_instance_id, stream_id, intent, profile, picture)
+             : no_format_support();
+}
+
+ProducerFormatCapabilities ProviderBroker::capture_parent_context_format_capabilities(
+    uint64_t device_instance_id,
+    const CaptureRequest& req) noexcept {
+  ActiveProviderCall call;
+  return acquire_active_provider_call_(call).ok()
+             ? call.provider()->capture_parent_context_format_capabilities(
+                   device_instance_id, req)
+             : no_format_support();
+}
+
 ProducerBackingCapabilities ProviderBroker::stream_backing_capabilities(
     const CaptureProfile& profile,
     const PictureConfig& picture) const noexcept {

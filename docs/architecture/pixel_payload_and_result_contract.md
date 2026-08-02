@@ -215,6 +215,209 @@ Depending on `payload_kind`, this may include:
 
 This document does not freeze exact C++ field layout, but the presence of adequate metadata is part of the contract.
 
+## 6.1 Pixel format descriptor
+
+Layout arithmetic for every format CamBANG can name lives in one truth table
+(`src/pixels/format/pixel_format_descriptor.h`): plane count, per-plane row
+bytes and row count, component depth, chroma subsampling, and whether the
+format is packed RGB-family or YUV-family.
+
+Provider, Core, and Godot layers derive size, stride, and bit-depth answers
+from that table. No layer may open-code `width * 4` or infer bit depth from a
+format name.
+
+Naming a format in the table is **not** a support claim. An entry means
+CamBANG can reason about that format's geometry. Whether a format can be
+retained, displayed, or materialized is proven by the paths that implement it,
+and every such path states its own admissible set explicitly. A format with a
+descriptor but no implementing path must fail closed, not fall through to a
+packed-RGBA reinterpretation.
+
+An unnamed FourCC yields an invalid descriptor. Callers must treat that as
+"geometry unknown" and reject, never guess.
+
+## 6.2 Payload layout and colorimetry
+
+A CPU payload is described by a plane descriptor, not a single pointer:
+
+- per-plane data pointer, byte count, stride, and row count;
+- the shared format tag and image dimensions;
+- colorimetry.
+
+`FrameView` carries this as an optional `payload_layout`. When absent, the
+frame is single-plane and the legacy scalar fields
+(`data`/`size_bytes`/`stride_bytes`/`format_fourcc`) are authoritative.
+Consumers read `FrameView::effective_payload_layout()` so both cases answer
+identically. A provider emitting a planar or semi-planar payload **must**
+populate the layout, because the scalars cannot describe more than one plane;
+a multi-plane format tag delivered through the scalars alone is malformed and
+resolves to absent.
+
+Colorimetry — range, matrix, transfer, primaries — is a first-class part of the
+payload contract, not an afterthought. Limited-vs-full range and BT.601 vs
+BT.709 matrix are facts the provider knows at acquisition and that no
+downstream layer can recover from the bytes. Getting them wrong produces an
+image that is plausible and incorrect, which is worse than a failure.
+
+`UNSPECIFIED` is truthful absence, not a default value. A consumer needing a
+concrete value must choose its fallback explicitly; it must not silently treat
+`UNSPECIFIED` as any particular colour space.
+
+## 6.3 Native format capability and selection
+
+Providers declare the formats they can emit **without converting**, in their own
+preference order, alongside whether they will convert to packed RGBA/BGRA on
+request. This is acquisition capability truth, parallel to
+`ProducerBackingCapabilities` and equally distinct from payload-kind policy.
+
+Advertising a format the provider does not actually emit is a contract
+violation, not an optimization hint.
+
+The direction this enables — and the reason the capability is declared rather
+than assumed — is that conversion should happen at the **latest** useful point,
+not the earliest:
+
+- the display path does not need CPU packed RGB at all, since subsampled YUV
+  can be uploaded as its native planes and converted by the sampling shader;
+- the materialization path (`to_image()` / `to_image_member()`) is the only
+  consumer that genuinely requires packed RGB, and it is explicit,
+  user-triggered, and already cost-classified under §11.
+
+Converting inside the provider, on the acquisition thread, before anything has
+asked for pixels, pays the cost unconditionally at the most latency-sensitive
+point in the pipeline. Where a provider's backend delivers YUV, its native
+format is the truthful advertisement and conversion belongs downstream of
+retention.
+
+### 6.3.0 Pixel format is not a user-facing concept
+
+Choosing a pixel format is CamBANG's job, not the application's. A user asking
+for a preview stream should not have to know, or name, the format their
+hardware happens to prefer. Requiring a `format_fourcc` in a public stream
+definition puts a hardware detail in the path of an ordinary request, which
+conflicts with keeping normal user-facing APIs simple.
+
+The capability advertisement in §6.3 exists so that Core can make that choice:
+the provider states what it can emit natively, Core selects based on how the
+result will actually be consumed, and the application never names a format.
+Negotiation today only *validates* a caller-supplied format, which leaves the
+burden in the wrong place. Moving Core from validating a choice to making one
+is the intended direction.
+
+`format_fourcc` on a public stream profile is therefore transitional. Where a
+format must be pinned — maintainer harnesses, verification scenes, diagnostics
+— that is developer tooling, and belongs with the other advanced surfaces
+rather than in the ordinary path.
+
+SyntheticProvider is a deliberate exception in a different sense. For a
+generator, output format is a property of the generator itself, alongside
+pattern preset and seed, so it belongs in `PictureConfig` with the rest of the
+synthetic appearance controls rather than in a hardware-facing profile.
+Pinning a format is meaningful for Synthetic in a way it is not for a camera.
+
+### 6.3.1 Current implementation status
+
+Recorded so a declared-but-unimplemented kind stays distinguishable from a
+working one. This section describes what is built, not what CamBANG may
+support; an absent entry means "not implemented yet", never "excluded by
+design".
+
+- `ResultPayloadKind::CPU_PLANAR` is written by the retention path and
+  reported by results. Semi-planar and fully planar payloads are retained in
+  the layout the producer delivered.
+- Conversion to packed RGBA happens in Core (`planar_payload_to_rgba8`), at
+  the point a caller asks for CPU display bytes or a Godot `Image` -- not in
+  the provider, and not at all if no caller asks.
+- Neither platform provider converts YUV for delivery any more. Both take the
+  camera's native planar buffer through unconverted when Core selects a planar
+  format. Their packed-conversion paths remain, and are reached only when a
+  caller explicitly names RGBA or BGRA.
+- Chroma order is carried by the descriptor (`chroma_v_first`), because
+  NV21/YV12 are indistinguishable from NV12/I420 by geometry alone and a
+  mis-read produces a plausible-looking red/blue swap rather than a failure.
+
+Emission by provider, as a **progress note only**:
+
+| Format | Synthetic stream | Synthetic capture | WinRT stream | WinRT capture | Camera2 stream | Camera2 capture |
+|---|---|---|---|---|---|---|
+| RGBA | yes | yes | yes | yes | yes | yes |
+| BGRA | no | yes | yes | yes | yes | yes |
+| NV12 | yes | yes | yes | yes | yes | yes |
+| NV21 / I420 / YV12 | yes | yes | no | no | yes, device-resolved | yes, device-resolved |
+| YUY2 / UYVY | no | no | no | no | no | no |
+
+WinRT is NV12-only among planar formats because `MediaPixelFormat` has exactly
+two uncompressed members, Bgra8 and Nv12. That is the API's limit, not a
+CamBANG one.
+
+One gap this table makes visible:
+- **Camera2 requests NV12 or I420 but may deliver NV21 or YV12.** The provider
+  resolves the concrete family member from the observed strides and pointer
+  order, and the retained payload carries the delivered FourCC, so payload
+  truth is correct. The stream *profile* still records the requested tag, so
+  profile and payload can name different formats for the same stream.
+
+Pixel format is independent of pattern content. The synthetic stream render
+spec is packed RGBA8 regardless of the requested profile format, and format
+conversion happens after rendering, so every pattern preset works with every
+format the provider emits. Adding a format does not require revisiting the
+pattern module.
+
+### 6.3.2 Platform format availability
+
+Recorded so that later payload decisions inherit this grounding instead of
+re-deriving it. This describes the **shapes CamBANG must be ready to accept**,
+not a device compatibility list. Actual support is always resolved by runtime
+capability query against the attached hardware; no part of CamBANG may key
+behaviour off a device model, and nothing here licenses a hardcoded format
+assumption.
+
+**Flexible formats are a family, not a format.** Camera2's `YUV_420_888` is
+the load-bearing example: a chroma `pixelStride` of 2 means semi-planar
+(NV12/NV21), 1 means fully planar (I420/YV12), and the device decides at
+runtime. Per-plane strides are the only truthful description of what a given
+device handed over. This is why `PayloadLayout` carries strides rather than
+trusting a format tag, and why a provider emitting a flexible format must
+resolve the concrete FourCC from the strides it observes.
+
+Still-capture availability on current targets:
+
+| Still format | Windows (WinRT) | Android (Camera2) | Payload kind |
+|---|---|---|---|
+| BGRA8 | `MediaPixelFormat::Bgra8` | not a capture format | `CPU_PACKED` |
+| NV12 | `MediaPixelFormat::Nv12` | via `YUV_420_888` when semi-planar | `CPU_PLANAR` |
+| NV21 / I420 / YV12 | no | via `YUV_420_888`, device-dependent | `CPU_PLANAR` |
+| YUY2 / UYVY | stream subtypes only | no | `CPU_PACKED` |
+| JPEG | `CreateJpeg()` | guaranteed at every hardware level | `ENCODED_IMAGE` |
+| HEIC / JPEG_R | no | capability-gated | `ENCODED_IMAGE` |
+| RAW Bayer | not exposed by this surface | capability-gated | `RAW_IMAGE` |
+| Opaque GPU | n/a | `PRIVATE`, never CPU-readable | `GPU_SURFACE` |
+
+Two consequences worth carrying forward:
+
+- **Uncompressed stills are natively planar on both targets.** WinRT's
+  uncompressed photo surface offers exactly two pixel formats, BGRA8 and NV12;
+  Camera2 guarantees `YUV_420_888` stills at maximum size on LIMITED hardware
+  and above. Planar still capture is therefore well-founded, not speculative.
+- **JPEG is the only still format guaranteed on every Android device**,
+  including LEGACY, and is the natural save/export artifact. It is also the
+  one payload kind where retaining the provider's own output means performing
+  no pixel work at all, which is why §10.5 already ranks an already-encoded
+  still artifact first for capture retention.
+
+Known descriptor gaps, each breaking a different current assumption:
+
+- **Grayscale (Y8/Y16).** No descriptor exists. Thermal sensors typically
+  deliver single-plane monochrome, and radiometric Y16 is semantically not a
+  picture: its values are temperature, so any RGB rendering is a false-colour
+  palette and therefore a derived representation under §15, never the original
+  retained truth.
+- **10-bit (P010, 10-bit flexible YUV).** The descriptor fields can already
+  express it; no downstream path consumes it.
+- **Bayer RAW.** Needs a colour-filter-array concept the descriptor has no
+  vocabulary for, and packed sub-byte layouts (RAW10/RAW12) are not modelled
+  by the current per-plane row arithmetic at all.
+
 ## 6.x Primary backing vs sidecar backing
 
 A realized image-bearing artifact may have:
@@ -311,6 +514,65 @@ that flow.
 
 CamBANG must not treat this case as equivalent to having CPU-backed fallback when no such
 CPU-backed realization is actually available.
+
+---
+
+### 6.x.5 Backing form by provider and platform, as observed
+
+Recorded because a plausible inference about this was wrong, and the wrong
+version is the one anybody would reach for again.
+
+**Only SyntheticProvider has a GPU-backed path.** Both platform providers
+report `ProducerBackingCapabilities{cpu=true, gpu=false, both=false}` --
+`WinrtCameraProvider::stream_backing_capabilities` and the Camera2 equivalent.
+Camera2's `PRIVATE` (opaque GPU) form is not implemented. So on hardware,
+every CamBANG payload today is CPU-backed, and the renderer in use does not
+change that.
+
+**Backing form must be read from the retained result, not inferred from the
+renderer setting.** An S20+ run against SyntheticProvider retained an RGBA
+stream result reporting `payload_kind=2` (GPU_SURFACE) while `project.godot`
+declared `gl_compatibility` for mobile. The cause was the harness: the Android
+export path substituted `"mobile"` whenever no explicit `--rendering-method`
+was given, so the handset ran Vulkan and had a RenderingDevice. That default is
+fixed -- the export now follows what the project declares -- and an Android run
+with no renderer argument reports `usesVulkan(): false`, `opengl3`,
+`GodotGLRenderView`.
+
+The guidance stands regardless of the cause. Anything that can rewrite project
+settings before an export sits between the file a maintainer reads and the
+renderer a device runs, so the retained result is the only reliable answer to
+which backing form applied.
+
+**ResultCapability is READY=0, CHEAP=1, EXPENSIVE=2, UNSUPPORTED=3.** Zero is
+the BEST answer, not the absent one, and a GPU-backed stream's display view is
+exactly the READY case. This is stated here because an earlier revision of this
+section recorded, as a defect, that a GPU-backed stream "reported
+`can_get_display_view() == 0` indefinitely and nothing ever displayed". There
+was no such defect: the result was READY throughout. The caller -- scene 570 --
+tested the value against 0 as though it meant unsupported, skipped a usable
+display view, and returned from its per-frame block, which starved the panels
+below it so one mis-skipped panel presented as three failing. See b22d261 and
+the revert in 7f139d8.
+
+Two things made that inversion durable, and both are worth avoiding. The
+comparison used a bare `0` rather than the bound `CAPABILITY_UNSUPPORTED`
+constant, so nothing at the call site said what the number meant. And because
+only a GPU-backed stream reports READY for display, while the project pins
+`gl_compatibility` where no GPU backing arises, it never fired in ordinary runs
+-- it appeared only under a renderer with a RenderingDevice, which made it look
+like a platform-specific fault in Core or the provider.
+
+The display-demand mechanism itself is sound. Demand is established by calling
+`get_display_view()`, and the returned texture holds a persistent demand token
+for as long as the caller keeps it, so uploads continue for a bound panel; a
+demand trace under `--rendering-method mobile` shows demand going active once
+and never lapsing.
+
+Planar formats are excluded from GPU backing on both the stream and capture
+sides (`query_stream_producer_capabilities_`,
+`query_capture_producer_capabilities_`) because that backing is RGBA8-only, so
+a planar Synthetic stream takes the CPU path and is unaffected by the above.
 
 ---
 

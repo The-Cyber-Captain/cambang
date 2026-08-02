@@ -7,6 +7,8 @@
 #include <numeric>
 #include <utility>
 
+#include "pixels/format/pixel_format_descriptor.h"
+
 namespace cambang {
 
 namespace {
@@ -34,10 +36,9 @@ bool checked_add_size_t(size_t a, size_t b, size_t& out) {
 }
 
 uint32_t infer_bit_depth(uint32_t format_fourcc) {
-  if (format_fourcc == FOURCC_RGBA || format_fourcc == FOURCC_BGRA) {
-    return 8;
-  }
-  return 0;
+  // 0 remains "CamBANG cannot state a bit depth for this format", which is what
+  // an unnamed FourCC yields from the descriptor table.
+  return describe_pixel_format(format_fourcc).bits_per_component;
 }
 
 CoreImageFactBundle build_default_facts(uint32_t width, uint32_t height, uint32_t format_fourcc) {
@@ -57,71 +58,31 @@ CoreImageFactBundle build_default_facts(uint32_t width, uint32_t height, uint32_
   return facts;
 }
 
+// A frame's image description is usable when CamBANG can name the format and
+// therefore reason about its geometry. Whether that format can be retained,
+// displayed, or materialized is decided separately, by the paths that
+// implement it.
 bool has_valid_result_image_description(const FrameView& frame) {
   if (frame.width == 0 || frame.height == 0) {
     return false;
   }
-  return frame.format_fourcc == FOURCC_RGBA || frame.format_fourcc == FOURCC_BGRA;
-}
-
-bool has_valid_retained_cpu_packed_access_payload(
-    const CoreResultPayloadCpuPacked& payload,
-    uint32_t expected_width,
-    uint32_t expected_height,
-    uint32_t expected_format_fourcc) {
-  if (payload.width == 0 || payload.height == 0 || payload.empty()) {
-    return false;
-  }
-  if (payload.width != expected_width ||
-      payload.height != expected_height ||
-      payload.format_fourcc != expected_format_fourcc) {
-    return false;
-  }
-  if (payload.format_fourcc != FOURCC_RGBA && payload.format_fourcc != FOURCC_BGRA) {
-    return false;
-  }
-  const size_t expected_size =
-      static_cast<size_t>(payload.width) * static_cast<size_t>(payload.height) * 4u;
-  return payload.stride_bytes == payload.width * 4u &&
-         payload.size_bytes() >= expected_size;
-}
-
-CoreRetainedAccessTruth build_stream_retained_access_truth(const CoreStreamResultData& result) {
-  CoreRetainedAccessTruth truth{};
-  const bool has_current_cpu_payload =
-      result.payload_retained_frame_id != 0 &&
-      result.payload_retained_frame_id == result.retained_frame_id &&
-      has_valid_retained_cpu_packed_access_payload(
-          result.payload, result.image_width, result.image_height, result.image_format_fourcc);
-
-  if (result.payload_kind == ResultPayloadKind::GPU_SURFACE) {
-    if (result.retained_gpu_backing) {
-      truth.display_view = ResultCapability::READY;
-    }
-    if (has_current_cpu_payload) {
-      truth.to_image = ResultCapability::CHEAP;
-    } else if (result.retained_gpu_backing &&
-               result.retained_gpu_backing_descriptor.valid &&
-               result.retained_gpu_backing_descriptor.materialization_available) {
-      truth.to_image = ResultCapability::EXPENSIVE;
-    }
-    return truth;
-  }
-
-  if (result.payload_kind == ResultPayloadKind::CPU_PACKED && has_current_cpu_payload) {
-    truth.display_view = ResultCapability::CHEAP;
-    truth.to_image = ResultCapability::CHEAP;
-  }
-  return truth;
+  return is_known_pixel_format(frame.format_fourcc);
 }
 
 CoreRetainedAccessTruth build_capture_image_member_retained_access_truth(
     const CoreCaptureResultData::ImageMemberData& member) {
   CoreRetainedAccessTruth truth{};
-  if (has_valid_retained_cpu_packed_access_payload(
-          member.payload, member.payload.width, member.payload.height, member.payload.format_fourcc)) {
+  if (retained_cpu_payload_is_packed_readable(member.payload)) {
     truth.display_view = ResultCapability::CHEAP;
     truth.to_image = ResultCapability::CHEAP;
+    return truth;
+  }
+  // A planar member converts on demand through the same shared routine the
+  // stream paths use, so it is supported and equally non-ready. Without this
+  // a planar capture retains truthfully and then reports no way to reach it.
+  if (retained_cpu_payload_is_convertible(member.payload)) {
+    truth.display_view = ResultCapability::EXPENSIVE;
+    truth.to_image = ResultCapability::EXPENSIVE;
     return truth;
   }
   if (member.payload_kind == ResultPayloadKind::GPU_SURFACE &&
@@ -134,11 +95,27 @@ CoreRetainedAccessTruth build_capture_image_member_retained_access_truth(
   return truth;
 }
 
+// CPU-primary retention covers both packed and planar payloads. Plan checks
+// ask "is this CPU primary", never "is this specifically packed" -- the packed
+// vs planar distinction belongs to access truth, which is stricter.
+constexpr bool is_cpu_primary_kind(ResultPayloadKind kind) noexcept {
+  return kind == ResultPayloadKind::CPU_PACKED || kind == ResultPayloadKind::CPU_PLANAR;
+}
+
+// The CPU-primary payload kind implied by a frame's format.
+ResultPayloadKind cpu_primary_kind_for_frame(const FrameView& frame) noexcept {
+  const PixelFormatDescriptor desc = describe_pixel_format(frame.format_fourcc);
+  return (desc.valid && desc.layout_class != PixelLayoutClass::Packed)
+      ? ResultPayloadKind::CPU_PLANAR
+      : ResultPayloadKind::CPU_PACKED;
+}
+
 CoreRetainedBackingPlan build_retained_backing_plan_from_requested(
     CoreRetainedProductionPlan requested,
     const FrameView& frame,
     bool has_cpu_payload) {
   CoreRetainedBackingPlan plan{};
+  plan.primary_kind = cpu_primary_kind_for_frame(frame);
   if (!requested.valid) {
     const bool gpu_primary =
         frame.primary_backing_kind == ProducerBackingKind::GPU &&
@@ -397,15 +374,15 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
   if (frame.capture_id != 0 && !capture_requested_retained_plan.valid) {
     return false;
   }
-  const bool has_cpu_payload = CoreResultStore::has_cpu_packed_payload(frame);
+  const bool has_cpu_payload = CoreResultStore::has_cpu_payload(frame);
   const std::optional<CoreRetainedBackingPlan> stream_backing_plan =
       frame.stream_id != 0 ? std::make_optional(build_retained_backing_plan_from_requested(stream_requested_retained_plan, frame, has_cpu_payload)) : std::nullopt;
   const std::optional<CoreRetainedBackingPlan> capture_backing_plan =
       frame.capture_id != 0 ? std::make_optional(build_retained_backing_plan_from_requested(capture_requested_retained_plan, frame, has_cpu_payload)) : std::nullopt;
-  CoreResultPayloadCpuPacked payload{};
+  CoreResultPayloadCpu payload{};
   CoreImageFactBundle facts{};
   if (has_cpu_payload) {
-    if (!CoreResultStore::try_copy_cpu_packed_payload(frame, payload)) {
+    if (!CoreResultStore::try_copy_cpu_payload(frame, payload)) {
       return false;
     }
   }
@@ -424,7 +401,7 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     if (!frame_matches_requested_retained_plan(frame, plan, stream_requested_retained_plan, has_cpu_payload)) {
       return false;
     }
-    if (plan.primary_kind == ResultPayloadKind::CPU_PACKED && !has_cpu_payload) {
+    if (is_cpu_primary_kind(plan.primary_kind) && !has_cpu_payload) {
       return false;
     }
     std::shared_ptr<void> retained_gpu_backing =
@@ -442,7 +419,7 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     mutable_stream_result->payload_kind = plan.primary_kind;
     mutable_stream_result->retained_gpu_backing = std::move(retained_gpu_backing);
     mutable_stream_result->retained_gpu_backing_descriptor = retained_gpu_backing_descriptor;
-    if (plan.primary_kind == ResultPayloadKind::CPU_PACKED || plan.retain_cpu_sidecar) {
+    if (is_cpu_primary_kind(plan.primary_kind) || plan.retain_cpu_sidecar) {
       if (frame.capture_id == 0) {
         mutable_stream_result->payload = std::move(payload);
       } else {
@@ -480,7 +457,7 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     if (!frame_matches_requested_retained_plan(frame, plan, capture_requested_retained_plan, has_cpu_payload)) {
       return false;
     }
-    if (plan.primary_kind == ResultPayloadKind::CPU_PACKED && !has_cpu_payload) {
+    if (is_cpu_primary_kind(plan.primary_kind) && !has_cpu_payload) {
       return false;
     }
     if (plan.primary_kind == ResultPayloadKind::GPU_SURFACE && !frame.primary_backing_artifact) {
@@ -728,12 +705,12 @@ bool CoreResultStore::try_build_capture_image_member_data_from_frame(
   if (!requested_retained_plan.valid) {
     return false;
   }
-  const bool has_cpu_payload = CoreResultStore::has_cpu_packed_payload(frame);
+  const bool has_cpu_payload = CoreResultStore::has_cpu_payload(frame);
   const CoreRetainedBackingPlan plan = build_retained_backing_plan_from_requested(requested_retained_plan, frame, has_cpu_payload);
   if (!frame_matches_requested_retained_plan(frame, plan, requested_retained_plan, has_cpu_payload)) {
     return false;
   }
-  if (plan.primary_kind == ResultPayloadKind::CPU_PACKED) {
+  if (is_cpu_primary_kind(plan.primary_kind)) {
     if (!try_build_capture_image_member_data_from_frame(frame, out_member.payload)) {
       return false;
     }
@@ -762,11 +739,11 @@ bool CoreResultStore::try_build_capture_image_member_data_from_frame(
 
 
 bool CoreResultStore::try_build_capture_image_member_data_from_frame(const FrameView& frame,
-                                                                     CoreResultPayloadCpuPacked& out_payload) {
-  if (!has_cpu_packed_payload(frame)) {
+                                                                     CoreResultPayloadCpu& out_payload) {
+  if (!has_cpu_payload(frame)) {
     return false;
   }
-  if (!try_copy_cpu_packed_payload(frame, out_payload)) {
+  if (!try_copy_cpu_payload(frame, out_payload)) {
     return false;
   }
   const bool valid = has_valid_capture_image_member_payload(out_payload);
@@ -776,7 +753,7 @@ bool CoreResultStore::try_build_capture_image_member_data_from_frame(const Frame
 MutableCaptureResultData CoreResultStore::build_default_image_capture_result(
     const FrameView& frame,
     CoreRetainedBackingPlan plan,
-    CoreResultPayloadCpuPacked payload,
+    CoreResultPayloadCpu payload,
     std::shared_ptr<void> retained_gpu_backing,
     RetainedGpuBackingDescriptor retained_gpu_backing_descriptor) {
   if (frame.capture_image.routing != CaptureImageRouting::DEFAULT_METERED ||
@@ -815,7 +792,7 @@ MutableCaptureResultData CoreResultStore::build_default_image_capture_result(
       capture_result->image_height,
       capture_result->image_format_fourcc);
   capture_result->default_image.payload_kind = plan.primary_kind;
-  if (plan.primary_kind == ResultPayloadKind::CPU_PACKED || plan.retain_cpu_sidecar) {
+  if (is_cpu_primary_kind(plan.primary_kind) || plan.retain_cpu_sidecar) {
     capture_result->default_image.payload = std::move(payload);
   }
   capture_result->default_image.retained_gpu_backing = std::move(retained_gpu_backing);
@@ -834,11 +811,21 @@ MutableCaptureResultData CoreResultStore::build_default_image_capture_result(
   return capture_result;
 }
 
-bool CoreResultStore::has_valid_capture_image_member_payload(const CoreResultPayloadCpuPacked& payload) {
+bool CoreResultStore::has_valid_capture_image_member_payload(const CoreResultPayloadCpu& payload) {
   if (payload.width == 0 || payload.height == 0) {
     return false;
   }
-  if (payload.format_fourcc != FOURCC_RGBA && payload.format_fourcc != FOURCC_BGRA) {
+  // Retention validity only: can CamBANG reason about these bytes and account
+  // for them truthfully. Whether a CPU access path can *use* them is a
+  // separate, stricter question answered by
+  // build_capture_image_member_retained_access_truth(), which gates
+  // to_image_member() on is_packed_rgb_format().
+  //
+  // These were one check until planar retention landed. Conflated, a planar
+  // capture member was copied in full and then rejected here, so capture
+  // failed outright where the stream path retains the frame and reports
+  // UNSUPPORTED access. Keep the two questions separate.
+  if (!is_known_pixel_format(payload.format_fourcc)) {
     return false;
   }
   if (payload.empty()) {
@@ -1180,20 +1167,27 @@ CoreResultStore::DisplayDemandState CoreResultStore::get_stream_display_demand_s
   return state;
 }
 
-bool CoreResultStore::try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpuPacked& out) {
-  if (!has_cpu_packed_payload(frame)) {
+bool CoreResultStore::try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpu& out) {
+  if (!has_cpu_payload(frame)) {
     return false;
   }
 
-  if (!(frame.format_fourcc == FOURCC_RGBA || frame.format_fourcc == FOURCC_BGRA)) {
+  // This is the single-plane packed retention path. Planar and semi-planar
+  // payloads belong to try_copy_cpu_planar_payload(); rejecting them here
+  // keeps a misrouted frame from being copied as if plane 0 were the whole
+  // image.
+  const PixelFormatDescriptor desc = describe_pixel_format(frame.format_fourcc);
+  if (!desc.valid || desc.layout_class != PixelLayoutClass::Packed) {
     return false;
   }
-  if (frame.width > (std::numeric_limits<uint32_t>::max() / 4u)) {
+  const uint32_t bytes_per_pixel = desc.plane0_bytes_per_sample;
+  if (bytes_per_pixel == 0 ||
+      frame.width > (std::numeric_limits<uint32_t>::max() / bytes_per_pixel)) {
     return false;
   }
 
   size_t row_bytes = 0;
-  if (!checked_mul_size_t(static_cast<size_t>(frame.width), 4u, row_bytes)) {
+  if (!checked_mul_size_t(static_cast<size_t>(frame.width), bytes_per_pixel, row_bytes)) {
     return false;
   }
   const size_t src_stride = (frame.stride_bytes == 0) ? row_bytes : static_cast<size_t>(frame.stride_bytes);
@@ -1219,6 +1213,8 @@ bool CoreResultStore::try_copy_cpu_packed_payload(const FrameView& frame, CoreRe
   out.width = frame.width;
   out.height = frame.height;
   out.stride_bytes = static_cast<uint32_t>(row_bytes);
+  // A packed payload is described entirely by the scalar stride above.
+  out.plane_count = 0;
 
   const bool can_adopt_tightly_packed_owner =
       frame.cpu_payload_owner &&
@@ -1249,11 +1245,87 @@ bool CoreResultStore::try_copy_cpu_packed_payload(const FrameView& frame, CoreRe
   return true;
 }
 
-bool CoreResultStore::has_cpu_packed_payload(const FrameView& frame) {
-  return frame.width != 0 &&
-         frame.height != 0 &&
-         frame.data != nullptr &&
-         frame.size_bytes != 0;
+bool CoreResultStore::has_cpu_payload(const FrameView& frame) {
+  if (frame.width == 0 || frame.height == 0) {
+    return false;
+  }
+  // effective_payload_layout() resolves both a populated multi-plane layout and
+  // the legacy single-plane scalars, and reports absence for a multi-plane
+  // format delivered through the scalars alone.
+  return frame.effective_payload_layout().present();
+}
+
+bool CoreResultStore::try_copy_cpu_payload(const FrameView& frame, CoreResultPayloadCpu& out) {
+  const PixelFormatDescriptor desc = describe_pixel_format(frame.format_fourcc);
+  if (!desc.valid) {
+    return false;
+  }
+  return (desc.layout_class == PixelLayoutClass::Packed)
+      ? try_copy_cpu_packed_payload(frame, out)
+      : try_copy_cpu_planar_payload(frame, out);
+}
+
+// Retains a planar or semi-planar payload as one tightly packed contiguous
+// buffer, recording each plane's offset/stride/rows.
+//
+// Provider padding is removed on the way in: retaining tight means every later
+// consumer (GPU upload, conversion) can rely on a single stride rule per plane
+// rather than re-deriving the provider's arbitrary alignment. The copy is the
+// price of that, and it replaces the full-frame YUV->RGBA conversion the
+// provider would otherwise have done, so it is not a new cost on the frame
+// path.
+bool CoreResultStore::try_copy_cpu_planar_payload(const FrameView& frame, CoreResultPayloadCpu& out) {
+  const PayloadLayout layout = frame.effective_payload_layout();
+  if (!layout.present() || !validate_payload_layout(layout)) {
+    return false;
+  }
+  const PixelFormatDescriptor desc = describe_pixel_format(layout.format_fourcc);
+  if (!desc.valid || desc.layout_class == PixelLayoutClass::Packed) {
+    return false;
+  }
+  const size_t total = min_tight_size_bytes(desc, layout.width, layout.height);
+  if (total == 0 || total > out.bytes.max_size()) {
+    return false;
+  }
+
+  out.format_fourcc = layout.format_fourcc;
+  out.width = layout.width;
+  out.height = layout.height;
+  out.plane_count = layout.plane_count;
+  // Carried through retention: a consumer converting these bytes later cannot
+  // infer range or matrix from them, and guessing produces a plausible-looking
+  // wrong image rather than a visible failure.
+  out.colorimetry = layout.colorimetry;
+  out.retained_bytes.reset();
+  out.bytes.assign(total, 0u);
+
+  size_t offset = 0;
+  for (uint32_t plane = 0; plane < layout.plane_count; ++plane) {
+    const PayloadPlaneView& pv = layout.planes[plane];
+    const size_t row_bytes = static_cast<size_t>(plane_row_bytes(desc, plane, layout.width));
+    const size_t rows = static_cast<size_t>(plane_rows(desc, plane, layout.height));
+    const size_t src_stride = (pv.stride_bytes != 0) ? static_cast<size_t>(pv.stride_bytes) : row_bytes;
+    if (row_bytes == 0 || rows == 0 || src_stride < row_bytes) {
+      return false;
+    }
+
+    out.planes[plane].offset_bytes = offset;
+    out.planes[plane].stride_bytes = static_cast<uint32_t>(row_bytes);
+    out.planes[plane].rows = static_cast<uint32_t>(rows);
+
+    const uint8_t* src = pv.data;
+    uint8_t* dst = out.bytes.data() + offset;
+    for (size_t y = 0; y < rows; ++y) {
+      std::memcpy(dst, src, row_bytes);
+      src += src_stride;
+      dst += row_bytes;
+    }
+    offset += row_bytes * rows;
+  }
+
+  // Scalar stride describes plane 0, matching the packed path's meaning.
+  out.stride_bytes = out.planes[0].stride_bytes;
+  return offset == total;
 }
 
 } // namespace cambang

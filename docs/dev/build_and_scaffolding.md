@@ -52,6 +52,36 @@ On Windows systems where both MSVC and MinGW are present, the selected toolchain
 must be explicit or clearly reported. From Git Bash / MinGW environments,
 `use_mingw=yes` is the recommended explicit choice.
 
+### 2.2.1 The Windows platform provider requires MSVC
+
+`use_mingw=yes` cannot compile the WinRT provider, so a MinGW GDE build
+silently produces a **synthetic-only** plugin: the configuration banner still
+reports `gde_provider=windows_winrt`, but no `winrt_camera_provider` object is
+linked and no error is raised. The artifacts differ by roughly an order of
+magnitude (statically linked MinGW plugin ~63 MB, MSVC plugin ~8 MB), which is
+the quickest way to tell which one is on disk.
+
+To build a plugin that actually contains the Windows platform provider:
+
+```sh
+scons gde=yes maintainer_tools=no use_mingw=no
+```
+
+`maintainer_tools=no` is required: some maintainer tools do not compile under
+MSVC (for example `synthetic_timeline_verify.cpp` includes the libstdc++
+extension header `ext/stdio_filebuf.h`), so the tools and the platform-backed
+plugin are built with different toolchains by necessity.
+
+Consequences worth knowing before validating platform-provider work:
+
+- Godot scenes run against a MinGW-built plugin exercise SyntheticProvider
+  only, whatever provider kind the scene requests.
+- Rebuilding with MinGW **overwrites** an MSVC plugin in
+  `tests/cambang_gde/bin/`, so a platform-provider scene run needs the MSVC
+  build re-made first.
+- `platform_runtime_validate=yes` also requires `use_mingw=no` and refuses to
+  configure otherwise.
+
 ### 2.3 Local builds are first-class
 
 CamBANG must build locally without CI, cloud tooling, or internet access during

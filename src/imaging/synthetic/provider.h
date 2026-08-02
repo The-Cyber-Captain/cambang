@@ -52,6 +52,39 @@ public:
     return kBackingPlanEvaluationSettleDelayNs;
   }
 
+  // Synthetic emits packed RGBA natively and can also emit every 4:2:0 member
+  // CamBANG names, on streams and captures alike, so that the planar
+  // retention, conversion and materialization paths are exercisable
+  // deterministically without hardware. NV21 and YV12 are here specifically so
+  // chroma-order handling is covered by a test rather than only by whichever
+  // family member a given handset happens to deliver.
+  ProducerFormatCapabilities stream_format_capabilities(
+      const CaptureProfile& profile,
+      const PictureConfig& picture) const noexcept override {
+    (void)profile;
+    (void)picture;
+    return synthetic_420_format_capabilities();
+  }
+
+  ProducerFormatCapabilities capture_format_capabilities(
+      const CaptureRequest& req) const noexcept override {
+    (void)req;
+    return synthetic_420_format_capabilities();
+  }
+
+ private:
+  static ProducerFormatCapabilities synthetic_420_format_capabilities() noexcept {
+    ProducerFormatCapabilities caps{};
+    caps.add(FOURCC_RGBA);
+    caps.add(FOURCC_NV12);
+    caps.add(FOURCC_NV21);
+    caps.add(FOURCC_I420);
+    caps.add(FOURCC_YV12);
+    caps.can_emit_packed_rgb = true;
+    return caps;
+  }
+
+ public:
   ProducerBackingCapabilities stream_backing_capabilities(
       const CaptureProfile& profile,
       const PictureConfig& picture) const noexcept override;

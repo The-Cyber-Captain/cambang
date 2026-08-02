@@ -15,6 +15,11 @@ constexpr uint64_t kCheapWithinBestMultiplier =
     kResultAccessCheapWithinBestMultiplier;
 
 constexpr const char* kRouteStreamToImageCpuPacked = "stream_to_image.cpu_packed";
+// Planar materialization is a full-frame colour conversion, a materially
+// different cost domain from reading packed bytes, so it gets its own route
+// rather than being folded into cpu_packed.
+constexpr const char* kRouteStreamToImageCpuPlanarConvert = "stream_to_image.cpu_planar_convert";
+constexpr const char* kRouteCaptureToImageCpuPlanarConvert = "capture_to_image.cpu_planar_convert";
 constexpr const char* kRouteStreamToImageGpuPrimaryCpuSidecar = "stream_to_image.gpu_primary_cpu_sidecar";
 constexpr const char* kRouteStreamToImageGpuPrimaryCpuSidecarMaterializer = "stream_to_image.gpu_primary_cpu_sidecar_materializer";
 constexpr const char* kRouteStreamToImageGpuPrimaryNoCpuSidecarMaterializer = "stream_to_image.gpu_primary_no_cpu_sidecar_materializer";

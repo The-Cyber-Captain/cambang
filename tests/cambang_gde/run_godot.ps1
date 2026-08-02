@@ -1,7 +1,13 @@
 param(
     [string]$GodotExe = "C:\Program Files\Godot4.5\Godot_v4.5.1-stable_win64_console.exe",
     [string]$ProjectPath = $PSScriptRoot,
-    [ValidateSet("windows", "android")][string]$RunPlatform = "windows",
+    # The OS this run targets. Named TargetOs rather than RunPlatform because
+    # "platform" already means something else here -- a platform-BACKED provider
+    # (WinRT, Camera2) as opposed to Synthetic -- and a matrix run varies both
+    # independently. RunPlatform remains as an alias so existing invocations and
+    # documented examples keep working.
+    [Alias("RunPlatform")]
+    [ValidateSet("windows", "android")][string]$TargetOs = "windows",
     [string]$Scene = "",
     [string]$Script = "",
     [int]$QuitAfter = 0,
@@ -1242,6 +1248,22 @@ function Get-AndroidLaunchSettingsFromExtraArgs {
     return [PSCustomObject]$result
 }
 
+function Get-ProjectRenderingMethodValue {
+    param([Parameter(Mandatory)][string]$ProjectText)
+
+    # Prefer the mobile-tagged override, since that is the one an Android run
+    # would resolve; fall back to the base key, then to Godot's own default.
+    foreach ($prefix in @('renderer/rendering_method.mobile=', 'renderer/rendering_method=')) {
+        $match = [regex]::Match(
+            $ProjectText,
+            ('(?m)^\s*' + [regex]::Escape($prefix) + '\s*"([^"]*)"\s*$'))
+        if ($match.Success -and -not [string]::IsNullOrWhiteSpace($match.Groups[1].Value)) {
+            return $match.Groups[1].Value
+        }
+    }
+    return "gl_compatibility"
+}
+
 function Get-PatchedAndroidProjectText {
     param(
         [Parameter(Mandatory)][string]$ProjectText,
@@ -1269,11 +1291,20 @@ function Get-PatchedAndroidProjectText {
             -NewValue ('"{0}"' -f $AndroidLaunchSettings.BenchProvider) `
             -InsertAfterLinePrefix 'maintainer/synthetic_producer_output_form='
     }
+    # With no explicit -ExtraArgs "--rendering-method=...", follow what the
+    # project already declares for mobile rather than substituting a different
+    # default. This defaulted to "mobile" (Vulkan), which silently overrode the
+    # project's gl_compatibility on every Android run: the handset ran a
+    # renderer with a RenderingDevice while project.godot -- the thing a
+    # maintainer reads to answer "what does Android run?" -- said otherwise.
+    # That made GPU-backed payloads appear on Android where the settings
+    # predicted none, and left the Compatibility path, a required target,
+    # unexercised there.
     $renderingMethod = if ($AndroidLaunchSettings.HasRenderingMethod) {
         $AndroidLaunchSettings.RenderingMethod
     }
     else {
-        "mobile"
+        Get-ProjectRenderingMethodValue -ProjectText $ProjectText
     }
     $updated = Set-SingleLineValue -Text $updated -LinePrefix 'renderer/rendering_method=' -NewValue ('"{0}"' -f $renderingMethod)
     $updated = Set-OrInsertSingleLineValue `
@@ -2252,7 +2283,7 @@ $runIdentity = Get-RunIdentity `
     -ExplicitLabel $RunLabel `
     -ScenePath $Scene `
     -ScriptPath $Script `
-    -Platform $RunPlatform `
+    -Platform $TargetOs `
     -IsWindowed:$Windowed
 
 $commandText = ""
@@ -2266,7 +2297,7 @@ $androidHarnessVerdict = $null
 $androidSawAppRunning = $false
 $runnerErrorMessage = ""
 
-if ($RunPlatform -eq "windows") {
+if ($TargetOs -eq "windows") {
     $arguments = New-Object System.Collections.Generic.List[string]
     $extraArgBuckets = Get-WindowsGodotExtraArgBuckets -ExtraArgValues $ExtraArgs
 
@@ -2445,8 +2476,51 @@ $scriptParseLoadFailurePatterns = @(
     "Parse Error",
     "Failed to load script"
 )
-$scriptParseLoadFailureObserved = Test-PatternMatch -Text $combinedText -Patterns $scriptParseLoadFailurePatterns
-$hardFailureObserved = Test-PatternMatch -Text $combinedText -Patterns $HardFailurePatterns
+# Failure patterns describe text the SCENE emits, so they are matched against
+# the scene's own output rather than everything captured.
+#
+# On android the scene writes to logcat and nowhere else: stdout.log and
+# stderr.log hold harness narrative and adb tooling output. Matching those
+# too meant the harness could flag itself -- "Failed to read adb logcat.
+# Exit code: 255" satisfies the default (?im)^\s*FAIL(?:ED)? pattern, so a
+# lost adb transport was reported as hard_failure_pattern alongside
+# runner_exception and read like a scene failure during triage.
+#
+# On windows the Godot process's own stdout/stderr ARE those logs, so they
+# stay in scope. The harness verdict marker is still searched everywhere,
+# since finding it is never a false positive.
+# Failure patterns describe text the SCENE emits, so they are matched against
+# the scene's own output rather than everything captured.
+#
+# On android that means the app's logcat lines specifically, not the whole
+# device buffer and not the harness logs, for two separate reasons:
+#
+#   - stdout.log and stderr.log hold harness narrative and adb tooling output.
+#     Matching those let the harness flag itself: "Failed to read adb logcat.
+#     Exit code: 255" satisfies the default (?im)^\s*FAIL(?:ED)? pattern, so a
+#     lost adb transport was reported as hard_failure_pattern and read like a
+#     scene failure during triage.
+#
+#   - device_logcat.log is the whole device buffer, and every line carries a
+#     date/level/tag/pid prefix. An anchored pattern therefore never matched a
+#     scene's own FAIL text -- that backstop has never fired on android -- while
+#     simply stripping the prefix would expose unrelated system chatter to it
+#     ("Failed to delete /data/app/vmdl...tmp" matches perfectly well).
+#
+# Taking the godot-tagged lines and dropping their prefix gives the same text
+# the scene actually printed, so the patterns mean the same thing on both
+# targets. On windows the Godot process's own stdout/stderr already are that
+# text. The harness verdict marker is still searched everywhere, since finding
+# it is never a false positive.
+$sceneFailureText = if ($TargetOs -eq "android") {
+    $appLogPattern = '(?m)^\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\s+[VDIWEFS]/godot\s*\(\s*\d+\):\s?(.*)$'
+    (([regex]::Matches($deviceLogcatText, $appLogPattern) | ForEach-Object { $_.Groups[1].Value }) -join "`n")
+}
+else {
+    "$stdoutText`n$stderrText"
+}
+$scriptParseLoadFailureObserved = Test-PatternMatch -Text $sceneFailureText -Patterns $scriptParseLoadFailurePatterns
+$hardFailureObserved = Test-PatternMatch -Text $sceneFailureText -Patterns $HardFailurePatterns
 
 if ($null -eq $processExitCode -or [string]::IsNullOrWhiteSpace([string]$processExitCode)) {
     $processExitCode = $null
@@ -2465,7 +2539,7 @@ if (-not [string]::IsNullOrWhiteSpace($runnerErrorMessage)) {
     $verdictReasons.Add("runner_exception")
 }
 
-if ($RunPlatform -eq "android" -and -not $androidSawAppRunning -and -not $harnessVerdictObserved) {
+if ($TargetOs -eq "android" -and -not $androidSawAppRunning -and -not $harnessVerdictObserved) {
     $verdictReasons.Add("app_never_observed_running")
 }
 
@@ -2539,7 +2613,7 @@ else {
     1
 }
 $logRecord = Finalize-LogRecord -LogRecord $logRecord -Bucket $bucket
-$finalDeviceLogcatPath = if ($RunPlatform -eq "android") {
+$finalDeviceLogcatPath = if ($TargetOs -eq "android") {
     Join-Path $logRecord.RunDir "device_logcat.log"
 }
 else {
@@ -2553,7 +2627,7 @@ if (-not [string]::IsNullOrWhiteSpace($logRecord.StdoutPath)) {
 if (-not [string]::IsNullOrWhiteSpace($logRecord.StderrPath)) {
     $structuredRecordSourceLogs[$logRecord.StderrPath] = $true
 }
-if ($RunPlatform -eq "android") {
+if ($TargetOs -eq "android") {
     $deviceLogcatPath = $finalDeviceLogcatPath
 }
 if (-not [string]::IsNullOrWhiteSpace($deviceLogcatPath) -and (Test-Path $deviceLogcatPath)) {
@@ -2565,7 +2639,7 @@ $androidRecordFileResult = [ordered]@{
     StructuredRecords = @()
     Scene870SummaryJson = $null
 }
-if ($RunPlatform -eq "android" -and -not [string]::IsNullOrWhiteSpace($deviceLogcatText) -and -not [string]::IsNullOrWhiteSpace($androidPackageName)) {
+if ($TargetOs -eq "android" -and -not [string]::IsNullOrWhiteSpace($deviceLogcatText) -and -not [string]::IsNullOrWhiteSpace($androidPackageName)) {
     $androidRecordFileResult = Recover-AndroidStructuredRecordFiles `
         -RunDir $logRecord.RunDir `
         -LogText $deviceLogcatText `
@@ -2591,7 +2665,7 @@ if ($null -ne $androidRecordFileResult.Scene870SummaryJson -and -not [string]::I
 
 $meta = [ordered]@{
     timestamp_utc = $logRecord.TimestampUtc.ToString("o")
-    run_platform = $RunPlatform
+    run_platform = $TargetOs
     run_identity = $runIdentity
     run_label = $RunLabel
     verdict = $finalVerdict
@@ -2618,7 +2692,7 @@ $meta = [ordered]@{
     structured_records = @($combinedStructuredRecords.ToArray())
 }
 
-if ($RunPlatform -eq "android") {
+if ($TargetOs -eq "android") {
     $meta["android_sdk_root"] = $(Resolve-AndroidSdkRootPath -ExplicitSdkRoot $AndroidSdkRoot)
     $meta["adb_exe"] = $(Resolve-AdbExePath -ExplicitAdbExe $AdbExe -SdkRoot $meta["android_sdk_root"])
     $meta["android_export_preset"] = $AndroidExportPreset
