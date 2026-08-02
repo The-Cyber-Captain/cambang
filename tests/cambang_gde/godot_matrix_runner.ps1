@@ -186,7 +186,13 @@ foreach ($scene in $Scenes) {
                         $labelParts += @("scene$tag", $os)
                         if (-not [string]::IsNullOrWhiteSpace($device.Tag)) { $labelParts += $device.Tag }
                         $labelParts += @($renderer, $backing)
-                        if ($backing -eq "synthetic") { $labelParts += $form }
+                        # The form is part of the label whenever it actually
+                        # varies between runs. Under a platform backing it
+                        # normally does not -- the redundant combinations are
+                        # collapsed -- but -NoSkipRedundant emits one run per
+                        # form, and omitting it there produced several runs
+                        # sharing a label, indistinguishable in summary.jsonl.
+                        if ($backing -eq "synthetic" -or $NoSkipRedundant) { $labelParts += $form }
                         $combinations.Add([pscustomobject]@{
                             Scene    = $scene
                             TargetOs = $os
