@@ -568,7 +568,16 @@ if is_msvc:
     if env["warnings_as_errors"]:
         env.Append(CXXFLAGS=["/WX"])
     if core_target == "debug":
-        env.Append(CXXFLAGS=["/Zi", "/Od"])
+        # /Z7 (debug info inside each .obj), not /Zi. /Zi makes every cl.exe
+        # write to one compiler PDB -- with no /Fd here they all landed on
+        # <repo root>\vc140.pdb, so any -j>1 build died immediately with
+        # "fatal error C1041: cannot open program database". /Z7 removes the
+        # shared file from the picture entirely rather than serialising access
+        # to it: /FS would keep the contention and route it through an
+        # mspdbsrv.exe background process, and per-object /Fd would leave a
+        # .pdb littered beside every .obj. The linker still emits the real
+        # program database for the binary from /DEBUG below.
+        env.Append(CXXFLAGS=["/Z7", "/Od"])
         env.Append(LINKFLAGS=["/DEBUG"])
     else:
         env.Append(CXXFLAGS=["/O2"])
