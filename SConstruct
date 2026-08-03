@@ -788,6 +788,7 @@ maintainer_tools_clean_outputs = [
     _program_path("core_spine_smoke"),
     _program_path("core_result_path_smoke"),
     _program_path("core_result_byte_budget_stress_smoke"),
+    _program_path("outstanding_payload_ledger_verify"),
     _program_path("core_capture_assembly_registry_smoke"),
     _program_path("core_dispatcher_bracket_routing_smoke"),
     _program_path("godot_result_convert_smoke"),
@@ -870,6 +871,13 @@ if build_maintainer_tools:
     core_result_byte_budget_stress_smoke_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "core_result_byte_budget_stress_smoke"),
         source=maintainer_tools_core_runtime_sources + ["src/smoke/core_result_byte_budget_stress_smoke.cpp"],
+    )
+    # Header-only subject (imaging/api/outstanding_payload_ledger.h), so this
+    # links no core runtime sources: the point is that the accounting is
+    # testable host-native, away from the platform provider that uses it.
+    outstanding_payload_ledger_verify_prog = maintainer_tools_env.Program(
+        target=os.path.join(out_dir, "outstanding_payload_ledger_verify"),
+        source=["src/smoke/outstanding_payload_ledger_verify.cpp"],
     )
     core_capture_assembly_registry_smoke_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "core_capture_assembly_registry_smoke"),
@@ -995,6 +1003,7 @@ if build_maintainer_tools:
             core_result_path_smoke_prog,
             core_thread_liveness_watchdog_verify_prog,
             core_result_byte_budget_stress_smoke_prog,
+            outstanding_payload_ledger_verify_prog,
             core_capture_assembly_registry_smoke_prog,
             core_dispatcher_bracket_routing_smoke_prog,
             godot_result_convert_smoke_prog,

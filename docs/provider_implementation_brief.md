@@ -120,6 +120,41 @@ match reality). See `architecture/pixel_payload_and_result_contract.md`.
   closed generation at their next checkpoint and terminalize as failed with
   `ERR_SHUTTING_DOWN` rather than delivering into a dead session.
 
+### 5.2 An abandoned capture's payloads are never a later capture's
+
+Giving up on a capture does not cancel the backend's obligation to produce it.
+A platform may deliver the payload later — sometimes only when the *next*
+request pushes its pipeline. Observed on Quest 3: a still-only session withheld
+a buffer past the sample wait and released it into the following capture, which
+adopted it. That device then ran one image behind indefinitely, every capture
+reporting success. Nothing detected it, because a stale payload wearing a fresh
+capture's facts is indistinguishable from a correct result.
+
+The obligation:
+
+* A payload delivered after its capture was abandoned **must not** be
+  attributed to any later capture. Discard it, and count the discard.
+* Attribution is **by accounting**: a capture abandoned with fewer payloads
+  than expected leaves that many owed, and the next arrivals discharge the debt
+  before any collector may claim one. Members the platform explicitly failed
+  owe nothing — no payload is in flight for them.
+* Attribution **must not** use acquisition marks. `camera_fact_model.md` §12.2
+  forbids acquisition timing as identity, freshness, or ordering evidence, and
+  marks may legitimately be identical across simultaneously triggered devices,
+  so they cannot discriminate even in principle.
+* Where an unmatched payload would otherwise be paired to metadata by position
+  (the degenerate single-member case), that pairing is permitted only while the
+  device owes nothing. Facts are enrichment and never gate pixels, so
+  withholding them is the conservative outcome.
+* Debt is per device and must not outlive it: settle or forgive it on close, or
+  a reopened device inherits discards that are not its own.
+
+`imaging/api/outstanding_payload_ledger.h` implements this accounting and is
+the expected mechanism. A provider whose backend model makes late delivery
+structurally impossible — one where each payload returns only to its own
+awaiting call, with no shared queue a later capture could drain — may state
+that instead, but must say so explicitly rather than leave the question open.
+
 ### 5.1 Multi-image bundles: coherence outranks per-image quality
 
 A multi-image still bundle exists to be *combined*. That makes it a different
@@ -299,8 +334,8 @@ never evidence that the contract permits it.
 
 A provider is not done until it passes, unmodified:
 
-* `out/provider_compliance_verify.exe` — the executable contract (currently
-  41 checks; the check source is the authoritative audit list).
+* `out/provider_compliance_verify.exe` — the executable contract. The check
+  source is the authoritative audit list; do not rely on a count quoted here.
 * `out/core_spine_smoke.exe`, `out/restart_boundary_verify.exe`,
   `out/verify_case_runner.exe --run-all` — lifecycle/restart/authored cases.
 * `out/core_thread_liveness_watchdog_verify.exe` — both prompt/bounded

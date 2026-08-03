@@ -1883,15 +1883,18 @@ ProviderResult SyntheticProvider::validate_and_admit_capture_submission_locked_(
   }
 
   for (const DeviceCaptureJob& device_job : job.device_jobs) {
-    const InFlightCaptureKey key{
-        device_job.request.capture_id,
-        device_job.request.device_instance_id};
-    if (in_flight_captures_.find(key) != in_flight_captures_.end()) {
+    // Any in-flight capture on this device, not merely a duplicate key
+    // (capture_identity_and_lifecycle.md 3, brief 5.2). The reference provider
+    // must model the contract it defines: platform providers enforce this, so
+    // Synthetic enforcing something laxer would teach the wrong model to anyone
+    // reading it as the template -- and would let a provider pass compliance
+    // while permitting concurrency the contract forbids.
+    if (has_in_flight_capture_for_device_locked_(device_job.request.device_instance_id)) {
       auto dev_it = devices_.find(device_job.request.device_instance_id);
       const DeviceState* device_state =
           dev_it == devices_.end() ? nullptr : &dev_it->second;
       set_failure_info(
-          "duplicate_inflight_capture_key",
+          "device_capture_already_in_flight",
           device_job.request.device_instance_id,
           device_state);
       return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
@@ -2196,10 +2199,27 @@ void SyntheticProvider::run_device_capture_job_(const DeviceCaptureJob& job, uin
     return;
   }
 
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+  // A payload withheld from an earlier capture on this device is released now,
+  // as the next request pushes the pipeline -- still carrying its own
+  // capture_id, because that is what the platform hands back.
+  release_withheld_payload_for_test_(job.request.device_instance_id);
+#endif
+
   std::shared_ptr<std::vector<std::uint8_t>> deferred_cpu_staging_bytes{};
   try {
     const bool ok = generate_device_capture_payloads_(
         job, generation, &deferred_cpu_staging_bytes);
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+    if (ok && consume_withheld_capture_marker_for_test_(job.request.capture_id)) {
+      finish_device_capture_job_(job,
+                                 generation,
+                                 CaptureTerminalKind::Failed,
+                                 ProviderError::ERR_TIMEOUT,
+                                 std::move(deferred_cpu_staging_bytes));
+      return;
+    }
+#endif
     if (ok) {
       finish_device_capture_job_(job,
                                  generation,
@@ -2221,6 +2241,51 @@ void SyntheticProvider::run_device_capture_job_(const DeviceCaptureJob& job, uin
                                std::move(deferred_cpu_staging_bytes));
   }
 }
+
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+
+void SyntheticProvider::arm_withheld_capture_payload_for_test(uint64_t device_instance_id) {
+  std::lock_guard<std::mutex> lock(withheld_payload_mutex_for_test_);
+  withhold_armed_devices_for_test_.insert(device_instance_id);
+}
+
+bool SyntheticProvider::consume_withhold_arm_for_test_(uint64_t device_instance_id) {
+  std::lock_guard<std::mutex> lock(withheld_payload_mutex_for_test_);
+  return withhold_armed_devices_for_test_.erase(device_instance_id) != 0;
+}
+
+void SyntheticProvider::stash_withheld_payload_for_test_(uint64_t device_instance_id,
+                                                         uint64_t capture_id,
+                                                         const FrameView& fv) {
+  std::lock_guard<std::mutex> lock(withheld_payload_mutex_for_test_);
+  // The FrameView keeps its own release lease alive; holding it by value here
+  // defers that release until the payload is finally posted.
+  withheld_payload_by_device_for_test_[device_instance_id] = fv;
+  withheld_captures_for_test_.insert(capture_id);
+}
+
+bool SyntheticProvider::consume_withheld_capture_marker_for_test_(uint64_t capture_id) {
+  std::lock_guard<std::mutex> lock(withheld_payload_mutex_for_test_);
+  return withheld_captures_for_test_.erase(capture_id) != 0;
+}
+
+void SyntheticProvider::release_withheld_payload_for_test_(uint64_t device_instance_id) {
+  FrameView fv{};
+  {
+    std::lock_guard<std::mutex> lock(withheld_payload_mutex_for_test_);
+    const auto it = withheld_payload_by_device_for_test_.find(device_instance_id);
+    if (it == withheld_payload_by_device_for_test_.end()) {
+      return;
+    }
+    fv = it->second;
+    withheld_payload_by_device_for_test_.erase(it);
+  }
+  // Posted outside the lock: strand delivery must not run under provider
+  // bookkeeping locks.
+  strand_.post_frame(fv);
+}
+
+#endif
 
 bool SyntheticProvider::generate_device_capture_payloads_(
     const DeviceCaptureJob& job,
@@ -2549,6 +2614,15 @@ bool SyntheticProvider::generate_device_capture_payloads_(
     const uint64_t member_post_begin_ns = provider_monotonic_now_ns();
     emit_capture_image_facts_(req, member.image_member_index,
                               member.intended_exposure_compensation_milli_ev);
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+    if (consume_withhold_arm_for_test_(req.device_instance_id)) {
+      // Hold the payload back rather than posting it. The capture itself
+      // terminalizes failed in run_device_capture_job_, as a provider that gave
+      // up waiting reports; this payload surfaces at the next capture.
+      stash_withheld_payload_for_test_(req.device_instance_id, req.capture_id, fv);
+      continue;
+    }
+#endif
     strand_.post_frame(fv);
     const uint64_t member_post_end_ns = provider_monotonic_now_ns();
     member_post_sample_ns = member_post_end_ns - member_post_begin_ns;

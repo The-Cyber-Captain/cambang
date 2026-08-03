@@ -2608,6 +2608,20 @@ void WinrtCameraProvider::run_device_capture_job_(const DeviceCaptureJob& job) n
   }
 }
 
+// Brief 5.2 (an abandoned capture's payloads are never a later capture's):
+// this provider carries no outstanding-payload ledger, and states why rather
+// than leaving the question open.
+//
+// Stills come from LowLagPhotoCapture::CaptureAsync(), a pull model: each
+// payload is returned to the single awaiting call that requested it. There is
+// no shared reader queue that a later capture could drain, so a payload cannot
+// arrive with no capture identity and be adopted by whichever capture happens
+// to be collecting. An abandoned capture's async operation completes into a
+// future nobody reads; its payload is released, never re-delivered.
+//
+// If that ever changes -- a frame-reader path for stills, or any shared
+// delivery queue -- this provider acquires the same obligation as Camera2 and
+// must adopt imaging/api/outstanding_payload_ledger.h.
 ProviderResult WinrtCameraProvider::validate_and_admit_submission_locked_(
     const CaptureSubmission& submission,
     std::vector<DeviceCaptureJob>& out_jobs) {
@@ -2640,8 +2654,22 @@ ProviderResult WinrtCameraProvider::validate_and_admit_submission_locked_(
                                              supports_multi_image_still_sequence())) {
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
-    if (in_flight_captures_.count(
-            InFlightKey{req.capture_id, req.device_instance_id}) != 0) {
+    // Any in-flight capture on this device, not merely a duplicate of this
+    // request (capture_identity_and_lifecycle.md 3, brief 5.2). Two captures on
+    // one device share this backend's LowLagPhotoCapture, and nothing else here
+    // serialises them -- there is no per-device still lock as the Camera2
+    // provider has. The rule is contract-level, not backend-specific: a caller
+    // must get the same answer from every provider.
+    const bool device_already_capturing =
+        std::any_of(in_flight_captures_.begin(), in_flight_captures_.end(),
+                    [&req](const auto& entry) {
+                      return entry.first.device_instance_id == req.device_instance_id;
+                    });
+    if (device_already_capturing) {
+      winrt_detail::log_line(
+          "capture admission refused: device=%llu already has a capture in flight "
+          "-> ERR_BUSY",
+          static_cast<unsigned long long>(req.device_instance_id));
       return ProviderResult::failure(ProviderError::ERR_BUSY);
     }
     auto dev_it = devices_.find(req.device_instance_id);

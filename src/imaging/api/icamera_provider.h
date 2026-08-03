@@ -363,6 +363,16 @@ public:
   // Trigger a still capture for a device instance. A successful return is
   // admission/ownership transfer: the provider will later report terminal
   // capture success or failure through the provider callback/strand path.
+  //
+  // Abandonment obligation (brief §5.2). Giving up on a capture does not
+  // cancel the backend's obligation to produce it: a platform may deliver the
+  // payload later, sometimes only when the next request pushes its pipeline. A
+  // payload delivered after its capture was abandoned must never be attributed
+  // to a later capture on that device. Attribution is by accounting -- see
+  // imaging/api/outstanding_payload_ledger.h -- never by acquisition mark,
+  // which camera_fact_model.md §12.2 forbids as identity or freshness evidence
+  // and which may legitimately be identical across simultaneously triggered
+  // devices.
   virtual ProviderResult trigger_capture(const CaptureRequest& req) = 0;
 
   // Trigger a grouped still-capture submission. Providers that do not override

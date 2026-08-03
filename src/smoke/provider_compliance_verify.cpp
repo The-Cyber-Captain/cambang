@@ -1612,6 +1612,19 @@ bool wait_for_stream_frame(const RecorderCallbacks& cb, uint64_t stream_id, Even
   return false;
 }
 
+bool wait_for_tagged_event(const RecorderCallbacks& cb, const char* tag, uint64_t id) {
+  for (int i = 0; i < kMaxIters; ++i) {
+    const auto events = cb.snapshot_events();
+    for (const auto& ev : events) {
+      if (ev.tag == tag && ev.id == id) {
+        return true;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+  }
+  return false;
+}
+
 bool wait_for_capture_completed_with_frames(const RecorderCallbacks& cb,
                                             uint64_t capture_id,
                                             size_t expected_frame_count) {
@@ -3354,6 +3367,118 @@ bool run_synthetic_timeline_picture_appearance_check() {
   return assert_native_balance(cb_events_after_teardown, "synthetic_picture_appearance");
 }
 
+// Brief section 5.2: an abandoned capture's payload is never a later
+// capture's.
+//
+// Drives SyntheticProvider's section 11 withhold machinery: capture A's payload
+// is held back (A terminalizes ERR_TIMEOUT, as a provider that gave up
+// reports), then released when capture B pushes the pipeline. The obligation
+// under test is that the late payload still carries capture A's id -- a
+// provider must never re-tag it as the capture that happened to be running when
+// it arrived, which is precisely how a stale image acquires a fresh capture's
+// identity and a device starts running one image behind.
+//
+// This covers the identity-preserving half of section 5.2. The other half --
+// a payload arriving with no capture identity at all, as an ImageReader queue
+// delivers -- is internal to a provider and unobservable through the contract;
+// outstanding_payload_ledger_verify covers the accounting for that case, and
+// hardware validation covers the wiring.
+bool run_abandoned_capture_payload_attribution_check() {
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 64;
+  cfg.nominal.height = 64;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(cfg);
+
+  constexpr uint64_t kDevice = 1;
+  constexpr uint64_t kCaptureA = 9001;
+  constexpr uint64_t kCaptureB = 9002;
+
+  if (!provider.initialize(&cb).ok() ||
+      !provider.open_device("synthetic:0", kDevice, 2001).ok()) {
+    return false;
+  }
+
+  auto make_request = [](uint64_t capture_id) {
+    CaptureRequest req{};
+    req.capture_id = capture_id;
+    req.device_instance_id = kDevice;
+    req.width = 64;
+    req.height = 64;
+    req.format_fourcc = FOURCC_RGBA;
+    req.still_image_bundle = make_default_metered_still_image_bundle();
+    return req;
+  };
+
+  provider.arm_withheld_capture_payload_for_test(kDevice);
+
+  if (!provider.trigger_capture(make_request(kCaptureA)).ok()) {
+    return false;
+  }
+  if (!wait_for_tagged_event(cb, "capture_failed", kCaptureA)) {
+    std::fprintf(stderr,
+                 "abandoned-payload check: capture A did not terminalize failed\n");
+    return false;
+  }
+
+  // A withheld payload must not have been posted with its own capture.
+  {
+    const auto events = cb.snapshot_events();
+    for (const auto& ev : events) {
+      if (ev.tag == "frame" && ev.capture_id == kCaptureA) {
+        std::fprintf(stderr,
+                     "abandoned-payload check: capture A posted a frame despite being withheld\n");
+        return false;
+      }
+    }
+  }
+
+  if (!provider.trigger_capture(make_request(kCaptureB)).ok()) {
+    return false;
+  }
+  if (!wait_for_tagged_event(cb, "capture_completed", kCaptureB)) {
+    std::fprintf(stderr, "abandoned-payload check: capture B did not complete\n");
+    return false;
+  }
+
+  int frames_for_a = 0;
+  int frames_for_b = 0;
+  for (const auto& ev : cb.snapshot_events()) {
+    if (ev.tag != "frame") {
+      continue;
+    }
+    if (ev.capture_id == kCaptureA) {
+      ++frames_for_a;
+    } else if (ev.capture_id == kCaptureB) {
+      ++frames_for_b;
+    }
+  }
+
+  bool ok = true;
+  // The late payload surfaced, still owning its abandoned capture's identity.
+  if (frames_for_a != 1) {
+    std::fprintf(stderr,
+                 "abandoned-payload check: expected exactly 1 late frame carrying capture A's id, saw %d\n",
+                 frames_for_a);
+    ok = false;
+  }
+  // Capture B got its own payload and only its own. Two frames here would mean
+  // the late payload had been re-tagged as B -- the defect this guards.
+  if (frames_for_b != 1) {
+    std::fprintf(stderr,
+                 "abandoned-payload check: capture B must carry exactly its own payload, saw %d\n",
+                 frames_for_b);
+    ok = false;
+  }
+
+  if (!provider.close_device(kDevice).ok() || !provider.shutdown().ok()) {
+    return false;
+  }
+  return ok;
+}
+
 bool run_stub_provider_sanity_check() {
   RecorderCallbacks cb;
   StubProvider provider;
@@ -3469,12 +3594,24 @@ bool run_synthetic_provider_direct_sanity_check() {
 bool run_synthetic_capture_executor_correctness_check() {
   RecorderCallbacks cb;
   SyntheticProviderConfig cfg{};
-  cfg.endpoint_count = 2;
+  // One device per queued job. A device admits at most one capture at a time
+  // (capture_identity_and_lifecycle.md 3), so executor saturation can only be
+  // reached across devices -- stacking one device, as this check did before
+  // that rule existed, now fails at the second capture instead of filling the
+  // queue. The assertion is unchanged: saturation is a deterministic ERR_BUSY,
+  // never hidden queue growth (brief 5).
+  // kCaptureQueueCapacity (64) + kDeviceA + kDeviceB, with headroom. Under
+  // one-capture-per-device the queue depth is a device count, so saturating it
+  // needs that many distinct devices -- the constant now bounds concurrent
+  // capturing devices rather than per-device stacking.
+  cfg.endpoint_count = 70;
   cfg.nominal.width = 8;
   cfg.nominal.height = 8;
   cfg.nominal.format_fourcc = FOURCC_RGBA;
   SyntheticProvider provider(cfg);
 
+  constexpr uint64_t kFillDeviceBase = 7300;
+  constexpr uint64_t kFillRootBase = 730100;
   constexpr uint64_t kDeviceA = 701;
   constexpr uint64_t kDeviceB = 702;
   constexpr uint64_t kRootA = 70101;
@@ -3541,11 +3678,30 @@ bool run_synthetic_capture_executor_correctness_check() {
     return false;
   }
 
-  provider.set_capture_workers_paused_for_test(true);
   const size_t queued_prefix = snapshot.queue_capacity - 1;
+  if (queued_prefix + 2 > cfg.endpoint_count) {
+    std::cerr << "FAIL synthetic capture executor check needs one endpoint per queued job\n";
+    (void)provider.shutdown();
+    return false;
+  }
+  // Devices 2..N carry the queue fill; kDeviceA and kDeviceB stay idle so the
+  // grouped-rejection and tail/overflow assertions below exercise queue
+  // capacity rather than per-device busy-ness. Opened before the workers are
+  // paused -- device open is ordinary lifecycle work and should not be
+  // interleaved with a deliberately stalled executor.
+  for (size_t i = 0; i < queued_prefix; ++i) {
+    const std::string hardware_id = "synthetic:" + std::to_string(i + 2);
+    if (!provider.open_device(hardware_id, kFillDeviceBase + i, kFillRootBase + i).ok()) {
+      std::cerr << "FAIL synthetic capture executor could not open a queue-fill device\n";
+      (void)provider.shutdown();
+      return false;
+    }
+  }
+
+  provider.set_capture_workers_paused_for_test(true);
   for (size_t i = 0; i < queued_prefix; ++i) {
     if (!provider.trigger_capture(
-            make_request(kQueuedCaptureBase + i, kDeviceA)).ok()) {
+            make_request(kQueuedCaptureBase + i, kFillDeviceBase + i)).ok()) {
       std::cerr << "FAIL synthetic capture executor could not fill bounded queue\n";
       (void)provider.shutdown();
       return false;
@@ -3576,8 +3732,10 @@ bool run_synthetic_capture_executor_correctness_check() {
     (void)provider.shutdown();
     return false;
   }
+  // kDeviceB, not kDeviceA: A now holds the tail capture, so re-using it would
+  // return ERR_BUSY for per-device reasons and prove nothing about saturation.
   const ProviderResult overflow_result = provider.trigger_capture(
-      make_request(kRejectedOverflowCapture, kDeviceA));
+      make_request(kRejectedOverflowCapture, kDeviceB));
   snapshot = provider.capture_executor_snapshot_for_test();
   if (overflow_result.ok() || overflow_result.code != ProviderError::ERR_BUSY ||
       snapshot.queued_jobs != snapshot.queue_capacity ||
@@ -3736,9 +3894,12 @@ bool run_synthetic_capture_executor_correctness_check() {
 
   provider.set_capture_jobs_paused_after_dequeue_for_test(true);
   constexpr size_t kShutdownCaptureCount = 4;
+  // One device each: these are deliberately concurrent (they must still be
+  // in flight when shutdown lands), which one device can no longer carry. The
+  // queue-fill devices opened earlier are idle again by now.
   for (size_t i = 0; i < kShutdownCaptureCount; ++i) {
     if (!provider.trigger_capture(
-            make_request(kShutdownCaptureBase + i, kDeviceA)).ok()) {
+            make_request(kShutdownCaptureBase + i, kFillDeviceBase + i)).ok()) {
       std::cerr << "FAIL synthetic capture executor shutdown setup admission failed\n";
       (void)provider.shutdown();
       return false;
@@ -9846,6 +10007,7 @@ int main(int argc, char** argv) {
       {"run_synthetic_producer_output_form_mode_production_check", [] { return run_synthetic_producer_output_form_mode_production_check(); }},
       {"run_synthetic_live_gpu_backing_truth_check", [] { return run_synthetic_live_gpu_backing_truth_check(); }},
       {"run_synthetic_timeline_picture_appearance_check", [] { return run_synthetic_timeline_picture_appearance_check(); }},
+      {"run_abandoned_capture_payload_attribution_check", [] { return run_abandoned_capture_payload_attribution_check(); }},
       {"run_stub_provider_sanity_check", [] { return run_stub_provider_sanity_check(); }},
       {"run_synthetic_provider_direct_sanity_check", [] { return run_synthetic_provider_direct_sanity_check(); }},
       {"run_synthetic_capture_executor_correctness_check", [] { return run_synthetic_capture_executor_correctness_check(); }},

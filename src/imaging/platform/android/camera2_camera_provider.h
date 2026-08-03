@@ -69,6 +69,7 @@
 #include <vector>
 
 #include "imaging/api/icamera_provider.h"
+#include "imaging/api/outstanding_payload_ledger.h"
 #include "imaging/api/provider_access_status.h"
 #include "imaging/api/provider_strand.h"
 

@@ -720,6 +720,10 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   // (AF trigger submissions produce one each); a jump across a capture would
   // mean one landed inside a collector and displaced a real member.
   std::atomic<uint64_t> stray_still_images{0};
+  // Payloads this device still owes from captures abandoned before every
+  // member arrived. See outstanding_payload_ledger.h for why this exists and
+  // why attribution is by counting rather than by timestamp.
+  OutstandingPayloadLedger payload_ledger;
 
   std::shared_ptr<StreamProduction> stream;
   std::shared_ptr<BurstCollector> burst; // non-null only during a capture
@@ -984,6 +988,23 @@ void on_still_image_available(void* context, AImageReader* reader) {
 
   AImage* image = nullptr;
   if (AImageReader_acquireNextImage(reader, &image) != AMEDIA_OK || !image) {
+    return;
+  }
+
+  // Settle outstanding debt FIRST, before any collector can see this payload.
+  // A device that owes payloads from an abandoned capture must have that debt
+  // discharged by the next arrivals, whichever collector happens to be
+  // installed -- the whole point is that these payloads belong to a capture
+  // that is already over, and no later capture may adopt them.
+  if (backend->payload_ledger.claim_arrival_for_debt()) {
+    const OutstandingPayloadLedger::Snapshot after = backend->payload_ledger.snapshot();
+    camera2_detail::log_line(
+        "device=%llu discarded a late payload to settle abandoned-capture debt "
+        "(remaining=%llu settled_total=%llu)",
+        static_cast<unsigned long long>(backend->device_instance_id),
+        static_cast<unsigned long long>(after.outstanding),
+        static_cast<unsigned long long>(after.settled_total));
+    AImage_delete(image);
     return;
   }
 
@@ -2835,6 +2856,13 @@ bool Camera2CameraProvider::capture_burst_(
     return false;
   }
 
+  // Snapshotted before the collector is installed: if this device owed payloads
+  // when the burst began, or discharged any while it ran, then a payload here
+  // that matches no result of ours cannot be assumed to be ours (see the
+  // positional-pairing guard below).
+  const OutstandingPayloadLedger::Snapshot ledger_at_start =
+      backend->payload_ledger.snapshot();
+
   auto burst = std::make_shared<BurstCollector>();
   burst->expected = specs.size();
   burst->width = width;
@@ -3028,6 +3056,7 @@ bool Camera2CameraProvider::capture_burst_(
   std::map<int64_t, ResultFacts> results_by_time;
   std::vector<ResultFacts> results_in_order;
   bool settled = false;
+  size_t failed_count = 0;
   {
     std::unique_lock<std::mutex> wl(burst->m);
     settled = burst->cv.wait_for(wl, std::chrono::milliseconds(kCaptureSampleWaitMs),
@@ -3035,6 +3064,23 @@ bool Camera2CameraProvider::capture_burst_(
     images = burst->images;
     results_by_time = burst->results_by_time;
     results_in_order = burst->results_in_order;
+    failed_count = burst->failed_count;
+  }
+
+  // Abandoning this burst short leaves the platform still holding those
+  // payloads; it may deliver them into a later capture on this device. Record
+  // the shortfall so the next arrivals discharge it instead of being adopted.
+  // A member the platform explicitly failed owes nothing -- there is no payload
+  // in flight for it.
+  const size_t accounted = images.size() + failed_count;
+  if (accounted < specs.size()) {
+    backend->payload_ledger.record_abandoned(static_cast<uint64_t>(specs.size()),
+                                             static_cast<uint64_t>(accounted));
+    camera2_detail::log_line(
+        "device=%llu abandoned burst short by %zu payload(s); outstanding debt now %llu",
+        static_cast<unsigned long long>(backend->device_instance_id),
+        specs.size() - accounted,
+        static_cast<unsigned long long>(backend->payload_ledger.outstanding()));
   }
 
   // Sensor timestamps are monotonic within a device, so ascending timestamp is
@@ -3105,7 +3151,16 @@ bool Camera2CameraProvider::capture_burst_(
         paired = true;
       }
     }
-    if (!paired && out_frames.size() == 1) {
+    // Positional fallback for a lone member, allowed only when this device is
+    // known to owe nothing. Timestamp pairing is what normally proves an image
+    // and a result describe the same frame; with debt in play an unmatched
+    // image may be a late payload from an abandoned capture, and pairing it
+    // positionally is exactly how a stale frame acquires a fresh capture's
+    // facts. Facts are enrichment and never gate pixels, so withholding them
+    // here is the conservative outcome, not a failure.
+    const bool device_owed_nothing =
+        backend->payload_ledger.owed_nothing_since(ledger_at_start);
+    if (!paired && out_frames.size() == 1 && device_owed_nothing) {
       if (!results_in_order.empty()) {
         out_frames[i].has_facts = true;
         out_frames[i].facts = results_in_order.front();
@@ -3113,6 +3168,11 @@ bool Camera2CameraProvider::capture_burst_(
         out_frames[i].has_facts = true;
         out_frames[i].facts = results_by_time.begin()->second;
       }
+    } else if (!paired && out_frames.size() == 1) {
+      camera2_detail::log_line(
+          "device=%llu withheld positional fact pairing: device had outstanding "
+          "payload debt, so an unmatched image cannot be assumed to be this capture's",
+          static_cast<unsigned long long>(backend->device_instance_id));
     }
   }
   return true;
@@ -4009,8 +4069,27 @@ ProviderResult Camera2CameraProvider::validate_and_admit_submission_locked_(
                                              supports_multi_image_still_sequence())) {
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
-    if (in_flight_captures_.count(
-            InFlightKey{req.capture_id, req.device_instance_id}) != 0) {
+    // Any in-flight capture on this device, not merely a duplicate of this
+    // request. Two captures on one device would contend for the single burst
+    // collector slot, and -- more seriously -- make outstanding-payload debt
+    // unattributable, since neither capture could know whose payload arrived.
+    //
+    // This refuses deterministically where the code previously serialised by
+    // blocking a worker on still_capture_mutex, which turned contention into
+    // latency the caller could not see. Core owns arbitration policy
+    // (capture_identity_and_lifecycle.md 3); this is the provider guarding the
+    // invariant it depends on, so a later policy change fails loudly here
+    // rather than silently misattributing payloads.
+    const bool device_already_capturing =
+        std::any_of(in_flight_captures_.begin(), in_flight_captures_.end(),
+                    [&req](const auto& entry) {
+                      return entry.first.device_instance_id == req.device_instance_id;
+                    });
+    if (device_already_capturing) {
+      camera2_detail::log_line(
+          "capture admission refused: device=%llu already has a capture in flight "
+          "-> ERR_BUSY",
+          static_cast<unsigned long long>(req.device_instance_id));
       return ProviderResult::failure(ProviderError::ERR_BUSY);
     }
     auto dev_it = devices_.find(req.device_instance_id);
