@@ -1897,7 +1897,12 @@ ProviderResult SyntheticProvider::validate_and_admit_capture_submission_locked_(
           "device_capture_already_in_flight",
           device_job.request.device_instance_id,
           device_state);
-      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+      // ERR_BUSY, not ERR_BAD_STATE. The old condition was a resubmitted
+      // capture_id -- a caller error. This one is "that device is already
+      // capturing", which is the contract's BUSY category and what both
+      // platform providers return; a caller must get the same answer from
+      // every provider.
+      return ProviderResult::failure(ProviderError::ERR_BUSY);
     }
   }
 

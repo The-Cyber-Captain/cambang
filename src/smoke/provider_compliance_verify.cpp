@@ -3479,6 +3479,139 @@ bool run_abandoned_capture_payload_attribution_check() {
   return ok;
 }
 
+// capture_identity_and_lifecycle.md 3: at most one capture in flight per
+// device, refused deterministically rather than queued or serialised by
+// blocking.
+//
+// The rule is contract-level, not a Camera2 workaround: two captures on one
+// device contend for a single collector slot, and -- the reason it is load
+// bearing -- make outstanding-payload debt unattributable, since neither
+// capture could know whose payload arrived (brief 5.2).
+//
+// Coverage boundary: this binds the reference provider. Camera2 and WinRT
+// implement the same guard but are not reachable from this tool -- Camera2
+// cannot be built host-native and WinRT needs hardware -- so their conformance
+// rests on inspection and hardware runs.
+bool run_per_device_single_capture_admission_check() {
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 2;
+  cfg.nominal.width = 8;
+  cfg.nominal.height = 8;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(cfg);
+
+  constexpr uint64_t kDeviceA = 801;
+  constexpr uint64_t kDeviceB = 802;
+  constexpr uint64_t kInFlightCapture = 81000;
+  constexpr uint64_t kSecondOnBusyDevice = 81001;
+  constexpr uint64_t kOnIdleDevice = 81002;
+  constexpr uint64_t kGroupedOverBusyDevice = 81003;
+  constexpr uint64_t kAfterTerminalCapture = 81004;
+
+  const auto make_request = [](uint64_t capture_id, uint64_t device_id) {
+    return make_direct_provider_default_still_capture_request(
+        capture_id, device_id, 8, 8, FOURCC_RGBA);
+  };
+  const auto count_event = [&](const char* tag, uint64_t capture_id) {
+    size_t count = 0;
+    for (const EventRec& event : cb.snapshot_events()) {
+      if (event.tag == tag && event.id == capture_id) {
+        ++count;
+      }
+    }
+    return count;
+  };
+
+  if (!provider.initialize(&cb).ok() ||
+      !provider.open_device("synthetic:0", kDeviceA, 80101).ok() ||
+      !provider.open_device("synthetic:1", kDeviceB, 80201).ok()) {
+    std::cerr << "FAIL per-device single capture setup failed\n";
+    return false;
+  }
+
+  // Hold a capture genuinely in flight on device A.
+  provider.set_capture_workers_paused_for_test(true);
+  if (!provider.trigger_capture(make_request(kInFlightCapture, kDeviceA)).ok()) {
+    std::cerr << "FAIL per-device single capture could not place a capture in flight\n";
+    (void)provider.shutdown();
+    return false;
+  }
+
+  bool ok = true;
+
+  // 1. A second capture on the busy device is refused, and specifically as BUSY.
+  const ProviderResult second = provider.trigger_capture(
+      make_request(kSecondOnBusyDevice, kDeviceA));
+  if (second.ok() || second.code != ProviderError::ERR_BUSY) {
+    std::cerr << "FAIL second capture on a busy device must be refused with ERR_BUSY\n";
+    ok = false;
+  }
+
+  // 2. The refusal is per device, not a global capture lock.
+  if (!provider.trigger_capture(make_request(kOnIdleDevice, kDeviceB)).ok()) {
+    std::cerr << "FAIL a capture on an idle device must still be admitted\n";
+    ok = false;
+  }
+
+  // 3. A grouped submission naming the busy device is rejected atomically:
+  //    no member may leave any fact behind, including the idle member
+  //    (brief 5: admit every device job or none, rejected submissions emit
+  //    no started/frame/terminal facts).
+  CaptureSubmission grouped{};
+  grouped.capture_id = kGroupedOverBusyDevice;
+  grouped.origin = CaptureSubmissionOrigin::RIG_CAPTURE;
+  grouped.rig_id = 88;
+  CaptureRequest grouped_a = make_request(grouped.capture_id, kDeviceA);
+  CaptureRequest grouped_b = make_request(grouped.capture_id, kDeviceB);
+  grouped_a.rig_id = grouped.rig_id;
+  grouped_b.rig_id = grouped.rig_id;
+  grouped.device_requests.push_back(grouped_a);
+  grouped.device_requests.push_back(grouped_b);
+  const ProviderResult grouped_result = provider.trigger_capture_submission(grouped);
+  if (grouped_result.ok() || grouped_result.code != ProviderError::ERR_BUSY) {
+    std::cerr << "FAIL grouped submission over a busy member must be refused with ERR_BUSY\n";
+    ok = false;
+  }
+  if (count_event("capture_started", kGroupedOverBusyDevice) != 0 ||
+      count_event("capture_completed", kGroupedOverBusyDevice) != 0 ||
+      count_event("capture_failed", kGroupedOverBusyDevice) != 0) {
+    std::cerr << "FAIL rejected grouped submission emitted facts\n";
+    ok = false;
+  }
+
+  // Let the in-flight work drain.
+  provider.set_capture_workers_paused_for_test(false);
+  const auto drained = [&]() {
+    return count_event("capture_completed", kInFlightCapture) == 1 &&
+           count_event("capture_completed", kOnIdleDevice) == 1;
+  };
+  bool settled = false;
+  for (int i = 0; i < kMaxIters && !settled; ++i) {
+    settled = drained();
+    if (!settled) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+  }
+  if (!settled) {
+    std::cerr << "FAIL per-device single capture work did not drain\n";
+    (void)provider.shutdown();
+    return false;
+  }
+
+  // 4. The refusal is transient. A provider that leaked its in-flight record
+  //    would still satisfy 1-3 while being permanently unusable.
+  if (!provider.trigger_capture(make_request(kAfterTerminalCapture, kDeviceA)).ok()) {
+    std::cerr << "FAIL device must admit again once its capture is terminal\n";
+    ok = false;
+  }
+
+  if (!provider.shutdown().ok()) {
+    return false;
+  }
+  return ok;
+}
+
 bool run_stub_provider_sanity_check() {
   RecorderCallbacks cb;
   StubProvider provider;
@@ -10008,6 +10141,7 @@ int main(int argc, char** argv) {
       {"run_synthetic_live_gpu_backing_truth_check", [] { return run_synthetic_live_gpu_backing_truth_check(); }},
       {"run_synthetic_timeline_picture_appearance_check", [] { return run_synthetic_timeline_picture_appearance_check(); }},
       {"run_abandoned_capture_payload_attribution_check", [] { return run_abandoned_capture_payload_attribution_check(); }},
+      {"run_per_device_single_capture_admission_check", [] { return run_per_device_single_capture_admission_check(); }},
       {"run_stub_provider_sanity_check", [] { return run_stub_provider_sanity_check(); }},
       {"run_synthetic_provider_direct_sanity_check", [] { return run_synthetic_provider_direct_sanity_check(); }},
       {"run_synthetic_capture_executor_correctness_check", [] { return run_synthetic_capture_executor_correctness_check(); }},
