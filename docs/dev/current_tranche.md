@@ -1,123 +1,91 @@
 # Current tranche
 
-## Rig capture returns an inconsistent result set
+## AcquisitionSession conformance for WinRT
+
+### Decision, taken
+
+**A WinRT `AcquisitionSession` is the realized `MediaFrameReader`.** The output
+set belongs to the `MediaFrameSource`, not to the seam, so a `SetFormatAsync`
+geometry change is a mutation within one seam: identity persists and no
+destroyed/created pair is reported.
+
+`lifecycle_model.md` needs no rule change — its reconfiguration rule is already
+conditional on the native object being 1:1 with the seam, which WinRT's reader
+is not. It carries one line asserting that `WinrtCameraProvider` does not meet
+this contract, which this tranche falsifies and must correct.
+
+The mapping itself belongs with the provider, in its own source comments — and
+in a provider-specific document only if that proves genuinely insufficient.
+
+Two consequences to implement against:
+
+- References govern when the **reader** may be torn down. They do not govern
+  reconfiguration, because a format change does not destroy the reader.
+- Zero references therefore makes teardown permitted, not mandatory. A warm
+  reader may be kept; an explicit release from Core must still be honoured.
 
 ### Problem
 
-`CamBANGRig.trigger_capture()` does not reliably return one
-`CamBANGCaptureResult` per rig member. The reported symptom: two results on the
-first rig capture, one on the second, and a caller indexing `rig_results[1]`
-crashes on the second.
+The WinRT seam is **not reference-held**. `lifecycle_model.md` §2 and brief §7.1
+require it to be retained while any of three claimants — stream, capture,
+capture parent — needs it, and require the provider to be able to say which
+currently do. WinRT has one session id on the backend and no claimant concept.
 
-Whether that still reproduces is **unknown**. Every hardware observation of it
-predates the Camera2 work now on this branch, and that work changed the two
-things most likely to have caused it:
+Everything below is that one defect at its various call sites:
 
-- Stills submitted into a session with no flowing pipeline frequently produced
-  nothing. Every capture now starts a pilot stream, and single-device delivery
-  went from as low as 1-in-4 to 142/142 across all five cameras available here.
-- A capture that came up short recorded a payload debt that the next capture's
-  own image discharged, so one lost frame starved the device permanently. A rig
-  member losing one image was enough to make every later capture return fewer
-  members than it had. Sequence-end settlement plus the in-flight grace removed
-  both halves of that.
+- Capture admission establishes nothing and takes no claim; the seam is
+  realized later inside the capture worker.
+- `sync_capture_parent_priming` / `release_capture_parent_priming` are not
+  implemented, so the seam can never be created from the retained still
+  profile — only from whatever the first stream or capture happens to ask for.
+- Session teardown fires only at device close and shutdown. Stream stop
+  releases nothing.
+- A started stream pins geometry via a hard-coded `ERR_PLATFORM_CONSTRAINT`
+  refusal, standing in for the reference check and covering streams only, so an
+  in-flight capture is not protected.
 
-A rig whose members each delivered unreliably could produce exactly the reported
-symptom with no rig-specific defect at all. That has to be settled before
-anything is designed.
+### Scope
 
-### Step 1 — reproduce, or don't
-
-Run rig capture on hardware under the current build and record what comes back,
-per capture, per member. Nothing else in this tranche is designed until that is
-known.
-
-Three outcomes, and they lead different places:
-
-- **Does not reproduce.** Confirm it across enough captures and cameras to
-  mean something, then the work is regression coverage that would have caught
-  it, not a repair.
-- **Reproduces, and members are individually delivering.** A genuine rig
-  defect: the result set is being assembled or published wrongly. Design from
-  there.
-- **Reproduces, and some member delivered nothing.** The single-device work is
-  incomplete under rig conditions -- concurrent sessions on two cameras is a
-  configuration none of the single-device runs exercised.
-
-Report which of these it is, with the per-member evidence, before proceeding.
-
-### What is already known and must not be rediscovered
-
-- Rig capture fails closed: a multi-device capture is rejected unless a
-  camera-concurrency truth naming the exact device combination was ingested via
-  `CamBANGServer.ingest_camera_description(...)` **before** `start()`. Missing
-  that returns `ERR_UNCONFIGURED`; other orchestration failures return
-  `ERR_BUSY`. `73_rig_capture_result_set_verification.gd` has the correct ingest
-  pattern.
-- There is no rig-capture completion protocol. Every working scene hand-rolls
-  one. Whether this tranche should supply one depends on step 1's outcome;
-  it is not assumed.
-- `capture_id` is minted at the Godot boundary
-  (`CamBANGServer::next_capture_id_`) and shared across device and rig paths.
-- Acquisition marks may legitimately be identical across simultaneously
-  triggered devices (`camera_fact_model.md` §12.1/§12.2). They must never be
-  used for member identity, ordering or attribution. Reporting them
-  diagnostically is fine.
+1. Record the seam mapping in the provider source, and correct the stale
+   conformance line in `lifecycle_model.md`.
+2. Refcounted claimants: stream / capture / capture parent, mirroring
+   `SyntheticProvider` so the reference provider stays the readable model.
+3. Establish-and-retain the seam at **capture admission**. Failure to establish
+   is an admission failure with full submission rollback. Realizing the native
+   object may still be deferred to the bounded control executor.
+4. Implement the capture-parent path so a retained-profile set creates a
+   truthful seam at the retained geometry, idempotent for equivalent requests,
+   and releasing a claim never destroys the seam.
+5. Generalise the started-stream geometry pin to cover in-flight captures. This
+   is a separate question from teardown and must stay separate: reconfiguration
+   consults the stream and capture claims only, never the capture-parent latch,
+   whose whole purpose is to set geometry from the retained profile.
+6. Lifecycle honesty: created and destroyed facts on real transitions only. No
+   fabricated destruction, and no created fact for a reader that was never
+   realized.
 
 ### Out of scope
 
-- The identity/completion API (`capture_identity_and_lifecycle.md` §1–§5),
-  unless step 1 shows the result set cannot be made correct without it.
-- WinRT: same contract, different backend shape, its own tranche.
-- Pilot-stream lifetime. Settled by measurement: per-capture, 10-15ms better at
-  p50 on every camera, delivery identical. `kPersistentPilotTest` remains only
-  as a diagnostic switch.
-- Further S20+ camera 0 work. It delivers 28/28; its refusal rate under a 0.1s
-  schedule is the schedule outrunning capture duration, not a fault.
+- Camera2, which already conforms.
+- Rig-capture repair. Complete, and its evidence is in git history.
+- WinRT bracketing.
+- Any use of Media Foundation. `windows_winrt` means real WinRT APIs; surface a
+  toolchain blocker rather than substituting a backend.
 
 ### Acceptance criteria
 
-Set once step 1 has an answer. A tranche that closes without either a
-reproduction or a documented failure to reproduce has not done its job.
-
-### Queued, not active: a derived acquisition mark on a standardised base
-
-Not part of this tranche. Recorded here because `CLAUDE.md` makes this file the
-only place future work is queued.
-
-`ImageAcquisitionTiming` is delivered per image member today
-(`cambang_result_convert_timing.cpp`), carrying mark, tick period, clock domain,
-reference event, comparability and origin. Its comparability is declared from
-the platform's own statement — Camera2 maps `TIMESTAMP_SOURCE_REALTIME` to
-`same_provider` and everything else to `same_device`. That is correct and must
-not be widened by assumption, but it leaves marks from different hardware
-mutually meaningless even when the underlying bases are relatable.
-
-The feature: publish a **second, optional, derived** timing fact alongside the
-native one, on a standardised base, with `origin = derived` and an explicit
-uncertainty. The native mark stays exactly as the device reported it — §12.2
-requires the declared domain, period, reference event, comparability, origin and
-mark to be preserved, and forbids substituting another time, so this must be an
-addition and never a conversion in place.
-
-Android is the tractable case: `TIMESTAMP_SOURCE_UNKNOWN` and
-`TIMESTAMP_SOURCE_REALTIME` are documented against `uptimeMillis` and
-`elapsedRealtime`, both readable at runtime, so the offset between them is a
-measured quantity rather than an estimate. **Confirm that wording in the NDK
-headers before building on it.** Where the offset is known,
-`cross_device_synchronized` becomes justifiable — a value the enum defines and
-nothing currently emits.
-
-Scope limit to state up front: Camera2's "realtime" is boot-relative, not UTC.
-This buys cross-device comparability on one machine. It does not buy
-cross-machine or wall-clock meaning, and that must not be smuggled in under the
-same name.
-
-Motivating measurement: Quest `50|51` publishes `same_device`, forbidding the
-subtraction, yet its two cameras produce bit-identical marks on 23 of 35 rig
-captures. S20+ `0|1` publishes `same_provider`, permitting it, yet its cameras
-are not frame-locked at all — 0 of 27 identical, sd 61.9 ms. The contract is
-under-claiming on the device where the comparison would be meaningful.
+1. The seam mapping is stated in the provider source, the implementation
+   matches it, and `lifecycle_model.md` no longer claims WinRT fails this
+   contract.
+2. No WinRT capture is admitted without an established, referenced seam;
+   failure rolls the submission back whole.
+3. A retained-profile set creates a truthful seam at the retained geometry, and
+   releasing a claim leaves it standing.
+4. Session created/destroyed facts correspond to real transitions only.
+5. A new `provider_compliance_verify` check binds establish-before-capture on
+   the WinRT shape and is **mutation-tested** — a provider that admits without
+   establishing must fail it.
+6. Existing gates green.
 
 ### Validation expectations
 
@@ -128,15 +96,16 @@ Deterministic (required):
   `out/core_thread_liveness_watchdog_verify.exe`,
   `out/outstanding_payload_ledger_verify.exe`,
   `out/capture_sequence_settlement_verify.exe` all green.
-- Any new rule gets a mutation proof, as the settlement policy did: removing it
-  must fail the verifier.
+- Any new rule gets a mutation proof: removing it must fail the verifier.
+
+`provider_compliance_verify` exercises the contract through recording providers
+and never instantiates `WinrtCameraProvider`. Decide early what conformance can
+be bound host-native and what genuinely needs the Windows device surface;
+otherwise a green gate will say nothing about this work.
 
 Hardware (required before acceptance):
 
-- Quest 3 rig `50|51`, and at least one two-camera rig on a handset. Windowed.
-- Single-device delivery unregressed on all five cameras — the foundation this
-  tranche stands on, and cheap to re-measure.
-- Windows / WinRT: no regression.
+- Windows platform-backed scenes, windowed. Camera2 must be re-run only if
+  shared Core code changes.
 
-Scene 1001 is read-only. Scene 999 is the untracked single-device probe and is
-not to be added to git. Report un-run surfaces plainly.
+Report un-run surfaces plainly.
