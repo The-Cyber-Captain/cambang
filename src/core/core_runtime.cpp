@@ -1333,10 +1333,7 @@ bool CoreRuntime::sync_capture_parent_priming_(
       (!active_capture_evaluator && any_stream)) {
     return false;
   }
-  if (!active_capture_evaluator &&
-      live_session_id != 0) {
-    return false;
-  }
+
 
   const CapturePrimingSeedSignature signature =
       build_capture_priming_seed_signature_(
@@ -1344,6 +1341,33 @@ bool CoreRuntime::sync_capture_parent_priming_(
           effective,
           runtime_backing_capabilities,
           parent_context_backing_capabilities);
+
+  // An existing session is not by itself a reason to do nothing. The device's
+  // acquisition seam is created from whatever capture geometry is effective at
+  // the time, and on the engage path that is the provider's capture template,
+  // because the caller's retained still profile is applied only AFTER the
+  // device has an instance id to apply it to. Returning early here left the
+  // seam permanently at the template geometry: every later profile set was
+  // discarded, and the first real capture had to tear the session down and
+  // rebuild it at the geometry the caller had asked for all along.
+  //
+  // Proceed when the retained shape no longer matches what the seam was
+  // created for. The signature comparison below is the idempotence guard, so
+  // an unchanged profile still costs nothing; a stream-backed device is
+  // already excluded above, and the provider refuses a rebuild that a live
+  // claimant forbids.
+  if (!active_capture_evaluator && live_session_id != 0) {
+    const auto held = capture_parent_priming_states_.find(device_instance_id);
+    const bool seam_matches_retained_shape =
+        held != capture_parent_priming_states_.end() &&
+        held->second.provider_hold_active &&
+        held->second.signature.width == signature.width &&
+        held->second.signature.height == signature.height &&
+        held->second.signature.format_fourcc == signature.format_fourcc;
+    if (seam_matches_retained_shape) {
+      return false;
+    }
+  }
   auto& state = capture_parent_priming_states_[device_instance_id];
   if (state.provider_hold_active &&
       state.signature.hardware_id == signature.hardware_id &&
@@ -2561,33 +2585,6 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
     }
   }
   const bool preserve_existing_decision = have_preserved_decision;
-  auto decision_matches_current_non_evaluated_shape =
-      [&](const RetainedPlanDecisionProvenance& provenance) noexcept {
-        if (!provenance.valid || provenance.from_evaluation) {
-          return false;
-        }
-        const CoreRetainedProductionPlan current_selected =
-            decision.steady.valid ? decision.steady : decision.requested;
-        if (!same_retained_plan(provenance.selected, current_selected) ||
-            provenance.candidate_count != decision.candidate_count) {
-          return false;
-        }
-        for (uint8_t i = 0; i < decision.candidate_count; ++i) {
-          if (!same_retained_plan(
-                  provenance.candidate_sequence[i],
-                  make_retained_plan(decision.candidate_sequence[i]))) {
-            return false;
-          }
-        }
-        return true;
-      };
-  const auto existing_parent_decision_it =
-      capture_retained_plan_decisions_.find(parent.key);
-  const bool same_non_evaluated_decision_already_installed =
-      existing_parent_decision_it != capture_retained_plan_decisions_.end() &&
-      decision_matches_current_non_evaluated_shape(
-          existing_parent_decision_it->second);
-
   erase_capture_retained_plan_state_for_device_(
       device_instance_id, &parent.key);
   if (!decision.requested.valid) {
@@ -2732,12 +2729,21 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
     provenance.orphan_retire_after_ns = 0;
     provenance.capture_priming_seed_signature = seed_signature;
     capture_retained_plan_decisions_[parent.key] = provenance;
-    if (parent.acquisition_session_id == 0 &&
-        !same_non_evaluated_decision_already_installed) {
-      (void)sync_capture_parent_priming_(
-          device_instance_id, effective, runtime_caps, parent_context_caps);
-      release_capture_parent_priming_(device_instance_id);
-    }
+    // Called unconditionally. This was previously gated on
+    // `parent.acquisition_session_id == 0` -- create a seam only when none
+    // exists -- which is correct for creation but wrong as the whole rule: on
+    // the engage path the seam is created from the provider's capture template,
+    // because the caller's retained still profile can only be applied once the
+    // device has an instance id. The gate then made that first, provisional
+    // geometry permanent, and every capture paid a session rebuild.
+    //
+    // sync_capture_parent_priming_ carries the guards that belong to it: it
+    // does nothing for a stream-backed device, nothing when the seam already
+    // matches the retained shape, and nothing when the full seed signature is
+    // unchanged.
+    (void)sync_capture_parent_priming_(
+        device_instance_id, effective, runtime_caps, parent_context_caps);
+    release_capture_parent_priming_(device_instance_id);
     return true;
   }
   (void)sync_capture_parent_priming_(

@@ -789,6 +789,7 @@ maintainer_tools_clean_outputs = [
     _program_path("core_result_path_smoke"),
     _program_path("core_result_byte_budget_stress_smoke"),
     _program_path("outstanding_payload_ledger_verify"),
+    _program_path("capture_sequence_settlement_verify"),
     _program_path("core_capture_assembly_registry_smoke"),
     _program_path("core_dispatcher_bracket_routing_smoke"),
     _program_path("godot_result_convert_smoke"),
@@ -878,6 +879,13 @@ if build_maintainer_tools:
     outstanding_payload_ledger_verify_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "outstanding_payload_ledger_verify"),
         source=["src/smoke/outstanding_payload_ledger_verify.cpp"],
+    )
+    # Header-only subject (imaging/api/capture_sequence_settlement.h). The
+    # policy governs Camera2's collector, which no host verifier can reach;
+    # keeping the decision pure is what makes it testable here.
+    capture_sequence_settlement_verify_prog = maintainer_tools_env.Program(
+        target=os.path.join(out_dir, "capture_sequence_settlement_verify"),
+        source=["src/smoke/capture_sequence_settlement_verify.cpp"],
     )
     core_capture_assembly_registry_smoke_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "core_capture_assembly_registry_smoke"),
@@ -1004,6 +1012,7 @@ if build_maintainer_tools:
             core_thread_liveness_watchdog_verify_prog,
             core_result_byte_budget_stress_smoke_prog,
             outstanding_payload_ledger_verify_prog,
+            capture_sequence_settlement_verify_prog,
             core_capture_assembly_registry_smoke_prog,
             core_dispatcher_bracket_routing_smoke_prog,
             godot_result_convert_smoke_prog,

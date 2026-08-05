@@ -3260,6 +3260,17 @@ void CamBANGServer::_arm_live_retained_result_access_calibration_from_snapshot_(
         armed.member_shape_signature != 0) {
       continue;
     }
+    // Transient instrumentation: puts calibration arming on the same timeline
+    // as the capture trace, so its cost can be read against a capture rather
+    // than inferred. Suppression keys on acquisition_session_id, so a provider
+    // that re-creates its seam re-arms a full materialisation.
+    godot::UtilityFunctions::print(godot::vformat(
+        "[CamBANG][calprobe] ARM capture device=%d session=%d capture=%d due_in_ms=%d",
+        static_cast<int64_t>(armed.device_instance_id),
+        static_cast<int64_t>(armed.acquisition_session_id),
+        static_cast<int64_t>(armed.capture_id),
+        static_cast<int64_t>((armed.due_after_ns > now_ns
+                                  ? (armed.due_after_ns - now_ns) : 0) / 1000000)));
     pending_live_capture_retained_result_calibrations_[session.device_instance_id] =
         armed;
     completed_live_capture_retained_result_calibrations_.erase(
@@ -3662,7 +3673,16 @@ void CamBANGServer::_process_armed_live_retained_result_access_calibration_(
       it = pending_live_capture_retained_result_calibrations_.erase(it);
       continue;
     }
+    const auto cal_t0 = std::chrono::steady_clock::now();
     retained_result_access_calibration::calibrate_capture_result(result, &runtime_);
+    const double cal_ms =
+        static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - cal_t0).count()) / 1000.0;
+    godot::UtilityFunctions::print(godot::vformat(
+        "[CamBANG][calprobe] RUN capture device=%d session=%d capture=%d elapsed_ms=%f",
+        static_cast<int64_t>(it->second.device_instance_id),
+        static_cast<int64_t>(it->second.acquisition_session_id),
+        static_cast<int64_t>(it->second.capture_id), cal_ms));
     completed_live_capture_retained_result_calibrations_[it->first] =
         it->second;
     it = pending_live_capture_retained_result_calibrations_.erase(it);

@@ -1696,6 +1696,23 @@ int count_events_by_tag_and_type(const std::vector<EventRec>& events, const char
   return count;
 }
 
+// Native-object facts travel the callback strand, so they are observable only
+// after it has run. Poll rather than snapshot: reading immediately after the
+// call that caused the fact is a race that passes on a fast machine.
+bool wait_for_native_event_count(const RecorderCallbacks& cb,
+                                 const char* tag,
+                                 uint32_t type,
+                                 size_t expected) {
+  for (int i = 0; i < kMaxIters; ++i) {
+    if (count_events_by_tag_and_type(cb.snapshot_events(), tag, type) >= static_cast<int>(expected)) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  return false;
+}
+
+
 int count_events_by_tag_type_and_owner_stream(const std::vector<EventRec>& events,
                                               const char* tag,
                                               uint32_t type,
@@ -3492,6 +3509,149 @@ bool run_abandoned_capture_payload_attribution_check() {
 // implement the same guard but are not reachable from this tool -- Camera2
 // cannot be built host-native and WinRT needs hardware -- so their conformance
 // rests on inspection and hardware runs.
+// A capture must not be admitted without an established acquisition seam.
+//
+// This binds lifecycle_model.md section 2 ("retained while stream and/or
+// capture references remain live") at the point it is easiest to get wrong:
+// a provider can appear correct while realizing the seam lazily inside its
+// capture worker, because by the time anything observable happens the session
+// exists. The distinction only shows up if the worker is prevented from
+// running -- so this check pauses the workers and asserts the seam is already
+// there. A provider that establishes lazily fails here and nowhere else.
+bool run_capture_admission_establishes_acquisition_seam_check() {
+  const uint32_t kAcqSession = static_cast<uint32_t>(NativeObjectType::AcquisitionSession);
+  bool ok = true;
+
+  // Phase 1: capture on a device with no stream and no priming.
+  {
+    RecorderCallbacks cb;
+    SyntheticProviderConfig cfg{};
+    cfg.endpoint_count = 1;
+    cfg.nominal.width = 8;
+    cfg.nominal.height = 8;
+    cfg.nominal.format_fourcc = FOURCC_RGBA;
+    SyntheticProvider provider(cfg);
+
+    constexpr uint64_t kDevice = 901;
+    constexpr uint64_t kCapture = 91000;
+
+    if (!provider.initialize(&cb).ok() ||
+        !provider.open_device("synthetic:0", kDevice, 90101).ok()) {
+      std::cerr << "FAIL capture seam establishment setup failed\n";
+      return false;
+    }
+
+    // Opening a device must not by itself realize an acquisition seam: there
+    // is no claimant yet, and a seam reported here would be a fabricated fact.
+    if (count_events_by_tag_and_type(cb.snapshot_events(), "native_created", kAcqSession) != 0) {
+      std::cerr << "FAIL open_device realized an acquisition session with no claimant\n";
+      ok = false;
+    }
+
+    // Workers paused, so nothing after this point can be attributed to the
+    // capture worker having run.
+    provider.set_capture_workers_paused_for_test(true);
+    const ProviderResult admitted = provider.trigger_capture(
+        make_direct_provider_default_still_capture_request(kCapture, kDevice, 8, 8,
+                                                           FOURCC_RGBA));
+    if (!admitted.ok()) {
+      std::cerr << "FAIL capture on an idle device must be admitted\n";
+      provider.set_capture_workers_paused_for_test(false);
+      (void)provider.shutdown();
+      return false;
+    }
+
+    const bool seam_seen =
+        wait_for_native_event_count(cb, "native_created", kAcqSession, 1);
+    const auto after_admission = cb.snapshot_events();
+    const int seam_id =
+        seam_seen ? find_native_create_id_by_type(after_admission, kAcqSession) : -1;
+    if (seam_id < 0) {
+      std::cerr << "FAIL capture admission must establish an acquisition session, "
+                   "not leave it to the capture worker\n";
+      ok = false;
+    } else {
+      // Ordering, not just presence: the seam is a precondition of the
+      // capture, so no capture fact may precede it.
+      const int seam_ix =
+          find_event_index(after_admission, "native_created", static_cast<uint64_t>(seam_id));
+      const int started_ix = find_event_index(after_admission, "capture_started", kCapture);
+      if (started_ix >= 0 && seam_ix > started_ix) {
+        std::cerr << "FAIL acquisition session was reported after the capture started\n";
+        ok = false;
+      }
+    }
+
+    provider.set_capture_workers_paused_for_test(false);
+    (void)provider.shutdown();
+  }
+
+  // Phase 2: priming establishes a seam, and releasing priming gives it back.
+  // Both directions matter -- a provider that primes but never releases pins
+  // the seam forever, which is indistinguishable from a leak.
+  {
+    RecorderCallbacks cb;
+    SyntheticProviderConfig cfg{};
+    cfg.endpoint_count = 1;
+    cfg.nominal.width = 8;
+    cfg.nominal.height = 8;
+    cfg.nominal.format_fourcc = FOURCC_RGBA;
+    SyntheticProvider provider(cfg);
+
+    constexpr uint64_t kDevice = 902;
+
+    if (!provider.initialize(&cb).ok() ||
+        !provider.open_device("synthetic:0", kDevice, 90201).ok()) {
+      std::cerr << "FAIL priming seam setup failed\n";
+      return false;
+    }
+
+    const CaptureRequest prime_req =
+        make_direct_provider_default_still_capture_request(0, kDevice, 8, 8, FOURCC_RGBA);
+    if (!provider.sync_capture_parent_priming(prime_req).ok()) {
+      std::cerr << "FAIL sync_capture_parent_priming must establish a seam\n";
+      ok = false;
+    }
+    if (!wait_for_native_event_count(cb, "native_created", kAcqSession, 1)) {
+      std::cerr << "FAIL priming must realize exactly one acquisition session\n";
+      ok = false;
+    }
+
+    // Idempotence: the contract requires repeated equivalent priming to be a
+    // no-op, so a second call must not report a second seam.
+    if (!provider.sync_capture_parent_priming(prime_req).ok()) {
+      std::cerr << "FAIL repeated equivalent priming must succeed\n";
+      ok = false;
+    }
+    if (count_events_by_tag_and_type(cb.snapshot_events(), "native_created", kAcqSession) != 1) {
+      std::cerr << "FAIL repeated priming realized a second acquisition session\n";
+      ok = false;
+    }
+
+    if (!provider.release_capture_parent_priming(kDevice).ok()) {
+      std::cerr << "FAIL release_capture_parent_priming must succeed when primed\n";
+      ok = false;
+    }
+    if (!wait_for_native_event_count(cb, "native_destroyed", kAcqSession, 1)) {
+      std::cerr << "FAIL releasing the last claim must destroy the acquisition session\n";
+      ok = false;
+    }
+
+    // Idempotent when nothing is held.
+    if (!provider.release_capture_parent_priming(kDevice).ok()) {
+      std::cerr << "FAIL release_capture_parent_priming must be safe when unprimed\n";
+      ok = false;
+    }
+
+    (void)provider.shutdown();
+  }
+
+  if (ok) {
+    std::cout << "OK capture admission establishes and retains the acquisition seam\n";
+  }
+  return ok;
+}
+
 bool run_per_device_single_capture_admission_check() {
   RecorderCallbacks cb;
   SyntheticProviderConfig cfg{};
@@ -10142,6 +10302,7 @@ int main(int argc, char** argv) {
       {"run_synthetic_timeline_picture_appearance_check", [] { return run_synthetic_timeline_picture_appearance_check(); }},
       {"run_abandoned_capture_payload_attribution_check", [] { return run_abandoned_capture_payload_attribution_check(); }},
       {"run_per_device_single_capture_admission_check", [] { return run_per_device_single_capture_admission_check(); }},
+      {"run_capture_admission_establishes_acquisition_seam_check", [] { return run_capture_admission_establishes_acquisition_seam_check(); }},
       {"run_stub_provider_sanity_check", [] { return run_stub_provider_sanity_check(); }},
       {"run_synthetic_provider_direct_sanity_check", [] { return run_synthetic_provider_direct_sanity_check(); }},
       {"run_synthetic_capture_executor_correctness_check", [] { return run_synthetic_capture_executor_correctness_check(); }},
