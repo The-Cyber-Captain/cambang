@@ -1297,7 +1297,42 @@ func _poll_acquisition_session_settlement_probe() -> void:
 	if _acq_probe_stage != "settle":
 		return
 	if _acq_probe_all_devices_settled() or _now_us() >= _acq_probe_settle_deadline_us:
+		var undelivered := _acq_probe_devices_missing_payload()
+		if not undelivered.is_empty():
+			_fail("settlement probe delivered no payload: %s (required_members=%d)" % [
+				", ".join(undelivered), _acq_probe_required_member_count])
+			return
 		_finish(0, false, _finish_reason_with_skips("complete"))
+
+
+# Devices whose probe capture did not hand back and materialise every member it
+# was asked for, described one per device for the failure message.
+#
+# This is a payload question, not a settlement question. A capture that returned
+# all five members but whose evaluator has not settled is NOT listed here: the
+# images were delivered, and the evaluator is a separate, pre-existing condition
+# on every platform-backed run.
+func _acq_probe_devices_missing_payload() -> Array:
+	var missing := []
+	if not _acq_probe_attempted:
+		return missing
+	for device_key in [DEV_A, DEV_B]:
+		var entry_v = _acq_probe_devices.get(device_key, {})
+		if typeof(entry_v) != TYPE_DICTIONARY:
+			missing.append("%s=no_probe_record" % device_key)
+			continue
+		var entry: Dictionary = entry_v
+		var returned := int(entry.get("returned_member_count", 0))
+		var materialized := int(entry.get("materialized_member_count", 0))
+		if not bool(entry.get("capture_complete", false)) or bool(entry.get("capture_failed", false)):
+			missing.append("%s=capture_failed(returned=%d)" % [device_key, returned])
+		elif returned < _acq_probe_required_member_count:
+			missing.append("%s=returned_%d_of_%d" % [
+				device_key, returned, _acq_probe_required_member_count])
+		elif materialized < _acq_probe_required_member_count:
+			missing.append("%s=materialised_%d_of_%d" % [
+				device_key, materialized, _acq_probe_required_member_count])
+	return missing
 
 
 func _acq_probe_all_captures_finished() -> bool:
@@ -3324,6 +3359,14 @@ func _acquisition_session_settlement_probe_summary(synthetic_metrics: Variant) -
 func _acq_probe_settlement_status(entry: Dictionary, report: Dictionary) -> String:
 	if not _acq_probe_attempted:
 		return "probe_not_attempted"
+	# A device that cannot supply the bracket bundle skips the probe entirely.
+	# The skip path still sets _acq_probe_attempted, so without this branch every
+	# skipped run reported capture_failed for a capture that was never fired --
+	# a device with no bracketing looked identical to one whose bracket capture
+	# collapsed. Quest 3 and the WinRT host both skip, and both were being
+	# reported as failures.
+	if _skipped_bundle_labels.has(ACQ_PROBE_BUNDLE_LABEL):
+		return "skipped_bundle_unsupported"
 	if not bool(entry.get("capture_complete", false)):
 		return "capture_failed"
 	if bool(entry.get("capture_failed", false)):
@@ -3355,6 +3398,11 @@ func _acq_probe_attribution_status(
 		settlement_status: String) -> String:
 	if not _acq_probe_attempted:
 		return "probe_not_attempted"
+	# Same skip path as _acq_probe_settlement_status: no capture was fired, so
+	# there is nothing to attribute. Reporting no_live_report here said the
+	# evaluator had gone quiet, when in fact nothing had ever asked it anything.
+	if _skipped_bundle_labels.has(ACQ_PROBE_BUNDLE_LABEL):
+		return "skipped_bundle_unsupported"
 	if report.is_empty():
 		return "no_live_report"
 	var probe_capture_id := int(entry.get("capture_id", 0))
@@ -3421,6 +3469,12 @@ func _run_quality_warnings_summary(
 		var device: Dictionary = device_v
 		var settlement_status := str(device.get("settlement_status", ""))
 		if settlement_status == "evaluator_settled":
+			continue
+		# A skipped probe is not an unsettled evaluator. Without this the warning
+		# below fired on every run that skipped the bracket bundle -- two per
+		# Quest 3 and WinRT run -- reporting an evaluator that had never been
+		# asked anything as one that failed to settle.
+		if settlement_status == "skipped_bundle_unsupported":
 			continue
 		var report_v: Variant = device.get("report", {})
 		var report: Dictionary = report_v if typeof(report_v) == TYPE_DICTIONARY else {}

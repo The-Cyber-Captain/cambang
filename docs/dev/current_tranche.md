@@ -80,6 +80,45 @@ Report which of these it is, with the per-member evidence, before proceeding.
 Set once step 1 has an answer. A tranche that closes without either a
 reproduction or a documented failure to reproduce has not done its job.
 
+### Queued, not active: a derived acquisition mark on a standardised base
+
+Not part of this tranche. Recorded here because `CLAUDE.md` makes this file the
+only place future work is queued.
+
+`ImageAcquisitionTiming` is delivered per image member today
+(`cambang_result_convert_timing.cpp`), carrying mark, tick period, clock domain,
+reference event, comparability and origin. Its comparability is declared from
+the platform's own statement — Camera2 maps `TIMESTAMP_SOURCE_REALTIME` to
+`same_provider` and everything else to `same_device`. That is correct and must
+not be widened by assumption, but it leaves marks from different hardware
+mutually meaningless even when the underlying bases are relatable.
+
+The feature: publish a **second, optional, derived** timing fact alongside the
+native one, on a standardised base, with `origin = derived` and an explicit
+uncertainty. The native mark stays exactly as the device reported it — §12.2
+requires the declared domain, period, reference event, comparability, origin and
+mark to be preserved, and forbids substituting another time, so this must be an
+addition and never a conversion in place.
+
+Android is the tractable case: `TIMESTAMP_SOURCE_UNKNOWN` and
+`TIMESTAMP_SOURCE_REALTIME` are documented against `uptimeMillis` and
+`elapsedRealtime`, both readable at runtime, so the offset between them is a
+measured quantity rather than an estimate. **Confirm that wording in the NDK
+headers before building on it.** Where the offset is known,
+`cross_device_synchronized` becomes justifiable — a value the enum defines and
+nothing currently emits.
+
+Scope limit to state up front: Camera2's "realtime" is boot-relative, not UTC.
+This buys cross-device comparability on one machine. It does not buy
+cross-machine or wall-clock meaning, and that must not be smuggled in under the
+same name.
+
+Motivating measurement: Quest `50|51` publishes `same_device`, forbidding the
+subtraction, yet its two cameras produce bit-identical marks on 23 of 35 rig
+captures. S20+ `0|1` publishes `same_provider`, permitting it, yet its cameras
+are not frame-locked at all — 0 of 27 identical, sd 61.9 ms. The contract is
+under-claiming on the device where the comparison would be meaningful.
+
 ### Validation expectations
 
 Deterministic (required):
