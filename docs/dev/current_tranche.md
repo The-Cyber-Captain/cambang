@@ -108,4 +108,28 @@ Hardware (required before acceptance):
 - Windows platform-backed scenes, windowed. Camera2 must be re-run only if
   shared Core code changes.
 
+**Frame-time p99 must be settled, and by a matched-condition measurement.**
+Scene 870's p99 rose on three platform-backed configurations between the
+pre-branch baseline and this branch. It is not noise — three repeats of one
+configuration sit within ±1 ms — but it is also not attributable, because the
+three readings were taken in three different sittings and the measure moves
+between sittings while code stays fixed. Ambient light additionally confounds
+every platform capture-duration metric, since these runs use the real camera.
+
+An acceptable measurement:
+
+- Windows only. No device needed, ~106s per run, so it is cheap to repeat.
+- `windows_gl_compatibility_platform` and `windows_mobile_platform`.
+- **Alternate the two sides within one sitting** — base, HEAD, base, HEAD —
+  rather than all of one then all of the other. Monotonic drift across an
+  evening is the thing being controlled for, and grouping defeats that.
+- Three runs per side per configuration, minimum.
+- Rebuild the Windows GDE artifact after each switch; the ignored binary does
+  not follow the checkout.
+- Report the spread, not just the medians. If the two sides overlap, the
+  earlier observation was sitting-to-sitting drift and the matter is closed.
+
+Do not close this tranche on a single-sample comparison, and do not compare
+platform capture durations across sittings at all without matching the light.
+
 Report un-run surfaces plainly.
