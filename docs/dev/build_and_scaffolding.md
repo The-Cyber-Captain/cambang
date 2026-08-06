@@ -141,7 +141,7 @@ Supported assignment-style variables are exactly:
 | `mingw_prefix` | path | empty | Optional MinGW installation prefix forwarded to `godot-cpp`. |
 | `windows_mingw_static_runtime` | `auto`, `yes`, `no` | `auto` | Windows MinGW GDE static-runtime link mode. `auto` enables it for Windows MinGW GDE builds. |
 | `warnings_as_errors` | `yes`, `no` | `no` | Treat compiler warnings as errors. |
-| `android_api_level` | Android API level | `24` | Android GDE NDK Clang target API level. |
+| `android_api_level` | Android API level | `26` | Android GDE NDK Clang target API level. 26 is a floor: the Camera2 provider calls `AImageReader_newWithUsage`, unavailable below it. |
 | `ndk_version` | Android NDK version | `28.1.13356709` | NDK version used with `ANDROID_HOME` / `ANDROID_SDK_ROOT` for Android GDE builds. |
 | `ANDROID_HOME` | path | process env fallback | Optional Android SDK root for Android GDE builds. |
 

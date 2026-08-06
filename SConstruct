@@ -457,7 +457,10 @@ vars.Add(BoolVariable(
 vars.Add(
     "android_api_level",
     "Android API level for Android GDE NDK Clang targets.",
-    "24",
+    # 26 is a floor, not a preference. The Camera2 provider calls
+    # AImageReader_newWithUsage, which the NDK marks as introduced in 26, so the
+    # Android GDE does not compile below it at all.
+    "26",
 )
 vars.Add(
     "ndk_version",

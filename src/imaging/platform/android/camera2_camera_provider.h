@@ -170,6 +170,16 @@ public:
   // ERR_NOT_SUPPORTED.
   bool supports_multi_image_still_sequence() const noexcept override { return true; }
 
+  // Camera2's answer follows from "outputs are fixed at session creation" (see
+  // the backend note at the top of this file): a session can hold a stream
+  // output and a still output at different geometries perfectly well, but it
+  // cannot GAIN one without being rebuilt, and the rebuild cancels the
+  // repeating request. So the cost is a function of the session's currently
+  // realized output set, not of the geometries alone.
+  AcquisitionCoexistence acquisition_coexistence(
+      uint64_t device_instance_id,
+      const AcquisitionUseSet& proposed) noexcept override;
+
   // Derived from the bounded per-step timeouts below (never a guess, per the
   // doc comment on the base declaration).
   //

@@ -2887,6 +2887,58 @@ void WinrtCameraProvider::run_device_capture_job_(const DeviceCaptureJob& job) n
 // If that ever changes -- a frame-reader path for stills, or any shared
 // delivery queue -- this provider acquires the same obligation as Camera2 and
 // must adopt imaging/api/outstanding_payload_ledger.h.
+AcquisitionCoexistence WinrtCameraProvider::acquisition_coexistence(
+    uint64_t device_instance_id,
+    const AcquisitionUseSet& proposed) noexcept {
+  // NOT ANSWERED HERE: whether the proposed geometries are supported at all.
+  // That would mean reading MediaFrameSource::SupportedFormats(), i.e. touching
+  // a WinRT object from the core thread, which the capability-query rule
+  // forbids. Nothing is cached at open that would answer it either. So this
+  // provider never returns Unsupported, and an unsupported geometry is still
+  // caught where it is caught today -- at capture admission. The consequence is
+  // bounded and worth stating: Core may act on a coexistence answer for a set
+  // that later turns out unserviceable, and will see the ordinary admission
+  // refusal when it does.
+  std::lock_guard<std::mutex> state_lock(state_mutex_);
+  auto dev_it = devices_.find(device_instance_id);
+  if (dev_it == devices_.end() || !dev_it->second.backend) {
+    return AcquisitionCoexistence::coexist();
+  }
+  std::lock_guard<std::mutex> bl(dev_it->second.backend->m);
+  const auto& backend = *dev_it->second.backend;
+
+  // Only a stream and a still WANTED AT DIFFERENT GEOMETRIES conflict. One use
+  // alone has the source's single format to itself, and two uses at the same
+  // geometry share it happily -- which is exactly the arrangement still capture
+  // while streaming already runs in.
+  if (!proposed.has_stream || !proposed.has_still) {
+    return AcquisitionCoexistence::coexist();
+  }
+  if (proposed.stream.width == proposed.still.width &&
+      proposed.stream.height == proposed.still.height) {
+    return AcquisitionCoexistence::coexist();
+  }
+
+  // Geometries differ. If no stream is actually producing there is nothing to
+  // disturb: SetFormatAsync moves the source to the still's geometry and the
+  // stream, whenever it starts, will be reconfigured on its own account.
+  const bool stream_producing = backend.stream && backend.stream->producing;
+  if (!stream_producing) {
+    return AcquisitionCoexistence::coexist();
+  }
+
+  // The stream must yield. Not Reconfigure: a reconfiguration ends with both
+  // uses served, and here the far side of SetFormatAsync has the source at the
+  // still's geometry, so the stream does not get its own geometry back while
+  // the still holds the source. It gives it up rather than gapping.
+  //
+  // Restorable. A geometry change is a mutation of the source's format, not a
+  // new reader -- only a pixel-format change forces CreateFrameReaderAsync
+  // again -- so the stream's own MediaFrameReader survives and the format can
+  // be set back to its profile once the still releases the source.
+  return AcquisitionCoexistence::stream_must_yield(/*restorable=*/true);
+}
+
 ProviderResult WinrtCameraProvider::validate_and_admit_submission_locked_(
     const CaptureSubmission& submission,
     std::vector<DeviceCaptureJob>& out_jobs) {

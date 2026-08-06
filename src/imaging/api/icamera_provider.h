@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "core/camera_fact_types.h"
+#include "imaging/api/acquisition_coexistence.h"
 #include "provider_contract_datatypes.h"
 
 namespace cambang {
@@ -267,6 +268,37 @@ public:
       const CaptureRequest& req) noexcept {
     (void)device_instance_id;
     return capture_backing_capabilities(req);
+  }
+
+  // What this device's backend can serve concurrently.
+  //
+  // Core asks before it arbitrates between a triggered capture and a repeating
+  // stream, at profile-set, at stream start and at capture admission. The
+  // provider answers what its backend can do; who yields is Core's decision and
+  // is not encoded in the answer. See imaging/api/acquisition_coexistence.h for
+  // the verdicts and why the question is asked of a set.
+  //
+  // MUST NOT touch the backend. Answer from characteristics cached at device
+  // open; brief §2 forbids I/O in a capability query on the core thread.
+  //
+  // MUST agree with what the provider then does. A provider answering Coexist
+  // and then refusing the capture is in violation, not merely unhelpful -- Core
+  // has no other way to learn that a conflict existed, and a refusal it did not
+  // predict is one it cannot attribute or report. provider_compliance_verify
+  // binds this.
+  //
+  // The default answers Coexist unconditionally, which is truthful for every
+  // provider with no backend constraint -- Synthetic and Stub, whose whole point
+  // is to be the permissive reference. A provider whose backend does constrain
+  // concurrent use must override it and say so; advertising coexistence it
+  // cannot deliver is a contract violation, exactly as with format capabilities
+  // above.
+  virtual AcquisitionCoexistence acquisition_coexistence(
+      uint64_t device_instance_id,
+      const AcquisitionUseSet& proposed) noexcept {
+    (void)device_instance_id;
+    (void)proposed;
+    return AcquisitionCoexistence::coexist();
   }
 
   // Small bounded delay before a newly realized or newly switched backing-plan

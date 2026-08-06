@@ -46,6 +46,21 @@ public:
   bool supports_stream_picture_updates() const noexcept override { return true; }
   bool supports_capture_picture_updates() const noexcept override { return true; }
   bool supports_multi_image_still_sequence() const noexcept override { return true; }
+
+  // Synthetic has no acquisition hardware and therefore no concurrency
+  // constraint: every proposed use set coexists, unconditionally. Stated
+  // explicitly rather than inherited from the interface default because this
+  // provider is the readable reference for the permissive end of the range --
+  // the same reason it carries the reference seam-claim model. A reader
+  // comparing a platform provider's answer against Synthetic's should find
+  // Synthetic saying so in its own source.
+  AcquisitionCoexistence acquisition_coexistence(
+      uint64_t device_instance_id,
+      const AcquisitionUseSet& proposed) noexcept override {
+    (void)device_instance_id;
+    (void)proposed;
+    return AcquisitionCoexistence::coexist();
+  }
   uint64_t stream_backing_plan_evaluation_settle_delay_ns() const noexcept override {
     return kBackingPlanEvaluationSettleDelayNs;
   }

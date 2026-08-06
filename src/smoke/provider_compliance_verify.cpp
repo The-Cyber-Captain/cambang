@@ -5948,6 +5948,130 @@ bool run_core_synthetic_three_member_realized_unknown_propagation_check() {
   return true;
 }
 
+// A provider's coexistence answer must agree with what it then does.
+//
+// acquisition_coexistence() is the only way Core can learn that a capture and a
+// live stream conflict on a given backend, so an answer that does not predict
+// the provider's behaviour is worse than no answer: Core acts on it, and the
+// refusal it did not expect is one it cannot attribute or report. This binds
+// the two together for the case they were measured to disagree on -- a device
+// capture at a geometry other than the producing stream's, which BOTH platform
+// providers refuse while arbitration_policy.md 2 says the stream is preempted.
+//
+// The rule is written out for every verdict even though the reference provider
+// answers only one of them, because the rule is what a platform provider is
+// held to and this file is where it is stated executably.
+//
+// Coverage boundary, and it is a real one: Camera2 cannot be built host-native
+// and WinRT needs hardware, so neither is reachable here. What this check binds
+// is the contract and the reference provider's conformance to it; the platform
+// providers' conformance rests on scene 911 and inspection.
+bool run_provider_coexistence_answer_matches_behaviour_check() {
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 64;
+  cfg.nominal.height = 64;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(cfg);
+
+  constexpr uint64_t kDevice = 43;
+  constexpr uint64_t kStream = 73;
+  constexpr uint64_t kCapture = 8003;
+
+  StreamRequest req{};
+  req.stream_id = kStream;
+  req.device_instance_id = kDevice;
+  req.intent = StreamIntent::VIEWFINDER;
+  req.profile.width = 64;
+  req.profile.height = 64;
+  req.profile.format_fourcc = FOURCC_RGBA;
+  req.profile.target_fps_min = 30;
+  req.profile.target_fps_max = 30;
+
+  // Deliberately NOT the stream's geometry. Same-geometry still capture while
+  // streaming already works everywhere and would prove nothing.
+  CaptureRequest cap = make_direct_provider_default_still_capture_request(
+      kCapture, kDevice, 32, 32, FOURCC_RGBA);
+
+  if (!provider.initialize(&cb).ok() ||
+      !provider.open_device("synthetic:0", kDevice, 4301).ok() ||
+      !provider.create_stream(req).ok() ||
+      !provider.start_stream(req.stream_id, req.profile, req.picture).ok()) {
+    std::cerr << "FAIL coexistence check setup failed\n";
+    return false;
+  }
+
+  AcquisitionUseSet proposed{};
+  proposed.has_stream = true;
+  proposed.stream = req.profile;
+  proposed.has_still = true;
+  proposed.still.width = cap.width;
+  proposed.still.height = cap.height;
+  proposed.still.format_fourcc = cap.format_fourcc;
+  const AcquisitionCoexistence verdict =
+      provider.acquisition_coexistence(kDevice, proposed);
+
+  const ProviderResult admitted = provider.trigger_capture(cap);
+
+  bool ok = true;
+  switch (verdict.verdict) {
+    case CoexistenceVerdict::Coexist:
+    case CoexistenceVerdict::Reconfigure:
+      // Both verdicts promise the capture is serviceable alongside the stream.
+      // A refusal here is the inversion this whole contract exists to catch.
+      if (!admitted.ok()) {
+        std::cerr << "FAIL provider answered " << coexistence_verdict_name(verdict.verdict)
+                  << " and then refused the capture\n";
+        ok = false;
+      }
+      break;
+    case CoexistenceVerdict::StreamMustYield:
+      // The provider says the two cannot be concurrent. Admitting anyway, with
+      // the stream still producing and nothing having stopped it, means the
+      // answer described a constraint the provider does not actually enforce --
+      // Core would leave a stream running that the provider claimed could not
+      // run.
+      if (admitted.ok()) {
+        std::cerr << "FAIL provider answered stream_must_yield and then admitted "
+                     "the capture with the stream still producing\n";
+        ok = false;
+      }
+      break;
+    case CoexistenceVerdict::Unsupported:
+      // No ordering serves this set, so the capture must not be admitted --
+      // admitting it would have Core preempt a working stream for a capture
+      // that was never going to succeed.
+      if (admitted.ok()) {
+        std::cerr << "FAIL provider answered unsupported and then admitted the capture\n";
+        ok = false;
+      }
+      break;
+  }
+
+  if (admitted.ok() && !wait_for_capture_completed_with_frames(cb, cap.capture_id, 1)) {
+    std::cerr << "FAIL coexistence check: admitted capture produced no frame evidence\n";
+    ok = false;
+  }
+
+  // Coexist is the strongest of the four: it promises the stream is not
+  // disturbed at all. Nothing may have stopped it.
+  if (verdict.verdict == CoexistenceVerdict::Coexist) {
+    const auto events = cb.snapshot_events();
+    if (find_event_index(events, "stream_stopped", kStream) >= 0) {
+      std::cerr << "FAIL provider answered coexist and the stream stopped anyway\n";
+      ok = false;
+    }
+  }
+
+  if (!provider.stop_stream(kStream).ok() || !provider.destroy_stream(kStream).ok() ||
+      !provider.close_device(kDevice).ok() || !provider.shutdown().ok()) {
+    std::cerr << "FAIL coexistence check teardown failed\n";
+    return false;
+  }
+  return ok;
+}
+
 bool run_synthetic_stream_plus_still_single_session_truth_check() {
   RecorderCallbacks cb;
   SyntheticProviderConfig cfg{};
@@ -10318,6 +10442,7 @@ int main(int argc, char** argv) {
       {"run_core_capture_result_fact_resolution_check", [] { return run_core_capture_result_fact_resolution_check(); }},
       {"run_core_synthetic_three_member_realized_unknown_propagation_check", [] { return run_core_synthetic_three_member_realized_unknown_propagation_check(); }},
       {"run_synthetic_stream_plus_still_single_session_truth_check", [] { return run_synthetic_stream_plus_still_single_session_truth_check(); }},
+      {"run_provider_coexistence_answer_matches_behaviour_check", [] { return run_provider_coexistence_answer_matches_behaviour_check(); }},
       {"run_core_measured_backing_plan_evaluation_check", [] { return run_core_measured_backing_plan_evaluation_check(); }},
       {"run_core_capture_observation_regression_check", [] { return run_core_capture_observation_regression_check(); }},
       {"run_core_capture_bracket_whole_result_scoring_check", [] { return run_core_capture_bracket_whole_result_scoring_check(); }},

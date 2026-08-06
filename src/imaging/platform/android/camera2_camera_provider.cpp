@@ -5370,6 +5370,68 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
   }
 }
 
+AcquisitionCoexistence Camera2CameraProvider::acquisition_coexistence(
+    uint64_t device_instance_id,
+    const AcquisitionUseSet& proposed) noexcept {
+  std::lock_guard<std::mutex> state_lock(state_mutex_);
+  auto dev_it = devices_.find(device_instance_id);
+  if (dev_it == devices_.end() || !dev_it->second.backend) {
+    // Nothing is configured, so nothing can be disturbed. An unopened device is
+    // not a capability denial: Unsupported would tell Core the set can never be
+    // served, which is a claim about the hardware this cannot support.
+    return AcquisitionCoexistence::coexist();
+  }
+  std::lock_guard<std::mutex> bl(dev_it->second.backend->m);
+  const auto& backend = *dev_it->second.backend;
+
+  // Sizes first, because an unsupported size is a capability denial no ordering
+  // of operations can reach and must never be confused with a priority
+  // decision. supports_size reads characteristics cached at open.
+  if (proposed.has_stream &&
+      !backend.chars.supports_size(proposed.stream.width, proposed.stream.height)) {
+    return AcquisitionCoexistence::unsupported();
+  }
+  if (proposed.has_still &&
+      !backend.chars.supports_size(proposed.still.width, proposed.still.height)) {
+    return AcquisitionCoexistence::unsupported();
+  }
+
+  // Whether the realized session already carries each proposed output at the
+  // geometry proposed for it. Anything it does not carry has to be added, and
+  // on Camera2 adding an output means a new session.
+  const bool stream_already_configured =
+      !proposed.has_stream ||
+      (backend.cfg_has_stream && backend.cfg_stream_w == proposed.stream.width &&
+       backend.cfg_stream_h == proposed.stream.height);
+  const bool still_already_configured =
+      !proposed.has_still ||
+      (backend.cfg_has_still && backend.cfg_still_w == proposed.still.width &&
+       backend.cfg_still_h == proposed.still.height);
+  if (stream_already_configured && still_already_configured) {
+    return AcquisitionCoexistence::coexist();
+  }
+
+  // A rebuild is needed. It only disturbs anything if a stream is actually
+  // producing -- rebuilding around a stream that is created but not started
+  // costs nothing observable.
+  const bool stream_producing = backend.stream && backend.stream->producing;
+  if (!stream_producing) {
+    return AcquisitionCoexistence::coexist();
+  }
+
+  // Reconfigure, not StreamMustYield. Camera2 can serve a stream output and a
+  // still output at different geometries in one session; what it cannot do is
+  // add an output to a live one. So the stream gaps across the rebuild and then
+  // resumes at its own geometry -- it does not have to give the geometry up,
+  // which is the distinction between the two verdicts.
+  //
+  // Today the capture path refuses this case outright instead of rebuilding.
+  // That refusal is the defect this contract exists to remove; the answer here
+  // states what the backend can do, and the capture path is brought into line
+  // with it in the same tranche.
+  return AcquisitionCoexistence::reconfigure();
+}
+
 ProviderResult Camera2CameraProvider::validate_and_admit_submission_locked_(
     const CaptureSubmission& submission,
     std::vector<DeviceCaptureJob>& out_jobs) {

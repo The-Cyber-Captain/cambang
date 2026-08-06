@@ -138,6 +138,15 @@ public:
   // exceeding kMaxBracketMembers, is refused with ERR_NOT_SUPPORTED.
   bool supports_multi_image_still_sequence() const noexcept override { return true; }
 
+  // A MediaFrameSource carries ONE active MediaFrameFormat, shared by every
+  // reader on it and by the photo pipeline. Two geometries therefore cannot be
+  // live at once on one device, so where a still is wanted at a geometry other
+  // than the stream's, something has to give -- which is a genuine backend
+  // constraint here, not a policy choice like Camera2's rebuild.
+  AcquisitionCoexistence acquisition_coexistence(
+      uint64_t device_instance_id,
+      const AcquisitionUseSet& proposed) noexcept override;
+
   // Derived from the bounded per-step timeouts below (never a guess, per the
   // doc comment on the base declaration). Re-derived when still capture moved
   // to the photo pipeline: the step count happens to be unchanged, but the
