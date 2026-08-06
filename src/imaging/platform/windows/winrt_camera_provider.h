@@ -302,9 +302,10 @@ private:
   // Acquisition-seam claims. Retain governs the seam's LIFETIME from the
   // moment a claimant needs it; realizing the native reader may still happen
   // later on the bounded control executor. Release drops the claim only --
-  // it never tears the seam down, because Core's capture-parent call site
-  // creates and then releases immediately, and a provider that destroyed on
-  // release would undo the creation it had just performed.
+  // it never tears the seam down. Core holds the capture-parent claim for as
+  // long as the retained still profile stands, so the release that eventually
+  // arrives means the profile is changing or going away -- not that the seam
+  // should be destroyed.
   //
   // None of these touch the backend's WinRT objects, so they are safe to call
   // under state_mutex_ during admission.

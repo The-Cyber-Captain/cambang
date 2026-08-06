@@ -2949,7 +2949,7 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
     // refuse at all when an in-flight capture held the seam, which is the case
     // that actually loses work.
     //
-    // The decision is seam_replacement_permitted
+    // The decision is seam_reconfiguration_permitted
     // (imaging/api/acquisition_seam_claims.h), shared with the WinRT provider
     // and exercised host-native. EVERY claimant here arrives already counted:
     // a capture reference is taken at admission, a stream's before realization
@@ -2969,7 +2969,7 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
         backend->seam_capture_parent_refs.load(std::memory_order_acquire);
     const SeamClaims others =
         cambang::detail::without_own_claim(live, requester, OwnClaim::AlreadyHeld);
-    if (!seam_replacement_permitted(live, requester, OwnClaim::AlreadyHeld)) {
+    if (!seam_reconfiguration_permitted(live, requester, OwnClaim::AlreadyHeld)) {
       // Refused. The branches below only choose the error code and the
       // diagnostic; the decision above is the single authority, so a provider
       // and the shared policy cannot drift apart.

@@ -1388,7 +1388,7 @@ ProviderResult WinrtCameraProvider::ensure_reader_realized_(
       }
       // Retiring the reader ends this seam and begins another, so every other
       // claimant forbids it -- what must not be destroyed is a seam something
-      // live is using. The rule is seam_replacement_permitted
+      // live is using. The rule is seam_reconfiguration_permitted
       // (imaging/api/acquisition_seam_claims.h).
       //
       // Whether the asker already holds its own claim is THIS provider's call
@@ -1398,7 +1398,7 @@ ProviderResult WinrtCameraProvider::ensure_reader_realized_(
       // stream claim visible here is always somebody else's.
       const OwnClaim own = requester == SeamClaimant::Stream ? OwnClaim::NotHeld
                                                              : OwnClaim::AlreadyHeld;
-      if (!seam_replacement_permitted(backend->seam_claims, requester, own)) {
+      if (!seam_reconfiguration_permitted(backend->seam_claims, requester, own)) {
         return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
       }
       retire_first = true;
@@ -1634,12 +1634,12 @@ ProviderResult WinrtCameraProvider::ensure_reader_geometry_(
     // under another.
     //
     // The asker's OWN claim must not block it. That rule, and which claimants
-    // count at all, is seam_geometry_change_permitted
+    // count at all, is seam_reconfiguration_permitted
     // (imaging/api/acquisition_seam_claims.h). Ordering as above: only a stream
     // reaches here without having retained.
     const OwnClaim own = requester == SeamClaimant::Stream ? OwnClaim::NotHeld
                                                            : OwnClaim::AlreadyHeld;
-    if (!seam_geometry_change_permitted(backend->seam_claims, requester, own)) {
+    if (!seam_reconfiguration_permitted(backend->seam_claims, requester, own)) {
       return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
     }
   }
@@ -3086,9 +3086,10 @@ ProviderResult WinrtCameraProvider::release_capture_parent_priming(
   }
 
   // Drops the claim and nothing else. Core's creation call site is gated on
-  // "no session exists" and releases immediately afterwards, so a provider
-  // that tore the reader down here would destroy it microseconds after
-  // creating it. Zero references makes teardown permitted, not mandatory.
+  // "no session exists", and holds the claim for as long as the retained
+  // still profile stands rather than releasing straight away. Either way this
+  // path drops the claim and nothing more: zero references makes teardown
+  // permitted, not mandatory.
   //
   // Clearing a latch that is already clear is success: the contract requires
   // release to be safe when no claim is held.

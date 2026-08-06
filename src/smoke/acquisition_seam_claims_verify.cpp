@@ -60,22 +60,37 @@ void run_held_and_teardown_checks() {
   check("many claimants forbid teardown", !seam_teardown_permitted(claims(3, 2, 1)));
 }
 
-void run_geometry_excludes_capture_parent_checks() {
-  // THE CAPTURE-PARENT RULE. The retained-profile claim exists so the profile
-  // can shape the seam; letting it pin geometry stops it doing its own job.
+void run_capture_parent_never_blocks_reconfiguration_checks() {
+  // THE CAPTURE-PARENT RULE, and the one this file exists to hold down hardest.
+  // The retained-profile claim exists so the profile can shape the seam. If it
+  // blocks reconfiguration it stops the capture-parent path doing its own job.
+  const SeamClaims parent_only = claims(0, 0, 1);
   for (SeamClaimant asker :
        {SeamClaimant::Stream, SeamClaimant::Capture, SeamClaimant::CaptureParent}) {
-    check("capture-parent claim never pins geometry",
-          seam_geometry_change_permitted(claims(0, 0, 1), asker, OwnClaim::NotHeld));
+    check("capture-parent claim never blocks reconfiguration",
+          seam_reconfiguration_permitted(parent_only, asker, OwnClaim::NotHeld));
   }
-  // ...but it does forbid replacement by anyone else, because that destroys the
-  // object and would leave Core believing a primed seam still exists.
-  check("capture-parent claim forbids replacement by a stream",
-        !seam_replacement_permitted(claims(0, 0, 1), SeamClaimant::Stream,
+
+  // It held for an in-place change already. The case that regressed was the
+  // change that REPLACES the seam's native object: on Camera2 every geometry
+  // change is one of those, so a stream starting at a new geometry while a
+  // retained still profile stood was refused. It must not be.
+  check("capture-parent claim does not block a replacing reconfiguration",
+        seam_reconfiguration_permitted(parent_only, SeamClaimant::Stream,
+                                       OwnClaim::NotHeld));
+
+  // But it DOES still block an outright teardown, which is the case that would
+  // leave Core believing a primed seam exists when none does.
+  check("capture-parent claim blocks teardown by a stream",
+        !seam_teardown_permitted_by(parent_only, SeamClaimant::Stream,
                                     OwnClaim::NotHeld));
-  check("capture-parent claim forbids replacement by a capture",
-        !seam_replacement_permitted(claims(0, 0, 1), SeamClaimant::Capture,
+  check("capture-parent claim blocks teardown by a capture",
+        !seam_teardown_permitted_by(parent_only, SeamClaimant::Capture,
                                     OwnClaim::AlreadyHeld));
+  // ...and not its own, so the holder may release what it alone holds.
+  check("capture parent may tear down the seam its own latch holds",
+        seam_teardown_permitted_by(parent_only, SeamClaimant::CaptureParent,
+                                   OwnClaim::AlreadyHeld));
 }
 
 void run_self_block_checks() {
@@ -83,24 +98,24 @@ void run_self_block_checks() {
   // for. Its own claim must not refuse it.
   const SeamClaims sole_capture = claims(0, 1, 0);
   check("a capture is not blocked by its own claim",
-        seam_geometry_change_permitted(sole_capture, SeamClaimant::Capture,
+        seam_reconfiguration_permitted(sole_capture, SeamClaimant::Capture,
                                        OwnClaim::AlreadyHeld));
   check("a capture may replace the seam it alone holds",
-        seam_replacement_permitted(sole_capture, SeamClaimant::Capture,
+        seam_reconfiguration_permitted(sole_capture, SeamClaimant::Capture,
                                    OwnClaim::AlreadyHeld));
 
   // Exactly one is discounted, not all of them.
   const SeamClaims two_captures = claims(0, 2, 0);
   check("a second capture still pins geometry",
-        !seam_geometry_change_permitted(two_captures, SeamClaimant::Capture,
+        !seam_reconfiguration_permitted(two_captures, SeamClaimant::Capture,
                                         OwnClaim::AlreadyHeld));
   check("a second capture still forbids replacement",
-        !seam_replacement_permitted(two_captures, SeamClaimant::Capture,
+        !seam_reconfiguration_permitted(two_captures, SeamClaimant::Capture,
                                     OwnClaim::AlreadyHeld));
 
   // A capture discount does not excuse a stream claim.
   check("a capture cannot reconfigure under a live stream",
-        !seam_geometry_change_permitted(claims(1, 1, 0), SeamClaimant::Capture,
+        !seam_reconfiguration_permitted(claims(1, 1, 0), SeamClaimant::Capture,
                                         OwnClaim::AlreadyHeld));
 
   // THE CAPTURE-PARENT SELF-BLOCK. sync_capture_parent_priming retains its
@@ -108,13 +123,13 @@ void run_self_block_checks() {
   // must not refuse it, or the device can never reach the profile it was given
   // and keeps the wrong geometry silently.
   check("capture parent may replace the seam its own latch holds",
-        seam_replacement_permitted(claims(0, 0, 1), SeamClaimant::CaptureParent,
+        seam_reconfiguration_permitted(claims(0, 0, 1), SeamClaimant::CaptureParent,
                                    OwnClaim::AlreadyHeld));
   check("capture parent cannot replace under a live stream",
-        !seam_replacement_permitted(claims(1, 0, 1), SeamClaimant::CaptureParent,
+        !seam_reconfiguration_permitted(claims(1, 0, 1), SeamClaimant::CaptureParent,
                                     OwnClaim::AlreadyHeld));
   check("capture parent cannot replace under an in-flight capture",
-        !seam_replacement_permitted(claims(0, 1, 1), SeamClaimant::CaptureParent,
+        !seam_reconfiguration_permitted(claims(0, 1, 1), SeamClaimant::CaptureParent,
                                     OwnClaim::AlreadyHeld));
 }
 
@@ -127,17 +142,17 @@ void run_ordering_is_the_callers_statement_check() {
   // A WinRT stream realizes first and retains only once started, so when it
   // asks it holds nothing and a stream claim present belongs to somebody else.
   check("stream that has not yet retained is refused by an existing stream",
-        !seam_replacement_permitted(one_stream, SeamClaimant::Stream,
+        !seam_reconfiguration_permitted(one_stream, SeamClaimant::Stream,
                                     OwnClaim::NotHeld));
 
   // A Camera2 stream retains before requesting realization, so identical counts
   // mean its own claim and must not refuse it.
   check("stream that has already retained may replace its own seam",
-        seam_replacement_permitted(one_stream, SeamClaimant::Stream,
+        seam_reconfiguration_permitted(one_stream, SeamClaimant::Stream,
                                    OwnClaim::AlreadyHeld));
 
   check("a second stream still refuses a stream that has retained",
-        !seam_replacement_permitted(claims(2, 0, 0), SeamClaimant::Stream,
+        !seam_reconfiguration_permitted(claims(2, 0, 0), SeamClaimant::Stream,
                                     OwnClaim::AlreadyHeld));
 }
 
@@ -146,9 +161,9 @@ void run_unheld_seam_checks() {
   for (SeamClaimant asker :
        {SeamClaimant::Stream, SeamClaimant::Capture, SeamClaimant::CaptureParent}) {
     check("unheld seam permits geometry change",
-          seam_geometry_change_permitted(claims(0, 0, 0), asker, OwnClaim::NotHeld));
+          seam_reconfiguration_permitted(claims(0, 0, 0), asker, OwnClaim::NotHeld));
     check("unheld seam permits replacement",
-          seam_replacement_permitted(claims(0, 0, 0), asker, OwnClaim::NotHeld));
+          seam_reconfiguration_permitted(claims(0, 0, 0), asker, OwnClaim::NotHeld));
   }
 }
 
@@ -157,7 +172,7 @@ void run_discount_targets_own_claim_check() {
   // a bookkeeping bug elsewhere, but it must not turn into a huge count that
   // pins the seam forever.
   check("discount does not underflow on zero",
-        seam_geometry_pinning_claims(claims(0, 0, 0), SeamClaimant::Capture,
+        seam_reconfiguration_blocking_claims(claims(0, 0, 0), SeamClaimant::Capture,
                                      OwnClaim::AlreadyHeld) == 0);
 
   // And it must come off capture_refs SPECIFICALLY, never off the total. An
@@ -165,13 +180,16 @@ void run_discount_targets_own_claim_check() {
   // its own silently excused somebody else's -- caught by this verifier on its
   // first run, against a policy that had already been wired into the provider.
   check("a capture with no claim does not excuse a stream's",
-        seam_geometry_pinning_claims(claims(1, 0, 0), SeamClaimant::Capture,
+        seam_reconfiguration_blocking_claims(claims(1, 0, 0), SeamClaimant::Capture,
                                      OwnClaim::AlreadyHeld) == 1);
+  // Asked of teardown, not reconfiguration: the capture parent deliberately
+  // takes no part in reconfiguration at all, so only teardown can show whether
+  // a capture's discount wrongly reaches another category's claim.
   check("a capture with no claim does not excuse the capture parent's",
-        !seam_replacement_permitted(claims(0, 0, 1), SeamClaimant::Capture,
+        !seam_teardown_permitted_by(claims(0, 0, 1), SeamClaimant::Capture,
                                     OwnClaim::AlreadyHeld));
   check("a capture with no claim cannot replace a stream-held seam",
-        !seam_replacement_permitted(claims(1, 0, 0), SeamClaimant::Capture,
+        !seam_reconfiguration_permitted(claims(1, 0, 0), SeamClaimant::Capture,
                                     OwnClaim::AlreadyHeld));
 }
 
@@ -201,7 +219,7 @@ void run_winrt_admission_sequence_check() {
   // Core sets a retained profile: capture-parent latch, then released.
   c.capture_parent_refs = 1;
   check("sequence: profile-set may shape geometry",
-        seam_geometry_change_permitted(c, SeamClaimant::CaptureParent,
+        seam_reconfiguration_permitted(c, SeamClaimant::CaptureParent,
                                        OwnClaim::AlreadyHeld));
   c.capture_parent_refs = 0;
   check("sequence: releasing the latch leaves teardown permitted",
@@ -210,23 +228,23 @@ void run_winrt_admission_sequence_check() {
   // A capture is admitted: claim taken at admission.
   c.capture_refs = 1;
   check("sequence: admitted capture reaches its own geometry",
-        seam_geometry_change_permitted(c, SeamClaimant::Capture,
+        seam_reconfiguration_permitted(c, SeamClaimant::Capture,
                                        OwnClaim::AlreadyHeld));
   check("sequence: admitted capture forbids teardown", !seam_teardown_permitted(c));
 
   // A stream starts while the capture is in flight.
   c.stream_refs = 1;
   check("sequence: capture cannot reconfigure under the new stream",
-        !seam_geometry_change_permitted(c, SeamClaimant::Capture,
+        !seam_reconfiguration_permitted(c, SeamClaimant::Capture,
                                         OwnClaim::AlreadyHeld));
   check("sequence: stream cannot reconfigure under the in-flight capture",
-        !seam_geometry_change_permitted(c, SeamClaimant::Stream,
+        !seam_reconfiguration_permitted(c, SeamClaimant::Stream,
                                         OwnClaim::NotHeld));
 
   // Capture reaches a terminal outcome.
   c.capture_refs = 0;
   check("sequence: stream alone still pins its own geometry",
-        !seam_geometry_change_permitted(c, SeamClaimant::Stream,
+        !seam_reconfiguration_permitted(c, SeamClaimant::Stream,
                                         OwnClaim::NotHeld));
   check("sequence: seam still held by the stream", !seam_teardown_permitted(c));
 
@@ -239,7 +257,7 @@ void run_winrt_admission_sequence_check() {
 
 int main() {
   run_held_and_teardown_checks();
-  run_geometry_excludes_capture_parent_checks();
+  run_capture_parent_never_blocks_reconfiguration_checks();
   run_self_block_checks();
   run_unheld_seam_checks();
   run_ordering_is_the_callers_statement_check();

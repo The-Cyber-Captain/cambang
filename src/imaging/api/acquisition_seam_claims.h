@@ -20,9 +20,12 @@ namespace cambang {
 //   * The capture-parent claim exists so a retained still profile can shape the
 //     seam. Letting it pin geometry stops it doing its own job.
 //   * Zero references makes teardown PERMITTED, not mandatory. Core's creation
-//     call site is gated on "no session exists" and releases immediately
-//     afterwards, so a provider that tore down on release would destroy the
-//     seam microseconds after creating it.
+//     call site holds this claim for as long as the retained still profile
+//     stands (CoreRuntime::sync_capture_parent_priming_ sets
+//     provider_hold_active and does not release; the releases live in
+//     refresh_capture_retained_plan_state_). A provider that tore the seam
+//     down when that claim is finally dropped would destroy it under a
+//     profile that is merely changing.
 //
 // The decisions are pure functions of three counts and the asker's identity, so
 // they live here and are exercised host-native -- the same arrangement as
@@ -63,19 +66,6 @@ constexpr bool seam_teardown_permitted(const SeamClaims& c) noexcept {
   return !seam_is_held(c);
 }
 
-// Claims that would be disturbed by changing the seam's geometry, from the
-// point of view of `requester`.
-//
-// Geometry is a different question from teardown and reads a different set:
-//
-//   * The capture parent is excluded entirely. Its purpose is to set geometry
-//     from the retained profile.
-//   * The asker's own claim is discounted, and only for a capture. A capture
-//     holds its claim from admission and then asks for the geometry it was
-//     admitted for. A stream takes its claim only once started -- after the
-//     geometry call has already succeeded -- so it has nothing of its own to
-//     discount, and discounting one anyway would let it reconfigure out from
-//     under a different live stream.
 // Whether the asker's own claim is already counted in `c`, and must therefore
 // be discounted before asking whether anyone ELSE objects.
 //
@@ -113,19 +103,47 @@ constexpr SeamClaims without_own_claim(const SeamClaims& c, SeamClaimant request
 
 }  // namespace detail
 
-// Claims that would be disturbed by a geometry change, excluding the asker's.
-constexpr uint32_t seam_geometry_pinning_claims(const SeamClaims& c,
-                                                SeamClaimant requester,
-                                                OwnClaim own) noexcept {
+// Claims that would be disturbed by reconfiguring the seam, excluding the
+// asker's own.
+//
+// The capture parent is excluded, and this is the load-bearing part. Its claim
+// exists so a retained still profile can shape the seam; a rule that let it
+// block reconfiguration would stop it doing the one thing it is for.
+constexpr uint32_t seam_reconfiguration_blocking_claims(const SeamClaims& c,
+                                                        SeamClaimant requester,
+                                                        OwnClaim own) noexcept {
   const SeamClaims others = detail::without_own_claim(c, requester, own);
   return others.stream_refs + others.capture_refs;
 }
 
-// May the seam's geometry be changed by this claimant?
-constexpr bool seam_geometry_change_permitted(const SeamClaims& c,
+// May the seam be reconfigured by this claimant?
+//
+// "Reconfigured" covers BOTH shapes this takes across backends, deliberately:
+//
+//   * a change applied in place, leaving the seam's native object alive --
+//     WinRT's SetFormatAsync on the MediaFrameSource;
+//   * a change that can only be made by replacing that object, which ends one
+//     seam and begins another with both facts reported -- Camera2, whose
+//     ACameraCaptureSession fixes its output set at creation, and WinRT again
+//     when the reader's subtype must change.
+//
+// An earlier version of this header split those into separate questions and
+// consulted the capture-parent latch for the second. That was wrong, and wrong
+// in a way that could only bite one provider: on WinRT the two are genuinely
+// different operations, but on Camera2 EVERY geometry change is a replacement,
+// so the capture-parent exclusion above never applied there and the latch
+// blocked exactly what it was written not to block. With a retained still
+// profile in force, a stream starting at a different geometry was refused.
+//
+// What justifies excluding the capture parent from both is that neither shape
+// leaves Core believing a primed seam exists when none does: an in-place change
+// keeps the seam, and a replacement reports the destruction and the creation.
+// Only an outright teardown does that, and teardown is the separate question
+// below.
+constexpr bool seam_reconfiguration_permitted(const SeamClaims& c,
                                               SeamClaimant requester,
                                               OwnClaim own) noexcept {
-  return seam_geometry_pinning_claims(c, requester, own) == 0;
+  return seam_reconfiguration_blocking_claims(c, requester, own) == 0;
 }
 
 // May the seam's native object be REPLACED by this claimant -- retired and
@@ -135,12 +153,17 @@ constexpr bool seam_geometry_change_permitted(const SeamClaims& c,
 // including the capture parent: a primed seam that vanished under Core would
 // leave it believing a seam exists when none does. The asker's own claim is
 // still discounted on the same terms as above.
-// The capture parent is discounted here too when it already holds its latch: it
-// retains and THEN asks for a seam matching the retained profile, so refusing
-// on its own latch would make the capture-parent path refuse itself. The
-// symptom is a device that can never reach the profile it was given, and it
-// keeps the wrong geometry silently.
-constexpr bool seam_replacement_permitted(const SeamClaims& c, SeamClaimant requester,
+// May the seam be torn down outright -- destroyed with nothing put in its
+// place?
+//
+// Every claimant blocks this, the capture parent included, because a primed
+// seam that simply vanishes leaves Core believing one exists when none does.
+// That is the case seam_reconfiguration_permitted is NOT, and the reason the
+// two are separate questions rather than one.
+//
+// The asker's own claim is still discounted: a claimant that holds the only
+// reference may release the seam it alone depends on.
+constexpr bool seam_teardown_permitted_by(const SeamClaims& c, SeamClaimant requester,
                                           OwnClaim own) noexcept {
   const SeamClaims others = detail::without_own_claim(c, requester, own);
   return !seam_is_held(others);
