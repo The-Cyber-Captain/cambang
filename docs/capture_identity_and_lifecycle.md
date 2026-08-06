@@ -177,6 +177,35 @@ deliberately *shared* across one rig capture. Acquisition marks from separate
 devices may legitimately be identical and must never be used to decide
 membership, lateness, ordering, or identity.
 
+### 4.5 Outstanding work
+
+A caller that records the id a trigger returns (§4.1) and clears it on the
+matching settlement (§4.2) knows what it is still waiting for, without polling
+anything. That is the ordinary usage this model is designed around, and it is
+deliberately sufficient on its own.
+
+`CamBANGServer` must also expose that set directly — the ids it has minted and
+not yet seen settle, per device and in total — for callers that would otherwise
+maintain it themselves.
+
+This adds no lifecycle concept and no new bookkeeping. Capture ids are minted
+at the Godot boundary, and §4.2's settlement signals arrive there; the boundary
+therefore sees both ends already. Today it sees only one, because the minted id
+is discarded rather than returned (§9), which is exactly what §4.1 fixes.
+
+It is worth exposing rather than leaving to each caller because a device's busy
+state is otherwise observable **only by being refused**, and every non-trivial
+consumer written against this codebase has hand-rolled the same counter to
+avoid that — including the soak scene, which tracks in-flight captures per
+device purely so it can decline to ask.
+
+**One caveat, and it is not about timing.** An empty outstanding set for a
+device does not guarantee the next trigger is admitted: admission can refuse
+for reasons unrelated to busy-ness — materialization backlog, orchestration
+failure — and those surface as `ERR_BUSY` too. A caller still handles the
+trigger's return. Narrowing what `ERR_BUSY` means, through additional states or
+clearer reporting, is worthwhile and is tracked separately from this model.
+
 ---
 
 ## 5. Rig membership lifecycle
