@@ -100,18 +100,11 @@ void run_self_block_checks() {
   check("a capture is not blocked by its own claim",
         seam_reconfiguration_permitted(sole_capture, SeamClaimant::Capture,
                                        OwnClaim::AlreadyHeld));
-  check("a capture may replace the seam it alone holds",
-        seam_reconfiguration_permitted(sole_capture, SeamClaimant::Capture,
-                                   OwnClaim::AlreadyHeld));
-
   // Exactly one is discounted, not all of them.
   const SeamClaims two_captures = claims(0, 2, 0);
-  check("a second capture still pins geometry",
+  check("a second capture still forbids reconfiguration",
         !seam_reconfiguration_permitted(two_captures, SeamClaimant::Capture,
                                         OwnClaim::AlreadyHeld));
-  check("a second capture still forbids replacement",
-        !seam_reconfiguration_permitted(two_captures, SeamClaimant::Capture,
-                                    OwnClaim::AlreadyHeld));
 
   // A capture discount does not excuse a stream claim.
   check("a capture cannot reconfigure under a live stream",
@@ -122,13 +115,10 @@ void run_self_block_checks() {
   // latch and THEN asks for a seam matching the retained profile. Its own latch
   // must not refuse it, or the device can never reach the profile it was given
   // and keeps the wrong geometry silently.
-  check("capture parent may replace the seam its own latch holds",
-        seam_reconfiguration_permitted(claims(0, 0, 1), SeamClaimant::CaptureParent,
-                                   OwnClaim::AlreadyHeld));
-  check("capture parent cannot replace under a live stream",
+  check("capture parent cannot reconfigure under a live stream",
         !seam_reconfiguration_permitted(claims(1, 0, 1), SeamClaimant::CaptureParent,
                                     OwnClaim::AlreadyHeld));
-  check("capture parent cannot replace under an in-flight capture",
+  check("capture parent cannot reconfigure under an in-flight capture",
         !seam_reconfiguration_permitted(claims(0, 1, 1), SeamClaimant::CaptureParent,
                                     OwnClaim::AlreadyHeld));
 }
@@ -147,7 +137,7 @@ void run_ordering_is_the_callers_statement_check() {
 
   // A Camera2 stream retains before requesting realization, so identical counts
   // mean its own claim and must not refuse it.
-  check("stream that has already retained may replace its own seam",
+  check("stream that has already retained may reconfigure its own seam",
         seam_reconfiguration_permitted(one_stream, SeamClaimant::Stream,
                                    OwnClaim::AlreadyHeld));
 
@@ -195,8 +185,8 @@ void run_discount_targets_own_claim_check() {
 
 void run_teardown_is_permission_not_instruction_check() {
   // Zero references makes teardown PERMITTED. The policy must not be readable
-  // as "tear it down now": a provider may keep a warm seam, and Core's creation
-  // call site releases immediately after creating.
+  // as "tear it down now": a provider may keep a warm seam, and a release only
+  // says that claimant no longer needs the seam.
   //
   // Expressed as the property that matters: permission is stable under
   // re-asking, and says nothing about what the provider then does.

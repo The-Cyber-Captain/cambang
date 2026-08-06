@@ -5603,13 +5603,12 @@ ProviderResult Camera2CameraProvider::release_capture_parent_priming(uint64_t de
   // path must not take it.
   //
   // An earlier version tore the seam down here, on the reasoning that an
-  // explicit release states intent. Hardware disproved it: Core's creation
-  // call site is gated on `acquisition_session_id == 0` and releases
-  // immediately afterwards, so tearing down on release destroyed the seam
-  // microseconds after creating it and the next capture rebuilt from nothing.
-  // The paired release is Core declining to hold a claim, not asking for
-  // destruction. The seam is created because none was in place; undoing that
-  // discards the whole benefit.
+  // explicit release states intent. Hardware disproved it. Core holds this
+  // claim for as long as the retained still profile stands, so the release
+  // that eventually arrives says the profile is changing or going away -- it
+  // is Core declining to keep a claim, not asking for destruction. Tearing
+  // down on it left the next capture rebuilding from nothing, discarding the
+  // whole benefit of having created the seam.
   //
   // Genuine teardown happens on close_device, shutdown, and a reconfigure that
   // no live claimant forbids.

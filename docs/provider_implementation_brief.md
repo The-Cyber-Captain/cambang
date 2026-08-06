@@ -348,10 +348,20 @@ Two consequences that are easy to get wrong:
   changes, and let the reference check refuse the rebuild if a stream or an
   in-flight capture holds the seam. It must be idempotent for equivalent
   requests.
-* **Releasing a claim is not a request to destroy the seam.** Core's creation
-  call site is gated on "no session exists" and releases immediately
-  afterwards; a provider that tore down on release would undo the creation it
-  had just performed. Drop the claim and leave the seam.
+
+  **A stream or an in-flight capture — not the capture parent.** The
+  capture-parent claim must never refuse a reconfiguration, including one your
+  backend can only perform by replacing the seam's native object. Where the two
+  cannot be told apart, as on Camera2, keying the refusal on "is the object
+  replaced" excludes the capture parent in theory and includes it in practice,
+  and a retained still profile then blocks the geometry it exists to set. Key
+  it on whether anything is put back instead: a replacement that reports its
+  destroyed and created facts leaves Core knowing exactly where it stands,
+  which an outright teardown does not.
+* **Releasing a claim is not a request to destroy the seam.** Core holds the
+  capture-parent claim for as long as the retained still profile stands, so the
+  release that eventually arrives says the profile is changing or going away —
+  not that the seam should be destroyed. Drop the claim and leave the seam.
 
 References govern when teardown is **permitted**, not whether seam identity
 survives a reconfiguration. Where a backend's session object is 1:1 with the

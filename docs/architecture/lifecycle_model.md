@@ -105,9 +105,12 @@ Two rules follow:
   the reference check is what enforces that — not a blanket refusal to
   re-create.
 * **Releasing a claim never destroys the seam.** Zero references makes teardown
-  permitted, not mandatory. Core's creation call site is gated on "no session
-  exists" and drops its claim immediately afterwards; a provider that tore the
-  seam down on that release would destroy it microseconds after creating it.
+  permitted, not mandatory. Core holds the capture-parent claim for as long as
+  the retained still profile stands — `CoreRuntime::sync_capture_parent_priming_`
+  marks the hold active and returns, and the releases live in
+  `refresh_capture_retained_plan_state_` and
+  `rehome_capture_retained_plan_parent_state_` — so a release means the profile
+  is changing or going away, not that the seam should go with it.
 
 ### Identity across reconfiguration
 
@@ -122,6 +125,23 @@ just as surely as fabricating a destruction does.
 
 Genuine teardown happens on device close, shutdown, and a reconfiguration that
 no live claimant forbids — not on a claim being dropped.
+
+Which claimants forbid depends on whether anything is put back, and the two
+cases read different sets:
+
+* **Reconfiguration** — applied in place, or by replacing the native object
+  and reporting the destroyed and created facts for it. A **stream** or an
+  **in-flight capture** forbids this; the **capture parent does not**. Its
+  claim exists so a retained still profile can shape the seam, so a rule that
+  let it block reconfiguration would stop it doing the one thing it is for.
+  Neither shape leaves Core believing a primed seam exists when none does.
+* **Teardown with nothing put back** — every claimant forbids it, the capture
+  parent included, because that is precisely the case that would.
+
+The distinction matters most where a backend cannot separate the two. On
+Camera2 every geometry change is a replacement, so a rule keyed on "is the
+object replaced" rather than "is anything put back" excludes the capture parent
+in theory and includes it in practice.
 
 Implementation scope:
 
