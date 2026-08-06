@@ -68,6 +68,7 @@
 #include <thread>
 #include <vector>
 
+#include "imaging/api/acquisition_seam_claims.h"
 #include "imaging/api/icamera_provider.h"
 #include "imaging/api/capture_sequence_settlement.h"
 #include "imaging/api/outstanding_payload_ledger.h"
@@ -483,7 +484,10 @@ private:
   //
   // Which claimant a seam reference belongs to. The three are independent:
   // release must decrement the same claimant that retained, never "any".
-  enum class SeamClaimant { Stream, Capture, CaptureParent };
+  // Shared with the other platform-backed providers so the decisions taken
+  // from these counts live in one place (imaging/api/acquisition_seam_claims.h)
+  // and are exercised host-native.
+  using SeamClaimant = cambang::SeamClaimant;
 
   // Callable from any thread and under any of the provider's locks: the counts
   // live on DeviceBackend as atomics precisely so session realization, which

@@ -130,8 +130,10 @@ Implementation scope:
   reference model above
 - `Camera2CameraProvider` realizes the same reference model; its seam is 1:1
   with `ACameraCaptureSession`
-- `WinrtCameraProvider` does **not** yet meet this contract: it realizes the
-  seam inside its capture path and holds no references
+- `WinrtCameraProvider` realizes the same reference model. Its seam is not a
+  session-like object whose output set defines it, so the reconfiguration rule
+  above applies only where the seam's own native object is replaced; which
+  changes those are is stated in the provider source, not here
 
 ------------------------------------------------------------------------
 

@@ -2940,10 +2940,7 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
             ? "stream"
             : (requester == SeamClaimant::Capture ? "capture" : "capture_parent"));
     // A rebuild destroys the seam and everything running on it, so it is
-    // refused while another claimant holds it. Discount the requester's own
-    // reference: a capture reference is taken at admission and a stream's is
-    // taken before realization is requested, so each arrives here already
-    // counted.
+    // refused while another claimant holds it.
     //
     // This supersedes an earlier interlock that keyed off repeating_active.
     // That tested a native side effect rather than a claim, so it refused a
@@ -2951,24 +2948,51 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
     // including after the stream owning it had been released -- and it did not
     // refuse at all when an in-flight capture held the seam, which is the case
     // that actually loses work.
-    const uint32_t own_stream = requester == SeamClaimant::Stream ? 1u : 0u;
-    const uint32_t own_capture = requester == SeamClaimant::Capture ? 1u : 0u;
-    const uint32_t other_streams =
-        backend->seam_stream_refs.load(std::memory_order_acquire) - own_stream;
-    const uint32_t other_captures =
-        backend->seam_capture_refs.load(std::memory_order_acquire) - own_capture;
-    if (other_captures > 0) {
+    //
+    // The decision is seam_replacement_permitted
+    // (imaging/api/acquisition_seam_claims.h), shared with the WinRT provider
+    // and exercised host-native. EVERY claimant here arrives already counted:
+    // a capture reference is taken at admission, a stream's before realization
+    // is requested (see start_stream), and the capture parent latches before
+    // asking. That is not true of every provider -- WinRT's stream retains only
+    // once started -- which is why the ordering is stated by the caller rather
+    // than inferred from the claimant.
+    //
+    // The counts are re-read once into a snapshot: the decision and the
+    // diagnostics below must describe the same instant, and an earlier version
+    // that subtracted straight from the atomic loads could underflow to ~4.29
+    // billion had a claimant ever asked holding none.
+    SeamClaims live{};
+    live.stream_refs = backend->seam_stream_refs.load(std::memory_order_acquire);
+    live.capture_refs = backend->seam_capture_refs.load(std::memory_order_acquire);
+    live.capture_parent_refs =
+        backend->seam_capture_parent_refs.load(std::memory_order_acquire);
+    const SeamClaims others =
+        cambang::detail::without_own_claim(live, requester, OwnClaim::AlreadyHeld);
+    if (!seam_replacement_permitted(live, requester, OwnClaim::AlreadyHeld)) {
+      // Refused. The branches below only choose the error code and the
+      // diagnostic; the decision above is the single authority, so a provider
+      // and the shared policy cannot drift apart.
+      if (others.capture_refs > 0) {
+        camera2_detail::log_line(
+            "device=%llu session rebuild refused: %u capture claim(s) live",
+            static_cast<unsigned long long>(backend->device_instance_id),
+            others.capture_refs);
+        return ProviderResult::failure(ProviderError::ERR_BUSY);
+      }
+      if (others.stream_refs > 0) {
+        camera2_detail::log_line(
+            "device=%llu session rebuild refused: %u stream claim(s) live",
+            static_cast<unsigned long long>(backend->device_instance_id),
+            others.stream_refs);
+        return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
+      }
+      // A retained-profile claim held by someone else. Previously not consulted
+      // at all here, so a stream could rebuild the seam out from under a primed
+      // capture parent and leave Core believing a primed seam still existed.
       camera2_detail::log_line(
-          "device=%llu session rebuild refused: %u capture claim(s) live",
-          static_cast<unsigned long long>(backend->device_instance_id),
-          other_captures);
-      return ProviderResult::failure(ProviderError::ERR_BUSY);
-    }
-    if (other_streams > 0) {
-      camera2_detail::log_line(
-          "device=%llu session rebuild refused: %u stream claim(s) live",
-          static_cast<unsigned long long>(backend->device_instance_id),
-          other_streams);
+          "device=%llu session rebuild refused: capture-parent claim live",
+          static_cast<unsigned long long>(backend->device_instance_id));
       return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
     }
     // Geometry the device does not actually offer for YUV_420_888 must fail

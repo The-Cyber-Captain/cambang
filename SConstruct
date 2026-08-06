@@ -790,6 +790,7 @@ maintainer_tools_clean_outputs = [
     _program_path("core_result_byte_budget_stress_smoke"),
     _program_path("outstanding_payload_ledger_verify"),
     _program_path("capture_sequence_settlement_verify"),
+    _program_path("acquisition_seam_claims_verify"),
     _program_path("core_capture_assembly_registry_smoke"),
     _program_path("core_dispatcher_bracket_routing_smoke"),
     _program_path("godot_result_convert_smoke"),
@@ -886,6 +887,13 @@ if build_maintainer_tools:
     capture_sequence_settlement_verify_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "capture_sequence_settlement_verify"),
         source=["src/smoke/capture_sequence_settlement_verify.cpp"],
+    )
+    # Header-only for the same reason: the seam-claim decisions govern the
+    # platform-backed providers, which need MSVC+WinRT+a camera or an Android
+    # device. Keeping the decisions pure is what makes them testable here.
+    acquisition_seam_claims_verify_prog = maintainer_tools_env.Program(
+        target=os.path.join(out_dir, "acquisition_seam_claims_verify"),
+        source=["src/smoke/acquisition_seam_claims_verify.cpp"],
     )
     core_capture_assembly_registry_smoke_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "core_capture_assembly_registry_smoke"),
@@ -1013,6 +1021,7 @@ if build_maintainer_tools:
             core_result_byte_budget_stress_smoke_prog,
             outstanding_payload_ledger_verify_prog,
             capture_sequence_settlement_verify_prog,
+            acquisition_seam_claims_verify_prog,
             core_capture_assembly_registry_smoke_prog,
             core_dispatcher_bracket_routing_smoke_prog,
             godot_result_convert_smoke_prog,

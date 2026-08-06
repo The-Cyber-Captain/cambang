@@ -478,16 +478,48 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
 
   uint64_t device_instance_id = 0;
   uint64_t root_id = 0;
+  // The AcquisitionSession seam: this id names the realized reader below. See
+  // the block comment on ensure_reader_realized_ for what does and does not
+  // constitute a new seam.
   uint64_t acquisition_session_id = 0; // core-issued native id once realized
+
+  // Who currently needs the seam. Three claimants hold it independently
+  // (lifecycle_model.md section 2): a stream, a device capture, and the
+  // capture parent.
+  //
+  // Stream and capture are counters -- many can be live at once, and each
+  // must release exactly what it took. Capture parent is a LATCH, not a
+  // counter: the contract requires repeated equivalent priming calls to be
+  // idempotent and Core issues one on every profile-set, so counting them
+  // would pin the seam with claims no caller can ever release.
+  //
+  // Two different questions read these, and they must not be conflated:
+  //   may the reader be torn down?     all three claimants
+  //   may the source geometry change?  stream and capture only
+  // The capture-parent latch is deliberately excluded from the second: its
+  // whole purpose is to set geometry from the retained profile, so letting it
+  // block reconfiguration would stop it doing its own job.
+  // The counts themselves. Every DECISION taken from them lives in
+  // imaging/api/acquisition_seam_claims.h, where it is exercised host-native --
+  // this provider needs MSVC, WinRT and a camera, so nothing here is reachable
+  // from a deterministic verifier.
+  SeamClaims seam_claims{};
   CBProviderStrand* strand = nullptr;  // provider outlives all backends
 
   bool closed = false;   // set before WinRT objects are released
   bool failed = false;
   uint32_t configured_w = 0;
   uint32_t configured_h = 0;
-  // Format the current reader was created for. A reader's output subtype is
-  // fixed at creation, so a format change means creating a new one.
+  // Format a caller WANTS the reader to have. Stated before realization
+  // because a reader's output subtype is fixed at CreateFrameReaderAsync.
+  // Stream-only: stills come from low_lag_photo with its own photo_fourcc and
+  // never read from this reader.
   uint32_t reader_fourcc = 0;
+  // Format the reader that currently exists was actually created with. Kept
+  // apart from the wanted value above so "does the existing reader satisfy
+  // this request" is answerable; conflating them made the wanted value read as
+  // a description of a reader that did not have it.
+  uint32_t realized_reader_fourcc = 0;
   // Same for the still-photo pipeline: the pixel format is fixed at
   // PrepareLowLagPhotoCaptureAsync, so it has to be known before preparing.
   uint32_t photo_fourcc = 0;
@@ -886,6 +918,78 @@ void WinrtCameraProvider::emit_native_destroyed_(uint64_t native_id) {
   strand_.post_native_object_destroyed(info);
 }
 
+namespace {
+
+// A release with no matching retain is a bookkeeping bug, not a recoverable
+// condition. Underflowing to a huge unsigned value would pin the seam forever,
+// so it is clamped and logged instead.
+void release_seam_ref(uint32_t& refs, const char* claimant, uint64_t device_instance_id) {
+  if (refs != 0) {
+    --refs;
+    return;
+  }
+  winrt_detail::log_line("seam ref underflow claimant=%s device=%llu", claimant,
+                         static_cast<unsigned long long>(device_instance_id));
+}
+
+}  // namespace
+
+void WinrtCameraProvider::retain_acquisition_seam_for_capture_(
+    const std::shared_ptr<DeviceBackend>& backend) {
+  if (!backend) {
+    return;
+  }
+  std::lock_guard<std::mutex> bl(backend->m);
+  ++backend->seam_claims.capture_refs;
+}
+
+void WinrtCameraProvider::retain_acquisition_seam_for_stream_(
+    const std::shared_ptr<DeviceBackend>& backend) {
+  if (!backend) {
+    return;
+  }
+  std::lock_guard<std::mutex> bl(backend->m);
+  ++backend->seam_claims.stream_refs;
+}
+
+void WinrtCameraProvider::retain_acquisition_seam_for_capture_parent_(
+    const std::shared_ptr<DeviceBackend>& backend) {
+  if (!backend) {
+    return;
+  }
+  std::lock_guard<std::mutex> bl(backend->m);
+  backend->seam_claims.capture_parent_refs = 1;
+}
+
+void WinrtCameraProvider::release_acquisition_seam_for_capture_(
+    const std::shared_ptr<DeviceBackend>& backend) {
+  if (!backend) {
+    return;
+  }
+  std::lock_guard<std::mutex> bl(backend->m);
+  release_seam_ref(backend->seam_claims.capture_refs, "capture", backend->device_instance_id);
+}
+
+void WinrtCameraProvider::release_acquisition_seam_for_stream_(
+    const std::shared_ptr<DeviceBackend>& backend) {
+  if (!backend) {
+    return;
+  }
+  std::lock_guard<std::mutex> bl(backend->m);
+  release_seam_ref(backend->seam_claims.stream_refs, "stream", backend->device_instance_id);
+}
+
+// Clearing a latch that is already clear is success, not underflow: the
+// contract requires release to be safe when no primed seam is held.
+void WinrtCameraProvider::release_acquisition_seam_for_capture_parent_(
+    const std::shared_ptr<DeviceBackend>& backend) {
+  if (!backend) {
+    return;
+  }
+  std::lock_guard<std::mutex> bl(backend->m);
+  backend->seam_claims.capture_parent_refs = 0;
+}
+
 ProviderResult WinrtCameraProvider::initialize(IProviderCallbacks* callbacks) {
   if (initialized_.load(std::memory_order_acquire)) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
@@ -1183,23 +1287,134 @@ void WinrtCameraProvider::post_static_camera_facts_best_effort_(
   }
 }
 
+// Ends the seam so a reader at a different subtype can begin one. Callers hold
+// the configure mutex and have already established that no other claimant
+// depends on the reader.
+//
+// The destroyed fact is emitted here rather than left to the create path: a
+// seam that has ended must be reported as ended even if the replacement then
+// fails to realize. Reporting only the pair would fabricate continuity across
+// a failure.
+ProviderResult WinrtCameraProvider::retire_reader_for_format_change_(
+    const std::shared_ptr<DeviceBackend>& backend) {
+  if (!backend) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  uint64_t retiring_session_id = 0;
+  auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
+  const bool completed = control_.run_bounded(
+      [backend](const BoundedControlExecutor::AbandonToken& /*t*/) {
+        wmcf::MediaFrameReader reader{nullptr};
+        winrt::event_token frame_token{};
+        {
+          std::lock_guard<std::mutex> bl(backend->m);
+          reader = std::exchange(backend->reader, nullptr);
+          frame_token = std::exchange(backend->frame_token, {});
+          backend->reader_started = false;
+          backend->realized_reader_fourcc = 0;
+          // The source survives: it belongs to the device, not to this seam,
+          // and the replacement reader is created over the same one.
+        }
+        try {
+          if (reader) {
+            if (frame_token.value != 0) {
+              reader.FrameArrived(frame_token);
+            }
+            auto stop_op = reader.StopAsync();
+            (void)winrt_detail::wait_async_bounded(stop_op, kControlJobTimeoutMs - 500);
+            reader.Close();
+          }
+        } catch (...) {
+          // Best effort: the object is unreachable after the exchange above,
+          // and the destroyed fact below is truthful either way.
+        }
+      },
+      token, kControlJobTimeoutMs);
+  if (!completed) {
+    return ProviderResult::failure(ProviderError::ERR_TIMEOUT);
+  }
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    retiring_session_id = std::exchange(backend->acquisition_session_id, 0ull);
+  }
+  emit_native_destroyed_(retiring_session_id);
+  return ProviderResult::success();
+}
+
+// A WinRT AcquisitionSession is the realized MediaFrameReader.
+//
+// The seam mapping lives here rather than in the model documentation, which
+// carries the provider-neutral rule only. lifecycle_model.md section 2 makes
+// the "a reconfiguration is a new seam" rule conditional on the backend's
+// native object being 1:1 with the seam. WinRT's reader is not such an object,
+// and the split is what decides which changes are new seams:
+//
+//   width/height   SetFormatAsync on the MediaFrameSource. The reader survives,
+//                  so this is a mutation WITHIN one seam. Identity persists and
+//                  no created/destroyed pair is reported.
+//   pixel format   A reader's output subtype is fixed at CreateFrameReaderAsync.
+//                  Honouring a format change means a new reader, and therefore a
+//                  genuinely new seam: destroy the old, create the new, report
+//                  both.
+//
+// References govern when the reader may be torn down. They do NOT govern
+// whether geometry may change, because a SetFormatAsync does not destroy it.
+// Zero references makes teardown permitted, not mandatory: a warm reader may be
+// kept, but an explicit release from Core is a statement of intent.
 ProviderResult WinrtCameraProvider::ensure_reader_realized_(
+    SeamClaimant requester,
     const std::shared_ptr<DeviceBackend>& backend) {
   if (!backend) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
   std::lock_guard<std::mutex> configure_lock(backend->configure_mutex);
+  bool retire_first = false;
   {
     std::lock_guard<std::mutex> bl(backend->m);
     if (backend->closed) {
       return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
     }
     if (backend->reader) {
-      return backend->failed
-                 ? ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED)
-                 : ProviderResult::success();
+      if (backend->failed) {
+        return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
+      }
+      // A reader's output subtype is fixed at creation, so a stated format the
+      // existing reader does not have cannot be satisfied by reusing it. Zero
+      // means the caller stated no preference and takes what exists.
+      const bool satisfies = backend->reader_fourcc == 0 ||
+                             backend->reader_fourcc == backend->realized_reader_fourcc;
+      if (satisfies) {
+        return ProviderResult::success();
+      }
+      // Retiring the reader ends this seam and begins another, so every other
+      // claimant forbids it -- what must not be destroyed is a seam something
+      // live is using. The rule is seam_replacement_permitted
+      // (imaging/api/acquisition_seam_claims.h).
+      //
+      // Whether the asker already holds its own claim is THIS provider's call
+      // ordering, stated here rather than inferred: a capture retains at
+      // admission and the capture parent latches before asking, but a stream
+      // realizes first and retains only once started (see start_stream), so a
+      // stream claim visible here is always somebody else's.
+      const OwnClaim own = requester == SeamClaimant::Stream ? OwnClaim::NotHeld
+                                                             : OwnClaim::AlreadyHeld;
+      if (!seam_replacement_permitted(backend->seam_claims, requester, own)) {
+        return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
+      }
+      retire_first = true;
     }
-    if (!backend->capture) {
+    if (!retire_first && !backend->capture) {
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+    }
+  }
+
+  if (retire_first) {
+    const ProviderResult retired = retire_reader_for_format_change_(backend);
+    if (!retired.ok()) {
+      return retired;
+    }
+    std::lock_guard<std::mutex> bl(backend->m);
+    if (backend->closed || !backend->capture) {
       return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
     }
   }
@@ -1293,6 +1508,9 @@ ProviderResult WinrtCameraProvider::ensure_reader_realized_(
           } else {
             backend->frame_source = source;
             backend->reader = reader;
+            // The subtype this reader was actually created with, recorded at
+            // the moment it exists rather than inferred later.
+            backend->realized_reader_fourcc = backend->reader_fourcc;
             backend->frame_token = reader.FrameArrived(
                 [weak](const wmcf::MediaFrameReader& rdr,
                        const wmcf::MediaFrameArrivedEventArgs&) {
@@ -1378,6 +1596,7 @@ ProviderResult WinrtCameraProvider::ensure_reader_realized_(
 }
 
 ProviderResult WinrtCameraProvider::ensure_reader_geometry_(
+    SeamClaimant requester,
     const std::shared_ptr<DeviceBackend>& backend,
     uint32_t width,
     uint32_t height,
@@ -1401,9 +1620,26 @@ ProviderResult WinrtCameraProvider::ensure_reader_geometry_(
     if (backend->configured_w == width && backend->configured_h == height) {
       return ProviderResult::success();
     }
-    // A started stream pins the negotiated geometry: reconfiguring the shared
-    // source mid-stream would disrupt live delivery. Deterministic failure.
-    if (backend->stream && backend->stream->producing) {
+    // Anything relying on the current geometry pins it: reconfiguring the
+    // shared source underneath a live claimant would disrupt delivery.
+    // Deterministic failure rather than a silent change.
+    //
+    // This asks a different question from "may the seam be torn down", and
+    // reads a different set of claims. The capture-parent latch is excluded on
+    // purpose: its whole purpose is to set geometry from the retained profile,
+    // so letting it pin geometry would stop it doing its own job.
+    //
+    // Previously this consulted only a producing stream, which left an
+    // in-flight capture unprotected -- one capture could reformat the source
+    // under another.
+    //
+    // The asker's OWN claim must not block it. That rule, and which claimants
+    // count at all, is seam_geometry_change_permitted
+    // (imaging/api/acquisition_seam_claims.h). Ordering as above: only a stream
+    // reaches here without having retained.
+    const OwnClaim own = requester == SeamClaimant::Stream ? OwnClaim::NotHeld
+                                                           : OwnClaim::AlreadyHeld;
+    if (!seam_geometry_change_permitted(backend->seam_claims, requester, own)) {
       return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
     }
   }
@@ -1754,12 +1990,12 @@ ProviderResult WinrtCameraProvider::start_stream(
     std::lock_guard<std::mutex> bl(dev.backend->m);
     dev.backend->reader_fourcc = profile.format_fourcc;
   }
-  ProviderResult pr = ensure_reader_realized_(dev.backend);
+  ProviderResult pr = ensure_reader_realized_(SeamClaimant::Stream, dev.backend);
   if (!pr.ok()) {
     return pr;
   }
-  pr = ensure_reader_geometry_(dev.backend, profile.width, profile.height,
-                               profile.format_fourcc);
+  pr = ensure_reader_geometry_(SeamClaimant::Stream, dev.backend, profile.width,
+                               profile.height, profile.format_fourcc);
   if (!pr.ok()) {
     return pr;
   }
@@ -1804,6 +2040,11 @@ ProviderResult WinrtCameraProvider::start_stream(
     dev.backend->stream = production;
   }
 
+  // The stream claim is taken here rather than at create_stream: the contract
+  // ties it to the stream's session realization, and every early return above
+  // leaves without one. Released in stop_stream and in the error-latched stop.
+  retain_acquisition_seam_for_stream_(dev.backend);
+
   st.started = true;
   strand_.post_stream_started(stream_id);
   return ProviderResult::success();
@@ -1832,6 +2073,14 @@ ProviderResult WinrtCameraProvider::stop_stream(uint64_t stream_id) {
   }
 
   st_it->second.started = false;
+
+  // Drop the claim taken at start_stream. Taken whenever started became true,
+  // so released here whether the stream is stopping cleanly or was already
+  // latched stopped by a backend error -- the claim exists either way.
+  if (dev_it != devices_.end()) {
+    release_acquisition_seam_for_stream_(dev_it->second.backend);
+  }
+
   if (!already_stopped_by_error) {
     // Posting after producing=false under the backend lock guarantees no
     // frame for this stream lands after the stopped fact.
@@ -2326,6 +2575,21 @@ WinrtCameraProvider::CapturedMemberFrame WinrtCameraProvider::capture_one_member
 void WinrtCameraProvider::run_device_capture_job_(const DeviceCaptureJob& job) noexcept {
   const uint64_t capture_id = job.request.capture_id;
   const uint64_t device_id = job.request.device_instance_id;
+
+  // The capture's seam claim was taken at admission and is released when the
+  // capture reaches a terminal outcome -- which is every exit from this
+  // function, success, failure, shutdown cancellation and exception alike.
+  // A guard rather than a call per path: this function has several returns and
+  // a missed one would pin the seam for the life of the device.
+  //
+  // Releasing the claim does not tear the seam down. See the block comment on
+  // ensure_reader_realized_.
+  struct SeamClaimGuard {
+    WinrtCameraProvider* self;
+    const std::shared_ptr<DeviceBackend>* backend;
+    ~SeamClaimGuard() { self->release_acquisition_seam_for_capture_(*backend); }
+  } seam_claim_guard{this, &job.backend};
+
   bool terminal_posted = false;
   auto fail = [&](ProviderError error) {
     if (!terminal_posted) {
@@ -2368,17 +2632,18 @@ void WinrtCameraProvider::run_device_capture_job_(const DeviceCaptureJob& job) n
       return;
     }
 
-    {
-      std::lock_guard<std::mutex> bl(backend->m);
-      backend->reader_fourcc = job.request.format_fourcc;
-    }
-    ProviderResult pr = ensure_reader_realized_(backend);
+    // Deliberately does NOT state reader_fourcc. Stills come from the
+    // LowLagPhotoCapture pipeline and its own photo_fourcc; this path never
+    // reads a frame from the reader. Writing the still's format here declared
+    // a subtype for an object the still does not use, and clobbered the format
+    // a later stream's reader would be created with.
+    ProviderResult pr = ensure_reader_realized_(SeamClaimant::Capture, backend);
     if (!pr.ok()) {
       fail(pr.code);
       return;
     }
-    pr = ensure_reader_geometry_(backend, job.request.width, job.request.height,
-                                 job.request.format_fourcc);
+    pr = ensure_reader_geometry_(SeamClaimant::Capture, backend, job.request.width,
+                                 job.request.height, job.request.format_fourcc);
     if (!pr.ok()) {
       fail(pr.code);
       return;
@@ -2725,6 +2990,109 @@ ProviderResult WinrtCameraProvider::validate_and_admit_submission_locked_(
     job.generation = capture_generation_;
     out_jobs.push_back(std::move(job));
   }
+
+  // Take the acquisition-seam capture claims only once the WHOLE submission
+  // has validated. Grouped admission is atomic (brief section 5): admit every
+  // device job or none, so a claim must not be held for a submission that is
+  // about to be refused. Retaining inside the validation loop would leak one
+  // on any later device's rejection.
+  //
+  // Taken at ADMISSION rather than in the worker (lifecycle_model.md section
+  // 2). Realizing the reader still happens later on the bounded control
+  // executor -- CreateFrameReaderAsync is heavyweight and admission runs on
+  // the core thread, which must stay prompt and I/O-free -- but the seam's
+  // LIFETIME is governed from the moment the capture is accepted, instead of
+  // the reader being incidental state left behind by whichever operation
+  // happened to run first.
+  for (DeviceCaptureJob& job : out_jobs) {
+    auto dev_it = devices_.find(job.request.device_instance_id);
+    if (dev_it != devices_.end()) {
+      job.backend = dev_it->second.backend;
+      retain_acquisition_seam_for_capture_(job.backend);
+    }
+  }
+  return ProviderResult::success();
+}
+
+ProviderResult WinrtCameraProvider::sync_capture_parent_priming(const CaptureRequest& req) {
+  if (!initialized_.load(std::memory_order_acquire)) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (req.device_instance_id == 0 || req.width == 0 || req.height == 0) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+
+  std::shared_ptr<DeviceBackend> backend;
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    auto it = devices_.find(req.device_instance_id);
+    if (it == devices_.end() || !it->second.open || !it->second.backend) {
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+    }
+    backend = it->second.backend;
+  }
+
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    if (backend->closed || backend->failed || !backend->capture) {
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+    }
+    // The reader's output subtype is fixed at creation, so the wanted format
+    // must be stated before realization -- the same ordering start_stream and
+    // the capture worker observe.
+    backend->reader_fourcc = req.format_fourcc;
+  }
+
+  // A latch, not a counter: Core calls this on every profile-set and the
+  // contract requires repeated equivalent calls to be idempotent.
+  retain_acquisition_seam_for_capture_parent_(backend);
+
+  // Deliberately NOT short-circuited on "a reader already exists". Creation
+  // must follow the retained shape: a device whose still profile arrives after
+  // engage would otherwise be frozen at whatever geometry the seam was first
+  // built with, and every capture would pay a reconfiguration to reach the
+  // geometry the caller actually asked for.
+  ProviderResult pr = ensure_reader_realized_(SeamClaimant::CaptureParent, backend);
+  if (pr.ok()) {
+    pr = ensure_reader_geometry_(SeamClaimant::CaptureParent, backend, req.width,
+                                 req.height, req.format_fourcc);
+  }
+  if (!pr.ok()) {
+    // A creation that did not happen holds nothing. Reporting success would
+    // tell Core a seam exists when none does.
+    release_acquisition_seam_for_capture_parent_(backend);
+    return pr;
+  }
+  return ProviderResult::success();
+}
+
+ProviderResult WinrtCameraProvider::release_capture_parent_priming(
+    uint64_t device_instance_id) {
+  if (!initialized_.load(std::memory_order_acquire)) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (device_instance_id == 0) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+
+  std::shared_ptr<DeviceBackend> backend;
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    auto it = devices_.find(device_instance_id);
+    if (it == devices_.end() || !it->second.open || !it->second.backend) {
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+    }
+    backend = it->second.backend;
+  }
+
+  // Drops the claim and nothing else. Core's creation call site is gated on
+  // "no session exists" and releases immediately afterwards, so a provider
+  // that tore the reader down here would destroy it microseconds after
+  // creating it. Zero references makes teardown permitted, not mandatory.
+  //
+  // Clearing a latch that is already clear is success: the contract requires
+  // release to be safe when no claim is held.
+  release_acquisition_seam_for_capture_parent_(backend);
   return ProviderResult::success();
 }
 
