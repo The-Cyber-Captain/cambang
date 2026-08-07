@@ -213,6 +213,49 @@ the case where the backend accepts the request and then delivers nothing.
    healthy streams would be worse than none.
 8. Existing gates green.
 
+### Open gap: Core's arming is unobserved on hardware
+
+Criteria 6 and 7 are met host-native, with the never-arm mutation failing both
+checks. **Core arming the expectation has never been observed on a device**, and
+three attempts to see it failed:
+
+- Shortening the Camera2 bound to 50 ms, then to 1 ms, against a reprovision
+  measured at ~350 ms. State 3 read `FLOWING`/`NONE` both times: the expiry did
+  not fire.
+- Core's own log lines cannot settle it. Core writes diagnostics with
+  `std::fprintf` from the core thread, and that does not reach Android logcat.
+  Proven by counting the provider-attached banner, which is emitted twice --
+  once by Core directly and once by the Godot-side echo at
+  `cambang_server.cpp:3036`: Windows captures 2, Android captures 1. Every one
+  of Core's ~17 direct writes is invisible on Android. That is a pre-existing
+  repo-wide condition, not something this tranche introduced.
+
+So two possibilities remain unseparated: Core never arms on Android, or it arms
+and the expiry never runs before the resuming frame disarms it. The second is
+the less likely -- Core drains provider facts and checks expiry in the same tick
+handler, and there is capture activity in that window -- but that is reasoning,
+not evidence.
+
+Neither backend can reach the arming path in a way that shows: WinRT answers
+`StreamMustYield` and never reaches it at all, and Camera2's `Reconfigure` path
+looks identical from outside whether Core armed or not, because the reprovision
+is provider-side and happens regardless.
+
+Two routes to close it, both needing a decision rather than a tweak:
+
+- **Fault injection in Camera2**, reached by a `cambang/maintainer/...` project
+  setting and `--cambang-...=` argument, the pattern `imaging/synthetic/config.h`
+  already uses. Device-reachable, unlike `CAMBANG_INTERNAL_SMOKE`, which is a
+  smoke-build concept and absent from GDE by design. The cost is a
+  fault-injection path living in shipping platform code. It would also exercise
+  Camera2's own loud-failure path, which has no coverage anywhere.
+- **A bounded Core-to-host diagnostic drain**, generalising the single-slot
+  banner echo. Core stays platform-free and the host emits. This is repo-wide
+  work touching every existing Core write, and belongs in its own tranche.
+
+Until one is taken, criteria 6 and 7 stand as host-native only. Do not record
+them as hardware-validated.
+
 ### Validation expectations
 
 Deterministic (required):

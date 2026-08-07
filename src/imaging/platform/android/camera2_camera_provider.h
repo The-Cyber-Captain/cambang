@@ -170,6 +170,23 @@ public:
   // ERR_NOT_SUPPORTED.
   bool supports_multi_image_still_sequence() const noexcept override { return true; }
 
+  // Time Core allows for frames to resume after a preserving reprovision here.
+  //
+  // MEASURED, and the measurement is thin -- say so rather than let the number
+  // imply more than it is. Two samples, scene 911 state 3, S20+ camera 0, one
+  // geometry pair (stream 640x480 + still 1280x720), device otherwise idle:
+  // 308 ms and 362 ms from "session REBUILD required" to "reprovision complete".
+  //
+  // 2s is roughly 5.5x the slower of those. That covers a loaded device on this
+  // handset with room to spare; it is NOT a worst case across the Camera2 fleet,
+  // which spans the Quest and the Hammer as well, and neither has been timed.
+  // Re-derive before trusting it on hardware that has not been measured: a bound
+  // shorter than a real reprovision turns a working one into a reported failure,
+  // which is the one outcome worse than waiting.
+  uint64_t stream_reprovision_resume_timeout_ns() const noexcept override {
+    return 2ull * 1000ull * 1000ull * 1000ull;
+  }
+
   // Camera2's answer follows from "outputs are fixed at session creation" (see
   // the backend note at the top of this file): a session can hold a stream
   // output and a still output at different geometries perfectly well, but it
