@@ -30,12 +30,13 @@ theme_override_constants/separation = 8
 
 [node name="StepLabel" type="Label" parent="Margin/Root"]
 unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 150)
 layout_mode = 2
 text = "911 acquisition-session states"
 
 [node name="Artifacts" type="HBoxContainer" parent="Margin/Root"]
+custom_minimum_size = Vector2(0, 420)
 layout_mode = 2
-size_flags_vertical = 3
 theme_override_constants/separation = 16
 
 [node name="BeforeBox" type="VBoxContainer" parent="Margin/Root/Artifacts"]
@@ -75,7 +76,17 @@ stretch_mode = 5
 [node name="ResultsLabel" type="Label" parent="Margin/Root"]
 unique_name_in_owner = true
 layout_mode = 2
+size_flags_vertical = 3
 text = "(no steps yet)"
+
+[node name="ProceedButton" type="Button" parent="Margin/Root"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 72)
+layout_mode = 2
+focus_mode = 0
+theme_override_font_sizes/font_size = 28
+disabled = true
+text = "working..."
 
 [node name="CamBANGStatusPanel" type="PanelContainer" parent="Margin/Root"]
 layout_mode = 2
