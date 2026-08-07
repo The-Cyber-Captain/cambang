@@ -6307,6 +6307,137 @@ bool run_core_capture_preempts_yielding_stream_check() {
   return true;
 }
 
+// A provider that advertises a preempted stream as RESTORABLE must actually
+// accept it being restarted, at its own profile, once the capture settles.
+//
+// yielded_stream_restorable is an advertisement, and nothing in Core consumes it
+// today: 6.2 says a preempted viewfinder goes to STOPPED and Core leaves it
+// there. That is exactly why it needs binding. An advertisement with no consumer
+// and no check can be wrong indefinitely without anything noticing, and this one
+// is load-bearing for a token that IS consumed -- a caller seeing
+// stop_reason PREEMPTED infers "taken for a capture, restartable", and that
+// inference is only sound while every provider claiming StreamMustYield also
+// tells the truth about restorability.
+//
+// Binds the claim, not Core's policy. Core is free to go on not auto-restoring;
+// what may not happen is a provider promising a restart that then fails.
+bool run_preempted_stream_restorable_claim_check() {
+  auto wait_until = [](const std::function<bool()>& predicate) {
+    for (int i = 0; i < kMaxIters; ++i) {
+      if (predicate()) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+    return false;
+  };
+
+  CoreRuntime rt;
+  if (!rt.start() || !wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL restorable-claim runtime did not reach LIVE\n";
+    rt.stop();
+    return false;
+  }
+
+  BackingPlanEvaluationTestProvider provider;
+  const auto fail_with_cleanup = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    (void)provider.shutdown();
+    rt.stop();
+    rt.attach_provider(nullptr);
+    return false;
+  };
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    return fail_with_cleanup("FAIL restorable-claim provider init failed");
+  }
+  rt.attach_provider(&provider);
+
+  constexpr uint64_t kDeviceId = 95;
+  constexpr uint64_t kRootId = 9501;
+  constexpr uint64_t kStreamId = 9601;
+  constexpr uint64_t kCaptureId = 9701;
+
+  if (rt.try_open_device("backing_plan_eval:0", kDeviceId, kRootId) !=
+          TryOpenDeviceStatus::OK ||
+      rt.try_create_stream(kStreamId, kDeviceId, StreamIntent::VIEWFINDER,
+                           nullptr, nullptr, 0) != TryCreateStreamStatus::OK ||
+      rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    return fail_with_cleanup("FAIL restorable-claim setup failed");
+  }
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec && rec->started;
+      })) {
+    return fail_with_cleanup("FAIL restorable-claim stream never started");
+  }
+  const auto* before = rt.stream_record(kStreamId);
+  if (!before) {
+    return fail_with_cleanup("FAIL restorable-claim stream record missing");
+  }
+  const CaptureProfile stream_profile = before->profile;
+
+  // The claim under test.
+  provider.set_coexistence_for_differing_geometry_for_test(
+      AcquisitionCoexistence::stream_must_yield(/*restorable=*/true));
+
+  CaptureProfile still{};
+  still.width = 8;
+  still.height = 8;
+  still.format_fourcc = FOURCC_RGBA;
+  CaptureStillImageBundle bundle{};
+  bundle.members.push_back(CaptureStillImageMember{
+      0u, CaptureStillImageMemberRole::DEFAULT_METERED, 0});
+  if (rt.try_set_device_still_capture_profile(kDeviceId, still, bundle) !=
+      TrySetStillCaptureProfileStatus::OK) {
+    return fail_with_cleanup("FAIL restorable-claim could not retain the profile");
+  }
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceId, kCaptureId) !=
+      TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup("FAIL restorable-claim capture was not admitted");
+  }
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec && !rec->started;
+      })) {
+    return fail_with_cleanup("FAIL restorable-claim stream did not yield");
+  }
+
+  // Settle the capture. Restoring while it is still in flight would be refused
+  // for a reason that has nothing to do with the claim being tested.
+  (void)provider.emit_pending_capture(kCaptureId);
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec != nullptr;
+      })) {
+    return fail_with_cleanup("FAIL restorable-claim stream record vanished");
+  }
+
+  // THE CLAIM: restartable, at its own profile.
+  if (rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL provider advertised the yielded stream restorable and the restart "
+        "was refused");
+  }
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec && rec->started;
+      })) {
+    return fail_with_cleanup(
+        "FAIL restorable-claim restart was accepted but the stream never ran again");
+  }
+  const auto* after = rt.stream_record(kStreamId);
+  if (!after || after->profile.width != stream_profile.width ||
+      after->profile.height != stream_profile.height) {
+    return fail_with_cleanup(
+        "FAIL restorable-claim stream came back at a different profile than its own");
+  }
+
+  (void)provider.shutdown();
+  rt.stop();
+  rt.attach_provider(nullptr);
+  return true;
+}
+
 // The other side of the same rule: an Unsupported answer is a capability
 // denial, so the capture is refused and NOTHING is stopped for it. Kept
 // separate from the check above because the failure it guards is the
@@ -10707,6 +10838,7 @@ int main(int argc, char** argv) {
       {"run_provider_coexistence_answer_matches_behaviour_check", [] { return run_provider_coexistence_answer_matches_behaviour_check(); }},
       {"run_core_capture_preempts_yielding_stream_check", [] { return run_core_capture_preempts_yielding_stream_check(); }},
       {"run_core_capture_unsupported_does_not_preempt_check", [] { return run_core_capture_unsupported_does_not_preempt_check(); }},
+      {"run_preempted_stream_restorable_claim_check", [] { return run_preempted_stream_restorable_claim_check(); }},
       {"run_core_measured_backing_plan_evaluation_check", [] { return run_core_measured_backing_plan_evaluation_check(); }},
       {"run_core_capture_observation_regression_check", [] { return run_core_capture_observation_regression_check(); }},
       {"run_core_capture_bracket_whole_result_scoring_check", [] { return run_core_capture_bracket_whole_result_scoring_check(); }},
