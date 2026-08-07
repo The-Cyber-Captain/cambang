@@ -523,6 +523,17 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   // Same for the still-photo pipeline: the pixel format is fixed at
   // PrepareLowLagPhotoCaptureAsync, so it has to be known before preparing.
   uint32_t photo_fourcc = 0;
+  // Geometry the prepared photo pipeline was actually prepared FOR.
+  //
+  // Not a duplicate of configured_w/h. That pair describes the MediaFrameSource
+  // format; this describes the photo pin, and on real hardware the two are not
+  // the same thing -- an eMeet C970 kept delivering 1280x720 photos after
+  // SetFormatAsync had moved the source to 640x480 and reported success. Photo
+  // resolution comes from the ImageEncodingProperties handed to
+  // PrepareLowLagPhotoCaptureAsync and is fixed for the life of that prepared
+  // pipeline, so a geometry change means re-preparing it.
+  uint32_t photo_w = 0;
+  uint32_t photo_h = 0;
   std::atomic<uint64_t> frame_arrived_count{0};
   std::atomic<uint64_t> frame_handler_errors{0};
 
@@ -2341,18 +2352,49 @@ bool WinrtCameraProvider::apply_exposure_compensation_bounded_(
 }
 
 ProviderResult WinrtCameraProvider::ensure_low_lag_photo_realized_(
-    const std::shared_ptr<DeviceBackend>& backend) noexcept {
+    const std::shared_ptr<DeviceBackend>& backend,
+    uint32_t width,
+    uint32_t height) noexcept {
   if (!backend) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
+  if (width == 0 || height == 0) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  wmc::LowLagPhotoCapture stale{nullptr};
   {
     std::lock_guard<std::mutex> bl(backend->m);
     if (backend->closed || backend->failed) {
       return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
     }
-    if (backend->low_lag_photo) {
+    // Geometry is part of the identity of a prepared pipeline, not just its
+    // existence. Returning early on existence alone meant the pipeline prepared
+    // by the FIRST capture served every later one, whatever geometry they asked
+    // for -- so on a device whose photo pin does not follow the frame source,
+    // every still after the first came back at the first one's resolution.
+    if (backend->low_lag_photo && backend->photo_w == width &&
+        backend->photo_h == height) {
       return ProviderResult::success();
     }
+    // Wrong geometry: a prepared pipeline cannot be retuned, so it is finished
+    // below and replaced. Taken out of the backend first so nothing can capture
+    // through a pipeline that is being torn down.
+    stale = backend->low_lag_photo;
+    backend->low_lag_photo = nullptr;
+    backend->photo_w = 0;
+    backend->photo_h = 0;
+  }
+  if (stale) {
+    auto finish_token = std::make_shared<BoundedControlExecutor::AbandonToken>();
+    (void)control_.run_bounded(
+        [stale](const BoundedControlExecutor::AbandonToken&) {
+          try {
+            auto finish_op = stale.FinishAsync();
+            (void)winrt_detail::wait_async_bounded(finish_op, kControlJobTimeoutMs - 500);
+          } catch (...) {
+          }
+        },
+        finish_token, kControlJobTimeoutMs);
   }
 
   struct PrepareResult {
@@ -2363,7 +2405,7 @@ ProviderResult WinrtCameraProvider::ensure_low_lag_photo_realized_(
   auto result = std::make_shared<PrepareResult>();
   auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
   const bool completed = control_.run_bounded(
-      [result, backend](const BoundedControlExecutor::AbandonToken& t) {
+      [result, backend, width, height](const BoundedControlExecutor::AbandonToken& t) {
         PrepareResult local;
         try {
           wmc::MediaCapture capture{nullptr};
@@ -2386,8 +2428,16 @@ ProviderResult WinrtCameraProvider::ensure_low_lag_photo_realized_(
             const auto photo_pixel_format = (want_photo == FOURCC_NV12)
                 ? wmm::MediaPixelFormat::Nv12
                 : wmm::MediaPixelFormat::Bgra8;
-            auto op = capture.PrepareLowLagPhotoCaptureAsync(
-                wmm::ImageEncodingProperties::CreateUncompressed(photo_pixel_format));
+            // CreateUncompressed states the SUBTYPE ONLY -- its Width and
+            // Height come back zero, and a zero-sized request leaves the photo
+            // pin at whatever the device defaults to. Stating the geometry here
+            // is what actually asks for it; SetFormatAsync on the frame source
+            // does not reach this pin on every device.
+            auto photo_props =
+                wmm::ImageEncodingProperties::CreateUncompressed(photo_pixel_format);
+            photo_props.Width(width);
+            photo_props.Height(height);
+            auto op = capture.PrepareLowLagPhotoCaptureAsync(photo_props);
             if (!winrt_detail::wait_async_bounded(op, kControlJobTimeoutMs - 500)) {
               local.error = ProviderError::ERR_TIMEOUT;
             } else {
@@ -2431,6 +2481,8 @@ ProviderResult WinrtCameraProvider::ensure_low_lag_photo_realized_(
       return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
     }
     backend->low_lag_photo = result->prepared;
+    backend->photo_w = width;
+    backend->photo_h = height;
   }
   return ProviderResult::success();
 }
@@ -2446,7 +2498,7 @@ WinrtCameraProvider::CapturedMemberFrame WinrtCameraProvider::capture_one_member
     std::lock_guard<std::mutex> bl(backend->m);
     backend->photo_fourcc = format_fourcc;
   }
-  const ProviderResult prepared = ensure_low_lag_photo_realized_(backend);
+  const ProviderResult prepared = ensure_low_lag_photo_realized_(backend, width, height);
   if (!prepared.ok()) {
     result.error = prepared.code;
     return result;
