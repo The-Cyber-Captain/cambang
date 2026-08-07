@@ -1,141 +1,217 @@
 # Current tranche
 
-## Capture-over-stream arbitration: provider reports, Core decides
+## Auto-reprovision: stop preempting streams the backend could have kept
+
+### Terminology
+
+A **reprovision** is a capture-session reconfiguration. It is never a "rebuild" —
+that word means SCons here. The previous tranche let "rebuild" back into new
+Camera2 and contract comments; those uses are corrected as part of this work.
+Pre-existing uses elsewhere in the Camera2 provider are a separate sweep and are
+out of scope.
 
 ### Problem
 
-`arbitration_policy.md` §2 puts triggered capture above repeating streams and
-says repeating streams are always preemptible by triggered capture; §6.2 says a
-VIEWFINDER is denied or preempted to `STOPPED` while a triggered capture is in
-flight. **Both platform providers do the opposite.** With a stream producing at
-1280x720, a device capture at 640x480 is refused — measured on S20+ camera 0
-(Camera2) and on an eMeet C970 (WinRT), same step, same result. Each refuses in
-its own `validate_and_admit_submission_locked_`, before any seam claim is
-consulted, so Core never learns a conflict existed and its preemption path —
-frame-integration suppression, entered only *after* `prov->trigger_capture`
-succeeds — never runs.
+Camera2 preempts a producing stream for a capture it could have served alongside
+it. Measured on S20+ camera 0 via scene 911, state 3:
 
-Two further symptoms of the same seam gap:
+```
+seam realize claimant=stream  flow=caller_stream 640x480 still=640x480
+seam realize claimant=capture flow=caller_stream 640x480 still=1280x720
+```
 
-- `set_still_capture_profile` returns `OK` while a stream produces, without the
-  provider ever being asked to prime at the new geometry. It is a *try*
-  (`TrySetStillCaptureProfileStatus` has `OK` / `NotSupported` / `Busy`) and it
-  reported success for something it had not attempted, so Core's retained
-  profile and the seam's real shape diverge silently.
-- The providers' distinct refusal codes both flatten to `ERR_UNAVAILABLE` at the
-  Godot boundary, so the caller cannot recover the reason.
+The session was provisioned against whatever still profile was retained when the
+stream started — here 640x480, the same as the stream. The state then asks for a
+still at 1280x720, a geometry no output was declared for. Reaching it needs the
+session replaced, the producing stream's claim forbids that, so the provider
+answers `StreamMustYield` and Core stops the viewfinder.
+
+Nothing about the hardware requires this. Camera2 can hold a 640x480 stream
+output and a 1280x720 still output in one session. The stream dies for want of a
+prediction, which is precisely the outcome `arbitration_policy.md` §6.2 was not
+written to produce: preemption is for where the backend genuinely cannot serve
+both, and this is not that case.
+
+The provisioning work in the previous tranche is real but narrower than it was
+described as. It avoids a reprovision only when the profile retained AT STREAM
+START is the one later captures use. Change the profile after the stream is up
+and the preemption returns.
 
 ### Decision, taken
 
-**The provider reports what its backend can do; Core decides who yields.** No
-single rule Core could hardcode is right for both implemented backends, because
-their constraints differ in kind:
+**1. The claim policy gains a third question.**
 
-- **camera2** — *declare up front.* `ACameraCaptureSession` fixes its output set
-  at creation and rebuilding cancels the repeating request, but a session may
-  hold a stream output and a still output at different geometries. Today
-  `start_stream` provisions the still at the *stream's* geometry
-  (`camera2_camera_provider.h`, "Outputs are fixed at session creation"), which
-  is what makes a differing capture need a rebuild. Combination limits are
-  answerable from `INFO_SUPPORTED_HARDWARE_LEVEL` and `StreamConfigurationMap`,
-  both cached at open.
-- **windows_winrt** — *one active format, shared.* A `MediaFrameSource` has a
-  single active `MediaFrameFormat` and `SetFormatAsync` changes it for every
-  reader on that source. On a shared-pin UVC device two geometries are not
-  available at once, so a real yield is unavoidable.
+`seam_reconfiguration_permitted` blocks on any other stream or capture claim,
+and deliberately covers both an in-place change and a replacement of the native
+object. That conflation was right while both shapes destroyed what the other
+claimant depended on. A *preserving reprovision* is a third shape: the session is
+replaced, and every other claimant's output is carried into the new one. The
+stream is interrupted, not discarded, and the header has no word for it.
 
-The three unimplemented seams are taken at their documented face value and get a
-declaration only, no seam work: `linux_v4l2` one active format per node with
-`VIDIOC_S_FMT` refused while streaming; `apple_avfoundation` concurrent photo and
-video outputs with `activeFormat` changes interrupting; `web_getusermedia`
-varying by engine and therefore declared conservatively.
+Add `seam_reprovision_permitted(claims, requester, own)` alongside the existing
+two, differing only in what blocks it:
 
-**Vocabulary.** One query, asked of a proposed concurrent *set* rather than of a
-single profile — Camera2's constraint is a property of the whole output set, so
-a per-profile question is unanswerable there. It is symmetric by construction: a
-stream starting under a retained still profile is the same question as a profile
-being retained under a live stream. Four verdicts:
+| Held by someone else | reconfiguration | reprovision | teardown |
+|---|---|---|---|
+| stream | blocks | **does not block** | blocks |
+| capture in flight | blocks | blocks | blocks |
+| capture parent | does not block | does not block | blocks |
 
-- `Coexist` — both served, nothing disturbed.
-- `Reconfigure` — both served, but reaching that state interrupts the stream.
-- `StreamMustYield` — not concurrent; the lower-priority stream stops so the
-  capture proceeds.
-- `Unsupported` — not serviceable at these shapes in any order. A capability
-  denial, which is **not** a priority decision and must not be reported as one.
+A stream does not block because it gaps and resumes on the far side. An in-flight
+capture does, because its request is bound to the session being replaced and its
+image would never arrive. The capture parent is unchanged. Own-claim discounting
+works exactly as it does today, off its own category.
 
-Answerable from characteristics already cached at open, with no backend I/O —
-brief §2 forbids I/O in a capability query on the core thread, and this is
-consulted at profile-set, stream start and capture admission. Being a pure
-function of static characteristics and the proposed set, it also satisfies §7.1
-determinism.
+**The two questions map onto the two backends' real constraints, which is what
+makes this a distinction rather than a loophole.** WinRT's reconfiguration cannot
+preserve a stream — one shared `MediaFrameSource` format, so the stream's
+geometry is genuinely lost — so it keeps asking `seam_reconfiguration_permitted`
+and keeps yielding. Camera2's can, so it asks the new question and gaps instead.
 
-Where a yield is required, the verdict must also carry whether the yielded
-stream can be restored at its own profile afterwards. Core cannot honour §6.1's
-"public stream objects remain valid" without knowing that.
+"Preserving" is a precondition the CALLER asserts. The header knows only counts
+and cannot verify that outputs were carried forward, so this is documented the
+way `OwnClaim` already is and bound by a compliance check.
+
+**NOT permitted as an alternative:** having Camera2 release the stream's claim
+around its own reprovision and reacquire it afterwards. That falsifies the counts
+while the stream still depends on the seam, and opens a window in which a third
+party could tear the seam down entirely. The counts existing to be true is what
+the header is for.
+
+**2. A gap is reported by silence, and needs no new vocabulary.**
+
+Core has no starvation watchdog: `last_frame_ts_ns` is recorded and nothing acts
+on it, and `snapshot_builder` deliberately does not project `STARVED`. Camera2
+posts `stream_stopped` in exactly three places — the device-failure latch, a
+caller's `stop_stream`, and device close — and session teardown/recreate posts
+none of them.
+
+So a preserving reprovision reports `native_destroyed` + `native_created` for the
+AcquisitionSession, which are real transitions, and nothing about the stream. The
+stream record stays started, frames pause and resume. That is the truth.
+
+It also keeps the two verdicts distinguishable at the boundary, which is what
+makes them separately testable:
+
+| | stream record | snapshot |
+|---|---|---|
+| `Reconfigure` | stays started | `FLOWING` / `NONE` |
+| `StreamMustYield` | stopped by Core | `STOPPED` / `PREEMPTED` |
+
+**3. Core enforces that frames actually resume, and the guarantee lives there
+rather than in the provider.**
+
+Silence is the right report for a gap, but it is also how a permanent hang would
+look. A reprovision that never restores the flow leaves the stream `FLOWING`
+forever delivering nothing, and no watchdog, snapshot or gate would notice. That
+is a worse failure than the preemption this tranche removes.
+
+Leaving that to the provider makes the guarantee unverifiable: the code is in
+Camera2, which cannot be built host-native, so it would rest on inspection plus
+whatever a hardware run happened to exercise — and a run where the reprovision
+works never touches it. In Core it is enforceable independent of any provider and
+bindable by a deterministic check.
+
+So: when Core acts on a `Reconfigure` verdict for a producing stream, it arms a
+bounded expectation that frames resume for that stream, disarms it on the next
+frame, and on expiry reports the stream as failed. The stopped fact carries a
+provider error, which projects as `STOPPED` / `PROVIDER` — truthful, and already
+distinct from both `USER` and `PREEMPTED`. No public enum changes.
+
+**This is NOT a general frame-cadence watchdog.** It arms only after Core has
+authorised a specific reprovision, and it asks one question: did the thing Core
+just permitted actually happen. A watchdog over all streams at all times needs a
+policy about what cadence means, which is `STARVED`, which is out of scope.
+
+The bound is supplied by the provider, mirroring
+`capture_admission_watchdog_timeout_ns()` and subject to the same rule stated on
+that method: a value backed by measured worst-case latency, never a guess. Core
+cannot know a given backend's reprovision cost, and a bound that is too short
+turns a slow-but-working reprovision into a false failure — worse than waiting.
+
+The provider obligation to report a failed restore stays as well. That is not
+duplicated refusal of the kind removed from WinRT admission: there, a second
+check would fire exactly when Core had arbitrated correctly. Here the two catch
+different things — the provider knows when its own call failed, and Core catches
+the case where the backend accepts the request and then delivers nothing.
 
 ### Scope
 
-**Phase 1 — the seam and the truth. No behaviour change.**
-
-1. The coexistence query on `ICameraProvider`, with the four verdicts and the
-   restorability answer.
-2. `SyntheticProvider` answers `Coexist` for everything, and that is the
-   reference statement of the permissive end of the range, not a stub. Stub
-   provider likewise.
-3. Both platform providers answer from cached characteristics.
-4. The three unimplemented seams carry their declaration in source.
-5. A `provider_compliance_verify` check binding **answer to behaviour**: a
-   provider answering `Coexist` must not then refuse a capture during a stream;
-   one answering `StreamMustYield` must see the stream stopped before the
-   capture is admitted. Mutation-tested.
-
-Nothing consults the verdict for decisions in this phase, so every existing gate
-stays green and the phase is verifiable host-native.
-
-**Phase 2 — Core acts on it.**
-
-6. Core consults the verdict at profile-set, stream start and capture admission,
-   and implements §6.2 stop-then-capture where the verdict demands a yield.
-7. The stopped fact carries a preemption reason. A caller must be able to tell
-   preemption from a failure and from its own stop; §6.1 requires truthful
-   accounting and does not permit reporting a stop that did not happen.
-8. Camera2 provisions the retained still geometry as its own output, so the case
-   911 fails on should answer `Coexist` and never reach the yield path. A
-   capture at a geometry no output was declared for remains a genuine
-   `Reconfigure`.
-9. WinRT implements the yield: preempt and restore.
-10. Both providers' unilateral admission refusals come out. A provider may still
-    refuse an operation that would corrupt its own state; it may not refuse one
-    that merely conflicts by priority.
-11. `set_still_capture_profile` answers truthfully, using the verdict.
+1. `seam_reprovision_permitted` in `imaging/api/acquisition_seam_claims.h`, with
+   the preserving precondition stated. `seam_teardown_permitted` and
+   `seam_teardown_permitted_by` do not change.
+2. Camera2 performs a preserving reprovision where the requested still geometry
+   is not in the realized output set and a stream is producing: halt the
+   repeating request, reconfigure the session carrying the stream output AND the
+   new still output, re-establish the repeating request. The stream keeps its
+   identity and its own geometry.
+3. Camera2's `acquisition_coexistence` answers `Reconfigure` for that case
+   instead of `StreamMustYield`. `Unsupported` and the already-configured
+   `Coexist` cases are unchanged.
+4. Core's `Reconfigure` path becomes reachable for the first time. It already
+   falls through without stopping anything, which is correct; it needs a test
+   that says so rather than an accident that happens to hold.
+5. **Core arms a bounded frame-resumption expectation** when it acts on a
+   `Reconfigure` for a producing stream: disarmed by the next frame on that
+   stream, and on expiry the stream is reported failed (`STOPPED` / `PROVIDER`).
+   Armed only for a reprovision Core itself authorised — not a cadence watchdog
+   over all streams.
+6. A provider-supplied bound for that expectation, alongside
+   `capture_admission_watchdog_timeout_ns()` and carrying the same rule in its
+   doc comment: measured worst-case latency, never a guess. A generous default,
+   because a bound that is too short converts a working reprovision into a false
+   failure.
+7. Provider obligations, both binding:
+   - **Silence during the swap.** No `stream_error`, no `stream_stopped`, and no
+     frames posted from the retired reader. Any of those turns a gap into an
+     apparent failure.
+   - **Report a restore that fails.** Where the provider knows its own call
+     failed, it latches a stream error and posts `stream_stopped` rather than
+     leaving Core's expectation to expire. Core's check is the backstop for the
+     case it cannot know about — a backend that accepts the request and then
+     delivers nothing.
+8. Correct the "rebuild" uses introduced by the previous tranche.
 
 ### Out of scope
 
-- Rig-capture repair. Complete; evidence is in git history.
-- WinRT bracketing.
-- Seam implementation for `linux_v4l2`, `apple_avfoundation`, `web_getusermedia`
-  beyond the declaration in scope item 4.
-- The outstanding-capture query designed in `capture_identity_and_lifecycle.md`
-  §4.5.
-- Any use of Media Foundation. `windows_winrt` means real WinRT APIs; surface a
-  toolchain blocker rather than substituting a backend.
-- `kMaxBracketMembers`. It is deliberate maintainer policy.
+- `STARVED`. Core's expectation catches a reprovision whose frames never come
+  back, so a permanent hang is reported. What remains indistinguishable is a
+  reprovision that is merely SLOW: while it is within the bound, a caller
+  watching frame cadence cannot tell "briefly reprovisioning" from "the device
+  stalled". That distinction needs retained state that does not exist, and is a
+  stated limitation of this work rather than a defect in it.
+- Pre-existing "rebuild" wording elsewhere in the Camera2 provider.
+- WinRT. Its constraint is real and its yield stays; it is the control case.
+- Restoring a preempted stream after a capture settles. §6.2's "preempted to
+  STOPPED" stands, and `yielded_stream_restorable` remains an advertisement with
+  a compliance check and no consumer.
+- Any use of Media Foundation.
 
 ### Acceptance criteria
 
-1. Scene 911 passes on **both** backends — S20+ camera 0 and the eMeet C970.
-   Step 4 asserts the contract and currently fails on both; it is the reproducer
-   this tranche exists to turn green, and no expectation in it may be relaxed to
-   reach that.
-2. A provider's coexistence answer and its behaviour agree, bound host-native
-   and mutation-tested: a provider that answers `Coexist` and then refuses must
-   fail the verifier.
-3. A stream stopped by preemption is distinguishable at the boundary from a
-   caller's stop and from a failure.
-4. `set_still_capture_profile` reports a failure to apply when it cannot apply.
-5. Camera2 answers `Coexist` for a retained still profile differing from a live
-   stream, and reaches it without a session rebuild.
-6. Existing gates green.
+1. `seam_reprovision_permitted` exists, a live stream permits it while still
+   forbidding a plain reconfiguration, and an in-flight capture forbids both.
+   Mutation-proved in `acquisition_seam_claims_verify`.
+2. A provider that asks `seam_reprovision_permitted` and then fails to carry
+   another claimant's output forward fails a `provider_compliance_verify` check.
+3. Core's `Reconfigure` path is exercised by a check that fails if Core stops a
+   stream on that verdict.
+4. Scene 911 state 3 on S20+ camera 0: the capture is delivered at 1280x720 AND
+   the stream reads `FLOWING`/`NONE` afterwards. Today it reads
+   `STOPPED`/`PREEMPTED`; that is the change this tranche is for.
+5. Scene 911 state 3 on the eMeet C970 still reads `STOPPED`/`PREEMPTED`. WinRT
+   must not be dragged along by a Camera2 fix.
+6. **A reprovision whose frames never resume is reported as a stream failure,
+   and this is bound host-native.** A provider that answers `Reconfigure` and
+   then delivers no further frames must produce `STOPPED` / `PROVIDER` within the
+   provider's stated bound. Mutation-proved: removing the arming must fail the
+   check. This is the criterion that had no gate when the guarantee sat in the
+   provider, and it is the reason it moved to Core.
+7. Core does not arm the expectation for `Coexist`, `StreamMustYield` or
+   `Unsupported`, and a stream that resumes normally is never reported failed.
+   The false-positive direction gets its own check; a watchdog that fires on
+   healthy streams would be worse than none.
+8. Existing gates green.
 
 ### Validation expectations
 
@@ -146,22 +222,22 @@ Deterministic (required):
   `out/core_thread_liveness_watchdog_verify.exe`,
   `out/outstanding_payload_ledger_verify.exe`,
   `out/capture_sequence_settlement_verify.exe`,
-  `out/acquisition_seam_claims_verify.exe` all green.
-- Any new rule gets a mutation proof: removing it must fail the verifier.
+  `out/acquisition_seam_claims_verify.exe`, `out/phase3_snapshot_verify.exe`.
+- Every new rule gets a mutation proof: removing it must fail the verifier.
+- The frame-resumption expectation is exercised in `provider_compliance_verify`
+  through a provider that answers `Reconfigure` and then stops delivering, and
+  again through one that resumes normally. Both directions, because a watchdog
+  is only as good as its false-positive behaviour.
 
 Hardware (required before acceptance):
 
-- Scene 911 on Android over ADB, S20+ camera 0, windowed. Android scenes cannot
-  self-verdict, so classify from step evidence in logcat.
-- Scene 911 on Windows against the eMeet C970, windowed. Set `TARGET` to match;
-  it is currently `"windows"`.
-- Windows platform-backed suite, windowed, since Core changes in phase 2 are
-  shared code. Ask before the full multi-scene ADB sweep.
-- State what the maintainer must watch or press **before** any interactive run
-  starts.
-
-Frame-time p99 needs no fresh matched-condition measurement unless phase 2
-changes the frame path. If it does, the alternating base/HEAD/base protocol from
-the previous tranche applies.
+- Scene 911 on S20+ camera 0 and on the eMeet C970, operator-paced through all
+  twelve gates. `TARGET` selects which. Criteria 4 and 5 are read from the
+  `stream state after capture` line, not from the pass count.
+- **The Windows platform-backed suite, carried forward from the previous
+  tranche.** It was deliberately not run there: phase 2 changed shared Core code,
+  but the arbitration behaviour was about to change again, and validating a
+  configuration that is about to move is wasted. It belongs here, after the
+  `Reconfigure` path settles. Ask before starting the multi-scene ADB sweep.
 
 Report un-run surfaces plainly. Native-tool PASS does not prove the Godot scene.
