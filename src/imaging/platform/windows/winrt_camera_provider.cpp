@@ -2988,6 +2988,10 @@ AcquisitionCoexistence WinrtCameraProvider::acquisition_coexistence(
   // new reader -- only a pixel-format change forces CreateFrameReaderAsync
   // again -- so the stream's own MediaFrameReader survives and the format can
   // be set back to its profile once the still releases the source.
+  // MEASURED, not inferred. Forcing this to Coexist and re-running scene 911
+  // against an eMeet C970 left the 1280x720 stream flowing and the 640x480
+  // capture never delivered; the same capture succeeded moments later once the
+  // stream had stopped. The yield is doing real work on this backend.
   return AcquisitionCoexistence::stream_must_yield(/*restorable=*/true);
 }
 
@@ -3045,16 +3049,18 @@ ProviderResult WinrtCameraProvider::validate_and_admit_submission_locked_(
     if (dev_it == devices_.end() || !dev_it->second.open) {
       return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
     }
-    // A started stream pins the shared source geometry; a capture that needs
-    // different geometry cannot execute without disrupting the stream.
-    if (dev_it->second.backend) {
-      std::lock_guard<std::mutex> bl(dev_it->second.backend->m);
-      const auto& stream = dev_it->second.backend->stream;
-      if (stream && stream->producing &&
-          (stream->width != req.width || stream->height != req.height)) {
-        return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
-      }
-    }
+    // NOT REFUSED HERE any more: a capture whose geometry differs from a
+    // producing stream's. The shared MediaFrameSource format is a real
+    // constraint, but the contract's answer to it is that the STREAM gives way
+    // (arbitration_policy.md 2, 6.2), not that the capture is refused. Core asks
+    // acquisition_coexistence(), gets StreamMustYield from this provider, stops
+    // the stream, and only then submits -- so a producing stream at a different
+    // geometry should no longer be here to find.
+    //
+    // Deliberately not re-checked as a belt-and-braces guard either. A second
+    // refusal on the same ground would fire exactly when Core had arbitrated
+    // correctly and something raced, turning a recoverable ordering problem
+    // into the opaque failure this whole tranche exists to remove.
     // Provider-wide multi-image support is advertised optimistically
     // (exposure-compensation control is a very common UVC capability), but
     // the exact opened device may still lack it, or the caller may request

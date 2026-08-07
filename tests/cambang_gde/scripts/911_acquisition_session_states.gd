@@ -1,4 +1,4 @@
-extends Control
+﻿extends Control
 # TRANSIENT DIAGNOSTIC SCENE -- NOT PART OF THE VALIDATION SUITE.
 # Disposable, like 999. Numbered 911 for the same reason: no production scene
 # number expects to know about it, and it may be deleted whenever the coverage
@@ -21,20 +21,15 @@ extends Control
 # Camera2, where every geometry change is a session replacement, and it must not
 # be -- the retained-profile claim exists so the profile can shape the seam.
 #
-# There are exactly TWO ways to ask for a different geometry through the public
-# API, not three. trigger_capture() takes no arguments and uses whatever still
-# profile is retained, and a stream's geometry is fixed at create_stream(). So:
-#   set_still_capture_profile(G)     -- the capture parent asks
-#   create_stream(G) + start()       -- a stream asks
-# A capture only forces a reconfiguration when the seam is not already in the
-# shape its retained profile asks for.
+# Geometry is asked for two ways only: set_still_capture_profile(G) for the
+# capture parent, create_stream(G) + start() for a stream. trigger_capture()
+# takes no arguments and uses whatever profile is retained.
 #
 # Geometry pair
 # -------------
-# 1280x720 and 640x480. Both are advertised by S20+ camera 0 (YUV_420_888) and
-# by the eMeet C970 (NV12), confirmed by querying each device rather than
-# assumed, so a refusal in this scene is never a refusal for an unsupported
-# size. Do not change these without re-querying.
+# 1280x720 and 640x480, both advertised by S20+ camera 0 (YUV_420_888) and by
+# the eMeet C970 (NV12), confirmed by querying each device. Do not change these
+# without re-querying.
 
 const SCENE_LABEL := "911_acquisition_session_states"
 
@@ -110,9 +105,12 @@ func _log(msg: String) -> void:
 
 
 # ---------------------------------------------------------------------------
-# Artifact display. Before and after are shown side by side for any step whose
-# state involves an artifact, each labelled with what it is and at what size --
-# the resolution is the whole point of this scene, so it is never implied.
+# Artifact display, before and after side by side, each labelled with what it is
+# and at what size.
+#
+# THE SIZE SHOWN IS MEASURED FROM THE TEXTURE, never the geometry the step asked
+# for. Printing the requested constant made a wrong artifact indistinguishable
+# from a right one. A disagreement is shown on the panel and fails the run.
 
 func _show(slot: String, kind: String, geom: Vector2i, texture: Texture2D) -> void:
 	var tex_node: TextureRect = %BeforeTexture if slot == "before" else %AfterTexture
@@ -121,7 +119,18 @@ func _show(slot: String, kind: String, geom: Vector2i, texture: Texture2D) -> vo
 	if texture == null:
 		label_node.text = "%s\n(none)" % slot.to_upper()
 		return
-	label_node.text = "%s\n%s  %dx%d" % [slot.to_upper(), kind, geom.x, geom.y]
+	var actual := texture.get_size()
+	var actual_i := Vector2i(int(actual.x), int(actual.y))
+	if geom == Vector2i.ZERO or actual_i == geom:
+		label_node.text = "%s\n%s  %dx%d" % [slot.to_upper(), kind, actual_i.x, actual_i.y]
+		return
+	label_node.text = "%s\n%s  %dx%d  MISMATCH (asked %dx%d)" % [
+		slot.to_upper(), kind, actual_i.x, actual_i.y, geom.x, geom.y,
+	]
+	_failed = true
+	_log("MISMATCH %s %s: artifact is %dx%d, step asked for %dx%d" % [
+		slot, kind, actual_i.x, actual_i.y, geom.x, geom.y,
+	])
 
 
 func _clear_slots() -> void:
@@ -147,6 +156,21 @@ func _capture_artifact() -> Texture2D:
 	return ImageTexture.create_from_image(res.to_image())
 
 
+# How the published snapshot describes this scene's stream. A step that merely
+# returns OK cannot show which mechanism carried it, nor that a preempted stream
+# is reported as preempted rather than as a caller stop or a failure.
+func _stream_stop_reason() -> String:
+	if _stream == null:
+		return "no_stream"
+	var snap = CamBANGServer.get_state_snapshot()
+	if snap == null:
+		return "no_snapshot"
+	for s in snap.get("streams", []):
+		if int(s.get("stream_id", 0)) == _stream.get_stream_id():
+			return "%s/%s" % [str(s.get("mode", "?")), str(s.get("stop_reason", "?"))]
+	return "not_in_snapshot"
+
+
 # ---------------------------------------------------------------------------
 
 func _record(name: String, expect: Expect, err: int, note: String) -> void:
@@ -170,6 +194,33 @@ func _record(name: String, expect: Expect, err: int, note: String) -> void:
 	for s in _steps:
 		lines.append("%s  %s (%s)" % [s["verdict"], s["name"], s["got"]])
 	%ResultsLabel.text = "\n".join(lines)
+
+
+# A capture step is satisfied only when an image ARRIVES AT THE SIZE ASKED FOR.
+# The trigger's return code alone was actively misleading -- a WinRT capture
+# returned OK, delivered the wrong resolution, and the step passed. Admission
+# and delivery are separate facts, so each gets its own row.
+func _record_delivery(step: String, trigger_err: int, want: Vector2i) -> void:
+	if trigger_err != OK:
+		_record("%s: capture delivered %dx%d" % [step, want.x, want.y], Expect.OK,
+			FAILED, "not triggered")
+		_show("after", "Stream", _stream_geom, _stream_artifact())
+		return
+	if not await _await_capture(CAPTURE_SETTLE_MS):
+		_record("%s: capture delivered %dx%d" % [step, want.x, want.y], Expect.OK,
+			FAILED, "no result arrived")
+		_show("after", "Stream", _stream_geom, _stream_artifact())
+		return
+	var tex := _capture_artifact()
+	if tex == null:
+		_record("%s: capture delivered %dx%d" % [step, want.x, want.y], Expect.OK,
+			FAILED, "result carried no image")
+		return
+	var got := Vector2i(int(tex.get_size().x), int(tex.get_size().y))
+	_record("%s: capture delivered %dx%d" % [step, want.x, want.y], Expect.OK,
+		OK if got == want else FAILED,
+		"" if got == want else "arrived %dx%d" % [got.x, got.y])
+	_show("after", "Capture", want, tex)
 
 
 func _await_capture(timeout_ms: int) -> bool:
@@ -273,8 +324,7 @@ func _run_states() -> void:
 		return
 	err = int(_device.trigger_capture())
 	_record("1 no seam: trigger capture A", Expect.OK, err, "")
-	if err == OK and await _await_capture(CAPTURE_SETTLE_MS):
-		_show("after", "Capture", GEOM_A, _capture_artifact())
+	await _record_delivery("1 no seam", err, GEOM_A)
 	await get_tree().create_timer(HOLD_ARTIFACT_SEC).timeout
 
 	# STATE 2 -- a seam exists at A and nothing holds it: the capture that built
@@ -287,8 +337,7 @@ func _run_states() -> void:
 	_record("2 unheld seam: set profile B", Expect.OK, err, "")
 	err = int(_device.trigger_capture())
 	_record("2 unheld seam: trigger capture B", Expect.OK, err, "")
-	if err == OK and await _await_capture(CAPTURE_SETTLE_MS):
-		_show("after", "Capture", GEOM_B, _capture_artifact())
+	await _record_delivery("2 unheld seam", err, GEOM_B)
 	await get_tree().create_timer(HOLD_ARTIFACT_SEC).timeout
 
 	# STATE 3 -- THE ONE THIS SCENE EXISTS FOR. A retained still profile holds
@@ -310,62 +359,35 @@ func _run_states() -> void:
 			_show("after", "Stream", GEOM_A, _stream_artifact())
 	await get_tree().create_timer(HOLD_ARTIFACT_SEC).timeout
 
-	# STATE 4 -- a VIEWFINDER stream is producing at A and a capture wants B.
-	#
-	# This must SUCCEED. arbitration_policy.md section 2 puts device-triggered
-	# still capture above repeating streams and states that "repeating streams
-	# are always preemptible by triggered capture"; section 6.1 requires the
-	# capture to preempt the stream, and 6.2 has VIEWFINDER denied or preempted
-	# to STOPPED while a triggered capture is in flight.
-	#
-	# Both platform providers currently do the inverse -- the producing stream
-	# pins the geometry and the capture is refused in
-	# validate_and_admit_submission_locked_ with "request WxH differs from
-	# producing stream WxH", surfacing as ERR_UNAVAILABLE. Where a backend
-	# genuinely cannot serve both geometries at once, as Camera2 cannot, the
-	# contract's answer is to preempt the stream, not to refuse the capture.
-	#
-	# So this step is EXPECTED TO FAIL until that is fixed, and it is written
-	# the way the contract says rather than the way the providers behave. An
-	# earlier version asserted the refusal and called it a pass, which would
-	# have quietly enshrined the defect as the expectation.
-	#
-	# The fix is Core-side (preempt at capture admission) and affects both
-	# providers, so it does not belong to the WinRT conformance tranche.
+	# STATE 4 -- THE ONE THIS SCENE EXISTS FOR. A VIEWFINDER stream is producing
+	# at A and a capture wants B. It must SUCCEED: arbitration_policy.md 2 ranks
+	# triggered capture above repeating streams, and 6.2 has the viewfinder
+	# preempted to STOPPED rather than the capture refused.
 	%StepLabel.text = "4: stream producing A -> capture at B (capture should preempt)"
 	_show("before", "Stream", GEOM_A, _stream_artifact())
 	err = int(_device.set_still_capture_profile(_still_profile(GEOM_B)))
-	# Also a contract expectation, not an observation. This is a *try* --
-	# TrySetStillCaptureProfileStatus carries OK / NotSupported / Busy -- so it
-	# is built to report a failure to apply. It currently returns OK without the
-	# provider ever being asked to prime at the new geometry: no
-	# claimant=capture_parent realize appears in the trace, and Core's retained
-	# profile then diverges from the seam's actual shape with nothing reported.
-	# Once the preemption above works, OK becomes the truthful answer.
-	_record("4 stream live: set profile B", Expect.OK, err,
-		"OK today, but reported without asking the provider")
+	# A retention, not a capture: a conflict with the live stream is resolved
+	# when the capture is triggered, so this must still succeed.
+	_record("4 stream live: set profile B", Expect.OK, err, "")
 	err = int(_device.trigger_capture())
-	_record("4 stream live: trigger capture B", Expect.OK, err,
-		"contract says preempt the viewfinder; providers refuse instead")
-	if err == OK and await _await_capture(CAPTURE_SETTLE_MS):
-		_show("after", "Capture", GEOM_B, _capture_artifact())
-	else:
-		_show("after", "Stream", GEOM_A, _stream_artifact())
+	_record("4 stream live: trigger capture B", Expect.OK, err, "")
+	# Which mechanism carried it, and the two backends differ by design:
+	# FLOWING/NONE means both were served (Camera2, having declared the still
+	# output at session creation), STOPPED/PREEMPTED means the stream gave way
+	# (WinRT, measured -- forced to coexist there, the capture is never
+	# delivered). STOPPED/USER or STOPPED/PROVIDER would be a misattributed stop.
+	# Read after a publish tick: snapshots are tick-bounded, and an immediate
+	# read still shows the pre-capture state.
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_log("4 stream state after capture: %s" % _stream_stop_reason())
+	await _record_delivery("4 stream live", err, GEOM_B)
 	await get_tree().create_timer(HOLD_ARTIFACT_SEC).timeout
 
 	# STATE 5 -- stream STOPPED but not destroyed, capture parent still holding.
-	#
-	# The original step 5 tried to start a second stream on the device and got
-	# null back from create_stream, before the seam policy was ever consulted:
-	# the refusal came from a stage above it, so the row proved nothing. It was
-	# also redundant -- state 4 already holds both the capture-parent claim and
-	# a producing stream, so "parent + stream refuses" was asserted there.
-	#
-	# This is the state actually left uncovered. A stream's claim is taken when
-	# it starts, and both providers release it in stop_stream rather than in
-	# destroy. If that is right, stopping alone should lift the refusal from
-	# state 4 while the stream object still exists. If the claim really releases
-	# only at destroy, this step fails and says so.
+	# A stream's claim is taken at start and released in stop_stream, not in
+	# destroy, so stopping alone should be enough while the handle still exists.
+	# If the claim really releases only at destroy, this step fails and says so.
 	%StepLabel.text = "5: stream stopped (not destroyed) -> capture at B"
 	_show("before", "Stream", GEOM_A, _stream_artifact())
 	if _stream != null:
@@ -374,10 +396,8 @@ func _run_states() -> void:
 		_record("5 stopped stream: stop()", Expect.OK, err, "")
 	await get_tree().create_timer(SETTLE_PAUSE_SEC).timeout
 	err = int(_device.trigger_capture())
-	_record("5 stopped stream: trigger capture B", Expect.OK, err,
-		"claim expected released at stop, stream handle still alive")
-	if err == OK and await _await_capture(CAPTURE_SETTLE_MS):
-		_show("after", "Capture", GEOM_B, _capture_artifact())
+	_record("5 stopped stream: trigger capture B", Expect.OK, err, "")
+	await _record_delivery("5 stopped stream", err, GEOM_B)
 	await get_tree().create_timer(HOLD_ARTIFACT_SEC).timeout
 
 	# RECOVERY -- destroy the stream outright and go back the other way, to A.
@@ -391,8 +411,7 @@ func _run_states() -> void:
 	_record("6 recovery: set profile A", Expect.OK, err, "")
 	err = int(_device.trigger_capture())
 	_record("6 recovery: trigger capture A", Expect.OK, err, "")
-	if err == OK and await _await_capture(CAPTURE_SETTLE_MS):
-		_show("after", "Capture", GEOM_A, _capture_artifact())
+	await _record_delivery("6 recovery", err, GEOM_A)
 	await get_tree().create_timer(HOLD_ARTIFACT_SEC).timeout
 
 

@@ -267,6 +267,11 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
 
             if (rec.started) {
                 s.stop_reason = CBStreamStopReason::NONE;
+            } else if (rec.last_stop_origin == CoreStreamRegistry::StopOrigin::Preemption) {
+                // Ahead of the error-code branch deliberately: a preemption is
+                // not a failure, so a stray error code must not relabel it
+                // PROVIDER and send the caller looking for a fault.
+                s.stop_reason = CBStreamStopReason::PREEMPTED;
             } else if (rec.last_stop_origin == CoreStreamRegistry::StopOrigin::User) {
                 s.stop_reason = CBStreamStopReason::USER;
             } else if (rec.last_error_code != 0) {

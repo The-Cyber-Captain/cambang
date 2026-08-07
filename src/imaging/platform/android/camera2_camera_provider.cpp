@@ -816,6 +816,16 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   uint32_t cfg_still_h = 0;
   bool repeating_active = false;
 
+  // The still geometry Core last retained for this device, as told to us by
+  // sync_capture_parent_priming. Kept so a stream starting afterwards can
+  // declare the still output at the geometry captures will actually ask for
+  // rather than at the stream's own -- outputs are fixed at session creation,
+  // so a still geometry not declared then costs a rebuild later. Zero means
+  // Core has retained nothing and the stream's geometry is the best guess
+  // available.
+  uint32_t retained_still_w = 0;
+  uint32_t retained_still_h = 0;
+
   std::unique_ptr<ListenerCtx> device_ctx;
   std::unique_ptr<ListenerCtx> session_ctx;
   std::unique_ptr<ListenerCtx> stream_reader_ctx;
@@ -3423,17 +3433,35 @@ ProviderResult Camera2CameraProvider::start_stream(
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
 
-  // Provision the still output alongside the stream at the same geometry, so
-  // still capture while streaming works without a session rebuild. A capture
-  // at a different geometry is refused while producing; see the header.
+  // Provision the still output alongside the stream, AT THE RETAINED STILL
+  // GEOMETRY where Core has given us one. Outputs are fixed at session
+  // creation, so whichever still geometry is declared here is the one a capture
+  // can later use without rebuilding the session and dropping this stream. The
+  // stream's own geometry is the fallback, and it is only ever a guess -- it was
+  // the unconditional choice before, which is precisely why a capture at any
+  // other geometry needed a rebuild.
+  uint32_t still_w = profile.width;
+  uint32_t still_h = profile.height;
+  {
+    std::lock_guard<std::mutex> bl(dev.backend->m);
+    // Only if the device actually advertises it; an unsupported retained
+    // geometry must not take the stream's session configuration down with it.
+    if (dev.backend->retained_still_w != 0 && dev.backend->retained_still_h != 0 &&
+        dev.backend->chars.supports_size(dev.backend->retained_still_w,
+                                         dev.backend->retained_still_h)) {
+      still_w = dev.backend->retained_still_w;
+      still_h = dev.backend->retained_still_h;
+    }
+  }
+
   // Claim the seam before asking for realization, so the reference reflects
   // the whole window in which the stream depends on it -- and so the refusal
   // check above can discount this stream's own claim rather than mistaking it
   // for a competing one. Released again if realization fails: an unstarted
   // stream must not pin a seam.
   retain_acquisition_seam_for_stream_(dev.backend);
-  ProviderResult pr = ensure_seam_realized_(SeamClaimant::Stream, dev.backend, profile.width,
-                                            profile.height, profile.width, profile.height);
+  ProviderResult pr = ensure_seam_realized_(SeamClaimant::Stream, dev.backend, still_w,
+                                            still_h, profile.width, profile.height);
   if (!pr.ok()) {
     release_acquisition_seam_for_stream_(dev.backend);
     return pr;
@@ -5419,17 +5447,25 @@ AcquisitionCoexistence Camera2CameraProvider::acquisition_coexistence(
     return AcquisitionCoexistence::coexist();
   }
 
-  // Reconfigure, not StreamMustYield. Camera2 can serve a stream output and a
-  // still output at different geometries in one session; what it cannot do is
-  // add an output to a live one. So the stream gaps across the rebuild and then
-  // resumes at its own geometry -- it does not have to give the geometry up,
-  // which is the distinction between the two verdicts.
+  // StreamMustYield, and NOT Reconfigure, which is the tempting answer and the
+  // wrong one. Camera2 can hold a stream output and a still output at different
+  // geometries perfectly well, so the far side of a rebuild does serve both --
+  // but a producing stream holds a seam claim, and the claim policy
+  // (imaging/api/acquisition_seam_claims.h) refuses a capture the
+  // reconfiguration while that claim stands. The rebuild is therefore not
+  // reachable with the stream still up, whatever the output tables allow.
+  // Answering Reconfigure would promise Core something this provider would then
+  // refuse -- exactly the disagreement the contract exists to prevent.
   //
-  // Today the capture path refuses this case outright instead of rebuilding.
-  // That refusal is the defect this contract exists to remove; the answer here
-  // states what the backend can do, and the capture path is brought into line
-  // with it in the same tranche.
-  return AcquisitionCoexistence::reconfigure();
+  // Restorable: the stream keeps its own geometry. Once it stops and the claim
+  // clears, the session is rebuilt carrying both outputs, and the restart
+  // declares the retained still geometry alongside it (see start_stream), so
+  // the yield is paid once rather than on every capture.
+  //
+  // Note this is reachable only when the still geometry was NOT declared at
+  // session creation. Where Core retained the profile before the stream
+  // started, both outputs are already there and the answer above is Coexist.
+  return AcquisitionCoexistence::stream_must_yield(/*restorable=*/true);
 }
 
 ProviderResult Camera2CameraProvider::validate_and_admit_submission_locked_(
@@ -5510,20 +5546,19 @@ ProviderResult Camera2CameraProvider::validate_and_admit_submission_locked_(
             static_cast<unsigned long long>(req.rig_id), req.width, req.height);
         return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
       }
-      // A started stream pins the session output set; a capture that needs a
-      // different geometry cannot execute without rebuilding the session and
-      // dropping the live stream.
-      const auto& stream = dev_it->second.backend->stream;
-      if (stream && stream->producing &&
-          (stream->width != req.width || stream->height != req.height)) {
-        camera2_detail::log_line(
-            "capture admission refused: device=%llu rig=%llu request=%ux%u "
-            "differs from producing stream=%ux%u -> ERR_PLATFORM_CONSTRAINT",
-            static_cast<unsigned long long>(req.device_instance_id),
-            static_cast<unsigned long long>(req.rig_id), req.width, req.height,
-            stream->width, stream->height);
-        return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
-      }
+      // NOT REFUSED HERE any more: a capture whose geometry differs from a
+      // producing stream's. That refusal inverted arbitration_policy.md 2, which
+      // ranks triggered capture above repeating streams -- the stream is the
+      // thing that gives way, and deciding that is Core's job, not this
+      // provider's. Core asks acquisition_coexistence() before admission and
+      // acts on the answer; by the time a submission arrives here it has already
+      // been arbitrated. Refusing again would make the answer a lie and put the
+      // decision back in the adapter.
+      //
+      // What is still guarded is this provider's own invariant: the session
+      // output set. If the geometry asked for is not in the realized session,
+      // the capture path rebuilds it (see ensure_seam_realized_), which is what
+      // the coexistence answer promised when it said Reconfigure.
       if (req.still_image_bundle.members.size() > 1) {
         if (req.still_image_bundle.members.size() > kMaxBracketMembers) {
           return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
@@ -5630,6 +5665,16 @@ ProviderResult Camera2CameraProvider::sync_capture_parent_priming(const CaptureR
   // and until it is fixed the creation path costs one extra session build per
   // device rather than saving one.
   //
+  // Remember the retained geometry before realizing. A stream started later
+  // reads it so the session it builds already carries the still output captures
+  // will ask for, which is what lets a differing still coexist with a stream on
+  // this backend instead of costing a rebuild.
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    backend->retained_still_w = req.width;
+    backend->retained_still_h = req.height;
+  }
+
   // Realize (or re-realize) the seam at the geometry we were given.
   ProviderResult pr =
       ensure_seam_realized_(SeamClaimant::CaptureParent, backend, req.width, req.height);

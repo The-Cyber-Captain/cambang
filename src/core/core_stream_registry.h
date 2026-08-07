@@ -25,6 +25,11 @@ public:
     None = 0,
     User = 1,
     Provider = 2,
+    // Core stopped the stream to let a higher-priority capture proceed
+    // (arbitration_policy.md 2, 6.2). Distinct from User because the caller did
+    // not ask for it and from Provider because nothing failed -- reporting it
+    // as either would misdescribe a working stream that Core took away.
+    Preemption = 3,
   };
 
   struct StreamRecord {
@@ -45,6 +50,9 @@ public:
     bool created = false;
     bool started = false;
     bool stop_requested_by_core = false;
+    // Set alongside stop_requested_by_core when that stop is a preemption, so
+    // the stopped fact can be attributed when it arrives.
+    bool preemption_requested_by_core = false;
     StopOrigin last_stop_origin = StopOrigin::None;
     uint32_t pending_core_start_facts = 0;
     uint32_t pending_core_stop_facts = 0;
@@ -83,6 +91,10 @@ public:
   bool on_core_stream_stopped(uint64_t stream_id, uint32_t error_code);
   bool on_provider_stream_stopped(uint64_t stream_id, uint32_t error_code);
   bool mark_stop_requested_by_core(uint64_t stream_id);
+  // As above, but records that the stop is a capture preemption rather than the
+  // caller's own stop. Must be called before the provider stop_stream, so the
+  // attribution is already in place whichever order the facts arrive in.
+  bool mark_stop_requested_by_core_for_preemption(uint64_t stream_id);
 
   // Frame accounting (stream must exist).
   bool on_frame_received(uint64_t stream_id, uint64_t integrated_ts_ns);

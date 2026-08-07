@@ -664,6 +664,29 @@ class BackingPlanEvaluationTestProvider final : public ICameraProvider {
     return backing_plan_evaluation_settle_delay_ns_;
   }
 
+  // Defaults to Coexist, so every existing check that uses this provider is
+  // unaffected. The preemption check sets it to model a constrained backend,
+  // which is the only way to reach Core's yield path host-native -- the two
+  // providers that really answer that way cannot be built or run here.
+  AcquisitionCoexistence acquisition_coexistence(
+      uint64_t,
+      const AcquisitionUseSet& proposed) noexcept override {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!proposed.has_stream || !proposed.has_still) {
+      return AcquisitionCoexistence::coexist();
+    }
+    if (proposed.stream.width == proposed.still.width &&
+        proposed.stream.height == proposed.still.height) {
+      return AcquisitionCoexistence::coexist();
+    }
+    return coexistence_for_differing_geometry_;
+  }
+
+  void set_coexistence_for_differing_geometry_for_test(AcquisitionCoexistence c) {
+    std::lock_guard<std::mutex> lk(mu_);
+    coexistence_for_differing_geometry_ = c;
+  }
+
   ProducerBackingCapabilities stream_backing_capabilities(
       const CaptureProfile&,
       const PictureConfig&) const noexcept override {
@@ -1261,6 +1284,8 @@ private:
   ProducerBackingCapabilities stream_caps_{true, true, true};
   ProducerBackingCapabilities capture_caps_{true, true, true};
   uint64_t backing_plan_evaluation_settle_delay_ns_ = 0;
+  AcquisitionCoexistence coexistence_for_differing_geometry_ =
+      AcquisitionCoexistence::coexist();
   std::map<uint64_t, DeviceState> devices_;
   std::map<uint64_t, PendingCapture> pending_captures_;
   std::map<uint64_t, StreamState> streams_;
@@ -1303,6 +1328,16 @@ public:
       ProviderError::ERR_PLATFORM_CONSTRAINT;
   static constexpr ProviderError kReleaseReturnCode =
       ProviderError::ERR_TRANSIENT_FAILURE;
+
+  // Deliberately NOT the interface default. A broker that fails to override the
+  // query answers Coexist on this backend's behalf, and Coexist is precisely the
+  // answer that makes Core skip arbitration -- so a default-shaped answer here
+  // would be indistinguishable from correct forwarding.
+  AcquisitionCoexistence acquisition_coexistence(
+      uint64_t,
+      const AcquisitionUseSet&) noexcept override {
+    return AcquisitionCoexistence::stream_must_yield(/*restorable=*/false);
+  }
 
   explicit BrokerPrimingForwardingRecordingProvider(
       std::shared_ptr<BrokerConcurrencyProbeState> concurrency_probe = {})
@@ -6143,6 +6178,221 @@ bool run_synthetic_stream_plus_still_single_session_truth_check() {
   return assert_native_balance(cb_events, "synthetic_stream_plus_still");
 }
 
+// Core preempts a stream the backend cannot run alongside a capture, and says
+// so truthfully.
+//
+// arbitration_policy.md 2 ranks triggered capture above repeating streams and
+// 6.2 has the stream preempted to STOPPED while a capture is in flight. Both
+// platform providers did the reverse -- refused the capture and kept the stream
+// -- and neither is reachable from this tool, so the yield path is driven here
+// through a provider that answers StreamMustYield.
+//
+// Three things are asserted together, because any one alone would pass while
+// the feature was still broken: the capture is admitted, the stream actually
+// stopped, and the stop is reported as PREEMPTED rather than as the caller's
+// own stop or as a provider failure. The last is the one a caller has to be
+// able to act on -- a preempted viewfinder is restartable, a failed one is not.
+bool run_core_capture_preempts_yielding_stream_check() {
+  auto wait_until = [](const std::function<bool()>& predicate) {
+    for (int i = 0; i < kMaxIters; ++i) {
+      if (predicate()) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+    return false;
+  };
+
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
+  if (!rt.start() || !wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL capture-preemption runtime did not reach LIVE\n";
+    rt.stop();
+    return false;
+  }
+
+  BackingPlanEvaluationTestProvider provider;
+  const auto fail_with_cleanup = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    (void)provider.shutdown();
+    rt.stop();
+    rt.attach_provider(nullptr);
+    return false;
+  };
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    return fail_with_cleanup("FAIL capture-preemption provider init failed");
+  }
+  rt.attach_provider(&provider);
+
+  constexpr uint64_t kDeviceId = 91;
+  constexpr uint64_t kRootId = 9101;
+  constexpr uint64_t kStreamId = 9201;
+  constexpr uint64_t kCaptureId = 9301;
+
+  if (rt.try_open_device("backing_plan_eval:0", kDeviceId, kRootId) !=
+      TryOpenDeviceStatus::OK) {
+    return fail_with_cleanup("FAIL capture-preemption open_device failed");
+  }
+  if (rt.try_create_stream(kStreamId, kDeviceId, StreamIntent::VIEWFINDER,
+                           nullptr, nullptr, 0) != TryCreateStreamStatus::OK) {
+    return fail_with_cleanup("FAIL capture-preemption create_stream failed");
+  }
+  if (rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    return fail_with_cleanup("FAIL capture-preemption start_stream failed");
+  }
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec && rec->started;
+      })) {
+    return fail_with_cleanup("FAIL capture-preemption stream never started");
+  }
+
+  // The provider now says a still at any other geometry cannot run beside this
+  // stream. The stream template is 16x16, so 8x8 is "any other geometry".
+  provider.set_coexistence_for_differing_geometry_for_test(
+      AcquisitionCoexistence::stream_must_yield(/*restorable=*/true));
+
+  CaptureProfile still{};
+  still.width = 8;
+  still.height = 8;
+  still.format_fourcc = FOURCC_RGBA;
+  CaptureStillImageBundle bundle{};
+  bundle.members.push_back(CaptureStillImageMember{
+      0u, CaptureStillImageMemberRole::DEFAULT_METERED, 0});
+  if (rt.try_set_device_still_capture_profile(kDeviceId, still, bundle) !=
+      TrySetStillCaptureProfileStatus::OK) {
+    // Retention is not the capture. A conflict with a live stream is resolved
+    // when the capture is triggered, so the profile must still be retainable.
+    return fail_with_cleanup(
+        "FAIL capture-preemption retaining a profile that conflicts with a live "
+        "stream must still succeed");
+  }
+
+  const TryTriggerDeviceCaptureStatus triggered =
+      rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceId, kCaptureId);
+  if (triggered != TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL capture outranks a repeating stream and must be admitted, not refused");
+  }
+
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec && !rec->started;
+      })) {
+    return fail_with_cleanup(
+        "FAIL the stream the provider said must yield was left running");
+  }
+
+  // The projection, not just the registry: this is what a caller can see.
+  if (!wait_until([&]() {
+        auto s = buf.snapshot_copy();
+        if (!s) {
+          return false;
+        }
+        for (const auto& st : s->streams) {
+          if (st.stream_id == kStreamId) {
+            return st.stop_reason == CBStreamStopReason::PREEMPTED;
+          }
+        }
+        return false;
+      })) {
+    return fail_with_cleanup(
+        "FAIL a preempted stream must report stop_reason PREEMPTED, not USER or PROVIDER");
+  }
+
+  (void)provider.shutdown();
+  rt.stop();
+  rt.attach_provider(nullptr);
+  return true;
+}
+
+// The other side of the same rule: an Unsupported answer is a capability
+// denial, so the capture is refused and NOTHING is stopped for it. Kept
+// separate from the check above because the failure it guards is the
+// attractive over-generalisation -- treating "cannot coexist" as "preempt" and
+// destroying a working stream for a capture that could never have run.
+bool run_core_capture_unsupported_does_not_preempt_check() {
+  auto wait_until = [](const std::function<bool()>& predicate) {
+    for (int i = 0; i < kMaxIters; ++i) {
+      if (predicate()) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+    return false;
+  };
+
+  CoreRuntime rt;
+  if (!rt.start() || !wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL unsupported-no-preempt runtime did not reach LIVE\n";
+    rt.stop();
+    return false;
+  }
+
+  BackingPlanEvaluationTestProvider provider;
+  const auto fail_with_cleanup = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    (void)provider.shutdown();
+    rt.stop();
+    rt.attach_provider(nullptr);
+    return false;
+  };
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    return fail_with_cleanup("FAIL unsupported-no-preempt provider init failed");
+  }
+  rt.attach_provider(&provider);
+
+  constexpr uint64_t kDeviceId = 93;
+  constexpr uint64_t kRootId = 9301;
+  constexpr uint64_t kStreamId = 9401;
+  constexpr uint64_t kCaptureId = 9501;
+
+  if (rt.try_open_device("backing_plan_eval:0", kDeviceId, kRootId) !=
+          TryOpenDeviceStatus::OK ||
+      rt.try_create_stream(kStreamId, kDeviceId, StreamIntent::VIEWFINDER,
+                           nullptr, nullptr, 0) != TryCreateStreamStatus::OK ||
+      rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    return fail_with_cleanup("FAIL unsupported-no-preempt setup failed");
+  }
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec && rec->started;
+      })) {
+    return fail_with_cleanup("FAIL unsupported-no-preempt stream never started");
+  }
+
+  provider.set_coexistence_for_differing_geometry_for_test(
+      AcquisitionCoexistence::unsupported());
+
+  CaptureProfile still{};
+  still.width = 8;
+  still.height = 8;
+  still.format_fourcc = FOURCC_RGBA;
+  CaptureStillImageBundle bundle{};
+  bundle.members.push_back(CaptureStillImageMember{
+      0u, CaptureStillImageMemberRole::DEFAULT_METERED, 0});
+  (void)rt.try_set_device_still_capture_profile(kDeviceId, still, bundle);
+
+  const TryTriggerDeviceCaptureStatus triggered =
+      rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceId, kCaptureId);
+  if (triggered == TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL a capture the provider says is unserviceable must not be admitted");
+  }
+
+  const auto* rec = rt.stream_record(kStreamId);
+  if (!rec || !rec->started) {
+    return fail_with_cleanup(
+        "FAIL a stream must not be preempted for a capture that could never run");
+  }
+
+  (void)provider.shutdown();
+  rt.stop();
+  rt.attach_provider(nullptr);
+  return true;
+}
+
 bool run_core_measured_backing_plan_evaluation_check() {
   auto plan_equals = [](CoreRetainedProductionPlan plan,
                         CoreProductionPostureShape posture) {
@@ -8494,6 +8744,18 @@ bool run_broker_format_capability_forwarding_check() {
                              "capture capabilities not forwarded from backend");
   }
 
+  // Coexistence, same rule, and it is here because it was got wrong: Core holds
+  // the broker and never a provider, so an un-forwarded query answered Coexist
+  // for both platform providers and Core skipped arbitration entirely. Nothing
+  // failed -- the wrong answer is the permissive one, so it looks like success.
+  const AcquisitionCoexistence coexistence_via_broker =
+      broker.acquisition_coexistence(1, AcquisitionUseSet{});
+  if (coexistence_via_broker.verdict != CoexistenceVerdict::StreamMustYield ||
+      coexistence_via_broker.yielded_stream_restorable) {
+    return fail_with_cleanup("FAIL broker format capability forwarding "
+                             "acquisition_coexistence not forwarded from backend");
+  }
+
   if (!broker.shutdown().ok()) {
     std::cerr << "FAIL broker format capability forwarding shutdown failed\n";
     return false;
@@ -10443,6 +10705,8 @@ int main(int argc, char** argv) {
       {"run_core_synthetic_three_member_realized_unknown_propagation_check", [] { return run_core_synthetic_three_member_realized_unknown_propagation_check(); }},
       {"run_synthetic_stream_plus_still_single_session_truth_check", [] { return run_synthetic_stream_plus_still_single_session_truth_check(); }},
       {"run_provider_coexistence_answer_matches_behaviour_check", [] { return run_provider_coexistence_answer_matches_behaviour_check(); }},
+      {"run_core_capture_preempts_yielding_stream_check", [] { return run_core_capture_preempts_yielding_stream_check(); }},
+      {"run_core_capture_unsupported_does_not_preempt_check", [] { return run_core_capture_unsupported_does_not_preempt_check(); }},
       {"run_core_measured_backing_plan_evaluation_check", [] { return run_core_measured_backing_plan_evaluation_check(); }},
       {"run_core_capture_observation_regression_check", [] { return run_core_capture_observation_regression_check(); }},
       {"run_core_capture_bracket_whole_result_scoring_check", [] { return run_core_capture_bracket_whole_result_scoring_check(); }},
