@@ -2917,6 +2917,10 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
   }
 
   std::lock_guard<std::mutex> configure_lock(backend->configure_mutex);
+  // Set inside the locked section below when the session about to be replaced
+  // is carrying a producing stream that the new one will carry too. Consulted
+  // after the swap, to put the flow back.
+  bool restore_flow_after = false;
   {
     std::lock_guard<std::mutex> bl(backend->m);
     if (backend->closed || backend->failed || !backend->device) {
@@ -2979,7 +2983,31 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
         backend->seam_capture_parent_refs.load(std::memory_order_acquire);
     const SeamClaims others =
         cambang::detail::without_own_claim(live, requester, OwnClaim::AlreadyHeld);
-    if (!seam_reconfiguration_permitted(live, requester, OwnClaim::AlreadyHeld)) {
+
+    // IS THIS A PRESERVING REPROVISION? Only if the configuration being built
+    // carries the live stream's output forward AT ITS OWN GEOMETRY. Then the
+    // stream gaps across the swap and resumes unchanged, which is what lets
+    // seam_reprovision_permitted be asked instead of the stricter question.
+    //
+    // Asserted from the actual arguments, never assumed: ensure_seam_realized_
+    // resolves the flow to the caller's stream when one exists, but a caller
+    // that passed a different geometry -- or dropped the stream output -- would
+    // be destroying the stream, not preserving it, and must not get the
+    // permissive answer. The header cannot check this; only here can.
+    const bool preserves_live_stream =
+        want_stream && backend->stream != nullptr &&
+        backend->stream->width == stream_width &&
+        backend->stream->height == stream_height;
+    // Whether the flow has to be put back afterwards. Read before
+    // teardown_session_locked_ clears it.
+    restore_flow_after =
+        preserves_live_stream && backend->stream->producing && backend->repeating_active;
+
+    const bool permitted =
+        preserves_live_stream
+            ? seam_reprovision_permitted(live, requester, OwnClaim::AlreadyHeld)
+            : seam_reconfiguration_permitted(live, requester, OwnClaim::AlreadyHeld);
+    if (!permitted) {
       // Refused. The branches below only choose the error code and the
       // diagnostic; the decision above is the single authority, so a provider
       // and the shared policy cannot drift apart.
@@ -3253,6 +3281,48 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
                                             std::memory_order_release);
   emit_native_created_(session_id, NativeObjectType::AcquisitionSession, root_id,
                        device_instance_id, 0, 0);
+
+  // PUT THE FLOW BACK. The stream was carried into the new session's output set,
+  // but a session swap cancels the repeating request, so without this the stream
+  // would sit "producing" and deliver nothing.
+  //
+  // Deliberately inside this function rather than left to the caller: the caller
+  // is a capture path that has no reason to know a stream was gapped, and a
+  // return between the swap and the restore would leave the stream dark with
+  // nobody responsible for it.
+  if (restore_flow_after) {
+    const ProviderResult resumed = submit_repeating_request_(backend);
+    if (!resumed.ok()) {
+      // THE SILENT FAILURE THIS EXISTS TO PREVENT. Reaching here means the
+      // session was replaced and the flow could not be restarted. Saying nothing
+      // would leave a stream that Core believes is FLOWING, delivering no frames,
+      // forever -- and nothing watches frame cadence, so nobody would ever find
+      // out. Report it as the stream failure it is.
+      uint64_t dark_stream_id = 0;
+      {
+        std::lock_guard<std::mutex> bl(backend->m);
+        if (backend->stream) {
+          dark_stream_id = backend->stream->stream_id;
+          backend->stream->producing = false;
+        }
+      }
+      camera2_detail::log_line(
+          "device=%llu reprovision restored the session but could not restart the "
+          "repeating request (rc=%u); reporting stream=%llu failed",
+          static_cast<unsigned long long>(device_instance_id),
+          static_cast<unsigned>(resumed.code),
+          static_cast<unsigned long long>(dark_stream_id));
+      if (dark_stream_id != 0) {
+        strand_.post_stream_error(dark_stream_id, resumed.code);
+        strand_.post_stream_stopped(dark_stream_id, resumed.code);
+      }
+      return resumed;
+    }
+    camera2_detail::log_line(
+        "device=%llu reprovision complete: stream flow restored at %ux%u",
+        static_cast<unsigned long long>(device_instance_id),
+        stream_width, stream_height);
+  }
   return ProviderResult::success();
 }
 
@@ -3494,15 +3564,44 @@ ProviderResult Camera2CameraProvider::start_stream(
     production->pool.push_back(std::move(slot));
   }
 
-  // Build and submit the repeating request on the control thread; it is a
-  // backend call and must stay off the core thread's own stack.
+  const ProviderResult submitted = submit_repeating_request_(dev.backend);
+  if (!submitted.ok()) {
+    return submitted;
+  }
+
+  {
+    std::lock_guard<std::mutex> bl(dev.backend->m);
+    if (dev.backend->failed || dev.backend->closed) {
+      return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
+    }
+    production->producing = true;
+    dev.backend->stream = production;
+  }
+
+  st.started = true;
+  strand_.post_stream_started(stream_id);
+  return ProviderResult::success();
+}
+
+// Builds and submits the repeating request that makes a caller's stream flow.
+//
+// Extracted from start_stream so the preserving-reprovision path in
+// ensure_session_configured_ can restore the flow after swapping the session.
+// The two must stay one implementation: a restore that built the request
+// differently would produce a stream that resumed with different behaviour from
+// the one the caller started.
+ProviderResult Camera2CameraProvider::submit_repeating_request_(
+    const std::shared_ptr<DeviceBackend>& backend) {
+  if (!backend) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  // Backend calls, so off the core thread's own stack.
   struct StartResult {
     ProviderError error = ProviderError::ERR_PROVIDER_FAILED;
     bool ok = false;
   };
   auto result = std::make_shared<StartResult>();
   auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
-  std::shared_ptr<DeviceBackend> backend = dev.backend;
   const bool completed = control_.run_bounded(
       [result, backend](const BoundedControlExecutor::AbandonToken& t) {
         StartResult local;
@@ -3583,18 +3682,6 @@ ProviderResult Camera2CameraProvider::start_stream(
   if (!result->ok) {
     return ProviderResult::failure(result->error);
   }
-
-  {
-    std::lock_guard<std::mutex> bl(dev.backend->m);
-    if (dev.backend->failed || dev.backend->closed) {
-      return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
-    }
-    production->producing = true;
-    dev.backend->stream = production;
-  }
-
-  st.started = true;
-  strand_.post_stream_started(stream_id);
   return ProviderResult::success();
 }
 
@@ -5439,33 +5526,38 @@ AcquisitionCoexistence Camera2CameraProvider::acquisition_coexistence(
     return AcquisitionCoexistence::coexist();
   }
 
-  // A rebuild is needed. It only disturbs anything if a stream is actually
-  // producing -- rebuilding around a stream that is created but not started
+  // A reprovision is needed. It only disturbs anything if a stream is actually
+  // producing -- reprovisioning around a stream that is created but not started
   // costs nothing observable.
   const bool stream_producing = backend.stream && backend.stream->producing;
   if (!stream_producing) {
     return AcquisitionCoexistence::coexist();
   }
 
-  // StreamMustYield, and NOT Reconfigure, which is the tempting answer and the
-  // wrong one. Camera2 can hold a stream output and a still output at different
-  // geometries perfectly well, so the far side of a rebuild does serve both --
-  // but a producing stream holds a seam claim, and the claim policy
-  // (imaging/api/acquisition_seam_claims.h) refuses a capture the
-  // reconfiguration while that claim stands. The rebuild is therefore not
-  // reachable with the stream still up, whatever the output tables allow.
-  // Answering Reconfigure would promise Core something this provider would then
-  // refuse -- exactly the disagreement the contract exists to prevent.
+  // RECONFIGURE, not StreamMustYield. Camera2 can hold a stream output and a
+  // still output at different geometries in one session, so the far side of the
+  // swap serves both; what it cannot do is add an output to a live session. The
+  // stream therefore GAPS -- frames pause while the session is replaced and
+  // resume at the stream's own geometry -- rather than giving that geometry up.
   //
-  // Restorable: the stream keeps its own geometry. Once it stops and the claim
-  // clears, the session is rebuilt carrying both outputs, and the restart
-  // declares the retained still geometry alongside it (see start_stream), so
-  // the yield is paid once rather than on every capture.
+  // This answered StreamMustYield until the session swap learned to carry the
+  // stream's output forward and put its flow back
+  // (ensure_session_configured_/submit_repeating_request_). Before that the
+  // reprovision genuinely was unreachable with the stream up, because the claim
+  // policy refuses a plain reconfiguration under another claimant's claim, and
+  // answering Reconfigure would have promised Core something this provider would
+  // then refuse. Now the provider asks seam_reprovision_permitted for exactly
+  // the preserving case, so the promise is one it keeps.
   //
-  // Note this is reachable only when the still geometry was NOT declared at
-  // session creation. Where Core retained the profile before the stream
-  // started, both outputs are already there and the answer above is Coexist.
-  return AcquisitionCoexistence::stream_must_yield(/*restorable=*/true);
+  // Killing a working viewfinder here was never a hardware constraint. It cost
+  // the stream only because the still geometry had not been predicted when the
+  // session was built, and arbitration_policy.md 6.2's preemption is for
+  // backends that cannot serve both -- which this one can.
+  //
+  // Reachable only when the still geometry was NOT declared at session creation.
+  // Where Core retained the profile before the stream started, both outputs are
+  // already there and the answer above is Coexist, with no gap at all.
+  return AcquisitionCoexistence::reconfigure();
 }
 
 ProviderResult Camera2CameraProvider::validate_and_admit_submission_locked_(

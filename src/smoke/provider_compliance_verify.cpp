@@ -687,6 +687,17 @@ class BackingPlanEvaluationTestProvider final : public ICameraProvider {
     coexistence_for_differing_geometry_ = c;
   }
 
+  uint64_t stream_reprovision_resume_timeout_ns() const noexcept override {
+    std::lock_guard<std::mutex> lk(mu_);
+    return reprovision_resume_timeout_ns_;
+  }
+
+  // Shortened by the reprovision checks so they do not sit out the real default.
+  void set_reprovision_resume_timeout_ns_for_test(uint64_t ns) {
+    std::lock_guard<std::mutex> lk(mu_);
+    reprovision_resume_timeout_ns_ = ns;
+  }
+
   ProducerBackingCapabilities stream_backing_capabilities(
       const CaptureProfile&,
       const PictureConfig&) const noexcept override {
@@ -1286,6 +1297,7 @@ private:
   uint64_t backing_plan_evaluation_settle_delay_ns_ = 0;
   AcquisitionCoexistence coexistence_for_differing_geometry_ =
       AcquisitionCoexistence::coexist();
+  uint64_t reprovision_resume_timeout_ns_ = kDefaultStreamReprovisionResumeTimeoutNs;
   std::map<uint64_t, DeviceState> devices_;
   std::map<uint64_t, PendingCapture> pending_captures_;
   std::map<uint64_t, StreamState> streams_;
@@ -6307,6 +6319,281 @@ bool run_core_capture_preempts_yielding_stream_check() {
   return true;
 }
 
+// A reprovision Core permitted, whose frames never come back, is reported as a
+// stream failure.
+//
+// This is the check the guarantee moved into Core to make possible. While it sat
+// in the provider it was unreachable: the code is in Camera2, which cannot be
+// built host-native, and a run where the reprovision works never exercises it.
+//
+// The failure it guards is silent by construction. A reprovision gaps a stream
+// deliberately and reports nothing while it does; if the flow never returns, the
+// stream stays marked started, no fact contradicts it, and nothing in Core
+// watches frame cadence -- so a permanently dark stream reads FLOWING forever
+// and no gate, snapshot or caller ever finds out.
+bool run_core_reports_reprovision_that_never_resumes_check() {
+  auto wait_until = [](const std::function<bool()>& predicate) {
+    for (int i = 0; i < kMaxIters; ++i) {
+      if (predicate()) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+    return false;
+  };
+
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
+  if (!rt.start() || !wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL reprovision-timeout runtime did not reach LIVE\n";
+    rt.stop();
+    return false;
+  }
+
+  BackingPlanEvaluationTestProvider provider;
+  const auto fail_with_cleanup = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    (void)provider.shutdown();
+    rt.stop();
+    rt.attach_provider(nullptr);
+    return false;
+  };
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    return fail_with_cleanup("FAIL reprovision-timeout provider init failed");
+  }
+  rt.attach_provider(&provider);
+
+  constexpr uint64_t kDeviceId = 97;
+  constexpr uint64_t kRootId = 9701;
+  constexpr uint64_t kStreamId = 9801;
+  constexpr uint64_t kCaptureId = 9901;
+
+  if (rt.try_open_device("backing_plan_eval:0", kDeviceId, kRootId) !=
+          TryOpenDeviceStatus::OK ||
+      rt.try_create_stream(kStreamId, kDeviceId, StreamIntent::VIEWFINDER,
+                           nullptr, nullptr, 0) != TryCreateStreamStatus::OK ||
+      rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    return fail_with_cleanup("FAIL reprovision-timeout setup failed");
+  }
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec && rec->started;
+      })) {
+    return fail_with_cleanup("FAIL reprovision-timeout stream never started");
+  }
+
+  // A backend that gaps the stream and serves both afterwards -- and then does
+  // not deliver. The provider emits frames only when told to, so simply never
+  // telling it models the flow that was cancelled and never restored.
+  provider.set_coexistence_for_differing_geometry_for_test(
+      AcquisitionCoexistence::reconfigure());
+  provider.set_reprovision_resume_timeout_ns_for_test(300ull * 1000ull * 1000ull);
+
+  CaptureProfile still{};
+  still.width = 8;
+  still.height = 8;
+  still.format_fourcc = FOURCC_RGBA;
+  CaptureStillImageBundle bundle{};
+  bundle.members.push_back(CaptureStillImageMember{
+      0u, CaptureStillImageMemberRole::DEFAULT_METERED, 0});
+  if (rt.try_set_device_still_capture_profile(kDeviceId, still, bundle) !=
+      TrySetStillCaptureProfileStatus::OK) {
+    return fail_with_cleanup("FAIL reprovision-timeout could not retain the profile");
+  }
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceId, kCaptureId) !=
+      TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL a Reconfigure verdict must not refuse the capture");
+  }
+
+
+  // THE PREMISE, READ FROM STATE. Without this a run in which Core never armed
+  // the expectation passes silently -- the stream simply keeps running, which is
+  // what the check wants to see -- and the check would be hollow. Read from the
+  // record rather than from any log line: this harness redirects stdout per
+  // check, so Core's own logging is discarded and cannot be reasoned from.
+  if (const auto* armed = rt.stream_record(kStreamId);
+      armed == nullptr || armed->frame_resume_deadline_ns == 0) {
+    return fail_with_cleanup(
+        "FAIL Core did not arm a frame-resumption expectation on a Reconfigure "
+        "verdict; this check proves nothing unless it did");
+  }
+
+  // Reconfigure does NOT stop the stream. Anything that stopped it here would
+  // mean Core had treated the verdict as a yield.
+  if (const auto* rec = rt.stream_record(kStreamId); !rec || !rec->started) {
+    return fail_with_cleanup(
+        "FAIL Core stopped the stream on a Reconfigure verdict; that verdict "
+        "gaps a stream, it does not take it");
+  }
+
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec && !rec->started;
+      })) {
+    return fail_with_cleanup(
+        "FAIL a reprovision whose frames never resumed was never reported; the "
+        "stream would read FLOWING forever while delivering nothing");
+  }
+  if (!wait_until([&]() {
+        auto snap = buf.snapshot_copy();
+        if (!snap) {
+          return false;
+        }
+        for (const auto& st : snap->streams) {
+          if (st.stream_id == kStreamId) {
+            return st.stop_reason == CBStreamStopReason::PROVIDER;
+          }
+        }
+        return false;
+      })) {
+    return fail_with_cleanup(
+        "FAIL a stream dark after a reprovision must report PROVIDER, not USER "
+        "or PREEMPTED -- nobody chose this");
+  }
+
+  (void)provider.shutdown();
+  rt.stop();
+  rt.attach_provider(nullptr);
+  return true;
+}
+
+// ...and a reprovision whose frames DO come back is never reported failed.
+//
+// The other half, and not optional. A watchdog that fires on healthy streams is
+// worse than no watchdog: it would take working viewfinders away for the crime
+// of a brief, expected gap. One frame is all it takes to disarm.
+bool run_core_does_not_report_a_reprovision_that_resumes_check() {
+  auto wait_until = [](const std::function<bool()>& predicate) {
+    for (int i = 0; i < kMaxIters; ++i) {
+      if (predicate()) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+    return false;
+  };
+
+  CoreRuntime rt;
+  if (!rt.start() || !wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL reprovision-resumes runtime did not reach LIVE\n";
+    rt.stop();
+    return false;
+  }
+
+  BackingPlanEvaluationTestProvider provider;
+  const auto fail_with_cleanup = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    (void)provider.shutdown();
+    rt.stop();
+    rt.attach_provider(nullptr);
+    return false;
+  };
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    return fail_with_cleanup("FAIL reprovision-resumes provider init failed");
+  }
+  rt.attach_provider(&provider);
+
+  constexpr uint64_t kDeviceId = 98;
+  constexpr uint64_t kRootId = 9801;
+  constexpr uint64_t kStreamId = 9901;
+  constexpr uint64_t kCaptureId = 9902;
+
+  if (rt.try_open_device("backing_plan_eval:0", kDeviceId, kRootId) !=
+          TryOpenDeviceStatus::OK ||
+      rt.try_create_stream(kStreamId, kDeviceId, StreamIntent::VIEWFINDER,
+                           nullptr, nullptr, 0) != TryCreateStreamStatus::OK ||
+      rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    return fail_with_cleanup("FAIL reprovision-resumes setup failed");
+  }
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec && rec->started;
+      })) {
+    return fail_with_cleanup("FAIL reprovision-resumes stream never started");
+  }
+
+  provider.set_coexistence_for_differing_geometry_for_test(
+      AcquisitionCoexistence::reconfigure());
+  provider.set_reprovision_resume_timeout_ns_for_test(300ull * 1000ull * 1000ull);
+
+  CaptureProfile still{};
+  still.width = 8;
+  still.height = 8;
+  still.format_fourcc = FOURCC_RGBA;
+  CaptureStillImageBundle bundle{};
+  bundle.members.push_back(CaptureStillImageMember{
+      0u, CaptureStillImageMemberRole::DEFAULT_METERED, 0});
+  if (rt.try_set_device_still_capture_profile(kDeviceId, still, bundle) !=
+      TrySetStillCaptureProfileStatus::OK) {
+    return fail_with_cleanup("FAIL reprovision-resumes could not retain the profile");
+  }
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceId, kCaptureId) !=
+      TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup("FAIL reprovision-resumes capture was not admitted");
+  }
+
+
+  // THE PREMISE, READ FROM STATE. Without this a run in which Core never armed
+  // the expectation passes silently -- the stream simply keeps running, which is
+  // what the check wants to see -- and the check would be hollow. Read from the
+  // record rather than from any log line: this harness redirects stdout per
+  // check, so Core's own logging is discarded and cannot be reasoned from.
+  if (const auto* armed = rt.stream_record(kStreamId);
+      armed == nullptr || armed->frame_resume_deadline_ns == 0) {
+    return fail_with_cleanup(
+        "FAIL Core did not arm a frame-resumption expectation on a Reconfigure "
+        "verdict; this check proves nothing unless it did");
+  }
+
+  // Settle the capture first. Core suppresses repeating-stream frames while a
+  // capture is in flight, so emitting the resumption frame before that would
+  // test frame suppression and resumption at once and conclude nothing about
+  // either. A real reprovision's frames resume once the capture that caused it
+  // has finished with the session.
+  (void)provider.emit_pending_capture(kCaptureId);
+
+  // Counted from HERE, not from zero: the stream may already have delivered
+  // frames before the reprovision, and any of those would satisfy a comparison
+  // against zero while proving nothing about resumption.
+  uint64_t frames_before = 0;
+  if (const auto* r = rt.stream_record(kStreamId); r != nullptr) {
+    frames_before = r->frames_received;
+  }
+
+  // The flow comes back, which is what a working reprovision looks like.
+  if (!provider.emit_stream_frame(kStreamId, true)) {
+    return fail_with_cleanup("FAIL reprovision-resumes could not emit a frame");
+  }
+  // The premise, checked rather than assumed: the frame must actually reach
+  // Core's registry, because that is what disarms the expectation. A frame the
+  // provider emitted but Core never integrated would make this check pass or
+  // fail for reasons that have nothing to do with the rule under test.
+  if (!wait_until([&]() {
+        const auto* r = rt.stream_record(kStreamId);
+        return r && r->frames_received > frames_before;
+      })) {
+    return fail_with_cleanup(
+        "FAIL reprovision-resumes emitted a frame that Core never integrated; "
+        "the check cannot say anything about the expectation without one");
+  }
+
+  // Well past the bound. The stream must still be running: one frame disarms it.
+  std::this_thread::sleep_for(std::chrono::milliseconds(900));
+  const auto* rec = rt.stream_record(kStreamId);
+  if (!rec || !rec->started) {
+    return fail_with_cleanup(
+        "FAIL a stream that resumed after its reprovision was reported failed "
+        "anyway; a watchdog that fires on healthy streams is worse than none");
+  }
+
+  (void)provider.shutdown();
+  rt.stop();
+  rt.attach_provider(nullptr);
+  return true;
+}
+
 // A provider that advertises a preempted stream as RESTORABLE must actually
 // accept it being restarted, at its own profile, once the capture settles.
 //
@@ -10839,6 +11126,8 @@ int main(int argc, char** argv) {
       {"run_core_capture_preempts_yielding_stream_check", [] { return run_core_capture_preempts_yielding_stream_check(); }},
       {"run_core_capture_unsupported_does_not_preempt_check", [] { return run_core_capture_unsupported_does_not_preempt_check(); }},
       {"run_preempted_stream_restorable_claim_check", [] { return run_preempted_stream_restorable_claim_check(); }},
+      {"run_core_reports_reprovision_that_never_resumes_check", [] { return run_core_reports_reprovision_that_never_resumes_check(); }},
+      {"run_core_does_not_report_a_reprovision_that_resumes_check", [] { return run_core_does_not_report_a_reprovision_that_resumes_check(); }},
       {"run_core_measured_backing_plan_evaluation_check", [] { return run_core_measured_backing_plan_evaluation_check(); }},
       {"run_core_capture_observation_regression_check", [] { return run_core_capture_observation_regression_check(); }},
       {"run_core_capture_bracket_whole_result_scoring_check", [] { return run_core_capture_bracket_whole_result_scoring_check(); }},

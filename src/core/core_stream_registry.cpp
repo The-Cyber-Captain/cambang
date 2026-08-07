@@ -27,6 +27,7 @@ void apply_stream_started(CoreStreamRegistry::StreamRecord& rec, uint64_t access
   rec.stop_requested_by_core = false;
   rec.preemption_requested_by_core = false;
   rec.access_posture_epoch = access_posture_epoch;
+  rec.frame_resume_deadline_ns = 0;
 }
 
 void apply_stream_stopped(CoreStreamRegistry::StreamRecord& rec,
@@ -55,6 +56,9 @@ void apply_stream_stopped(CoreStreamRegistry::StreamRecord& rec,
   rec.stop_requested_by_core = false;
   rec.preemption_requested_by_core = false;
   rec.access_posture_epoch = 0;
+  // A stopped stream is owed no frames. Leaving the expectation armed would
+  // report a stream failed for not resuming after it had legitimately stopped.
+  rec.frame_resume_deadline_ns = 0;
 }
 
 void increment_saturating(uint32_t& value) noexcept {
@@ -195,11 +199,53 @@ bool CoreStreamRegistry::mark_stop_requested_by_core_for_preemption(uint64_t str
   return true;
 }
 
+bool CoreStreamRegistry::arm_frame_resumption(uint64_t stream_id, uint64_t deadline_ns) {
+  auto it = streams_.find(stream_id);
+  if (it == streams_.end()) return false;
+  it->second.frame_resume_deadline_ns = deadline_ns;
+  return true;
+}
+
+std::optional<uint64_t> CoreStreamRegistry::next_frame_resumption_delay_ns(
+    uint64_t now_ns) const noexcept {
+  std::optional<uint64_t> soonest;
+  for (const auto& [stream_id, rec] : streams_) {
+    (void)stream_id;
+    if (rec.frame_resume_deadline_ns == 0) {
+      continue;
+    }
+    const uint64_t delay_ns = rec.frame_resume_deadline_ns <= now_ns
+        ? 0ull
+        : rec.frame_resume_deadline_ns - now_ns;
+    if (!soonest.has_value() || delay_ns < *soonest) {
+      soonest = delay_ns;
+    }
+  }
+  return soonest;
+}
+
+std::vector<uint64_t> CoreStreamRegistry::take_expired_frame_resumptions(uint64_t now_ns) {
+  std::vector<uint64_t> expired;
+  for (auto& [stream_id, rec] : streams_) {
+    if (rec.frame_resume_deadline_ns == 0 || now_ns < rec.frame_resume_deadline_ns) {
+      continue;
+    }
+    rec.frame_resume_deadline_ns = 0;
+    expired.push_back(stream_id);
+  }
+  return expired;
+}
+
+// Disarming lives HERE, in the one place every frame path reaches, rather than
+// at the call sites. There are three of them today -- the dispatcher's normal
+// path and two suppression paths -- and a fourth added later would silently miss
+// a disarm placed anywhere else, leaving a healthy stream to be reported failed.
 bool CoreStreamRegistry::on_frame_received(uint64_t stream_id, uint64_t integrated_ts_ns) {
   auto it = streams_.find(stream_id);
   if (it == streams_.end()) return false;
   it->second.frames_received++;
   it->second.last_frame_ts_ns = integrated_ts_ns;
+  it->second.frame_resume_deadline_ns = 0;
   return true;
 }
 

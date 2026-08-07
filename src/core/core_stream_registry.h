@@ -2,8 +2,10 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <set>
 #include <map>
+#include <vector>
 
 #include "core/core_frame_sink.h"
 #include "imaging/api/provider_contract_datatypes.h"
@@ -53,6 +55,13 @@ public:
     // Set alongside stop_requested_by_core when that stop is a preemption, so
     // the stopped fact can be attributed when it arrives.
     bool preemption_requested_by_core = false;
+    // Deadline by which frames must resume after Core authorised a provider
+    // reprovision of this stream's session. 0 means nothing is expected.
+    //
+    // Armed only for a reprovision Core itself permitted, never as a general
+    // cadence watch: a stream that is merely slow is not this registry's
+    // business, and treating it as one would fire on healthy streams.
+    uint64_t frame_resume_deadline_ns = 0;
     StopOrigin last_stop_origin = StopOrigin::None;
     uint32_t pending_core_start_facts = 0;
     uint32_t pending_core_stop_facts = 0;
@@ -95,6 +104,19 @@ public:
   // caller's own stop. Must be called before the provider stop_stream, so the
   // attribution is already in place whichever order the facts arrive in.
   bool mark_stop_requested_by_core_for_preemption(uint64_t stream_id);
+
+  // Expect frames to resume on this stream by `deadline_ns`, because Core has
+  // just permitted the provider to reprovision the session underneath it.
+  bool arm_frame_resumption(uint64_t stream_id, uint64_t deadline_ns);
+  // Stream ids whose expectation has passed, cleared as they are returned so a
+  // single expiry is reported once. A stream that stopped, started, or
+  // delivered a frame in the meantime is not returned: those all disarm it.
+  std::vector<uint64_t> take_expired_frame_resumptions(uint64_t now_ns);
+  // Delay until the soonest armed expectation falls due, or nothing if none is
+  // armed. Core folds this into its next-wake deadline: the timer tick is
+  // demand-driven, so an expectation nobody schedules a wake for would only be
+  // noticed if something else happened to wake the core thread first.
+  std::optional<uint64_t> next_frame_resumption_delay_ns(uint64_t now_ns) const noexcept;
 
   // Frame accounting (stream must exist).
   bool on_frame_received(uint64_t stream_id, uint64_t integrated_ts_ns);

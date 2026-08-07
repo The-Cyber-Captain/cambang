@@ -4112,6 +4112,15 @@ CoreRuntime::CaptureCoexistenceOutcome CoreRuntime::resolve_capture_stream_coexi
     }
     if (c.verdict == CoexistenceVerdict::StreamMustYield) {
       must_yield.push_back(stream_id);
+    } else if (c.verdict == CoexistenceVerdict::Reconfigure && rec.started) {
+      // Core is about to let the provider swap the session underneath a running
+      // stream. That gaps it, and a gap is reported by silence -- which is also
+      // how a permanent hang looks. Arm the expectation that frames come back;
+      // any frame, stop or start on this stream disarms it, and expiry is
+      // reported as a stream failure by on_core_timer_tick.
+      const uint64_t deadline_ns =
+          ns_since_epoch_() + prov->stream_reprovision_resume_timeout_ns();
+      (void)streams_.arm_frame_resumption(stream_id, deadline_ns);
     }
   }
 
@@ -4578,6 +4587,26 @@ void CoreRuntime::on_core_timer_tick() {
   const auto now = std::chrono::steady_clock::now();
   const uint64_t now_ns = ns_since_epoch_(now);
 
+  // A reprovision Core permitted that never restored the flow. The stream is
+  // still marked started and no fact has contradicted that, so without this it
+  // would read FLOWING forever while delivering nothing -- invisible to every
+  // gate, snapshot and caller, because nothing else here watches frame cadence.
+  //
+  // Reported as a PROVIDER stop, which is what it is: the backend accepted the
+  // reprovision and then failed to deliver. Distinct from a caller's stop and
+  // from a preemption, both of which are choices somebody made.
+  for (const uint64_t dark_stream_id : streams_.take_expired_frame_resumptions(now_ns)) {
+    std::fprintf(stdout,
+                 "[CamBANG][Core] reprovision timeout: stream=%llu frames did not "
+                 "resume; reporting the stream failed\n",
+                 static_cast<unsigned long long>(dark_stream_id));
+    std::fflush(stdout);
+    if (streams_.on_provider_stream_stopped(
+            dark_stream_id, static_cast<uint32_t>(ProviderError::ERR_TIMEOUT))) {
+      request_publish_from_core_unchecked();
+    }
+  }
+
   // Banner 2: Core-loop provider attachment (effective runtime attachment).
   // Printed once per CoreRuntime session, the first time Core observes a non-null provider.
   if (!provider_banner_printed_) {
@@ -4934,6 +4963,15 @@ void CoreRuntime::on_core_timer_tick() {
          next_pending_capture_observation_delay_ns < next_deadline_delay_ns)) {
       has_next_deadline_delay = true;
       next_deadline_delay_ns = next_pending_capture_observation_delay_ns;
+    }
+    if (const auto next_frame_resumption_delay_ns =
+            streams_.next_frame_resumption_delay_ns(now_ns);
+        next_frame_resumption_delay_ns.has_value()) {
+      if (!has_next_deadline_delay ||
+          *next_frame_resumption_delay_ns < next_deadline_delay_ns) {
+        has_next_deadline_delay = true;
+        next_deadline_delay_ns = *next_frame_resumption_delay_ns;
+      }
     }
     next_capture_retained_plan_orphan_retirement_delay_(
         now_ns, has_next_deadline_delay, next_deadline_delay_ns);

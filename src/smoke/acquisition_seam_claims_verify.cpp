@@ -200,6 +200,93 @@ void run_teardown_is_permission_not_instruction_check() {
         !seam_teardown_permitted(claims(0, 0, 1)));
 }
 
+// THE REPROVISION QUESTION. A capture-session reconfiguration that carries every
+// other claimant's output into the new configuration: the seam's native object
+// is replaced, but a stream is interrupted rather than discarded.
+void run_reprovision_checks() {
+  // THE POINT OF THE WHOLE QUESTION, and the one that must never regress: a live
+  // stream permits a reprovision while STILL forbidding a plain reconfiguration.
+  // If those two ever agree, the new question has collapsed into the old one and
+  // buys nothing -- or worse, the old one has been loosened and a WinRT stream
+  // can have its geometry taken away underneath it.
+  const SeamClaims one_stream = claims(1, 0, 0);
+  check("a live stream permits a preserving reprovision",
+        seam_reprovision_permitted(one_stream, SeamClaimant::Capture,
+                                   OwnClaim::NotHeld));
+  check("a live stream still forbids a plain reconfiguration",
+        !seam_reconfiguration_permitted(one_stream, SeamClaimant::Capture,
+                                        OwnClaim::NotHeld));
+
+  // Several streams are no more of an obstacle than one. Each gaps and resumes.
+  check("many streams still permit a reprovision",
+        seam_reprovision_permitted(claims(3, 0, 0), SeamClaimant::Capture,
+                                   OwnClaim::NotHeld));
+
+  // AN IN-FLIGHT CAPTURE BLOCKS. Its request is bound to the session being
+  // replaced, so the image would never arrive -- carrying outputs forward
+  // cannot rescue a request already submitted.
+  check("an in-flight capture forbids a reprovision",
+        !seam_reprovision_permitted(claims(0, 1, 0), SeamClaimant::Stream,
+                                    OwnClaim::NotHeld));
+  check("an in-flight capture forbids a reprovision even beside a stream",
+        !seam_reprovision_permitted(claims(1, 1, 0), SeamClaimant::Stream,
+                                    OwnClaim::NotHeld));
+
+  // The capture parent takes no part here either, for the same reason it takes
+  // none in reconfiguration: its claim exists to shape the seam.
+  check("the capture-parent claim does not block a reprovision",
+        seam_reprovision_permitted(claims(0, 0, 1), SeamClaimant::Capture,
+                                   OwnClaim::NotHeld));
+  // ...but it still blocks an outright teardown. Teardown is untouched by this
+  // question and must stay that way.
+  check("the capture-parent claim still blocks teardown",
+        !seam_teardown_permitted_by(claims(0, 0, 1), SeamClaimant::Capture,
+                                    OwnClaim::NotHeld));
+
+  // Own-claim discount, on exactly the terms the other questions use.
+  check("a capture is not blocked from reprovisioning by its own claim",
+        seam_reprovision_permitted(claims(0, 1, 0), SeamClaimant::Capture,
+                                   OwnClaim::AlreadyHeld));
+  check("a SECOND capture still forbids a reprovision",
+        !seam_reprovision_permitted(claims(0, 2, 0), SeamClaimant::Capture,
+                                    OwnClaim::AlreadyHeld));
+  check("reprovision discount does not underflow on zero",
+        seam_reprovision_blocking_claims(claims(0, 0, 0), SeamClaimant::Capture,
+                                         OwnClaim::AlreadyHeld) == 0);
+  // The discount must come off the asker's OWN category. A stream discounting
+  // itself must not excuse a capture.
+  check("a stream's discount does not excuse an in-flight capture",
+        seam_reprovision_blocking_claims(claims(1, 1, 0), SeamClaimant::Stream,
+                                         OwnClaim::AlreadyHeld) == 1);
+
+  check("an unheld seam permits a reprovision",
+        seam_reprovision_permitted(claims(0, 0, 0), SeamClaimant::Capture,
+                                   OwnClaim::NotHeld));
+
+  // THE ORDERING INVARIANT. A reprovision preserves what a reconfiguration
+  // destroys, so it can never be the stricter of the two: anything
+  // reconfiguration permits, reprovision must permit as well. Stated over a
+  // matrix rather than as prose so a future change to either rule that inverts
+  // them fails here.
+  for (uint32_t s = 0; s <= 2; ++s) {
+    for (uint32_t cap = 0; cap <= 2; ++cap) {
+      for (uint32_t parent = 0; parent <= 1; ++parent) {
+        const SeamClaims c = claims(s, cap, parent);
+        for (SeamClaimant asker : {SeamClaimant::Stream, SeamClaimant::Capture,
+                                   SeamClaimant::CaptureParent}) {
+          for (OwnClaim own : {OwnClaim::NotHeld, OwnClaim::AlreadyHeld}) {
+            if (!seam_reconfiguration_permitted(c, asker, own)) {
+              continue;
+            }
+            check("reprovision is never stricter than reconfiguration",
+                  seam_reprovision_permitted(c, asker, own));
+          }
+        }
+      }
+    }
+  }
+}
+
 void run_winrt_admission_sequence_check() {
   // Replays the WinRT capture sequence against the policy, in order, so the
   // interaction between admission-time retention and worker-time geometry is
@@ -253,6 +340,7 @@ int main() {
   run_ordering_is_the_callers_statement_check();
   run_discount_targets_own_claim_check();
   run_teardown_is_permission_not_instruction_check();
+  run_reprovision_checks();
   run_winrt_admission_sequence_check();
 
   if (g_failed != 0) {

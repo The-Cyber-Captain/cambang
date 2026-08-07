@@ -16,6 +16,13 @@ namespace cambang {
 inline constexpr uint64_t kDefaultCaptureAdmissionWatchdogTimeoutNs =
     30ull * 1000ull * 1000ull * 1000ull;
 
+// Default for ICameraProvider::stream_reprovision_resume_timeout_ns() (5s).
+// A session swap is a bounded control operation rather than an exposure, so the
+// generosity here is for a loaded device and a slow HAL, not for the work
+// itself. See that method's doc comment.
+inline constexpr uint64_t kDefaultStreamReprovisionResumeTimeoutNs =
+    5ull * 1000ull * 1000ull * 1000ull;
+
 // Provider->core callback sink.
 //
 // ============================================================================
@@ -309,6 +316,28 @@ public:
 
   virtual uint64_t capture_backing_plan_evaluation_settle_delay_ns() const noexcept {
     return 0;
+  }
+
+  // Worst-case time Core should wait, after permitting a reprovision that
+  // reported CoexistenceVerdict::Reconfigure, for that stream's frames to
+  // resume before Core declares the stream failed.
+  //
+  // A reprovision gaps a stream deliberately and reports nothing while it does,
+  // which is truthful -- and is also exactly how a permanent hang looks. Core
+  // arms this bound so a reprovision that never restores the flow becomes a
+  // reported failure rather than a stream that reads FLOWING forever and
+  // delivers nothing. Nothing else in Core watches frame cadence, so without it
+  // that outcome is invisible to every gate, snapshot and caller.
+  //
+  // Same rule as the capture watchdog below, for the same reason: only override
+  // this with a value backed by real measured worst-case latency, never a guess.
+  // Too short converts a slow-but-working reprovision into a false failure,
+  // which is worse than waiting.
+  //
+  // Only consulted for a stream Core permitted a reprovision for. It is not a
+  // general cadence watchdog and must not be treated as one.
+  virtual uint64_t stream_reprovision_resume_timeout_ns() const noexcept {
+    return kDefaultStreamReprovisionResumeTimeoutNs;
   }
 
   // Worst-case time Core should wait, after a trigger_capture()/

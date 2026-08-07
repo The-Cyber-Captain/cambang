@@ -525,6 +525,12 @@ private:
                             uint64_t owner_stream_id);
   void emit_native_destroyed_(uint64_t native_id);
 
+  // Builds and submits the repeating request that makes a caller's stream flow.
+  // Shared by start_stream and by the preserving-reprovision path, which has to
+  // restore the flow a session swap cancelled.
+  ProviderResult submit_repeating_request_(
+      const std::shared_ptr<camera2_detail::DeviceBackend>& backend);
+
   // Realizes (or rebuilds) the device's capture session so it carries exactly
   // the requested output set, and emits the AcquisitionSession native-created
   // fact on each realization. Serialized per device via the backend's

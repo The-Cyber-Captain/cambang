@@ -146,13 +146,70 @@ constexpr bool seam_reconfiguration_permitted(const SeamClaims& c,
   return seam_reconfiguration_blocking_claims(c, requester, own) == 0;
 }
 
-// May the seam's native object be REPLACED by this claimant -- retired and
-// re-created, ending one seam and beginning another?
+// Claims that would be disturbed by a PRESERVING REPROVISION, excluding the
+// asker's own. Only in-flight captures count; see below for why.
+constexpr uint32_t seam_reprovision_blocking_claims(const SeamClaims& c,
+                                                    SeamClaimant requester,
+                                                    OwnClaim own) noexcept {
+  const SeamClaims others = detail::without_own_claim(c, requester, own);
+  return others.capture_refs;
+}
+
+// May the seam be REPROVISIONED by this claimant?
 //
-// Unlike a geometry change this destroys the object, so every claimant counts,
-// including the capture parent: a primed seam that vanished under Core would
-// leave it believing a seam exists when none does. The asker's own claim is
-// still discounted on the same terms as above.
+// A reprovision is a capture-session reconfiguration that CARRIES EVERY OTHER
+// CLAIMANT'S OUTPUT INTO THE NEW CONFIGURATION. The native object is replaced,
+// but nothing else's needs are dropped: a stream is interrupted, not discarded,
+// and resumes at its own geometry on the far side.
+//
+// That is a third shape, and the reason it needs its own question.
+// seam_reconfiguration_permitted above covers an in-place change and a
+// replacement together, which is right while both destroy what the other
+// claimant depended on. Here the other claimant survives, so a live stream is
+// not a reason to refuse.
+//
+// WHAT BLOCKS IT, and what does not:
+//
+//   * A STREAM does not block. It gaps while the session is swapped and comes
+//     back at its own geometry, so the reprovision costs it frames, not its
+//     configuration. Whether that gap is acceptable is a PRIORITY decision and
+//     belongs to Core (arbitration_policy.md §2), not here -- this header only
+//     answers whether the operation is coherent.
+//   * An IN-FLIGHT CAPTURE blocks. Its request is bound to the session being
+//     replaced, so the image it is waiting for would never arrive. No amount of
+//     carrying outputs forward saves a request that was already submitted.
+//   * The CAPTURE PARENT does not block, on the same grounds as reconfiguration:
+//     the retained-profile claim exists to shape the seam, and a reprovision
+//     reports the destroyed/created pair, so Core is never left believing a
+//     primed seam exists when none does.
+//
+// The asker's own claim is discounted on exactly the terms used above.
+//
+// THE PRESERVING PRECONDITION IS ASSERTED BY THE CALLER, NOT CHECKED HERE. This
+// header knows three counts; it cannot see whether outputs were actually carried
+// forward. A provider that asks this question and then drops another claimant's
+// output has violated the contract, not found a loophole, and
+// provider_compliance_verify binds that.
+//
+// WHY THE TWO QUESTIONS ARE NOT INTERCHANGEABLE. They map onto real and
+// different backend constraints. A WinRT MediaFrameSource carries one active
+// format shared by every reader, so a geometry change genuinely takes the
+// stream's configuration away -- WinRT cannot preserve, and keeps asking
+// seam_reconfiguration_permitted. A Camera2 session can hold a stream output and
+// a still output at different geometries, so it can preserve, and asks this.
+// Reaching for this question on a backend that cannot preserve would be a lie
+// with no symptom until a caller's stream came back wrong.
+//
+// NOT AN ALTERNATIVE: releasing another claimant's reference around the
+// operation so the raw counts permit it. That falsifies the counts while the
+// claimant still depends on the seam, and opens a window in which a third party
+// could tear it down outright. The counts being true is what this header is for.
+constexpr bool seam_reprovision_permitted(const SeamClaims& c,
+                                          SeamClaimant requester,
+                                          OwnClaim own) noexcept {
+  return seam_reprovision_blocking_claims(c, requester, own) == 0;
+}
+
 // May the seam be torn down outright -- destroyed with nothing put in its
 // place?
 //

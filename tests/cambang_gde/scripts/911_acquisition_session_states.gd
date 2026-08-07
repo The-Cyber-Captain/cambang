@@ -39,7 +39,7 @@ const SCENE_LABEL := "911_acquisition_session_states"
 #                ACAMERA_LENS_FACING; camera 1 is front)
 #   "windows" -- WinRT. Ids are machine-specific symbolic links and cannot be
 #                written into a constant, so the device is picked by name.
-const TARGET := "s20plus"
+const TARGET := "windows"
 const S20PLUS_CAMERA_ID := "0"
 const WINDOWS_NAME_HINT := "eMeet"
 
@@ -50,6 +50,11 @@ const GEOM_B := Vector2i(640, 480)
 # mode. An unattended run will sit at the first gate until the harness timeout
 # kills it and classifies it an error, which is the honest outcome -- this scene
 # reports what a person saw, so with nobody watching it has nothing to report.
+
+# Rows of the running results list kept on screen. Bounded so the list cannot
+# grow into the framing above it.
+const RESULT_ROWS_SHOWN := 6
+
 const CAPTURE_SETTLE_MS := 8000
 const STREAM_LIVE_MS := 5000
 const SETTLE_PAUSE_SEC := 1.0
@@ -272,9 +277,17 @@ func _record(name: String, expect: Expect, err: int, note: String) -> void:
 		verdict,
 		("  -- " + note) if note != "" else "",
 	])
+	# Only the most recent rows are shown. A Label's minimum height is driven by
+	# its content, so an unbounded list grows until it crowds the framing off the
+	# screen -- which it did, by the later states. The full sequence is in the
+	# log; the panel only needs enough to see where you are.
 	var lines := []
 	for s in _steps:
 		lines.append("%s  %s (%s)" % [s["verdict"], s["name"], s["got"]])
+	if lines.size() > RESULT_ROWS_SHOWN:
+		var hidden := lines.size() - RESULT_ROWS_SHOWN
+		lines = lines.slice(hidden)
+		lines.insert(0, "... %d earlier row(s), see the log" % hidden)
 	%ResultsLabel.text = "\n".join(lines)
 
 
