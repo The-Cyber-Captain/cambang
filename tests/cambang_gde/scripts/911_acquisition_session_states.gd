@@ -39,7 +39,7 @@ const SCENE_LABEL := "911_acquisition_session_states"
 #                ACAMERA_LENS_FACING; camera 1 is front)
 #   "windows" -- WinRT. Ids are machine-specific symbolic links and cannot be
 #                written into a constant, so the device is picked by name.
-const TARGET := "windows"
+const TARGET := "s20plus"
 const S20PLUS_CAMERA_ID := "0"
 const WINDOWS_NAME_HINT := "eMeet"
 
@@ -370,6 +370,14 @@ func _ready() -> void:
 	_clear_slots()
 	%StepLabel.text = "starting"
 	CamBANGServer.start(CamBANGServer.PROVIDER_KIND_PLATFORM_BACKED)
+
+	# Everything the provider enumerated, before any target matching. Neither the
+	# Camera2 nor the WinRT provider logs its endpoint list, so without this the
+	# only way to know what a device offers is to already know.
+	for ep in CamBANGServer.enumerate_devices():
+		if typeof(ep) == TYPE_DICTIONARY:
+			_log("enumerated: hardware_id=%s name=%s" % [
+				str(ep.get("hardware_id", "?")), str(ep.get("name", "?"))])
 
 	_hardware_id = await _resolve_device_id()
 	if _hardware_id == "":
