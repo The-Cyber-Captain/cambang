@@ -21,14 +21,19 @@
 //     subset that happens to expose RGBA.
 //
 //   - Outputs are fixed at session creation. A Camera2 capture session
-//     declares its whole output set up front; adding an output means tearing
-//     the session down and rebuilding it, which cancels any repeating
-//     request. start_stream therefore provisions the still output alongside
-//     the stream output at the *same* geometry, so still capture while
-//     streaming works at the stream's geometry, and a capture that needs a
-//     different geometry while a stream is producing is refused
-//     (ERR_PLATFORM_CONSTRAINT) rather than glitching the live stream. That
-//     refusal is a session-configuration constraint, not a shortcut.
+//     declares its whole output set up front; adding an output means replacing
+//     the session, which cancels any repeating request. start_stream therefore
+//     provisions the still output alongside the stream output at the RETAINED
+//     still geometry where Core has given one, so a later capture at that
+//     geometry costs nothing.
+//
+//     A capture at a geometry no output was declared for still needs the
+//     session replaced. That is a REPROVISION, not a refusal: the new session
+//     carries the live stream's output forward at its own geometry, the stream
+//     gaps while the swap happens, and submit_repeating_request_ restores its
+//     flow. Killing the stream instead was the old behaviour and was wrong --
+//     the hardware can serve both, so the stream only ever died for want of a
+//     prediction. See acquisition_coexistence() and ensure_session_configured_.
 //
 //   - Metadata is genuinely realized. Camera2 capture *result* metadata
 //     reports what the sensor actually did for that exact frame, not the
@@ -190,7 +195,7 @@ public:
   // Camera2's answer follows from "outputs are fixed at session creation" (see
   // the backend note at the top of this file): a session can hold a stream
   // output and a still output at different geometries perfectly well, but it
-  // cannot GAIN one without being rebuilt, and the rebuild cancels the
+  // cannot GAIN one without being reprovisioned, and that cancels the
   // repeating request. So the cost is a function of the session's currently
   // realized output set, not of the geometries alone.
   AcquisitionCoexistence acquisition_coexistence(

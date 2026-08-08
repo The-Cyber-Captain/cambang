@@ -820,7 +820,7 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   // sync_capture_parent_priming. Kept so a stream starting afterwards can
   // declare the still output at the geometry captures will actually ask for
   // rather than at the stream's own -- outputs are fixed at session creation,
-  // so a still geometry not declared then costs a rebuild later. Zero means
+  // so a still geometry not declared then costs a reprovision later. Zero means
   // Core has retained nothing and the stream's geometry is the best guess
   // available.
   uint32_t retained_still_w = 0;
@@ -3506,10 +3506,10 @@ ProviderResult Camera2CameraProvider::start_stream(
   // Provision the still output alongside the stream, AT THE RETAINED STILL
   // GEOMETRY where Core has given us one. Outputs are fixed at session
   // creation, so whichever still geometry is declared here is the one a capture
-  // can later use without rebuilding the session and dropping this stream. The
+  // can later use without reprovisioning the session. The
   // stream's own geometry is the fallback, and it is only ever a guess -- it was
   // the unconditional choice before, which is precisely why a capture at any
-  // other geometry needed a rebuild.
+  // other geometry needed a reprovision.
   uint32_t still_w = profile.width;
   uint32_t still_h = profile.height;
   {
@@ -5649,7 +5649,7 @@ ProviderResult Camera2CameraProvider::validate_and_admit_submission_locked_(
       //
       // What is still guarded is this provider's own invariant: the session
       // output set. If the geometry asked for is not in the realized session,
-      // the capture path rebuilds it (see ensure_seam_realized_), which is what
+      // the capture path reprovisions it (see ensure_seam_realized_), which is what
       // the coexistence answer promised when it said Reconfigure.
       if (req.still_image_bundle.members.size() > 1) {
         if (req.still_image_bundle.members.size() > kMaxBracketMembers) {
@@ -5760,7 +5760,7 @@ ProviderResult Camera2CameraProvider::sync_capture_parent_priming(const CaptureR
   // Remember the retained geometry before realizing. A stream started later
   // reads it so the session it builds already carries the still output captures
   // will ask for, which is what lets a differing still coexist with a stream on
-  // this backend instead of costing a rebuild.
+  // this backend instead of costing a reprovision.
   {
     std::lock_guard<std::mutex> bl(backend->m);
     backend->retained_still_w = req.width;

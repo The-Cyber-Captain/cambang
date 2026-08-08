@@ -11,7 +11,8 @@
 //   - android_camera2 fixes a session's whole output set at creation, so the
 //     question is only answerable of a SET. A session may hold a stream output
 //     and a still output at different geometries; what it cannot do is gain an
-//     output without a rebuild, and a rebuild cancels the repeating request.
+//     output without reprovisioning it, and that cancels the repeating
+//     request.
 //   - windows_winrt shares one active MediaFrameFormat across every reader on a
 //     MediaFrameSource, so on a shared-pin device two geometries genuinely
 //     cannot be live at once and something must yield.
@@ -30,9 +31,9 @@
 // of getting there from the device's current configuration -- the same set can
 // be free to reach from one state and disturbing to reach from another. On
 // Camera2 that is the difference between a still output declared when the
-// session was built and one that needs a rebuild to add. So a provider answers
-// from its own live session state as well as from static characteristics, which
-// is still no backend I/O: both are already in hand.
+// session was built and one that needs a reprovision to add. So a provider
+// answers from its own live session state as well as from static
+// characteristics, which is still no backend I/O: both are already in hand.
 //
 // NO I/O. Answering must not touch the backend: brief §2 forbids I/O in a
 // capability query on the core thread, and Core consults this at profile-set,
