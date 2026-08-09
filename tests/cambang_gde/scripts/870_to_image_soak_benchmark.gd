@@ -167,6 +167,18 @@ const PHASE_DONE := "done"
 const ACQ_PROBE_BUNDLE_LABEL := "ev5_-2_-1_0_1_2"
 
 const SETTLEMENT_PROBE_SETTLE_TIMEOUT_US := 2500000
+# The probe follows the last benchmark phase immediately, and phases advance on
+# a timer rather than on their captures draining. Triggering straight away
+# therefore raced the tail of the previous phase: the per-device single-capture
+# rule refused the probe's own trigger, and the probe reported that refusal as
+# a failure to deliver a payload. Measured as a coin toss on hardware -- five
+# consecutive runs of one configuration returned 5,5 / 0,0 / 5,5 / 0,5 / 0,0,
+# the asymmetric case being one device drained and the other not.
+#
+# So wait for the devices to go idle first, bounded. Generous against the
+# ~250ms per still measured on the slowest handset here, because expiring this
+# reintroduces the very race it exists to remove.
+const SETTLEMENT_PROBE_DRAIN_TIMEOUT_US := 10000000
 const LOAD_PROFILE_HUMAN := "human"
 const LOAD_PROFILE_ELEVATED := "elevated"
 const LOAD_PROFILE_SUPERHUMAN := "superhuman"
@@ -284,6 +296,11 @@ var _acq_probe_attempted := false
 var _acq_probe_stage := ""
 var _acq_probe_started_us := 0
 var _acq_probe_settle_started_us := 0
+var _acq_probe_drain_deadline_us := 0
+# True when the devices were still busy when the drain bound expired and the
+# probe triggered anyway. Recorded rather than hidden: it means the probe's
+# result was taken under the conditions the drain exists to avoid.
+var _acq_probe_drain_expired := false
 var _acq_probe_settle_deadline_us := 0
 var _acq_probe_bundle_label := ""
 var _acq_probe_required_member_count := 0
@@ -1239,8 +1256,13 @@ func _begin_next_bundle() -> void:
 func _begin_acquisition_session_settlement_probe() -> void:
 	_acq_probe_attempted = true
 	_state = PHASE_SETTLEMENT_PROBE
-	_acq_probe_stage = "capture"
+	# Starts in "drain", not "capture": the previous phase's captures may still
+	# be in flight, and triggering into them is refused by the per-device
+	# single-capture rule. See SETTLEMENT_PROBE_DRAIN_TIMEOUT_US.
+	_acq_probe_stage = "drain"
 	_acq_probe_started_us = _now_us()
+	_acq_probe_drain_deadline_us = _acq_probe_started_us + SETTLEMENT_PROBE_DRAIN_TIMEOUT_US
+	_acq_probe_drain_expired = false
 	_acq_probe_settle_started_us = 0
 	_acq_probe_settle_deadline_us = 0
 	_acq_probe_bundle_label = str(_current_bundle.get("label", ""))
@@ -1249,7 +1271,9 @@ func _begin_acquisition_session_settlement_probe() -> void:
 	if _acq_probe_bundle_label != ACQ_PROBE_BUNDLE_LABEL or _acq_probe_required_member_count != 5:
 		_fail("settlement probe failed: EV5 bundle was not active at probe start")
 		return
-	_freeze_benchmark_metrics()
+	# NOT frozen here any more. The drain that follows is the tail of the last
+	# benchmark phase's real work, so freezing before it would stop counting
+	# work the benchmark did. Frozen at the drain -> capture transition instead.
 	var reports := _backing_plan_acquisition_session_reports_summary(
 		CamBANGServer.get_synthetic_metrics_snapshot())
 	for device_key in [DEV_A, DEV_B]:
@@ -1276,9 +1300,7 @@ func _begin_acquisition_session_settlement_probe() -> void:
 				continue
 			_acq_probe_devices[device_key]["acquisition_session_id"] = int(report.get("acquisition_session_id", 0))
 			break
-	for device_key in [DEV_A, DEV_B]:
-		_queue_settlement_probe_capture(device_key)
-	_log("settlement probe start: bundle=%s required_members=%d" % [
+	_log("settlement probe start: bundle=%s required_members=%d (draining)" % [
 		_acq_probe_bundle_label,
 		_acq_probe_required_member_count,
 	])
@@ -1286,6 +1308,27 @@ func _begin_acquisition_session_settlement_probe() -> void:
 
 func _poll_acquisition_session_settlement_probe() -> void:
 	if not _acq_probe_attempted or _done:
+		return
+	if _acq_probe_stage == "drain":
+		var busy := _acq_probe_devices_still_capturing()
+		if not busy.is_empty() and _now_us() < _acq_probe_drain_deadline_us:
+			return
+		if not busy.is_empty():
+			# Triggering anyway rather than failing: the probe's job is to
+			# report what the seam did, and refusing to run it would replace one
+			# uninformative result with another. Recorded so a reader knows the
+			# result was taken in the condition the drain exists to avoid.
+			_acq_probe_drain_expired = true
+			_log("settlement probe: %s still capturing after %.2fs drain; triggering anyway" % [
+				", ".join(busy),
+				float(SETTLEMENT_PROBE_DRAIN_TIMEOUT_US) / 1000000.0,
+			])
+		# Frozen here rather than at probe start: the drain is the tail of the
+		# last benchmark phase's own work and belongs in its metrics.
+		_freeze_benchmark_metrics()
+		for device_key in [DEV_A, DEV_B]:
+			_queue_settlement_probe_capture(device_key)
+		_acq_probe_stage = "capture"
 		return
 	if _acq_probe_stage == "capture":
 		if not _acq_probe_all_captures_finished():
@@ -1297,7 +1340,56 @@ func _poll_acquisition_session_settlement_probe() -> void:
 	if _acq_probe_stage != "settle":
 		return
 	if _acq_probe_all_devices_settled() or _now_us() >= _acq_probe_settle_deadline_us:
+		var undelivered := _acq_probe_devices_missing_payload()
+		if not undelivered.is_empty():
+			_fail("settlement probe delivered no payload: %s (required_members=%d)" % [
+				", ".join(undelivered), _acq_probe_required_member_count])
+			return
 		_finish(0, false, _finish_reason_with_skips("complete"))
+
+
+# Devices whose probe capture did not hand back and materialise every member it
+# was asked for, described one per device for the failure message.
+#
+# This is a payload question, not a settlement question. A capture that returned
+# all five members but whose evaluator has not settled is NOT listed here: the
+# images were delivered, and the evaluator is a separate, pre-existing condition
+# on every platform-backed run.
+func _acq_probe_devices_missing_payload() -> Array:
+	var missing := []
+	if not _acq_probe_attempted:
+		return missing
+	for device_key in [DEV_A, DEV_B]:
+		var entry_v = _acq_probe_devices.get(device_key, {})
+		if typeof(entry_v) != TYPE_DICTIONARY:
+			missing.append("%s=no_probe_record" % device_key)
+			continue
+		var entry: Dictionary = entry_v
+		var returned := int(entry.get("returned_member_count", 0))
+		var materialized := int(entry.get("materialized_member_count", 0))
+		if not bool(entry.get("capture_complete", false)) or bool(entry.get("capture_failed", false)):
+			missing.append("%s=capture_failed(returned=%d)" % [device_key, returned])
+		elif returned < _acq_probe_required_member_count:
+			missing.append("%s=returned_%d_of_%d" % [
+				device_key, returned, _acq_probe_required_member_count])
+		elif materialized < _acq_probe_required_member_count:
+			missing.append("%s=materialised_%d_of_%d" % [
+				device_key, materialized, _acq_probe_required_member_count])
+	return missing
+
+
+# Device keys with a capture still in flight from the phases that preceded the
+# probe. Reads the scene's own per-device counter, which is the same tally the
+# normal capture path gates on -- the probe previously bypassed it entirely.
+func _acq_probe_devices_still_capturing() -> Array:
+	var busy := []
+	for device_key in [DEV_A, DEV_B]:
+		var info_v = _devices.get(device_key, {})
+		if typeof(info_v) != TYPE_DICTIONARY:
+			continue
+		if int((info_v as Dictionary).get("inflight_captures", 0)) > 0:
+			busy.append(device_key)
+	return busy
 
 
 func _acq_probe_all_captures_finished() -> bool:
@@ -1353,15 +1445,20 @@ func _queue_settlement_probe_capture(device_key: String) -> void:
 	var info: Dictionary = _devices[device_key]
 	var device = info.get("device", null)
 	if device == null:
-		_acq_probe_mark_capture_failure(device_key, "capture_failed")
+		_acq_probe_mark_capture_failure(device_key, "no_device_object")
 		return
 	var baseline_capture_id := _device_last_capture_id(device_key)
 	var trigger_start := _now_us()
 	var err := int(device.trigger_capture())
 	var trigger_end := _now_us()
 	if err != OK:
-		_acq_probe_mark_capture_failure(device_key, "capture_failed")
+		_acq_probe_mark_capture_failure(device_key, "trigger_refused")
 		_acq_probe_devices[device_key]["capture_error"] = err
+		# Logged as well as recorded: a probe failure whose reason lives only in
+		# the summary JSON is invisible to anyone reading the run log, and this
+		# is the line that says whether the probe was refused or the device was
+		# missing.
+		_log("settlement probe trigger refused on %s: %s" % [device_key, error_string(err)])
 		return
 	info["inflight_captures"] = int(info.get("inflight_captures", 0)) + 1
 	_devices[device_key] = info
@@ -1370,7 +1467,14 @@ func _queue_settlement_probe_capture(device_key: String) -> void:
 		"device_key": device_key,
 		"device": device,
 		"device_id": int(info.get("device_id", 0)),
-		"request_us": _acq_probe_started_us,
+		# The capture's own CAPTURE_TIMEOUT_US budget runs from when it was
+		# TRIGGERED, not from when the probe began. The probe now drains the
+		# previous phase first, and charging that wait to the capture left a
+		# 5-member bracket on a slow handset with too little of its budget to
+		# finish -- a timeout that reads identically to a capture that failed.
+		# The ordinary capture path uses trigger_start for the same reason.
+		"request_us": trigger_start,
+		"probe_started_us": _acq_probe_started_us,
 		"trigger_start_us": trigger_start,
 		"trigger_end_us": trigger_end,
 		"trigger_call_us": trigger_end - trigger_start,
@@ -2228,7 +2332,11 @@ func _poll_one_capture_job(job: Dictionary) -> bool:
 	var now := _now_us()
 	if now - int(job.get("request_us", 0)) > CAPTURE_TIMEOUT_US:
 		if bool(job.get("is_settlement_probe", false)):
-			_acq_probe_mark_capture_failure(str(job.get("device_key", "")), "capture_failed")
+			# Named apart from the trigger-time failures. All three used to
+			# report "capture_failed", so a probe that was refused, a probe with
+			# no device, and a probe whose capture ran out of time were
+			# indistinguishable in the record.
+			_acq_probe_mark_capture_failure(str(job.get("device_key", "")), "capture_timeout")
 			_acq_probe_devices[str(job.get("device_key", ""))]["capture_timeout_us"] = now - int(job.get("request_us", 0))
 		_release_device_capture_inflight(str(job.get("device_key", "")))
 		_record_sample("device_capture", {
@@ -3262,6 +3370,11 @@ func _acquisition_session_settlement_probe_summary(synthetic_metrics: Variant) -
 		"bundle_label": _acq_probe_bundle_label,
 		"required_member_count": _acq_probe_required_member_count,
 		"settle_timeout_us": SETTLEMENT_PROBE_SETTLE_TIMEOUT_US,
+		"drain_timeout_us": SETTLEMENT_PROBE_DRAIN_TIMEOUT_US,
+		# True means the devices had not gone idle when the drain bound expired
+		# and the probe triggered into them anyway, so any capture_failed below
+		# may be the per-device single-capture rule rather than the seam.
+		"drain_expired": _acq_probe_drain_expired,
 		"settle_started_us": _acq_probe_settle_started_us,
 		"settle_deadline_us": _acq_probe_settle_deadline_us,
 		"devices": [],
@@ -3302,6 +3415,14 @@ func _acquisition_session_settlement_probe_summary(synthetic_metrics: Variant) -
 			"live_observed_capture_id": live_observed_capture_id,
 			"live_observed_source_bundle_label": live_observed_source_bundle_label,
 			"trigger_status": str(entry.get("trigger_status", "")),
+			# The error trigger_capture() actually returned, -1 when it was
+			# never called or returned OK. Without this a refused trigger and a
+			# missing device object are indistinguishable in the record: both
+			# leave trigger_status=capture_failed and capture_id=0, and the
+			# reason for a probe failure could not be recovered afterwards.
+			"trigger_error": int(entry.get("capture_error", -1)),
+			"trigger_error_name": (error_string(int(entry.get("capture_error", OK)))
+				if entry.has("capture_error") else "not_called_or_ok"),
 			"capture_complete": bool(entry.get("capture_complete", false)),
 			"capture_failed": bool(entry.get("capture_failed", false)),
 			"returned_member_count": int(entry.get("returned_member_count", 0)),
@@ -3324,6 +3445,14 @@ func _acquisition_session_settlement_probe_summary(synthetic_metrics: Variant) -
 func _acq_probe_settlement_status(entry: Dictionary, report: Dictionary) -> String:
 	if not _acq_probe_attempted:
 		return "probe_not_attempted"
+	# A device that cannot supply the bracket bundle skips the probe entirely.
+	# The skip path still sets _acq_probe_attempted, so without this branch every
+	# skipped run reported capture_failed for a capture that was never fired --
+	# a device with no bracketing looked identical to one whose bracket capture
+	# collapsed. Quest 3 and the WinRT host both skip, and both were being
+	# reported as failures.
+	if _skipped_bundle_labels.has(ACQ_PROBE_BUNDLE_LABEL):
+		return "skipped_bundle_unsupported"
 	if not bool(entry.get("capture_complete", false)):
 		return "capture_failed"
 	if bool(entry.get("capture_failed", false)):
@@ -3355,6 +3484,11 @@ func _acq_probe_attribution_status(
 		settlement_status: String) -> String:
 	if not _acq_probe_attempted:
 		return "probe_not_attempted"
+	# Same skip path as _acq_probe_settlement_status: no capture was fired, so
+	# there is nothing to attribute. Reporting no_live_report here said the
+	# evaluator had gone quiet, when in fact nothing had ever asked it anything.
+	if _skipped_bundle_labels.has(ACQ_PROBE_BUNDLE_LABEL):
+		return "skipped_bundle_unsupported"
 	if report.is_empty():
 		return "no_live_report"
 	var probe_capture_id := int(entry.get("capture_id", 0))
@@ -3421,6 +3555,12 @@ func _run_quality_warnings_summary(
 		var device: Dictionary = device_v
 		var settlement_status := str(device.get("settlement_status", ""))
 		if settlement_status == "evaluator_settled":
+			continue
+		# A skipped probe is not an unsettled evaluator. Without this the warning
+		# below fired on every run that skipped the bracket bundle -- two per
+		# Quest 3 and WinRT run -- reporting an evaluator that had never been
+		# asked anything as one that failed to settle.
+		if settlement_status == "skipped_bundle_unsupported":
 			continue
 		var report_v: Variant = device.get("report", {})
 		var report: Dictionary = report_v if typeof(report_v) == TYPE_DICTIONARY else {}

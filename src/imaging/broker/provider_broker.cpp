@@ -221,6 +221,19 @@ bool ProviderBroker::supports_multi_image_still_sequence() const noexcept {
              : false;
 }
 
+AcquisitionCoexistence ProviderBroker::acquisition_coexistence(
+    uint64_t device_instance_id,
+    const AcquisitionUseSet& proposed) noexcept {
+  ActiveProviderCall call;
+  if (!acquire_active_provider_call_(call).ok()) {
+    // No active provider means no device and nothing running on it, so there is
+    // nothing this could disturb. Unsupported would be a claim about hardware
+    // that is not there to make claims about.
+    return AcquisitionCoexistence::coexist();
+  }
+  return call.provider()->acquisition_coexistence(device_instance_id, proposed);
+}
+
 namespace {
 
 // With no active provider there is nothing to advertise. A default-constructed

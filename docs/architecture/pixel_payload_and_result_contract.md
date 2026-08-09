@@ -1232,6 +1232,43 @@ benchmark-tuning subsystem.
 Single-candidate supported non-ready paths retain their provisional
 non-ready classification after calibration rather than being automatically
 promoted or demoted merely because they are alone.
+
+### 11.7.1 The evidence channel is success-only
+
+Backing Plan evaluation decides against two inputs, and they are not the same
+kind of thing:
+
+1. **The candidate set** comes from the provider's declared
+   `ProducerBackingCapabilities`. It is an assertion by the provider, filtered
+   through `viable(posture)`. Nothing measures it.
+2. **The ranking between candidates** comes from access-cost observations —
+   `to_image` classification, materialization elapsed time, normalized cost
+   units — produced by retained-result access calibration.
+
+Calibration only ever runs on a result that was **delivered**. A capture that
+produces no payload produces no observation of any kind: there is nothing to
+materialize, nothing to time, and nothing to classify.
+
+**Evaluation can therefore learn that a candidate is expensive, but never that
+it is broken.** A posture that reliably fails to deliver is silent rather than
+costly, and silence is indistinguishable from "not yet measured". Evaluation
+cannot probe its way off a non-functional candidate, because the failure
+generates no evidence to move against.
+
+This is a live gap, not a resolved design point. It does not arise on a
+provider advertising a single viable posture — `ordered_count == 1` settles the
+plan before any capture runs, so no evidence is consulted at all (Camera2 is
+such a provider today: CPU-backed only). It becomes reachable on any provider
+advertising two or more viable postures where one of them does not work.
+
+Two consequences worth holding in mind when that case arrives:
+
+- A provider must not declare a posture viable that it cannot actually deliver
+  through. Declaration is the only gate; there is no measurement behind it.
+- Any future remedy has to introduce negative evidence deliberately — a
+  delivery failure attributed to a posture — rather than expecting the existing
+  cost-observation channel to carry it.
+
 ---
 
 ## 12. “Useful display” tiers

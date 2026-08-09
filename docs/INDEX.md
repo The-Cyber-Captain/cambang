@@ -17,6 +17,7 @@ other documents.
 - `provider_implementation_brief.md`
 - `core_runtime_model.md`
 - `arbitration_policy.md`
+- `capture_identity_and_lifecycle.md` (design intent; not yet implemented — see its §0 and §9)
 - `state_snapshot.md`
 - `camera_fact_model.md`
 - `naming.md`

@@ -12,28 +12,53 @@ bool same_retained_plan(CoreRetainedProductionPlan a,
   return a.valid == b.valid && (!a.valid || a.posture == b.posture);
 }
 
+// A stop Core asked for, whichever of its two reasons. Both must survive a
+// stale provider start fact arriving afterwards, and neither may be reported as
+// a provider failure.
+bool is_core_directed_stop(CoreStreamRegistry::StopOrigin origin) noexcept {
+  return origin == CoreStreamRegistry::StopOrigin::User ||
+         origin == CoreStreamRegistry::StopOrigin::Preemption;
+}
+
 void apply_stream_started(CoreStreamRegistry::StreamRecord& rec, uint64_t access_posture_epoch) noexcept {
   rec.started = true;
   rec.last_error_code = 0;
   rec.last_stop_origin = CoreStreamRegistry::StopOrigin::None;
   rec.stop_requested_by_core = false;
+  rec.preemption_requested_by_core = false;
   rec.access_posture_epoch = access_posture_epoch;
+  rec.frame_resume_deadline_ns = 0;
 }
 
 void apply_stream_stopped(CoreStreamRegistry::StreamRecord& rec,
                           uint32_t error_code,
                           CoreStreamRegistry::StopOrigin origin) noexcept {
+  // Preemption is decided first and wins over the user-stop latch: the stop was
+  // requested by Core, so every signal the latch reads is also true of it, and
+  // reading them first would relabel every preemption as a caller stop.
+  const bool preempted = rec.preemption_requested_by_core ||
+      origin == CoreStreamRegistry::StopOrigin::Preemption ||
+      (!rec.started && rec.last_stop_origin == CoreStreamRegistry::StopOrigin::Preemption);
+
   const bool latch_user_stop = origin == CoreStreamRegistry::StopOrigin::User ||
       rec.stop_requested_by_core ||
       (!rec.started && rec.last_stop_origin == CoreStreamRegistry::StopOrigin::User);
 
   rec.started = false;
   rec.last_error_code = error_code;
-  rec.last_stop_origin = latch_user_stop
-      ? CoreStreamRegistry::StopOrigin::User
-      : CoreStreamRegistry::StopOrigin::Provider;
+  if (preempted) {
+    rec.last_stop_origin = CoreStreamRegistry::StopOrigin::Preemption;
+  } else {
+    rec.last_stop_origin = latch_user_stop
+        ? CoreStreamRegistry::StopOrigin::User
+        : CoreStreamRegistry::StopOrigin::Provider;
+  }
   rec.stop_requested_by_core = false;
+  rec.preemption_requested_by_core = false;
   rec.access_posture_epoch = 0;
+  // A stopped stream is owed no frames. Leaving the expectation armed would
+  // report a stream failed for not resuming after it had legitimately stopped.
+  rec.frame_resume_deadline_ns = 0;
 }
 
 void increment_saturating(uint32_t& value) noexcept {
@@ -127,10 +152,11 @@ bool CoreStreamRegistry::on_provider_stream_started(uint64_t stream_id) {
     --rec.pending_core_start_facts;
     return true;
   }
-  if (!rec.started && rec.last_stop_origin == StopOrigin::User) {
+  if (!rec.started && is_core_directed_stop(rec.last_stop_origin)) {
     // A provider start fact can be delayed behind a newer core-directed stop.
-    // Without an operation token in the provider callback, the retained user-stop
-    // truth is the newer state and must not be overwritten by this stale fact.
+    // Without an operation token in the provider callback, the retained
+    // core-stop truth is the newer state and must not be overwritten by this
+    // stale fact. Applies to a preemption exactly as to a user stop.
     return true;
   }
   apply_stream_started(rec, allocate_access_posture_epoch());
@@ -165,11 +191,61 @@ bool CoreStreamRegistry::mark_stop_requested_by_core(uint64_t stream_id) {
   return true;
 }
 
+bool CoreStreamRegistry::mark_stop_requested_by_core_for_preemption(uint64_t stream_id) {
+  auto it = streams_.find(stream_id);
+  if (it == streams_.end()) return false;
+  it->second.stop_requested_by_core = true;
+  it->second.preemption_requested_by_core = true;
+  return true;
+}
+
+bool CoreStreamRegistry::arm_frame_resumption(uint64_t stream_id, uint64_t deadline_ns) {
+  auto it = streams_.find(stream_id);
+  if (it == streams_.end()) return false;
+  it->second.frame_resume_deadline_ns = deadline_ns;
+  return true;
+}
+
+std::optional<uint64_t> CoreStreamRegistry::next_frame_resumption_delay_ns(
+    uint64_t now_ns) const noexcept {
+  std::optional<uint64_t> soonest;
+  for (const auto& [stream_id, rec] : streams_) {
+    (void)stream_id;
+    if (rec.frame_resume_deadline_ns == 0) {
+      continue;
+    }
+    const uint64_t delay_ns = rec.frame_resume_deadline_ns <= now_ns
+        ? 0ull
+        : rec.frame_resume_deadline_ns - now_ns;
+    if (!soonest.has_value() || delay_ns < *soonest) {
+      soonest = delay_ns;
+    }
+  }
+  return soonest;
+}
+
+std::vector<uint64_t> CoreStreamRegistry::take_expired_frame_resumptions(uint64_t now_ns) {
+  std::vector<uint64_t> expired;
+  for (auto& [stream_id, rec] : streams_) {
+    if (rec.frame_resume_deadline_ns == 0 || now_ns < rec.frame_resume_deadline_ns) {
+      continue;
+    }
+    rec.frame_resume_deadline_ns = 0;
+    expired.push_back(stream_id);
+  }
+  return expired;
+}
+
+// Disarming lives HERE, in the one place every frame path reaches, rather than
+// at the call sites. There are three of them today -- the dispatcher's normal
+// path and two suppression paths -- and a fourth added later would silently miss
+// a disarm placed anywhere else, leaving a healthy stream to be reported failed.
 bool CoreStreamRegistry::on_frame_received(uint64_t stream_id, uint64_t integrated_ts_ns) {
   auto it = streams_.find(stream_id);
   if (it == streams_.end()) return false;
   it->second.frames_received++;
   it->second.last_frame_ts_ns = integrated_ts_ns;
+  it->second.frame_resume_deadline_ns = 0;
   return true;
 }
 

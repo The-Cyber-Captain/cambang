@@ -68,11 +68,92 @@ ways:
 `AcquisitionSession` is therefore a **truth boundary**, not a promise that every
 backend API uses the same noun or hierarchy natively.
 
-Implementation-scope reminder:
+The seam is retained while references to it remain live. Three claimants can
+hold one independently:
 
-- `SyntheticProvider` currently realizes `AcquisitionSession` truth for both
-  stream-backed and capture-only paths
-- the seam is retained while stream and/or capture references remain live
+| Claimant | Taken | Released |
+|---|---|---|
+| Stream | when a stream's session realization is requested | when the stream is stopped |
+| Capture | at capture **admission** | when that capture reaches a terminal outcome |
+| Capture parent | at retained-profile set | at explicit release |
+
+A capture retains at admission rather than at execution, so its seam is
+governed from the moment the capture is accepted rather than being whatever an
+earlier operation left behind.
+
+### Creation is the mechanism, not warming
+
+The seam is **created when none is in place**. That is the whole operation, and
+it has two equally first-class triggers: a retained-profile set on a device that
+has no seam, and a capture on a device that has no seam. Neither is a fallback
+for the other, and neither is an optimisation — a capture cannot proceed without
+a seam, so creating one is a precondition being met, not a cost being avoided.
+
+Describing this as "priming" or "warming" invites two mistakes that have both
+been made in this codebase: treating the profile-set path as optional
+nice-to-have, and treating the resulting seam as disposable. It is neither.
+
+Two rules follow:
+
+* **Creating follows the retained shape.** A seam already being in place does
+  not make the request satisfied: on the engage path the seam is necessarily
+  created from the provider's capture template, because a caller's retained
+  still profile can only be applied once the device has an instance id. The
+  seam must follow the retained profile when it arrives, or every capture pays
+  a rebuild to reach the geometry the caller asked for before engaging.
+  What must not be destroyed is a session a **live claimant** depends on, and
+  the reference check is what enforces that — not a blanket refusal to
+  re-create.
+* **Releasing a claim never destroys the seam.** Zero references makes teardown
+  permitted, not mandatory. Core holds the capture-parent claim for as long as
+  the retained still profile stands — `CoreRuntime::sync_capture_parent_priming_`
+  marks the hold active and returns, and the releases live in
+  `refresh_capture_retained_plan_state_` and
+  `rehome_capture_retained_plan_parent_state_` — so a release means the profile
+  is changing or going away, not that the seam should go with it.
+
+### Identity across reconfiguration
+
+References govern when teardown is **permitted**. They do not make the seam
+survive a genuine reconfiguration.
+
+Where a backend's native session object is 1:1 with the seam, changing the
+output set destroys one seam and creates another, and both facts are reported.
+Camera2 is such a backend: an `ACameraCaptureSession` cannot have its outputs
+altered in place. Reporting continuity across a rebuild would fabricate truth
+just as surely as fabricating a destruction does.
+
+Genuine teardown happens on device close, shutdown, and a reconfiguration that
+no live claimant forbids — not on a claim being dropped.
+
+Which claimants forbid depends on whether anything is put back, and the two
+cases read different sets:
+
+* **Reconfiguration** — applied in place, or by replacing the native object
+  and reporting the destroyed and created facts for it. A **stream** or an
+  **in-flight capture** forbids this; the **capture parent does not**. Its
+  claim exists so a retained still profile can shape the seam, so a rule that
+  let it block reconfiguration would stop it doing the one thing it is for.
+  Neither shape leaves Core believing a primed seam exists when none does.
+* **Teardown with nothing put back** — every claimant forbids it, the capture
+  parent included, because that is precisely the case that would.
+
+The distinction matters most where a backend cannot separate the two. On
+Camera2 every geometry change is a replacement, so a rule keyed on "is the
+object replaced" rather than "is anything put back" excludes the capture parent
+in theory and includes it in practice.
+
+Implementation scope:
+
+- `SyntheticProvider` realizes `AcquisitionSession` truth for stream-backed,
+  capture-only, and capture-parent paths, and is the readable reference for the
+  reference model above
+- `Camera2CameraProvider` realizes the same reference model; its seam is 1:1
+  with `ACameraCaptureSession`
+- `WinrtCameraProvider` realizes the same reference model. Its seam is not a
+  session-like object whose output set defines it, so the reconfiguration rule
+  above applies only where the seam's own native object is replaced; which
+  changes those are is stated in the provider source, not here
 
 ------------------------------------------------------------------------
 

@@ -1,0 +1,97 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/911_acquisition_session_states.gd" id="1_script"]
+[ext_resource type="Script" path="res://addons/cambang/cambang_status_panel.gd" id="2_status"]
+
+[node name="911_AcquisitionSessionStates" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_script")
+
+[node name="Margin" type="MarginContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/margin_left = 12
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 12
+theme_override_constants/margin_bottom = 12
+
+[node name="Root" type="VBoxContainer" parent="Margin"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="StepLabel" type="Label" parent="Margin/Root"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 150)
+layout_mode = 2
+text = "911 acquisition-session states"
+
+[node name="Artifacts" type="HBoxContainer" parent="Margin/Root"]
+custom_minimum_size = Vector2(0, 300)
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 16
+
+[node name="BeforeBox" type="VBoxContainer" parent="Margin/Root/Artifacts"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="BeforeLabel" type="Label" parent="Margin/Root/Artifacts/BeforeBox"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "BEFORE
+(none)"
+
+[node name="BeforeTexture" type="TextureRect" parent="Margin/Root/Artifacts/BeforeBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3
+expand_mode = 1
+stretch_mode = 5
+
+[node name="AfterBox" type="VBoxContainer" parent="Margin/Root/Artifacts"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="AfterLabel" type="Label" parent="Margin/Root/Artifacts/AfterBox"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "AFTER
+(none)"
+
+[node name="AfterTexture" type="TextureRect" parent="Margin/Root/Artifacts/AfterBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3
+expand_mode = 1
+stretch_mode = 5
+
+[node name="ResultsLabel" type="Label" parent="Margin/Root"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 150)
+layout_mode = 2
+size_flags_vertical = 1
+clip_text = true
+max_lines_visible = 7
+text = "(no steps yet)"
+
+[node name="ProceedButton" type="Button" parent="Margin/Root"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 72)
+layout_mode = 2
+focus_mode = 0
+theme_override_font_sizes/font_size = 28
+disabled = true
+text = "working..."
+
+[node name="CamBANGStatusPanel" type="PanelContainer" parent="Margin/Root"]
+layout_mode = 2
+script = ExtResource("2_status")

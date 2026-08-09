@@ -1,0 +1,860 @@
+[gd_scene load_steps=8 format=3 uid="uid://pgb0fy5ftvl7"]
+
+[ext_resource type="Script" uid="uid://djv2vyhmruoh2" path="res://addons/cambang/cambang_status_panel.gd" id="1_emiui"]
+
+[sub_resource type="GDScript" id="GDScript_probe9"]
+script/source = "extends Control
+# TRANSIENT DIAGNOSTIC SCENE -- NOT FOR AUTOMATED / CLI TESTING.
+# MANUAL, INTERACTIVE ONLY. Numbered 999 deliberately: no production scene
+# number expects to know about it.
+#
+# Tracked in git for the time being, at the maintainer's instruction, because
+# it is currently the only thing that exercises rig capture at all. That does
+# NOT promote it: it remains non-production and temporary, it is not part of
+# the validation suite, and it may be deleted whenever tracked coverage exists.
+# Do not build anything on it.
+#
+# Its device ids are per-handset and there is no sensible universal default:
+# ALL_DEVICE_IDS / RIG_MEMBER_IDS / PREFERRED_RIG_IDS must be set for whatever
+# hardware is attached before a run means anything.
+#
+# Question this scene exists to answer
+# ------------------------------------
+# CamBANGRig.get_result() returns a partial set while a rig capture is still
+# assembling, and an identical-looking partial set when a sibling device has
+# genuinely failed. There is no completion signal on CamBANGRig, so 1001 waits
+# an arbitrary 0.5s and then indexes [1], which is a race.
+#
+# This scene replaces that fixed wait with a bounded poll that records every
+# change in the result set, so a second click either:
+#   * settles at 2 after some measurable delay  -> 1001 lost a timing race, and
+#     the missing piece is a capture-is-finished signal; or
+#   * stays at 1 until the deadline              -> a sibling genuinely failed
+#     on the second capture, which is a separate defect underneath that.
+#
+# Watch for the [999Probe] lines. Click Capture at least twice.
+
+const WAIT_BEFORE_QUIT = 1.0
+# Sized to outlast the provider's per-burst sample wait (kCaptureSampleWaitMs,
+# 5s) with margin, and nothing more. The original 45s was chosen to outlast the
+# capture-admission watchdog, but that was wasted patience: we have since
+# established that a stalled payload does not arrive spontaneously at all -- it
+# surfaces only when the NEXT request is submitted. Waiting longer therefore
+# reveals nothing, and a run long enough to idle for minutes lets the device
+# logcat ring buffer wrap and destroy the start of the trace.
+const SETTLE_DEADLINE_MS := 8000
+const EXPECTED_PARTICIPANTS := 2  # kept in step with RIG_MEMBER_IDS by the matrix runner
+
+# Flip this one line to change target. Everything else follows from it.
+#   \"quest\"     -- fixed Camera2 passthrough ids 50/51 (the original report)
+#   \"synthetic\" -- deterministic provider, the A/B control
+#   \"windows\"   -- discover ids at runtime. Needed on WinRT, where ids are
+#                  machine-specific symbolic links that cannot be written into
+#                  a constant, but the branch is host-agnostic and works on
+#                  Quest too (see _ready()'s enumerate-first branch).
+const RIG_TARGET := \"windows\"
+
+const QUEST_RIG_IDS := [\"50\", \"51\"]
+const SYNTHETIC_RIG_IDS := [\"synthetic:0\", \"synthetic:1\"]
+
+# MATRIX CONFIGURATION -- rewritten between runs by run_999_matrix.sh.
+#
+# ALL_DEVICE_IDS is every device engaged for the run. RIG_MEMBER_IDS is the pair
+# (or set) the rig is built from. STREAM_ON_IDS is the subset that gets a
+# viewfinder stream, and it is deliberately NOT restricted to rig members: the
+# question the matrix exists to answer includes whether an unrelated streaming
+# camera disturbs a rig it is not part of.
+const ALL_DEVICE_IDS := [\"0\", \"1\"]
+const RIG_MEMBER_IDS := [\"0\", \"1\"]
+const STREAM_ON_IDS := []
+
+# Consulted only by the discovery branch. When every id here is present in the
+# enumeration, the rig is built from exactly these; otherwise discovery falls
+# back to the first EXPECTED_PARTICIPANTS enumerated. Set empty to always take
+# whatever enumerates first.
+const PREFERRED_RIG_IDS := [\"0\", \"1\"]
+
+# Unattended drive: pass --999-auto-clicks=N to fire N captures and quit.
+# Android mode refuses ExtraArgs it cannot translate, so the headset run uses
+# this fallback instead. Set to 0 for an interactive session.
+# Four captures, not three: three shows the first failure and the first late
+# payload, but four is the minimum that shows whether the pattern REPEATS or
+# was a one-off transition.
+const AUTO_CLICKS_FALLBACK := 6
+# Idle gap between auto-driven clicks. Must exceed the window in which the
+# device pipeline stays warm, or the withheld-payload defect cannot occur --
+# the manual runs that reproduced it had ~5s between clicks.
+const AUTO_CLICK_GAP_SEC := 6.0
+
+# Phased cadence: [lead-in wait seconds, capture count, gap between captures].
+# Exercises rapid-fire, moderate and sustained cadences in one run, with idle
+# gaps between phases so a pipeline that goes cold is given the chance to.
+# Stream-lifecycle mode. An empty mode keeps the ordinary CAPTURE_SCHEDULE
+# behaviour.
+# Otherwise the schedule is replaced by a sequence of labelled segments, each a
+# fixed number of stills at a fixed cadence, separated by one stream lifecycle
+# operation. Every segment prints a SEGMENT line so captures can be bucketed.
+#
+# The four entry points asked for, plus stop and destroy in each:
+#   A  stream created dormant BEFORE any still, then started, stopped, destroyed
+#   B  stream created AND started BEFORE any still, then stopped, destroyed
+#   C  stills first, THEN created dormant, started, stopped, destroyed
+#   D  stills first, THEN created and started in one step, stopped, destroyed
+# A/B answer whether an existing stream costs the stills that follow it.
+# C/D answer whether introducing a stream costs the stills that follow it.
+const STREAM_LIFECYCLE_MODE := \"\"
+const LIFECYCLE_SEGMENT_CAPTURES := 8
+const LIFECYCLE_SEGMENT_GAP := 0.5
+const LIFECYCLE_SEGMENT_LEAD := 1.0
+# Mode R only: a camera that is engaged but NOT a rig member, which streams by
+# itself in the final segment. Answers whether an unrelated streaming camera
+# disturbs a rig. Empty means no such segment. Must appear in ALL_DEVICE_IDS
+# and must not appear in RIG_MEMBER_IDS.
+const RIG_STREAM_NONMEMBER_ID := \"\"
+
+const CAPTURE_SCHEDULE := [
+	[0.5, 10, 0.1],
+	[4.0, 5, 1.0],
+	[3.0, 20, 0.5],
+]
+var _auto_clicks := 0
+var _rig_ids_resolved: Array = []
+
+const FAKE_LOCATION := {\"latitude_degrees\": 55.9533, \"longitude_degrees\": -3.1883,}
+
+var _devices: Array[CamBANGDevice] = []
+var _devices_by_id: Dictionary = {}
+var rig_00 : CamBANGRig
+var stream_00 : CamBANGStream
+var _streams: Array[CamBANGStream] = []
+
+var _capture_click := 0
+# One entry per click: how many of EXPECTED_PARTICIPANTS settled. The SEQUENCE
+# is the diagnosis, not any single click:
+#   full every click        healthy
+#   full then dropping      members stop delivering after their first capture
+#   which members drop      read the per-device forensics, not just the count
+var _tally: Array = []
+
+var capture_profile_00 : Dictionary = {
+	\"width\": 1280,
+	\"height\": 720,
+	\"still_image_bundle\": {
+		\"members\": [
+		{
+			\"image_member_index\": 0,
+			\"role\": CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED,
+			\"intended_exposure_compensation_milli_ev\": 0,
+		},
+		]
+	},
+}
+
+
+func _rig_ids() -> Array:
+	match RIG_TARGET:
+		\"synthetic\":
+			return SYNTHETIC_RIG_IDS
+		\"windows\":
+			return []  # discovered by enumeration
+		_:
+			return QUEST_RIG_IDS
+
+
+func _provider_kind() -> int:
+	if RIG_TARGET == \"synthetic\":
+		return CamBANGServer.PROVIDER_KIND_SYNTHETIC
+	return CamBANGServer.PROVIDER_KIND_PLATFORM_BACKED
+
+
+func _parse_auto_clicks() -> int:
+	# Both lists: run_godot.ps1 does not always place ExtraArgs after `--`, and
+	# only args after `--` reach get_cmdline_user_args().
+	var all_args := []
+	all_args.append_array(OS.get_cmdline_user_args())
+	all_args.append_array(OS.get_cmdline_args())
+	for a in all_args:
+		var arg := str(a)
+		if arg.begins_with(\"--999-auto-clicks=\"):
+			return int(arg.split(\"=\")[1])
+	return AUTO_CLICKS_FALLBACK
+
+
+func _await_endpoints(timeout_ms: int) -> Array:
+	var deadline := Time.get_ticks_msec() + timeout_ms
+	while Time.get_ticks_msec() < deadline:
+		var eps: Array = CamBANGServer.enumerate_devices()
+		if eps.size() >= EXPECTED_PARTICIPANTS:
+			return eps
+		await get_tree().process_frame
+	return CamBANGServer.enumerate_devices()
+
+
+# Built from the same ids the rig will drive, so the concurrency truth and the
+# rig membership cannot drift apart. Rig admission fails closed without it.
+func _camera_description_json() -> String:
+	# Every engaged device is described, and BOTH combinations are declared: the
+	# rig pair, which rig admission gates on, and the full engaged set, because
+	# all three cameras are open at once whether or not they are rig members.
+	var camera_dicts := []
+	for id in ALL_DEVICE_IDS:
+		camera_dicts.append({\"camera_id\": str(id)})
+	var rig_combo := []
+	for id in RIG_MEMBER_IDS:
+		rig_combo.append(str(id))
+	var all_combo := []
+	for id in ALL_DEVICE_IDS:
+		all_combo.append(str(id))
+	# Concurrency combinations describe cameras used TOGETHER, so a combination
+	# needs at least two members; the ADC validator rejects a single-member one.
+	# A one-camera configuration therefore declares no combinations at all.
+	var combos := []
+	if rig_combo.size() >= 2:
+		combos.append(rig_combo)
+	if all_combo.size() >= 2 and all_combo != rig_combo:
+		combos.append(all_combo)
+	if combos.is_empty():
+		return JSON.stringify({
+			\"schema_version\": 2,
+			\"cameras\": camera_dicts,
+		})
+	return JSON.stringify({
+		\"schema_version\": 2,
+		\"cameras\": camera_dicts,
+		\"concurrent_camera_support\": {
+			\"supported\": true,
+			\"camera_id_combinations\": combos,
+		},
+	})
+
+
+func _describe_set(results: Array) -> String:
+	var parts := []
+	for r in results:
+		if r == null:
+			parts.append(\"<null>\")
+			continue
+		var res := r as CamBANGCaptureResult
+		parts.append(\"dev=%d\" % res.get_device_instance_id())
+	return \"[%s]\" % \", \".join(parts)
+
+
+func _ready():
+	var camera_permission = \"android.permission.CAMERA\"
+	if OS.get_granted_permissions().has(camera_permission):
+		print(\"[999Probe] camera permission already granted\")
+	else:
+		OS.request_permissions()
+		await get_tree().create_timer(5.0).timeout
+
+	_auto_clicks = _parse_auto_clicks()
+	var ids: Array = _rig_ids()
+	print(\"[999Probe] target=%s auto_clicks=%d\" % [RIG_TARGET, _auto_clicks])
+
+	if RIG_TARGET == \"windows\":
+		# WinRT device ids are machine-specific symbolic links, so they cannot be
+		# written into a constant. Core's rig gate fails closed unless a
+		# concurrency truth naming the exact ids was ingested BEFORE start(), so
+		# the ids have to be learned from a first start, then the server
+		# restarted with the truth in place. Same shape as scene 870's
+		# enumerate-first path.
+		CamBANGServer.start(_provider_kind())
+		var discovered: Array = await _await_endpoints(5000)
+		print(\"[999Probe] discovery pass endpoints: %s\" % [discovered])
+		var available := []
+		for ep in discovered:
+			if typeof(ep) == TYPE_DICTIONARY:
+				var hw := str((ep as Dictionary).get(\"hardware_id\", \"\"))
+				if hw != \"\":
+					available.append(hw)
+		# Prefer the curated pair when this host actually has it, so the run is
+		# like-for-like with 1001 and 870. Taking the first two enumerated
+		# cameras is only a fallback: on Quest that silently picks camera 1 (the
+		# avatar camera, a different device class behind a different permission)
+		# instead of the 50/51 passthrough pair both references use, which makes
+		# any comparison against them meaningless.
+		var preferred_present := true
+		for want in PREFERRED_RIG_IDS:
+			if not (str(want) in available):
+				preferred_present = false
+		if PREFERRED_RIG_IDS.size() == EXPECTED_PARTICIPANTS and preferred_present:
+			for want in PREFERRED_RIG_IDS:
+				ids.append(str(want))
+			print(\"[999Probe] using preferred pair %s\" % [ids])
+		else:
+			for hw in available:
+				if ids.size() < EXPECTED_PARTICIPANTS:
+					ids.append(hw)
+			print(\"[999Probe] preferred pair unavailable; falling back to first %d enumerated\" % EXPECTED_PARTICIPANTS)
+		CamBANGServer.stop()
+		if ids.size() < EXPECTED_PARTICIPANTS:
+			push_error(\"[999Probe] discovery found %d cameras, need %d\" % [ids.size(), EXPECTED_PARTICIPANTS])
+			return
+		print(\"[999Probe] discovered rig ids: %s\" % [ids])
+
+	# Devices are named explicitly by the matrix now; discovery above is kept
+	# only as a presence check on the ids we are about to ask for.
+	for want in ALL_DEVICE_IDS:
+		if not (str(want) in ids) and not ids.is_empty():
+			print(\"[999Probe] NOTE %s was not enumerated in the discovery pass\" % [want])
+	_rig_ids_resolved = RIG_MEMBER_IDS
+	CamBANGServer.ingest_camera_description(_camera_description_json())
+	CamBANGServer.set_capture_geolocation(FAKE_LOCATION)
+	CamBANGServer.start(_provider_kind())
+
+	var endpoints: Array = await _await_endpoints(5000)
+	if endpoints.is_empty():
+		push_error(\"[999Probe] no CamBANG endpoints\")
+		return
+	print(\"[999Probe] endpoints: %s\" % [endpoints])
+
+	# Every device in the matrix is engaged, whether or not it is a rig member
+	# and whether or not it streams. An engaged-but-idle camera is itself one of
+	# the conditions under test.
+	_devices.clear()
+	_devices_by_id.clear()
+	for id in ALL_DEVICE_IDS:
+		var dev: CamBANGDevice = CamBANGServer.get_device_for_hardware_id(str(id))
+		if dev == null:
+			push_error(\"[999Probe] could not resolve device id %s\" % [id])
+			return
+		_devices.append(dev)
+		_devices_by_id[str(id)] = dev
+
+	for dev in _devices:
+		dev.set_still_capture_profile(capture_profile_00)
+	for dev in _devices:
+		dev.engage()
+	for dev in _devices:
+		while not dev.live:
+			await dev.live_changed
+
+	var rig_ids := PackedStringArray()
+	for id in RIG_MEMBER_IDS:
+		rig_ids.append(str(id))
+	# A one-member configuration drives the device path directly, so no rig is
+	# created for it: a rig of one is not what is under test.
+	if RIG_MEMBER_IDS.size() > 1:
+		rig_00 = CamBANGServer.create_rig(rig_ids)
+	var identity := []
+	for id in ALL_DEVICE_IDS:
+		var d: CamBANGDevice = _devices_by_id[str(id)]
+		identity.append(\"hw=%s instance=%d%s%s\" % [
+			str(id), d.get_instance_id(),
+			(\" RIG\" if RIG_MEMBER_IDS.has(str(id)) else \"\"),
+			(\" STREAM\" if STREAM_ON_IDS.has(str(id)) else \"\")])
+	print(\"[999Probe] MATRIX rig=%s streams=%s\" % [
+		\"|\".join(RIG_MEMBER_IDS),
+		(\"none\" if STREAM_ON_IDS.is_empty() else \"|\".join(STREAM_ON_IDS))])
+	print(\"[999Probe] %s: %s members: %s\" % [
+		(\"rig\" if rig_00 != null else \"single-device (no rig)\"),
+		rig_00, \", \".join(identity)])
+
+	var stream_devices: Array[CamBANGDevice] = []
+	# Lifecycle mode owns stream creation itself, at the point its segment
+	# sequence says to; setup must not pre-empt that.
+	for id in (STREAM_ON_IDS if STREAM_LIFECYCLE_MODE == \"\" else []):
+		if _devices_by_id.has(str(id)):
+			stream_devices.append(_devices_by_id[str(id)])
+		else:
+			push_error(\"[999Probe] STREAM_ON_IDS names %s, which is not engaged\" % [id])
+			return
+
+	for dev in stream_devices:
+		var st: CamBANGStream = dev.create_stream(({
+		\"intent\": CamBANGStream.INTENT_VIEWFINDER,
+		\"profile\": {
+			\"width\": 1280,
+			\"height\": 720,
+			\"format_fourcc\": CamBANGServer.PIXEL_FORMAT_RGBA,
+			\"target_fps_min\": 30,
+			\"target_fps_max\": 30,
+			}
+		}))
+		st.start()
+		while not st.result_live:
+			await st.result_live_changed
+		_streams.append(st)
+		if stream_00 == null:
+			stream_00 = st
+
+	if stream_00 != null:
+		var stream_result := stream_00.get_result()
+		if stream_result == null:
+			push_error(\"[999Probe] stream result unexpectedly null after result_live\")
+			return
+		%StreamDisplayTexture.texture = stream_result.get_display_view()
+	else:
+		%StreamDisplayTexture.texture = null
+
+	%SceneInfoText.text = \"999 probe. target=%s stream_on=%s. Click Capture 3+ times.\" % [
+		RIG_TARGET, (\"none\" if _streams.is_empty() else \"%d of %d\" % [_streams.size(), _devices.size()])]
+	print(\"[999Probe] setup complete; ready to capture\")
+
+	if _auto_clicks > 0:
+		# Phased cadence schedule: three bursts at different rates, separated by
+		# idle gaps. Triggers fire ON THE CLOCK and are deliberately NOT awaited
+		# -- awaiting each settle (up to SETTLE_DEADLINE_MS) would stretch every
+		# interval and destroy the cadence being tested. A trigger that lands
+		# while the device still has one in flight is refused per the per-device
+		# single-capture rule, and that refusal is itself a result worth seeing:
+		# the trigger_capture line records it.
+		if STREAM_LIFECYCLE_MODE == \"R\":
+			await _run_rig_stream_sequence()
+			return
+		if STREAM_LIFECYCLE_MODE != \"\":
+			await _run_stream_lifecycle_sequence()
+			return
+		for phase in CAPTURE_SCHEDULE:
+			var lead: float = phase[0]
+			var count: int = phase[1]
+			var gap: float = phase[2]
+			print(\"[999Probe] phase: wait %.2fs then %d captures %.2fs apart\" % [lead, count, gap])
+			await get_tree().create_timer(lead).timeout
+			for i in range(count):
+				_do_capture()
+				await get_tree().create_timer(gap).timeout
+		# Let any capture still in flight reach its own verdict before teardown.
+		await get_tree().create_timer(float(SETTLE_DEADLINE_MS) / 1000.0 + 1.0).timeout
+		print(\"[999Probe] auto-drive finished after %d scheduled trigger(s)\" % _capture_click)
+		_do_teardown()
+
+
+
+# --- stream lifecycle probe -------------------------------------------------
+# Each segment is a labelled block of stills at a fixed cadence. The label is
+# the stream's state during that block, so a per-segment delivery and latency
+# table falls straight out of the log. Triggers are not awaited, for the same
+# reason the ordinary schedule does not await them.
+func _lifecycle_segment(label: String) -> void:
+	print(\"[999Probe] SEGMENT %s\" % label)
+	await get_tree().create_timer(LIFECYCLE_SEGMENT_LEAD).timeout
+	for i in range(LIFECYCLE_SEGMENT_CAPTURES):
+		_do_capture()
+		await get_tree().create_timer(LIFECYCLE_SEGMENT_GAP).timeout
+
+
+# Creates the stream without starting it. Dormant is a real state worth
+# measuring on its own: the outputs may or may not already be attached to the
+# session even with no repeating request running.
+func _lifecycle_create_stream() -> CamBANGStream:
+	return _lifecycle_create_stream_on(_devices[0])
+
+
+func _lifecycle_create_stream_on(dev: CamBANGDevice) -> CamBANGStream:
+	var st: CamBANGStream = dev.create_stream(({
+		\"intent\": CamBANGStream.INTENT_VIEWFINDER,
+		\"profile\": {
+			\"width\": 1280,
+			\"height\": 720,
+			\"format_fourcc\": CamBANGServer.PIXEL_FORMAT_RGBA,
+			\"target_fps_min\": 30,
+			\"target_fps_max\": 30,
+			}
+		}))
+	if st == null:
+		push_error(\"[999Probe] lifecycle: create_stream returned null\")
+	return st
+
+
+func _lifecycle_start_stream(st: CamBANGStream) -> void:
+	st.start()
+	while not st.result_live:
+		await st.result_live_changed
+	var sr := st.get_result()
+	if sr != null:
+		%StreamDisplayTexture.texture = sr.get_display_view()
+
+
+func _run_stream_lifecycle_sequence() -> void:
+	print(\"[999Probe] stream lifecycle mode=%s captures/segment=%d gap=%.2fs\" % [
+		STREAM_LIFECYCLE_MODE, LIFECYCLE_SEGMENT_CAPTURES, LIFECYCLE_SEGMENT_GAP])
+	var st: CamBANGStream = null
+
+	if STREAM_LIFECYCLE_MODE == \"A\":
+		st = _lifecycle_create_stream()
+		await _lifecycle_segment(\"created_dormant\")
+		await _lifecycle_start_stream(st)
+		await _lifecycle_segment(\"started\")
+	elif STREAM_LIFECYCLE_MODE == \"B\":
+		st = _lifecycle_create_stream()
+		await _lifecycle_start_stream(st)
+		await _lifecycle_segment(\"started_from_the_outset\")
+	elif STREAM_LIFECYCLE_MODE == \"C\":
+		await _lifecycle_segment(\"no_stream\")
+		st = _lifecycle_create_stream()
+		await _lifecycle_segment(\"created_dormant_after_stills\")
+		await _lifecycle_start_stream(st)
+		await _lifecycle_segment(\"started_after_stills\")
+	elif STREAM_LIFECYCLE_MODE == \"D\":
+		await _lifecycle_segment(\"no_stream\")
+		st = _lifecycle_create_stream()
+		await _lifecycle_start_stream(st)
+		await _lifecycle_segment(\"created_and_started_after_stills\")
+	else:
+		push_error(\"[999Probe] unknown STREAM_LIFECYCLE_MODE %s\" % STREAM_LIFECYCLE_MODE)
+		_do_teardown()
+		return
+
+	# Stop and destroy are measured in every mode: the question is whether a
+	# stream that is over leaves anything behind for later stills.
+	if st != null:
+		st.stop()
+		await _lifecycle_segment(\"after_stream_stop\")
+		%StreamDisplayTexture.texture = null
+		st.destroy()
+		await _lifecycle_segment(\"after_stream_destroy\")
+
+	await get_tree().create_timer(float(SETTLE_DEADLINE_MS) / 1000.0 + 1.0).timeout
+	print(\"[999Probe] lifecycle sequence finished after %d trigger(s)\" % _capture_click)
+	_do_teardown()
+
+
+
+# Rig x flowing-members. One segment per count of rig members whose stream is
+# running, from none to all. Streams are created dormant up front so that
+# creation cost never lands inside a measured segment -- dormant was shown inert
+# on single cameras, which is why it is not a segment of its own here.
+#
+# The non-member segment runs LAST and only after every member stream has been
+# stopped and destroyed, so it measures an unrelated camera streaming alone
+# rather than in addition to the members.
+func _run_rig_stream_sequence() -> void:
+	var members: Array[CamBANGDevice] = []
+	for id in RIG_MEMBER_IDS:
+		members.append(_devices_by_id[str(id)])
+	print(\"[999Probe] rig stream sequence: %d member(s), nonmember=%s\" % [
+		members.size(),
+		(RIG_STREAM_NONMEMBER_ID if RIG_STREAM_NONMEMBER_ID != \"\" else \"none\")])
+
+	await _lifecycle_segment(\"rig_no_stream\")
+
+	var member_streams: Array[CamBANGStream] = []
+	for dev in members:
+		member_streams.append(_lifecycle_create_stream_on(dev))
+
+	for i in range(member_streams.size()):
+		await _lifecycle_start_stream(member_streams[i])
+		await _lifecycle_segment(\"rig_flowing_%d_of_%d\" % [
+			i + 1, member_streams.size()])
+
+	for st in member_streams:
+		st.stop()
+		st.destroy()
+	%StreamDisplayTexture.texture = null
+
+	if RIG_STREAM_NONMEMBER_ID != \"\":
+		if not _devices_by_id.has(RIG_STREAM_NONMEMBER_ID):
+			push_error(\"[999Probe] RIG_STREAM_NONMEMBER_ID %s is not engaged\" % [
+				RIG_STREAM_NONMEMBER_ID])
+		else:
+			var other := _lifecycle_create_stream_on(
+				_devices_by_id[RIG_STREAM_NONMEMBER_ID])
+			await _lifecycle_start_stream(other)
+			await _lifecycle_segment(\"rig_nonmember_flowing\")
+			other.stop()
+			other.destroy()
+
+	await get_tree().create_timer(float(SETTLE_DEADLINE_MS) / 1000.0 + 1.0).timeout
+	print(\"[999Probe] rig stream sequence finished after %d trigger(s)\" % _capture_click)
+	_do_teardown()
+
+
+# CamBANGDevice.get_result() returns a single Ref (null until one exists),
+# while CamBANGRig.get_result() returns an Array. Normalise so the settle poll
+# and forensics do not care which path produced the result.
+func _collect_results(single_device: CamBANGDevice) -> Array[CamBANGCaptureResult]:
+	var out: Array[CamBANGCaptureResult] = []
+	if single_device != null:
+		var one: CamBANGCaptureResult = single_device.get_result()
+		if one != null:
+			out.append(one)
+		return out
+	return rig_00.get_result()
+
+
+func _do_capture():
+	_capture_click += 1
+	var click := _capture_click
+
+	# Single-member configuration exercises the DEVICE capture path, not the rig
+	# path: no cohort, no assembly, one provider submission. That isolates
+	# whether a lone unstreamed camera serves a pre-roll frame, without a rig's
+	# machinery in the way.
+	var single_device: CamBANGDevice = null
+	if RIG_MEMBER_IDS.size() == 1:
+		single_device = _devices_by_id[str(RIG_MEMBER_IDS[0])]
+
+	var capture_err = (single_device.trigger_capture() if single_device != null
+		else rig_00.trigger_capture())
+	print(\"[999Probe] click=%d trigger_capture(%s) -> %s\" % [
+		click, (\"device\" if single_device != null else \"rig\"), error_string(capture_err)])
+	if capture_err != OK:
+		%SceneInfoText.text = \"click %d: trigger_capture failed: %s\" % [click, error_string(capture_err)]
+		return
+
+	# Bounded poll, replacing 1001's fixed 0.5s wait. Every change in the set is
+	# logged with the elapsed time, so a late arrival is distinguishable from an
+	# absent one.
+	var started_ms := Time.get_ticks_msec()
+	var deadline_ms := started_ms + SETTLE_DEADLINE_MS
+	var rig_results: Array[CamBANGCaptureResult] = _collect_results(single_device)
+	var last_size := -1
+	while true:
+		if rig_results.size() != last_size:
+			last_size = rig_results.size()
+			print(\"[999Probe] click=%d t=%dms size=%d %s\" % [click, Time.get_ticks_msec() - started_ms, last_size, _describe_set(rig_results)])
+		if rig_results.size() >= EXPECTED_PARTICIPANTS:
+			break
+		if Time.get_ticks_msec() >= deadline_ms:
+			break
+		await get_tree().process_frame
+		rig_results = _collect_results(single_device)
+
+	var elapsed := Time.get_ticks_msec() - started_ms
+	var settled := rig_results.size() >= EXPECTED_PARTICIPANTS
+	var verdict := \"COMPLETE\" if settled else \"INCOMPLETE (deadline)\"
+	print(\"[999Probe] click=%d VERDICT %s after %dms: %d of %d %s\" % [click, verdict, elapsed, rig_results.size(), EXPECTED_PARTICIPANTS, _describe_set(rig_results)])
+	if not settled:
+		print(\"[999Probe] click=%d a sibling never became assembly-successful within %dms (past the provider's own admission watchdog) -- not a timer race\" % [click, SETTLE_DEADLINE_MS])
+	_tally.append(rig_results.size())
+	print(\"[999Probe] TALLY %s   %s\" % [_tally_text(), _tally_reading()])
+	_forensics(click, rig_results)
+
+	# On-screen too: the headset is where this gets read, and the tally is the
+	# whole point.
+	%SceneInfoText.text = \"click %d: %s after %dms -- %d of %d %s\\nTALLY %s\\n%s\" % [
+		click, verdict, elapsed, rig_results.size(), EXPECTED_PARTICIPANTS,
+		_describe_set(rig_results), _tally_text(), _tally_reading()]
+
+	# Never index blind: display exactly what arrived, and say so when a slot is
+	# empty. 1001's crash was rig_results[1] on a one-element array.
+	_show_slot(0, rig_results, %CaptureDisplayTexture00, %CaptureInfoText00)
+	_show_slot(1, rig_results, %CaptureDisplayTexture01, %CaptureInfoText01)
+
+
+func _tally_text() -> String:
+	var parts := []
+	for n in _tally:
+		parts.append(str(n))
+	return \"%s of %d\" % [\" -> \".join(parts), EXPECTED_PARTICIPANTS]
+
+
+# Indicative reading of the sequence so far, not proof. The point is to make the
+# shape legible at the headset without reconstructing it from the log.
+func _tally_reading() -> String:
+	if _tally.size() < 2:
+		return \"(click again -- the sequence is the diagnosis, not one click)\"
+	var all_full := true
+	var monotonic_down := true
+	for i in range(_tally.size()):
+		if int(_tally[i]) < EXPECTED_PARTICIPANTS:
+			all_full = false
+		if i > 0 and int(_tally[i]) > int(_tally[i - 1]):
+			monotonic_down = false
+	if all_full:
+		return \"healthy so far\"
+	if monotonic_down and int(_tally[_tally.size() - 1]) == 0:
+		return \"DEGRADING TO ZERO -- consistent with the capture worker pool leaking a worker per capture\"
+	if monotonic_down and int(_tally[0]) == EXPECTED_PARTICIPANTS:
+		return \"dropped after the first capture and holding -- consistent with one device's job failing every time\"
+	return \"mixed -- no clean signature yet\"
+
+
+# Splits the remaining hypothesis space.
+#
+# CamBANGRig.get_result() -> CamBANGServer.get_capture_result_set_by_id() applies
+# cohort/assembly filtering: a participant whose assembly is not
+# assembly-successful is SKIPPED, so an absent member means \"not successful\",
+# not necessarily \"no data\".
+#
+# CamBANGServer.get_capture_result_by_id(capture_id, device) goes straight to the
+# result store with no such filtering. Asking both about the SAME (capture_id,
+# device) therefore separates the two candidates:
+#
+#   store has it, set does not  -> the data exists; the assembly/terminal-fact
+#                                  path marked it failed or never terminalized.
+#                                  Fault is in Core's capture assembly, and the
+#                                  image is sitting there unreachable.
+#   store does not have it      -> nothing was ever retained for that member;
+#                                  the fault is upstream, in the capture path
+#                                  or the provider.
+#
+# NOTE: get_capture_result_by_id is a CamBANGServer method, i.e. exactly the
+# not-recommended surface this investigation is meant to make unnecessary. It is
+# used here as a diagnostic instrument only.
+#
+# Also recorded: CamBANGDevice.get_result() is blind to rig-originated captures
+# (the server's latest-capture-id map is written only by trigger_device_capture),
+# so it returns NULL for a device whose result demonstrably exists. Printed to
+# keep that visible rather than folklore.
+func _forensics(click: int, rig_results: Array) -> void:
+	var expected_capture_id := 0
+	var seen_devices := {}
+	for r in rig_results:
+		if r == null:
+			continue
+		var rr := r as CamBANGCaptureResult
+		expected_capture_id = int(rr.get_capture_id())
+		seen_devices[int(rr.get_device_instance_id())] = true
+	if expected_capture_id == 0:
+		print(\"[999Probe] click=%d forensics: no member arrived, so the rig capture_id is unknown -- nothing to query\" % click)
+		return
+	print(\"[999Probe] click=%d forensics: rig capture_id=%d\" % [click, expected_capture_id])
+	for dev in _devices:
+		if dev == null:
+			continue
+		var dev_id := int(dev.get_instance_id())
+		var in_set: bool = seen_devices.has(dev_id)
+		var stored = CamBANGServer.get_capture_result_by_id(expected_capture_id, dev_id)
+		var in_store: bool = stored != null
+		var conclusion := \"consistent\"
+		if in_store and not in_set:
+			conclusion = \"*** DATA EXISTS BUT SET HID IT -- assembly never marked successful ***\"
+		elif not in_store and not in_set:
+			conclusion = \"*** NO DATA RETAINED -- failure upstream of the accessor ***\"
+		print(\"[999Probe]   device instance=%d in_rig_set=%s in_store=%s %s\" % [dev_id, in_set, in_store, conclusion])
+
+
+func _show_slot(index: int, results: Array, texture_rect: TextureRect, info_label: Label) -> void:
+	if index >= results.size() or results[index] == null:
+		texture_rect.texture = null
+		info_label.text = \"<no result in slot %d>\" % index
+		return
+	var res := results[index] as CamBANGCaptureResult
+	if res.can_to_image():
+		texture_rect.texture = ImageTexture.create_from_image(res.to_image())
+	else:
+		texture_rect.texture = null
+	info_label.text = \"device_instance_id: %d\\ncapture_id: %d\\n%dx%d\" % [res.get_device_instance_id(), res.get_capture_id(), res.get_width(), res.get_height()]
+
+
+func _do_teardown():
+	await get_tree().create_timer(WAIT_BEFORE_QUIT).timeout
+	get_tree().quit()
+
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo:
+		var key_event := event as InputEventKey
+		if key_event.keycode == KEY_ESCAPE:
+			_do_teardown()
+"
+
+[sub_resource type="Gradient" id="Gradient_probe9"]
+
+[sub_resource type="GradientTexture1D" id="GradientTexture1D_probe9"]
+gradient = SubResource("Gradient_probe9")
+
+[sub_resource type="Gradient" id="Gradient_probe9b"]
+colors = PackedColorArray(1, 1, 1, 1, 0, 0, 0, 1)
+
+[sub_resource type="GradientTexture1D" id="GradientTexture1D_probe9b"]
+gradient = SubResource("Gradient_probe9b")
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_83ygy"]
+bg_color = Color(0.07, 0.09, 0.12, 0.9)
+corner_radius_top_left = 6
+corner_radius_top_right = 6
+corner_radius_bottom_right = 6
+corner_radius_bottom_left = 6
+
+[node name="999_rig_result_completeness_probe" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+script = SubResource("GDScript_probe9")
+
+[node name="MarginContainer" type="MarginContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer"]
+layout_mode = 2
+
+[node name="StreamDisplayTexture" type="TextureRect" parent="MarginContainer/VBoxContainer"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(320, 180)
+layout_mode = 2
+size_flags_horizontal = 4
+texture = SubResource("GradientTexture1D_probe9")
+expand_mode = 2
+
+[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/VBoxContainer"]
+layout_mode = 2
+
+[node name="CaptureButton" type="Button" parent="MarginContainer/VBoxContainer/HBoxContainer"]
+custom_minimum_size = Vector2(0, 64)
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Capture"
+
+[node name="HBoxContainer4" type="HBoxContainer" parent="MarginContainer/VBoxContainer"]
+layout_mode = 2
+
+[node name="HBoxContainer2" type="HBoxContainer" parent="MarginContainer/VBoxContainer/HBoxContainer4"]
+layout_mode = 2
+
+[node name="CaptureDisplayTexture00" type="TextureRect" parent="MarginContainer/VBoxContainer/HBoxContainer4/HBoxContainer2"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(320, 180)
+layout_mode = 2
+size_flags_horizontal = 4
+texture = SubResource("GradientTexture1D_probe9b")
+
+[node name="CaptureInfoText00" type="Label" parent="MarginContainer/VBoxContainer/HBoxContainer4/HBoxContainer2"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(150, 0)
+layout_mode = 2
+size_flags_stretch_ratio = 0.5
+text = "<slot 0>"
+autowrap_mode = 1
+
+[node name="HBoxContainer3" type="HBoxContainer" parent="MarginContainer/VBoxContainer/HBoxContainer4"]
+layout_mode = 2
+
+[node name="CaptureDisplayTexture01" type="TextureRect" parent="MarginContainer/VBoxContainer/HBoxContainer4/HBoxContainer3"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(320, 180)
+layout_mode = 2
+size_flags_horizontal = 4
+texture = SubResource("GradientTexture1D_probe9b")
+
+[node name="CaptureInfoText01" type="Label" parent="MarginContainer/VBoxContainer/HBoxContainer4/HBoxContainer3"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(150, 0)
+layout_mode = 2
+text = "<slot 1>"
+autowrap_mode = 1
+
+[node name="CamBANGStatusPanel" type="PanelContainer" parent="MarginContainer/VBoxContainer"]
+custom_minimum_size = Vector2(320, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/panel = SubResource("StyleBoxFlat_83ygy")
+script = ExtResource("1_emiui")
+metadata/_custom_type_script = "uid://djv2vyhmruoh2"
+
+[node name="SceneInfoPanel" type="Panel" parent="MarginContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.1
+
+[node name="SceneInfoText" type="Label" parent="MarginContainer/VBoxContainer/SceneInfoPanel"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 23.0
+text = "<scene info>"
+autowrap_mode = 1
+
+[connection signal="pressed" from="MarginContainer/VBoxContainer/HBoxContainer/CaptureButton" to="." method="_do_capture"]

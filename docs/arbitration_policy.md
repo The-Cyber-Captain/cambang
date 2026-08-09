@@ -52,6 +52,11 @@ When operations conflict, core uses the following strict priority order:
 
 Repeating streams are always preemptible by triggered capture.
 
+This order governs contention *between* these classes. Contention *within* the
+triggered-capture class — a second device capture on a busy device, or a rig
+capture over a member's in-flight device capture — is defined in
+`capture_identity_and_lifecycle.md` §3.
+
 ### 2.1 Provider-fact integration priority
 
 Provider callbacks still enter core through the serialized provider strand, but
@@ -234,6 +239,11 @@ default: return error code but do not increment failure counters.
 ------------------------------------------------------------------------
 
 ## 9. Capture IDs and determinism
+
+> **Superseded on implementation.** `capture_identity_and_lifecycle.md` splits
+> Device Capture and Rig Capture into separate id spaces with durable,
+> type-prefixed public ids. The shared-counter rule below is current behaviour
+> and remains authoritative until that design lands.
 
 `capture_id` is a monotonic `uint64`, unique for the runtime session.
 Implementation note: it is minted at the Godot boundary

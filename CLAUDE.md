@@ -15,18 +15,27 @@ The Godot-facing public API (methods, signals, constants, dictionary shapes) is 
 
 ## Build
 
-SCons only (no CMake). Windows host, MinGW toolchain. The working invocation on this machine:
+SCons only (no CMake). Windows host, **MSVC** toolchain — the `windows_winrt` platform provider is C++/WinRT and MinGW cannot compile it. The working invocations on this machine:
 
 ```sh
-# Full build (GDE plugin DLL + maintainer tools)
-scons use_mingw=yes mingw_prefix=/c/Compilers/mingw64
-
 # GDE plugin only / maintainer tools only
-scons gde use_mingw=yes mingw_prefix=/c/Compilers/mingw64
-scons gde=no
+scons gde use_mingw=no godot_cpp=external -j8
+scons gde=no use_mingw=no godot_cpp=external -j8
+
+# Both artifact families
+scons use_mingw=no godot_cpp=external -j8
+
+# Android GDE for hardware validation (no mingw flags; arch is not inferred)
+scons gde platform=android arch=arm64 godot_cpp=external -j8
 ```
 
-`mingw_prefix` matters: without it, delegated godot-cpp discovery can pick up Git-for-Windows' bundled MinGW. Outputs: maintainer tools → `out/*.exe`; Windows GDE artifact → `tests/cambang_gde/bin/cambang.windows.template_debug.x86_64.dll`. Android GDE builds use `platform=android` (synthetic-only; no platform provider is compiled yet on any platform). Full variable/clean-alias reference: `docs/dev/build_and_scaffolding.md`.
+Three standing rules, each of which has cost real time when broken:
+
+- **`godot_cpp=external` always.** The `delegated` default is wrapped in `AlwaysBuild()`, so it re-runs the whole `thirdparty/godot-cpp` sub-build on every invocation regardless of changes (~10 min) and writes into the submodule tree. Preparing a genuinely new platform/target/arch/precision tuple is the only case for `delegated`, and it is ask-first.
+- **MinGW is opt-in, and produces a synthetic-only plugin.** `use_mingw` defaults to `auto`, which resolves to MSVC on every host — the invocations above pass `use_mingw=no` for explicitness, not because it changes anything. Passing `use_mingw=yes` is a deliberate diagnostic choice: that build still succeeds but silently omits the WinRT provider (~63 MB, vs ~8 MB for MSVC), announced only by `gde_provider_status=not_compiled` in the config banner. Check that banner before trusting any platform-backed run.
+- **Never pass `use_mingw` / `mingw_prefix` to Android builds**, and always state `arch=arm64` there — it defaults to `x86_64`, an emulator architecture.
+
+Outputs: maintainer tools → `out/*.exe`; Windows GDE artifact → `tests/cambang_gde/bin/cambang.windows.template_debug.x86_64.dll`. Both `windows_winrt` and `android_camera2` platform providers are implemented; `linux`/`macos`/`ios`/`web` are seams only. Full variable/clean-alias reference: `docs/dev/build_and_scaffolding.md`.
 
 `CAMBANG_INTERNAL_SMOKE` is defined only for maintainer-tool builds, never for GDE builds — maintainer-only code paths (including hard-abort watchdog behavior) are gated on it.
 
@@ -36,9 +45,9 @@ Native verifiers (host-native, deterministic, run directly):
 
 ```sh
 out/core_spine_smoke.exe              # core lifecycle/shutdown spine
-out/provider_compliance_verify.exe    # provider contract (41 checks)
+out/provider_compliance_verify.exe    # provider contract (43 checks as of 2026-08-02; trust the tool's own count, not this number)
 out/restart_boundary_verify.exe
-out/verify_case_runner.exe            # runs authored verification cases
+out/verify_case_runner.exe --run-all  # runs authored verification cases (26); with no case name it prints usage and exits 2
 out/core_thread_liveness_watchdog_verify.exe   # self-supervising death test (abort + failed-latch modes; ~30s)
 ```
 
@@ -89,7 +98,7 @@ CamBANG is a Godot 4.5+ GDExtension: a deterministic imaging Core with camera pr
 
 **Publication** — Godot observes state via tick-bounded snapshots: ≤1 `state_published` per Godot tick, with `gen`/`version`/`topology_version` counters. Published snapshots must reflect retained truth, not provider staging. Schema: `schema/state_snapshot/v1/`.
 
-**Layers** — `src/imaging/api/` defines the provider contract (`ICameraProvider` etc.); `src/imaging/synthetic/` is the deterministic reference provider (timeline scenarios, virtual time); `src/imaging/platform/<os>/` are the (not yet implemented) platform provider seams; `src/imaging/broker/` is `ProviderBroker`; `src/godot/` holds the GDExtension wrappers (`CamBANGServer` singleton, `CamBANGDevice`/`CamBANGStream`/`CamBANGRig`, result objects); `src/smoke/` are the maintainer verifier sources. Do not let Synthetic-only shortcuts leak into the provider contract, and do not shape internal records around ADC JSON, Godot Dictionaries, or one platform API.
+**Layers** — `src/imaging/api/` defines the provider contract (`ICameraProvider` etc.); `src/imaging/synthetic/` is the deterministic reference provider (timeline scenarios, virtual time); `src/imaging/platform/<os>/` are the platform provider seams (`windows/` = `windows_winrt`, C++/WinRT, MSVC-only; `android/` = `android_camera2`, both implemented — `linux`/`apple`/`web` are seams only); `src/imaging/broker/` is `ProviderBroker`; `src/godot/` holds the GDExtension wrappers (`CamBANGServer` singleton, `CamBANGDevice`/`CamBANGStream`/`CamBANGRig`, result objects); `src/smoke/` are the maintainer verifier sources. Do not let Synthetic-only shortcuts leak into the provider contract, and do not shape internal records around ADC JSON, Godot Dictionaries, or one platform API.
 
 **Render-thread discipline** — RenderingServer RID creation *and* release for display textures are marshaled to the render thread via pending-queue/drain helpers (both the CPU-backed path in `cambang_stream_result_internal.cpp` and the GPU-backing bridge). Follow that pattern; never call `free_rid()` from an arbitrary thread.
 

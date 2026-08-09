@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "core/camera_fact_types.h"
+#include "imaging/api/acquisition_coexistence.h"
 #include "provider_contract_datatypes.h"
 
 namespace cambang {
@@ -14,6 +15,13 @@ namespace cambang {
 // Deliberately generous; see that method's doc comment.
 inline constexpr uint64_t kDefaultCaptureAdmissionWatchdogTimeoutNs =
     30ull * 1000ull * 1000ull * 1000ull;
+
+// Default for ICameraProvider::stream_reprovision_resume_timeout_ns() (5s).
+// A session swap is a bounded control operation rather than an exposure, so the
+// generosity here is for a loaded device and a slow HAL, not for the work
+// itself. See that method's doc comment.
+inline constexpr uint64_t kDefaultStreamReprovisionResumeTimeoutNs =
+    5ull * 1000ull * 1000ull * 1000ull;
 
 // Provider->core callback sink.
 //
@@ -269,6 +277,37 @@ public:
     return capture_backing_capabilities(req);
   }
 
+  // What this device's backend can serve concurrently.
+  //
+  // Core asks before it arbitrates between a triggered capture and a repeating
+  // stream, at profile-set, at stream start and at capture admission. The
+  // provider answers what its backend can do; who yields is Core's decision and
+  // is not encoded in the answer. See imaging/api/acquisition_coexistence.h for
+  // the verdicts and why the question is asked of a set.
+  //
+  // MUST NOT touch the backend. Answer from characteristics cached at device
+  // open; brief §2 forbids I/O in a capability query on the core thread.
+  //
+  // MUST agree with what the provider then does. A provider answering Coexist
+  // and then refusing the capture is in violation, not merely unhelpful -- Core
+  // has no other way to learn that a conflict existed, and a refusal it did not
+  // predict is one it cannot attribute or report. provider_compliance_verify
+  // binds this.
+  //
+  // The default answers Coexist unconditionally, which is truthful for every
+  // provider with no backend constraint -- Synthetic and Stub, whose whole point
+  // is to be the permissive reference. A provider whose backend does constrain
+  // concurrent use must override it and say so; advertising coexistence it
+  // cannot deliver is a contract violation, exactly as with format capabilities
+  // above.
+  virtual AcquisitionCoexistence acquisition_coexistence(
+      uint64_t device_instance_id,
+      const AcquisitionUseSet& proposed) noexcept {
+    (void)device_instance_id;
+    (void)proposed;
+    return AcquisitionCoexistence::coexist();
+  }
+
   // Small bounded delay before a newly realized or newly switched backing-plan
   // measurement is treated as representative for this provider/runtime.
   virtual uint64_t stream_backing_plan_evaluation_settle_delay_ns() const noexcept {
@@ -277,6 +316,28 @@ public:
 
   virtual uint64_t capture_backing_plan_evaluation_settle_delay_ns() const noexcept {
     return 0;
+  }
+
+  // Worst-case time Core should wait, after permitting a reprovision that
+  // reported CoexistenceVerdict::Reconfigure, for that stream's frames to
+  // resume before Core declares the stream failed.
+  //
+  // A reprovision gaps a stream deliberately and reports nothing while it does,
+  // which is truthful -- and is also exactly how a permanent hang looks. Core
+  // arms this bound so a reprovision that never restores the flow becomes a
+  // reported failure rather than a stream that reads FLOWING forever and
+  // delivers nothing. Nothing else in Core watches frame cadence, so without it
+  // that outcome is invisible to every gate, snapshot and caller.
+  //
+  // Same rule as the capture watchdog below, for the same reason: only override
+  // this with a value backed by real measured worst-case latency, never a guess.
+  // Too short converts a slow-but-working reprovision into a false failure,
+  // which is worse than waiting.
+  //
+  // Only consulted for a stream Core permitted a reprovision for. It is not a
+  // general cadence watchdog and must not be treated as one.
+  virtual uint64_t stream_reprovision_resume_timeout_ns() const noexcept {
+    return kDefaultStreamReprovisionResumeTimeoutNs;
   }
 
   // Worst-case time Core should wait, after a trigger_capture()/
@@ -363,6 +424,16 @@ public:
   // Trigger a still capture for a device instance. A successful return is
   // admission/ownership transfer: the provider will later report terminal
   // capture success or failure through the provider callback/strand path.
+  //
+  // Abandonment obligation (brief §5.2). Giving up on a capture does not
+  // cancel the backend's obligation to produce it: a platform may deliver the
+  // payload later, sometimes only when the next request pushes its pipeline. A
+  // payload delivered after its capture was abandoned must never be attributed
+  // to a later capture on that device. Attribution is by accounting -- see
+  // imaging/api/outstanding_payload_ledger.h -- never by acquisition mark,
+  // which camera_fact_model.md §12.2 forbids as identity or freshness evidence
+  // and which may legitimately be identical across simultaneously triggered
+  // devices.
   virtual ProviderResult trigger_capture(const CaptureRequest& req) = 0;
 
   // Trigger a grouped still-capture submission. Providers that do not override

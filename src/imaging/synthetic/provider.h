@@ -7,6 +7,7 @@
 #include <functional>
 #include <mutex>
 #include <map>
+#include <set>
 #include <memory>
 #include <optional>
 #include <queue>
@@ -45,6 +46,21 @@ public:
   bool supports_stream_picture_updates() const noexcept override { return true; }
   bool supports_capture_picture_updates() const noexcept override { return true; }
   bool supports_multi_image_still_sequence() const noexcept override { return true; }
+
+  // Synthetic has no acquisition hardware and therefore no concurrency
+  // constraint: every proposed use set coexists, unconditionally. Stated
+  // explicitly rather than inherited from the interface default because this
+  // provider is the readable reference for the permissive end of the range --
+  // the same reason it carries the reference seam-claim model. A reader
+  // comparing a platform provider's answer against Synthetic's should find
+  // Synthetic saying so in its own source.
+  AcquisitionCoexistence acquisition_coexistence(
+      uint64_t device_instance_id,
+      const AcquisitionUseSet& proposed) noexcept override {
+    (void)device_instance_id;
+    (void)proposed;
+    return AcquisitionCoexistence::coexist();
+  }
   uint64_t stream_backing_plan_evaluation_settle_delay_ns() const noexcept override {
     return kBackingPlanEvaluationSettleDelayNs;
   }
@@ -178,6 +194,26 @@ public:
   std::vector<SyntheticStagedRigTopology> get_staged_rig_topology_for_host() const;
 
 #if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+  // Section 11 machinery (do not imitate); maintainer builds only, never in a
+  // GDE artifact.
+  //
+  // Arms a one-shot withhold for a device. Its next capture payload is not
+  // posted with its own capture -- that capture terminalizes failed with
+  // ERR_TIMEOUT, exactly as a provider that gave up waiting would report --
+  // and the payload is instead released, still bearing its own capture_id, at
+  // the start of the *following* capture on that device.
+  //
+  // This reproduces the platform behaviour behind brief section 5.2: a held
+  // buffer handed over only when the next request pushes the pipeline. It
+  // exists so the obligation is executable against the reference provider
+  // rather than discoverable only on hardware.
+  //
+  // What it does NOT reproduce: a payload arriving with no capture identity at
+  // all, which is the Camera2 shape. That ambiguity is internal to a provider
+  // and cannot be observed through the contract; it is covered by
+  // outstanding_payload_ledger_verify and by hardware validation.
+  void arm_withheld_capture_payload_for_test(uint64_t device_instance_id);
+
   enum class CaptureWorkerFaultForTest : uint8_t {
     None = 0,
     StandardException = 1,
@@ -588,6 +624,20 @@ private:
       CaptureWorkerFaultForTest::None;
   size_t capture_max_queued_jobs_for_test_ = 0;
   size_t capture_max_active_jobs_for_test_ = 0;
+  // Withheld-payload machinery (see arm_withheld_capture_payload_for_test).
+  // Its own mutex: capture workers for different devices touch it
+  // concurrently, and it must not be ordered against provider state locks.
+  mutable std::mutex withheld_payload_mutex_for_test_;
+  std::set<uint64_t> withhold_armed_devices_for_test_;
+  std::set<uint64_t> withheld_captures_for_test_;
+  std::map<uint64_t, FrameView> withheld_payload_by_device_for_test_;
+
+  bool consume_withhold_arm_for_test_(uint64_t device_instance_id);
+  void stash_withheld_payload_for_test_(uint64_t device_instance_id,
+                                        uint64_t capture_id,
+                                        const FrameView& fv);
+  bool consume_withheld_capture_marker_for_test_(uint64_t capture_id);
+  void release_withheld_payload_for_test_(uint64_t device_instance_id);
 #endif
 
   std::map<uint64_t, DeviceState> devices_;

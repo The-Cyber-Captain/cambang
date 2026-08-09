@@ -70,17 +70,6 @@ def _detect_host_platform():
     return "linux"
 
 
-def _looks_like_msys_or_bash():
-    # Heuristic only; users can always override with use_mingw=...
-    env = os.environ
-    if env.get("MSYSTEM") or env.get("MINGW_PREFIX") or env.get("MSYS2_PATH_TYPE"):
-        return True
-    sh = env.get("SHELL", "")
-    if "bash" in sh.lower():
-        return True
-    return False
-
-
 def _processor_architecture_for_arch(arch: str) -> str:
     return {
         "x86_64": "AMD64",
@@ -468,7 +457,10 @@ vars.Add(BoolVariable(
 vars.Add(
     "android_api_level",
     "Android API level for Android GDE NDK Clang targets.",
-    "24",
+    # 26 is a floor, not a preference. The Camera2 provider calls
+    # AImageReader_newWithUsage, which the NDK marks as introduced in 26, so the
+    # Android GDE does not compile below it at all.
+    "26",
 )
 vars.Add(
     "ndk_version",
@@ -497,7 +489,14 @@ selected_provider = GDE_PROVIDER_RESOLUTION[gde_platform]
 # target platform and must not make host verifiers non-native.
 resolved_use_mingw = tmp_env["use_mingw"]
 if resolved_use_mingw == "auto":
-    resolved_use_mingw = "yes" if (host_platform == "windows" and _looks_like_msys_or_bash()) else "no"
+    # auto resolves to MSVC everywhere. It used to sniff the shell (MSYSTEM /
+    # SHELL=bash) and pick MinGW from Git Bash, which meant one command built
+    # two different artifacts depending on where it was typed -- and the MinGW
+    # answer silently drops the C++/WinRT provider, so an unqualified
+    # `scons gde` from Git Bash produced a synthetic-only Windows plugin that
+    # announced itself only in the config banner. Windows is an MSVC target;
+    # MinGW is now a deliberate opt-in via use_mingw=yes.
+    resolved_use_mingw = "no"
 
 windows_uses_mingw = gde_platform == "windows" and resolved_use_mingw == "yes"
 windows_mingw_static_runtime_mode = str(tmp_env["windows_mingw_static_runtime"])
@@ -568,7 +567,16 @@ if is_msvc:
     if env["warnings_as_errors"]:
         env.Append(CXXFLAGS=["/WX"])
     if core_target == "debug":
-        env.Append(CXXFLAGS=["/Zi", "/Od"])
+        # /Z7 (debug info inside each .obj), not /Zi. /Zi makes every cl.exe
+        # write to one compiler PDB -- with no /Fd here they all landed on
+        # <repo root>\vc140.pdb, so any -j>1 build died immediately with
+        # "fatal error C1041: cannot open program database". /Z7 removes the
+        # shared file from the picture entirely rather than serialising access
+        # to it: /FS would keep the contention and route it through an
+        # mspdbsrv.exe background process, and per-object /Fd would leave a
+        # .pdb littered beside every .obj. The linker still emits the real
+        # program database for the binary from /DEBUG below.
+        env.Append(CXXFLAGS=["/Z7", "/Od"])
         env.Append(LINKFLAGS=["/DEBUG"])
     else:
         env.Append(CXXFLAGS=["/O2"])
@@ -783,6 +791,9 @@ maintainer_tools_clean_outputs = [
     _program_path("core_spine_smoke"),
     _program_path("core_result_path_smoke"),
     _program_path("core_result_byte_budget_stress_smoke"),
+    _program_path("outstanding_payload_ledger_verify"),
+    _program_path("capture_sequence_settlement_verify"),
+    _program_path("acquisition_seam_claims_verify"),
     _program_path("core_capture_assembly_registry_smoke"),
     _program_path("core_dispatcher_bracket_routing_smoke"),
     _program_path("godot_result_convert_smoke"),
@@ -865,6 +876,27 @@ if build_maintainer_tools:
     core_result_byte_budget_stress_smoke_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "core_result_byte_budget_stress_smoke"),
         source=maintainer_tools_core_runtime_sources + ["src/smoke/core_result_byte_budget_stress_smoke.cpp"],
+    )
+    # Header-only subject (imaging/api/outstanding_payload_ledger.h), so this
+    # links no core runtime sources: the point is that the accounting is
+    # testable host-native, away from the platform provider that uses it.
+    outstanding_payload_ledger_verify_prog = maintainer_tools_env.Program(
+        target=os.path.join(out_dir, "outstanding_payload_ledger_verify"),
+        source=["src/smoke/outstanding_payload_ledger_verify.cpp"],
+    )
+    # Header-only subject (imaging/api/capture_sequence_settlement.h). The
+    # policy governs Camera2's collector, which no host verifier can reach;
+    # keeping the decision pure is what makes it testable here.
+    capture_sequence_settlement_verify_prog = maintainer_tools_env.Program(
+        target=os.path.join(out_dir, "capture_sequence_settlement_verify"),
+        source=["src/smoke/capture_sequence_settlement_verify.cpp"],
+    )
+    # Header-only for the same reason: the seam-claim decisions govern the
+    # platform-backed providers, which need MSVC+WinRT+a camera or an Android
+    # device. Keeping the decisions pure is what makes them testable here.
+    acquisition_seam_claims_verify_prog = maintainer_tools_env.Program(
+        target=os.path.join(out_dir, "acquisition_seam_claims_verify"),
+        source=["src/smoke/acquisition_seam_claims_verify.cpp"],
     )
     core_capture_assembly_registry_smoke_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "core_capture_assembly_registry_smoke"),
@@ -990,6 +1022,9 @@ if build_maintainer_tools:
             core_result_path_smoke_prog,
             core_thread_liveness_watchdog_verify_prog,
             core_result_byte_budget_stress_smoke_prog,
+            outstanding_payload_ledger_verify_prog,
+            capture_sequence_settlement_verify_prog,
+            acquisition_seam_claims_verify_prog,
             core_capture_assembly_registry_smoke_prog,
             core_dispatcher_bracket_routing_smoke_prog,
             godot_result_convert_smoke_prog,

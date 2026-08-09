@@ -1317,6 +1317,42 @@ bool CoreRuntime::device_has_active_capture_evaluator_(
   return false;
 }
 
+bool CoreRuntime::priming_would_disturb_a_stream_(
+    uint64_t device_instance_id,
+    const CaptureRequest& effective) const {
+  assert(core_thread_.is_core_thread());
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    // No provider to ask. Keep the old conservative answer rather than priming
+    // on an assumption.
+    return true;
+  }
+
+  AcquisitionUseSet proposed{};
+  proposed.has_still = true;
+  proposed.still.width = effective.width;
+  proposed.still.height = effective.height;
+  proposed.still.format_fourcc = effective.format_fourcc;
+
+  for (const auto& [stream_id, rec] : streams_.all()) {
+    (void)stream_id;
+    if (rec.device_instance_id != device_instance_id) {
+      continue;
+    }
+    proposed.has_stream = true;
+    proposed.stream = rec.profile;
+    const AcquisitionCoexistence c = prov->acquisition_coexistence(device_instance_id, proposed);
+    // Only Coexist is good enough here. Reconfigure would gap the stream and
+    // StreamMustYield would stop it, neither of which a profile set is entitled
+    // to do; Unsupported means no seam shape serves both, so priming would
+    // achieve nothing and could still cost the stream.
+    if (c.verdict != CoexistenceVerdict::Coexist) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool CoreRuntime::sync_capture_parent_priming_(
     uint64_t device_instance_id,
     const CaptureRequest& effective,
@@ -1328,15 +1364,26 @@ bool CoreRuntime::sync_capture_parent_priming_(
   const uint64_t live_session_id =
       acquisition_sessions_.resolve_live_session_id_for_device(
           device_instance_id);
-  const bool any_stream = device_has_any_stream_(device_instance_id);
-  if (device_instance_id == 0 ||
-      (!active_capture_evaluator && any_stream)) {
+  if (device_instance_id == 0) {
     return false;
   }
-  if (!active_capture_evaluator &&
-      live_session_id != 0) {
-    return false;
+  // A stream on the device used to skip priming outright. That is why a
+  // retained still profile set while a stream ran was never applied to the seam
+  // and Core's retained shape diverged from the seam's real one silently.
+  //
+  // The provider can now say whether shaping the seam for this profile would
+  // disturb the stream, so the question is asked instead of assumed. Only a
+  // disturbing answer defers the priming -- and it DEFERS it rather than
+  // preempting, because retaining a profile is not a triggered capture and
+  // carries none of its priority (arbitration_policy.md 2 ranks triggered
+  // capture, not the retained profile behind it). The seam takes the shape when
+  // a capture is actually triggered, which is where the yield belongs.
+  if (!active_capture_evaluator && device_has_any_stream_(device_instance_id)) {
+    if (priming_would_disturb_a_stream_(device_instance_id, effective)) {
+      return false;
+    }
   }
+
 
   const CapturePrimingSeedSignature signature =
       build_capture_priming_seed_signature_(
@@ -1344,6 +1391,33 @@ bool CoreRuntime::sync_capture_parent_priming_(
           effective,
           runtime_backing_capabilities,
           parent_context_backing_capabilities);
+
+  // An existing session is not by itself a reason to do nothing. The device's
+  // acquisition seam is created from whatever capture geometry is effective at
+  // the time, and on the engage path that is the provider's capture template,
+  // because the caller's retained still profile is applied only AFTER the
+  // device has an instance id to apply it to. Returning early here left the
+  // seam permanently at the template geometry: every later profile set was
+  // discarded, and the first real capture had to tear the session down and
+  // rebuild it at the geometry the caller had asked for all along.
+  //
+  // Proceed when the retained shape no longer matches what the seam was
+  // created for. The signature comparison below is the idempotence guard, so
+  // an unchanged profile still costs nothing; a stream-backed device is
+  // already excluded above, and the provider refuses a rebuild that a live
+  // claimant forbids.
+  if (!active_capture_evaluator && live_session_id != 0) {
+    const auto held = capture_parent_priming_states_.find(device_instance_id);
+    const bool seam_matches_retained_shape =
+        held != capture_parent_priming_states_.end() &&
+        held->second.provider_hold_active &&
+        held->second.signature.width == signature.width &&
+        held->second.signature.height == signature.height &&
+        held->second.signature.format_fourcc == signature.format_fourcc;
+    if (seam_matches_retained_shape) {
+      return false;
+    }
+  }
   auto& state = capture_parent_priming_states_[device_instance_id];
   if (state.provider_hold_active &&
       state.signature.hardware_id == signature.hardware_id &&
@@ -2561,33 +2635,6 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
     }
   }
   const bool preserve_existing_decision = have_preserved_decision;
-  auto decision_matches_current_non_evaluated_shape =
-      [&](const RetainedPlanDecisionProvenance& provenance) noexcept {
-        if (!provenance.valid || provenance.from_evaluation) {
-          return false;
-        }
-        const CoreRetainedProductionPlan current_selected =
-            decision.steady.valid ? decision.steady : decision.requested;
-        if (!same_retained_plan(provenance.selected, current_selected) ||
-            provenance.candidate_count != decision.candidate_count) {
-          return false;
-        }
-        for (uint8_t i = 0; i < decision.candidate_count; ++i) {
-          if (!same_retained_plan(
-                  provenance.candidate_sequence[i],
-                  make_retained_plan(decision.candidate_sequence[i]))) {
-            return false;
-          }
-        }
-        return true;
-      };
-  const auto existing_parent_decision_it =
-      capture_retained_plan_decisions_.find(parent.key);
-  const bool same_non_evaluated_decision_already_installed =
-      existing_parent_decision_it != capture_retained_plan_decisions_.end() &&
-      decision_matches_current_non_evaluated_shape(
-          existing_parent_decision_it->second);
-
   erase_capture_retained_plan_state_for_device_(
       device_instance_id, &parent.key);
   if (!decision.requested.valid) {
@@ -2732,12 +2779,21 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
     provenance.orphan_retire_after_ns = 0;
     provenance.capture_priming_seed_signature = seed_signature;
     capture_retained_plan_decisions_[parent.key] = provenance;
-    if (parent.acquisition_session_id == 0 &&
-        !same_non_evaluated_decision_already_installed) {
-      (void)sync_capture_parent_priming_(
-          device_instance_id, effective, runtime_caps, parent_context_caps);
-      release_capture_parent_priming_(device_instance_id);
-    }
+    // Called unconditionally. This was previously gated on
+    // `parent.acquisition_session_id == 0` -- create a seam only when none
+    // exists -- which is correct for creation but wrong as the whole rule: on
+    // the engage path the seam is created from the provider's capture template,
+    // because the caller's retained still profile can only be applied once the
+    // device has an instance id. The gate then made that first, provisional
+    // geometry permanent, and every capture paid a session rebuild.
+    //
+    // sync_capture_parent_priming_ carries the guards that belong to it: it
+    // does nothing for a stream-backed device, nothing when the seam already
+    // matches the retained shape, and nothing when the full seed signature is
+    // unchanged.
+    (void)sync_capture_parent_priming_(
+        device_instance_id, effective, runtime_caps, parent_context_caps);
+    release_capture_parent_priming_(device_instance_id);
     return true;
   }
   (void)sync_capture_parent_priming_(
@@ -4007,6 +4063,87 @@ void CoreRuntime::finalize_completed_capture_facts_(
       });
 }
 
+CoreRuntime::CaptureCoexistenceOutcome CoreRuntime::resolve_capture_stream_coexistence_(
+    uint64_t device_instance_id,
+    const CaptureRequest& req,
+    ICameraProvider* prov) {
+  assert(core_thread_.is_core_thread());
+  if (!prov || device_instance_id == 0) {
+    return CaptureCoexistenceOutcome::Proceed;
+  }
+
+  AcquisitionUseSet proposed{};
+  proposed.has_still = true;
+  proposed.still.width = req.width;
+  proposed.still.height = req.height;
+  proposed.still.format_fourcc = req.format_fourcc;
+
+  // Asked once per running stream rather than once for the device. Each stream
+  // has its own profile, so "can this capture run alongside THAT stream" has a
+  // different answer per stream, and only the streams that must yield should
+  // be stopped -- stopping a stream the backend could have kept would be
+  // preemption Core was never asked for.
+  std::vector<uint64_t> must_yield;
+  for (const auto& [stream_id, rec] : streams_.all()) {
+    if (rec.device_instance_id != device_instance_id || !rec.started) {
+      continue;
+    }
+    proposed.has_stream = true;
+    proposed.stream = rec.profile;
+    const AcquisitionCoexistence c = prov->acquisition_coexistence(device_instance_id, proposed);
+    // Logged for every arbitrated capture, not only the ones that preempt. The
+    // decision is invisible otherwise: a wrong answer here is the PERMISSIVE
+    // one, so it produces no error, no stop and no refusal -- exactly how an
+    // unforwarded broker query went unnoticed until a capture came back at the
+    // wrong geometry.
+    std::fprintf(stdout,
+                 "[CamBANG][Core] arbitration: device=%llu capture=%ux%u vs "
+                 "stream=%llu %ux%u -> %s\n",
+                 static_cast<unsigned long long>(device_instance_id),
+                 proposed.still.width, proposed.still.height,
+                 static_cast<unsigned long long>(stream_id),
+                 proposed.stream.width, proposed.stream.height,
+                 coexistence_verdict_name(c.verdict));
+    std::fflush(stdout);
+    if (coexistence_is_capability_denial(c)) {
+      // Deny before stopping anything. Preempting for a capture that cannot
+      // succeed would destroy a working stream and gain nothing.
+      return CaptureCoexistenceOutcome::DenyUnavailable;
+    }
+    if (c.verdict == CoexistenceVerdict::StreamMustYield) {
+      must_yield.push_back(stream_id);
+    } else if (c.verdict == CoexistenceVerdict::Reconfigure && rec.started) {
+      // Core is about to let the provider swap the session underneath a running
+      // stream. That gaps it, and a gap is reported by silence -- which is also
+      // how a permanent hang looks. Arm the expectation that frames come back;
+      // any frame, stop or start on this stream disarms it, and expiry is
+      // reported as a stream failure by on_core_timer_tick.
+      const uint64_t deadline_ns =
+          ns_since_epoch_() + prov->stream_reprovision_resume_timeout_ns();
+      (void)streams_.arm_frame_resumption(stream_id, deadline_ns);
+    }
+  }
+
+  for (const uint64_t stream_id : must_yield) {
+    // Marked before the provider call so the stop is already attributable
+    // whichever order the resulting facts arrive in.
+    (void)streams_.mark_stop_requested_by_core_for_preemption(stream_id);
+    const ProviderResult sr = prov->stop_stream(stream_id);
+    if (!sr.ok()) {
+      // The provider said this stream had to yield and then would not stop it.
+      // Proceeding would trigger a capture the provider has already told us it
+      // cannot serve, so the honest answer is that the device is busy.
+      return CaptureCoexistenceOutcome::DenyBusy;
+    }
+    if (streams_.on_core_stream_stopped(stream_id, /*error_code=*/0)) {
+      request_publish_from_core_unchecked();
+    }
+    (void)refresh_capture_retained_plan_state_(
+        device_instance_id, /*requested_bump_access_posture_epoch=*/false);
+  }
+  return CaptureCoexistenceOutcome::Proceed;
+}
+
 void CoreRuntime::begin_capture_stream_preemption_(uint64_t capture_id, uint64_t device_instance_id) {
   assert(core_thread_.is_core_thread());
   if (capture_id == 0 || device_instance_id == 0) {
@@ -4450,6 +4587,26 @@ void CoreRuntime::on_core_timer_tick() {
   const auto now = std::chrono::steady_clock::now();
   const uint64_t now_ns = ns_since_epoch_(now);
 
+  // A reprovision Core permitted that never restored the flow. The stream is
+  // still marked started and no fact has contradicted that, so without this it
+  // would read FLOWING forever while delivering nothing -- invisible to every
+  // gate, snapshot and caller, because nothing else here watches frame cadence.
+  //
+  // Reported as a PROVIDER stop, which is what it is: the backend accepted the
+  // reprovision and then failed to deliver. Distinct from a caller's stop and
+  // from a preemption, both of which are choices somebody made.
+  for (const uint64_t dark_stream_id : streams_.take_expired_frame_resumptions(now_ns)) {
+    std::fprintf(stdout,
+                 "[CamBANG][Core] reprovision timeout: stream=%llu frames did not "
+                 "resume; reporting the stream failed\n",
+                 static_cast<unsigned long long>(dark_stream_id));
+    std::fflush(stdout);
+    if (streams_.on_provider_stream_stopped(
+            dark_stream_id, static_cast<uint32_t>(ProviderError::ERR_TIMEOUT))) {
+      request_publish_from_core_unchecked();
+    }
+  }
+
   // Banner 2: Core-loop provider attachment (effective runtime attachment).
   // Printed once per CoreRuntime session, the first time Core observes a non-null provider.
   if (!provider_banner_printed_) {
@@ -4806,6 +4963,15 @@ void CoreRuntime::on_core_timer_tick() {
          next_pending_capture_observation_delay_ns < next_deadline_delay_ns)) {
       has_next_deadline_delay = true;
       next_deadline_delay_ns = next_pending_capture_observation_delay_ns;
+    }
+    if (const auto next_frame_resumption_delay_ns =
+            streams_.next_frame_resumption_delay_ns(now_ns);
+        next_frame_resumption_delay_ns.has_value()) {
+      if (!has_next_deadline_delay ||
+          *next_frame_resumption_delay_ns < next_deadline_delay_ns) {
+        has_next_deadline_delay = true;
+        next_deadline_delay_ns = *next_frame_resumption_delay_ns;
+      }
     }
     next_capture_retained_plan_orphan_retirement_delay_(
         now_ns, has_next_deadline_delay, next_deadline_delay_ns);
@@ -5897,6 +6063,28 @@ TrySetStillCaptureProfileStatus CoreRuntime::try_set_device_still_capture_profil
       next_version = rec->capture_profile_version + 1;
       if (next_version == 0) next_version = 1;
     }
+    // This is a TRY, and until now it answered OK without asking anything --
+    // including for a geometry the device cannot produce at all, which was then
+    // retained and only discovered when a capture failed. Ask the provider
+    // whether the still alone is serviceable on this device.
+    //
+    // The still ALONE, with no stream in the set, deliberately: a conflict with
+    // a live stream is not a reason to refuse the retention. The profile is
+    // still retained truthfully and the stream yields when a capture is
+    // actually triggered. Only a capability denial means the profile can never
+    // be applied, and only that is reported as a failure here.
+    if (ICameraProvider* prov = provider_.load(std::memory_order_acquire)) {
+      AcquisitionUseSet proposed{};
+      proposed.has_still = true;
+      proposed.still.width = profile.width;
+      proposed.still.height = profile.height;
+      proposed.still.format_fourcc = profile.format_fourcc;
+      if (coexistence_is_capability_denial(
+              prov->acquisition_coexistence(device_instance_id, proposed))) {
+        return TrySetStillCaptureProfileStatus::NotSupported;
+      }
+    }
+
     (void)devices_.retain_capture_profile(
         device_instance_id,
         profile.width,
@@ -6090,6 +6278,19 @@ TryTriggerDeviceCaptureStatus CoreRuntime::trigger_device_capture_with_capture_i
   if (!prov) {
     return TryTriggerDeviceCaptureStatus::Busy;
   }
+  // Priority order applied BEFORE the provider is asked to admit. The provider
+  // reports what it can serve concurrently; the decision to stop a stream for
+  // the capture is Core's, and it has to happen here because a provider asked
+  // to admit an unservable capture can only refuse it.
+  switch (resolve_capture_stream_coexistence_(device_instance_id, req, prov)) {
+    case CaptureCoexistenceOutcome::DenyUnavailable:
+      return TryTriggerDeviceCaptureStatus::Unavailable;
+    case CaptureCoexistenceOutcome::DenyBusy:
+      return TryTriggerDeviceCaptureStatus::Busy;
+    case CaptureCoexistenceOutcome::Proceed:
+      break;
+  }
+
   req.admission_context = make_capture_admission_context_();
   req.has_admission_context = true;
   const ProviderResult pr = prov->trigger_capture(req);
@@ -6351,6 +6552,41 @@ CoreRuntime::RigSubmissionResult CoreRuntime::submit_admitted_rig_bundle_(
           static_cast<uint32_t>(ProviderError::ERR_INVALID_ARGUMENT));
     }
     submission.device_requests.push_back(participant.request);
+  }
+
+  // Same priority order as the device path, applied per participant. Rig
+  // capture sits ABOVE device capture in arbitration_policy.md 2, so a stream
+  // that must yield to a device capture must equally yield to this one.
+  //
+  // Every participant is resolved before the submission is triggered, because a
+  // rig submission is meant to be admitted as a whole: discovering a denial
+  // half way through would leave some members' streams stopped for a capture
+  // that never ran.
+  for (size_t i = 0; i < bundle.participants.size(); ++i) {
+    const auto& participant = bundle.participants[i];
+    const CaptureCoexistenceOutcome outcome = resolve_capture_stream_coexistence_(
+        participant.request.device_instance_id, participant.request, prov);
+    if (outcome == CaptureCoexistenceOutcome::Proceed) {
+      continue;
+    }
+    const uint32_t error_code = outcome == CaptureCoexistenceOutcome::DenyUnavailable
+        ? static_cast<uint32_t>(ProviderError::ERR_NOT_SUPPORTED)
+        : static_cast<uint32_t>(ProviderError::ERR_BUSY);
+    for (const auto& all_participants : bundle.participants) {
+      capture_assembly_registry_.mark_capture_failed(
+          bundle.capture_id, all_participants.request.device_instance_id, error_code);
+    }
+    (void)capture_cohort_registry_.mark_failed(
+        bundle.capture_id,
+        participant.request.device_instance_id,
+        error_code,
+        CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION);
+    return make_rig_submission_trigger_failed(
+        bundle.rig_id,
+        bundle.capture_id,
+        i,
+        participant.request.device_instance_id,
+        error_code);
   }
 
   const ProviderResult pr = prov->trigger_capture_submission(submission);

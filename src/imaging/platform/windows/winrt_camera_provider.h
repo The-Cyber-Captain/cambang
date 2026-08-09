@@ -54,6 +54,7 @@
 #include <thread>
 #include <vector>
 
+#include "imaging/api/acquisition_seam_claims.h"
 #include "imaging/api/icamera_provider.h"
 #include "imaging/api/provider_access_status.h"
 #include "imaging/api/provider_strand.h"
@@ -137,6 +138,15 @@ public:
   // exceeding kMaxBracketMembers, is refused with ERR_NOT_SUPPORTED.
   bool supports_multi_image_still_sequence() const noexcept override { return true; }
 
+  // A MediaFrameSource carries ONE active MediaFrameFormat, shared by every
+  // reader on it and by the photo pipeline. Two geometries therefore cannot be
+  // live at once on one device, so where a still is wanted at a geometry other
+  // than the stream's, something has to give -- which is a genuine backend
+  // constraint here, not a policy choice like Camera2's rebuild.
+  AcquisitionCoexistence acquisition_coexistence(
+      uint64_t device_instance_id,
+      const AcquisitionUseSet& proposed) noexcept override;
+
   // Derived from the bounded per-step timeouts below (never a guess, per the
   // doc comment on the base declaration). Re-derived when still capture moved
   // to the photo pipeline: the step count happens to be unchanged, but the
@@ -217,6 +227,12 @@ public:
   ProviderResult set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) override;
   ProviderResult set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) override;
 
+  // Creation of the acquisition seam from the retained still profile. The API
+  // name predates the understanding that this is creation rather than warming;
+  // it is kept for compatibility. See brief section 7.1.
+  ProviderResult sync_capture_parent_priming(const CaptureRequest& req) override;
+  ProviderResult release_capture_parent_priming(uint64_t device_instance_id) override;
+
   ProviderResult trigger_capture(const CaptureRequest& req) override;
   ProviderResult trigger_capture_submission(const CaptureSubmission& submission) override;
   ProviderResult abort_capture(uint64_t capture_id) override;
@@ -277,6 +293,10 @@ private:
   struct DeviceCaptureJob {
     CaptureRequest request{};
     uint64_t generation = 0;
+    // Bound at admission, when the acquisition-seam capture claim is taken, so
+    // the worker releases the claim against the same backend it was taken on
+    // even if the device record has since been replaced.
+    std::shared_ptr<winrt_detail::DeviceBackend> backend;
   };
 
   struct InFlightKey {
@@ -287,6 +307,29 @@ private:
       return device_instance_id < o.device_instance_id;
     }
   };
+
+  // Acquisition-seam claims. Retain governs the seam's LIFETIME from the
+  // moment a claimant needs it; realizing the native reader may still happen
+  // later on the bounded control executor. Release drops the claim only --
+  // it never tears the seam down. Core holds the capture-parent claim for as
+  // long as the retained still profile stands, so the release that eventually
+  // arrives means the profile is changing or going away -- not that the seam
+  // should be destroyed.
+  //
+  // None of these touch the backend's WinRT objects, so they are safe to call
+  // under state_mutex_ during admission.
+  void retain_acquisition_seam_for_capture_(
+      const std::shared_ptr<winrt_detail::DeviceBackend>& backend);
+  void retain_acquisition_seam_for_stream_(
+      const std::shared_ptr<winrt_detail::DeviceBackend>& backend);
+  void retain_acquisition_seam_for_capture_parent_(
+      const std::shared_ptr<winrt_detail::DeviceBackend>& backend);
+  void release_acquisition_seam_for_capture_(
+      const std::shared_ptr<winrt_detail::DeviceBackend>& backend);
+  void release_acquisition_seam_for_stream_(
+      const std::shared_ptr<winrt_detail::DeviceBackend>& backend);
+  void release_acquisition_seam_for_capture_parent_(
+      const std::shared_ptr<winrt_detail::DeviceBackend>& backend);
 
   uint64_t alloc_native_id_(NativeObjectType type);
   void emit_native_created_(uint64_t native_id,
@@ -304,11 +347,18 @@ private:
   // core-thread entries only) -> backend configure mutex -> backend inner
   // mutex; nothing re-acquires state_mutex_ inside the configure mutex.
   ProviderResult ensure_reader_realized_(
+      SeamClaimant requester,
+      const std::shared_ptr<winrt_detail::DeviceBackend>& backend);
+  // Tears down the existing reader so a new one can be created at a different
+  // subtype. Emits the AcquisitionSession destroyed fact for the seam that
+  // ends. Control thread; same locking rules as ensure_reader_realized_.
+  ProviderResult retire_reader_for_format_change_(
       const std::shared_ptr<winrt_detail::DeviceBackend>& backend);
   // Configures the reader output media type (control thread). Same locking
   // rules as ensure_reader_realized_. Fails deterministically when a started
   // stream already pins a different geometry.
   ProviderResult ensure_reader_geometry_(
+      SeamClaimant requester,
       const std::shared_ptr<winrt_detail::DeviceBackend>& backend,
       uint32_t width,
       uint32_t height,
@@ -400,11 +450,20 @@ private:
   // waiter mechanism. Shared by the default-metered member and every
   // additional-bracket member -- this is the same single-frame wait
   // single-image capture already used, just made reusable per member.
-  // Prepares the per-device still-capture pipeline, once, on first capture.
-  // Stills come from here rather than from the stream frame reader; see the
-  // still-capture note in this header's overview.
+  // Prepares the per-device still-capture pipeline AT A GIVEN GEOMETRY, and
+  // re-prepares it when the geometry asked for changes. Stills come from here
+  // rather than from the stream frame reader; see the still-capture note in
+  // this header's overview.
+  //
+  // The geometry argument is load-bearing. Photo resolution is fixed by the
+  // ImageEncodingProperties handed to PrepareLowLagPhotoCaptureAsync, cannot be
+  // changed on a prepared pipeline, and does NOT follow the frame source's
+  // format on every device -- so preparing once and reusing served every
+  // capture at the first one's resolution.
   ProviderResult ensure_low_lag_photo_realized_(
-      const std::shared_ptr<winrt_detail::DeviceBackend>& backend) noexcept;
+      const std::shared_ptr<winrt_detail::DeviceBackend>& backend,
+      uint32_t width,
+      uint32_t height) noexcept;
 
   CapturedMemberFrame capture_one_member_frame_(
       const std::shared_ptr<winrt_detail::DeviceBackend>& backend,

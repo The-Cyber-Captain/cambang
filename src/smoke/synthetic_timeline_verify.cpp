@@ -30,14 +30,15 @@ Non-Goals
 #include <cstdio>
 #include <future>
 #include <iostream>
+#include <memory>
 #include <set>
+#include <streambuf>
 #include <string>
 #include <thread>
 #include <vector>
 
 #if defined(_WIN32)
 #include <io.h>
-#include <ext/stdio_filebuf.h>
 #endif
 
 #if !defined(CAMBANG_INTERNAL_SMOKE)
@@ -69,6 +70,48 @@ enum class ParseOptsResult {
   Ok,
   Help,
   Error,
+};
+
+// Minimal std::streambuf over a FILE*. Replaces __gnu_cxx::stdio_filebuf,
+// which is a libstdc++ extension and unavailable under MSVC -- the toolchain
+// the Windows WinRT provider requires. Only the three virtuals a write-only
+// capture sink needs are overridden; there is no read side and no seeking.
+class FileSinkStreamBuf final : public std::streambuf {
+public:
+  explicit FileSinkStreamBuf(FILE* file) : file_(file) {}
+
+protected:
+  int_type overflow(int_type ch) override {
+    if (!file_) {
+      return traits_type::eof();
+    }
+    if (ch == traits_type::eof()) {
+      return traits_type::not_eof(ch);
+    }
+    const unsigned char byte = static_cast<unsigned char>(ch);
+    if (std::fwrite(&byte, 1, 1, file_) != 1) {
+      return traits_type::eof();
+    }
+    return ch;
+  }
+
+  std::streamsize xsputn(const char* s, std::streamsize n) override {
+    if (!file_ || n <= 0) {
+      return 0;
+    }
+    return static_cast<std::streamsize>(
+        std::fwrite(s, 1, static_cast<size_t>(n), file_));
+  }
+
+  int sync() override {
+    if (!file_) {
+      return -1;
+    }
+    return std::fflush(file_) == 0 ? 0 : -1;
+  }
+
+private:
+  FILE* file_ = nullptr;
 };
 
 class QuietOutputCapture final {
@@ -109,8 +152,8 @@ public:
     // stream's captured file) rather than ending up in stdout_file_/
     // stderr_file_. Redirect cout/cerr explicitly at the streambuf level
     // instead, bypassing whatever sync_with_stdio is (or isn't) doing.
-    stdout_filebuf_ = std::make_unique<__gnu_cxx::stdio_filebuf<char>>(stdout_file_.get(), std::ios::out);
-    stderr_filebuf_ = std::make_unique<__gnu_cxx::stdio_filebuf<char>>(stderr_file_.get(), std::ios::out);
+    stdout_filebuf_ = std::make_unique<FileSinkStreamBuf>(stdout_file_.get());
+    stderr_filebuf_ = std::make_unique<FileSinkStreamBuf>(stderr_file_.get());
     saved_cout_buf_ = std::cout.rdbuf(stdout_filebuf_.get());
     saved_cerr_buf_ = std::cerr.rdbuf(stderr_filebuf_.get());
     active_ = true;
@@ -211,8 +254,8 @@ private:
   std::unique_ptr<FILE, FileCloser> stdout_file_{};
   std::unique_ptr<FILE, FileCloser> stderr_file_{};
 #if defined(_WIN32)
-  std::unique_ptr<__gnu_cxx::stdio_filebuf<char>> stdout_filebuf_{};
-  std::unique_ptr<__gnu_cxx::stdio_filebuf<char>> stderr_filebuf_{};
+  std::unique_ptr<FileSinkStreamBuf> stdout_filebuf_{};
+  std::unique_ptr<FileSinkStreamBuf> stderr_filebuf_{};
   std::streambuf* saved_cout_buf_ = nullptr;
   std::streambuf* saved_cerr_buf_ = nullptr;
 #endif

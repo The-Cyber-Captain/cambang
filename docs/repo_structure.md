@@ -376,7 +376,7 @@ Assignment-style variables outside the declared public set are rejected.
   link mode; `auto` enables it for Windows MinGW GDE builds; default `auto`
 - `warnings_as_errors=yes|no` - treat warnings as errors; default `no`
 - `android_api_level=<level>` - Android GDE NDK Clang target API level; default
-  `24`
+  `26`, which is the floor the Camera2 provider compiles at
 - `ndk_version=<version>` - Android NDK version used with `ANDROID_HOME` /
   `ANDROID_SDK_ROOT`; default `28.1.13356709`
 - `ANDROID_HOME=<path>` - optional Android SDK root for Android GDE builds;

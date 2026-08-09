@@ -83,6 +83,13 @@ public:
   bool supports_stream_picture_updates() const noexcept override;
   bool supports_capture_picture_updates() const noexcept override;
   bool supports_multi_image_still_sequence() const noexcept override;
+  // MUST be forwarded, not inherited. Core holds the broker, never a provider
+  // directly, so an un-overridden capability query here silently answers for the
+  // provider -- and the interface default is the permissive Coexist, which is
+  // exactly the answer that makes Core skip arbitration entirely.
+  AcquisitionCoexistence acquisition_coexistence(
+      uint64_t device_instance_id,
+      const AcquisitionUseSet& proposed) noexcept override;
 
   // Format capability must be forwarded like backing capability. Left to the
   // ICameraProvider default, the broker would answer packed-RGB-only on behalf

@@ -15,11 +15,14 @@
 #include <camera/NdkCameraMetadataTags.h>
 #include <camera/NdkCaptureRequest.h>
 #include <media/NdkImage.h>
+#include <android/hardware_buffer.h>
 #include <media/NdkImageReader.h>
 
 #include <android/log.h>
 
 #include <algorithm>
+#include <chrono>
+#include <ctime>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -30,6 +33,40 @@ namespace cambang {
 namespace camera2_detail {
 
 namespace {
+
+// Provider-local monotonic clock for capture-path telemetry. Diagnostics only:
+// never a fact, never used for attribution, freshness, or ordering of payloads
+// (camera_fact_model.md 12.2).
+uint64_t diag_mono_ns() noexcept {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+
+// CLOCK_BOOTTIME, sampled alongside the monotonic mark so a request->sensor
+// delta is computable whichever clock the sensor uses.
+// ACAMERA_SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME marks are on CLOCK_BOOTTIME;
+// UNKNOWN marks are on CLOCK_MONOTONIC, which is what diag_mono_ns() reads.
+// The two differ by however long the device has been suspended, so pairing a
+// REALTIME sensor mark against a monotonic submit mark silently overstates the
+// latency. Sample both and let the reader use the one that matches.
+uint64_t diag_boot_ns() noexcept {
+  struct timespec ts {};
+  if (clock_gettime(CLOCK_BOOTTIME, &ts) != 0) {
+    return 0;
+  }
+  return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull +
+         static_cast<uint64_t>(ts.tv_nsec);
+}
+
+double diag_ms_since(uint64_t then_ns) noexcept {
+  if (then_ns == 0) {
+    return -1.0;
+  }
+  const uint64_t now = diag_mono_ns();
+  return now >= then_ns ? static_cast<double>(now - then_ns) / 1.0e6 : -1.0;
+}
 
 void log_line(const char* fmt, ...) {
   char buffer[512];
@@ -416,6 +453,37 @@ struct StaticCharacteristics {
   bool has_orientation = false;
   int32_t orientation_degrees = 0;
 
+  // Whether the device offers zero-shutter-lag as a settable control, and the
+  // capability set it advertises. ENABLE_ZSL missing from a RESULT does not
+  // distinguish "no ZSL" from "ZSL not reported"; missing from the available
+  // REQUEST keys does -- a control that cannot be set is not on offer.
+  bool zsl_settable = false;
+  // ACAMERA_CONTROL_AE_STATE is advertised as a result key. Selects the capture
+  // pilot stream's wait predicate; see kPilotStreamFrames.
+  bool ae_state_reported = false;
+  // ACAMERA_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES, as advertised. The pilot
+  // picks from these rather than inheriting whatever TEMPLATE_PREVIEW chose,
+  // because the pilot's cadence decides how long a still waits for its slot in
+  // the flow.
+  // ACAMERA_REQUEST_AVAILABLE_SESSION_KEYS: the subset of request keys the
+  // device says are "difficult to apply per-frame" and cause hardware
+  // reconfiguration when changed mid-session. Anything we set per request that
+  // appears here is being paid for on every capture.
+  std::vector<int32_t> session_keys;
+
+  std::vector<std::pair<int32_t, int32_t>> ae_fps_ranges;
+  int32_t pilot_fps_min = 0;
+  int32_t pilot_fps_max = 0;
+  // ACAMERA_INFO_SUPPORTED_HARDWARE_LEVEL, and whether the device lists any
+  // capability beyond BACKWARD_COMPATIBLE. Camera2 documents that a LEGACY
+  // device never lists another capability, and that AE precapture is not
+  // functional on LEGACY -- so "BACKWARD_COMPATIBLE only" is the signature of a
+  // device whose AE state machine will not run, however it answers the result-
+  // key question.
+  int32_t hardware_level = -1;
+  bool has_capability_beyond_backward_compatible = false;
+  std::string advertised_capabilities;
+
   // ACAMERA_SENSOR_INFO_TIMESTAMP_SOURCE. REALTIME marks are on the same
   // boot-time base every camera on the device shares; UNKNOWN marks are only
   // meaningful within one device.
@@ -498,6 +566,17 @@ struct StaticCharacteristics {
   // Output geometries the device actually supports for YUV_420_888.
   std::vector<std::pair<uint32_t, uint32_t>> supported_yuv_sizes;
 
+  // Pilot-stream geometry, resolved ONCE from the sizes this device actually
+  // advertises rather than assumed. Smallest applicable YUV output: pilot
+  // frames are acquired and dropped without ever being delivered, so the only
+  // thing their size costs is bandwidth and buffer memory.
+  //
+  // Resolved at device open, not per capture: the advertised set cannot change
+  // while a device is open, so re-deriving it for every still request would be
+  // work whose answer is already known.
+  uint32_t pilot_width = 0;
+  uint32_t pilot_height = 0;
+
   bool supports_size(uint32_t w, uint32_t h) const noexcept {
     for (const auto& size : supported_yuv_sizes) {
       if (size.first == w && size.second == h) {
@@ -563,6 +642,32 @@ struct ResultFacts {
   // image it describes once a burst has several captures in flight at once.
   bool has_sensor_timestamp = false;
   int64_t sensor_timestamp_ns = 0;
+
+  // 3A convergence state, diagnostic only. AE/AWB/AF each run a state machine
+  // that needs a flow of frames to converge; a still-only session with no
+  // repeating request supplies none. Read so that "the capture is waiting on
+  // 3A" can be told apart from "the payload was withheld", which are
+  // indistinguishable from outside.
+  bool has_ae_state = false;
+  uint8_t ae_state = 0;
+  bool has_awb_state = false;
+  uint8_t awb_state = 0;
+  bool has_af_mode = false;
+  uint8_t af_mode = 0;
+  bool has_ae_mode = false;
+  uint8_t ae_mode = 0;
+  // Zero-shutter-lag state as the device actually reported it, plus the intent
+  // the request carried. ENABLE_ZSL is documented as possibly defaulting TRUE in
+  // TEMPLATE_STILL_CAPTURE, and when it is true the sensor timestamp reflects
+  // the SOURCE frame, which may predate the request. Read back rather than
+  // assumed: we never set either of these.
+  bool has_enable_zsl = false;
+  uint8_t enable_zsl = 0;
+  bool has_capture_intent = false;
+  uint8_t capture_intent = 0;
+
+  bool has_lens_state = false;
+  uint8_t lens_state = 0;
 
   // ACAMERA_CONTROL_AF_STATE. Distinguishes a lens that has settled from one
   // mid-scan, which is the difference between locking focus and locking blur.
@@ -638,9 +743,34 @@ struct BurstCollector {
   std::vector<ResultFacts> results_in_order;      // results with no timestamp
   std::map<int64_t, ResultFacts> results_by_time; // results keyed by sensor ts
 
-  bool settled() const {
-    return images.size() + failed_count >= expected;
+  // The platform's own statement that this capture is over.
+  // ACameraCaptureSession_capture returns the sequence id at submit;
+  // onCaptureSequenceCompleted/Aborted for that sequence set sequence_ended.
+  //
+  // NdkCameraCaptureSession.h defines sequence completion over results and
+  // failures and says nothing about buffers, so this is not a contractual
+  // guarantee that every buffer has landed -- and on Galaxy S20+ camera 0 it
+  // demonstrably has not: completion fires 7-13ms AFTER the buffer's delivery
+  // callback begins. Sequence end therefore settles the debt but not the wait;
+  // in_flight_grace_elapsed closes the wait. See
+  // imaging/api/capture_sequence_settlement.h for the measurement and the rule.
+  int sequence_id = -1;
+  bool sequence_ended = false;
+  bool in_flight_grace_elapsed = false;
+
+  // The settlement/debt decision itself lives in imaging/api, so it can be
+  // exercised host-native away from this Android-only file.
+  CaptureSequenceProgress progress() const {
+    CaptureSequenceProgress p{};
+    p.expected = expected;
+    p.arrived = images.size();
+    p.failed = failed_count;
+    p.sequence_ended = sequence_ended;
+    p.in_flight_grace_elapsed = in_flight_grace_elapsed;
+    return p;
   }
+
+  bool settled() const { return capture_sequence_is_settled(progress()); }
 };
 
 struct DeviceBackend;
@@ -686,6 +816,16 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   uint32_t cfg_still_h = 0;
   bool repeating_active = false;
 
+  // The still geometry Core last retained for this device, as told to us by
+  // sync_capture_parent_priming. Kept so a stream starting afterwards can
+  // declare the still output at the geometry captures will actually ask for
+  // rather than at the stream's own -- outputs are fixed at session creation,
+  // so a still geometry not declared then costs a reprovision later. Zero means
+  // Core has retained nothing and the stream's geometry is the best guess
+  // available.
+  uint32_t retained_still_w = 0;
+  uint32_t retained_still_h = 0;
+
   std::unique_ptr<ListenerCtx> device_ctx;
   std::unique_ptr<ListenerCtx> session_ctx;
   std::unique_ptr<ListenerCtx> stream_reader_ctx;
@@ -703,6 +843,10 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   std::condition_variable af_cv;
   bool has_af_state = false;
   uint8_t af_state = 0;
+  // Shares af_m/af_cv: both are observed from the same repeating result and
+  // waited on by the same capture worker.
+  bool has_ae_state = false;
+  uint8_t ae_state = 0;
 
 
   std::string hardware_id;
@@ -710,6 +854,27 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   uint64_t root_id = 0;
   uint64_t acquisition_session_id = 0; // core-issued native id once realized
   CBProviderStrand* strand = nullptr;  // provider outlives all backends
+
+  // Who currently requires the acquisition seam to exist. Same three-claimant
+  // model as SyntheticProvider (lifecycle_model.md section 2: the seam is
+  // retained while stream and/or capture references remain live), but housed
+  // here rather than on DeviceState because of the lock ordering declared
+  // above: session realization runs under configure_mutex and must never take
+  // state_mutex_, so it could not consult a count that lived there.
+  //
+  // References govern when teardown is PERMITTED. They do not make the seam
+  // survive a genuine reconfigure: a Camera2 AcquisitionSession is 1:1 with a
+  // native ACameraCaptureSession, so an output-set change is a new seam and is
+  // reported as one.
+  std::atomic<uint32_t> seam_stream_refs{0};
+  std::atomic<uint32_t> seam_capture_refs{0};
+  std::atomic<uint32_t> seam_capture_parent_refs{0};
+
+  uint32_t seam_total_refs() const noexcept {
+    return seam_stream_refs.load(std::memory_order_acquire) +
+           seam_capture_refs.load(std::memory_order_acquire) +
+           seam_capture_parent_refs.load(std::memory_order_acquire);
+  }
 
   StaticCharacteristics chars{};
 
@@ -720,6 +885,34 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   // (AF trigger submissions produce one each); a jump across a capture would
   // mean one landed inside a collector and displaced a real member.
   std::atomic<uint64_t> stray_still_images{0};
+  // Payloads this device still owes from captures abandoned before every
+  // member arrived. See outstanding_payload_ledger.h for why this exists and
+  // why attribution is by counting rather than by timestamp.
+  OutstandingPayloadLedger payload_ledger;
+
+  // Capture-path telemetry. Diagnostics only -- nothing here participates in
+  // attribution, freshness or ordering. Present to establish WHY a still-only
+  // session withholds a payload until the next request pushes it: reconstructing
+  // that from latency alone was guesswork.
+  std::atomic<uint64_t> diag_last_submit_ns{0};   // last still request submitted
+  std::atomic<uint64_t> diag_last_arrival_ns{0};  // last still payload arrived
+  std::atomic<uint64_t> diag_session_configured_ns{0};
+  std::atomic<uint64_t> diag_still_requests_submitted{0};
+  std::atomic<uint64_t> diag_still_payloads_arrived{0};
+  // Most recent stream-frame sensor timestamp and when it landed, so a capture
+  // trace can be read against the stream traffic sharing the same session.
+  std::atomic<int64_t> diag_last_stream_ts{-1};
+  std::atomic<uint64_t> diag_last_stream_frame_ns{0};
+  std::atomic<uint64_t> diag_stream_frames{0};
+  // Frames produced by a pilot stream rather than by a caller's stream.
+  // Kept distinct so stream telemetry describes streams only.
+  std::atomic<uint64_t> diag_pilot_frames{0};
+  std::atomic<uint64_t> diag_last_pilot_frame_ns{0};
+  // Waited on by a capture worker for pilot stream frames to appear. Separate from
+  // af_m/af_cv: that pair carries 3A state from capture results, this one
+  // carries image arrivals, and they are reported by different callbacks.
+  std::mutex pilot_m;
+  std::condition_variable pilot_cv;
 
   std::shared_ptr<StreamProduction> stream;
   std::shared_ptr<BurstCollector> burst; // non-null only during a capture
@@ -957,6 +1150,20 @@ void on_stream_image_available(void* context, AImageReader* reader) {
   if (!backend) return;
   backend->image_arrived_count.fetch_add(1, std::memory_order_relaxed);
 
+  // Frames reach this reader from two different things: a caller's stream, and
+  // a pilot stream (a brief repeating flow run before a still on a device
+  // with no stream). Only the first is stream traffic.
+  //
+  // The distinction is load-bearing for the diagnostics below, not cosmetic.
+  // diag_stream_frames / diag_last_stream_ts are quoted in every capture trace
+  // line as "the stream traffic sharing this session"; letting pilot stream frames
+  // into them would make a device with no stream report stream activity, in
+  // exactly the traces used to tell those two cases apart.
+  const bool has_stream_production = [&] {
+    std::lock_guard<std::mutex> bl(backend->m);
+    return backend->stream != nullptr;
+  }();
+
   // Latest-only: repeating frames are lossy by contract, and taking the
   // newest keeps the preview from lagging behind the sensor when Core is
   // slower than the camera.
@@ -964,6 +1171,56 @@ void on_stream_image_available(void* context, AImageReader* reader) {
   if (AImageReader_acquireLatestImage(reader, &image) != AMEDIA_OK || !image) {
     return;
   }
+
+  if (!has_stream_production) {
+    // Pilot stream frame. Counted separately, kept out of the stream telemetry, and
+    // returned to the reader immediately -- nothing consumes these, they exist
+    // only so the pipeline is producing when the still is submitted.
+    const uint64_t n = backend->diag_pilot_frames.fetch_add(1, std::memory_order_acq_rel) + 1;
+    const uint64_t now = camera2_detail::diag_mono_ns();
+    const uint64_t prev = backend->diag_last_pilot_frame_ns.exchange(
+        now, std::memory_order_acq_rel);
+    // Cadence, sampled rather than logged per frame: enough to see the period
+    // and whether it holds, without drowning the capture trace.
+    if (prev != 0 && (n % 30 == 1)) {
+      camera2_detail::log_line(
+          "pilotcadence device=%llu frame=%llu interval_ms=%.2f",
+          static_cast<unsigned long long>(backend->device_instance_id),
+          static_cast<unsigned long long>(n),
+          static_cast<double>(now - prev) / 1.0e6);
+    }
+    backend->pilot_cv.notify_all();
+    AImage_delete(image);
+    return;
+  }
+
+  // Stream-frame sensor timestamps. Diagnostic only. Recorded because a
+  // streaming device pushes far more timestamped payloads through this session
+  // than captures ever do: reasoning about capture timestamps in isolation
+  // means reasoning about a fraction of what the platform is handling. The
+  // capture diag lines below quote the most recent value so still and stream
+  // stamps can be compared directly.
+  {
+    int64_t stream_ts = -1;
+    if (AImage_getTimestamp(image, &stream_ts) != AMEDIA_OK) {
+      stream_ts = -1;
+    }
+    const uint64_t seen =
+        backend->diag_stream_frames.fetch_add(1, std::memory_order_relaxed) + 1;
+    backend->diag_last_stream_ts.store(stream_ts, std::memory_order_release);
+    backend->diag_last_stream_frame_ns.store(camera2_detail::diag_mono_ns(),
+                                             std::memory_order_release);
+    // ~1 line/sec at 30fps: enough to see cadence and value range without
+    // drowning the capture trace.
+    if (seen % 30 == 1) {
+      camera2_detail::log_line(
+          "diag device=%llu stream frame #%llu sensor_timestamp=%lld",
+          static_cast<unsigned long long>(backend->device_instance_id),
+          static_cast<unsigned long long>(seen),
+          static_cast<long long>(stream_ts));
+    }
+  }
+
   {
     std::lock_guard<std::mutex> bl(backend->m);
     if (!backend->closed) {
@@ -984,6 +1241,66 @@ void on_still_image_available(void* context, AImageReader* reader) {
 
   AImage* image = nullptr;
   if (AImageReader_acquireNextImage(reader, &image) != AMEDIA_OK || !image) {
+    return;
+  }
+
+  // Arrival telemetry, logged before anything can consume or discard this
+  // payload, so the trace shows when the platform actually handed it over
+  // relative to the request that asked for it and to the request that pushed
+  // the pipeline.
+  {
+    const uint64_t arrived_ns = camera2_detail::diag_mono_ns();
+    const uint64_t submit_ns = backend->diag_last_submit_ns.load(std::memory_order_acquire);
+    // The PAYLOAD's own sensor timestamp -- a different value from
+    // onCaptureStarted's request-start stamp, and the one that becomes the
+    // published acquisition mark on a CamBANGCaptureResult. They are reported
+    // by different callbacks and are not guaranteed to agree, so both are
+    // logged rather than one being taken as a proxy for the other.
+    int64_t payload_ts = -1;
+    if (AImage_getTimestamp(image, &payload_ts) != AMEDIA_OK) {
+      payload_ts = -1;
+    }
+    std::shared_ptr<BurstCollector> peek;
+    {
+      std::lock_guard<std::mutex> bl(backend->m);
+      peek = backend->burst;
+    }
+    camera2_detail::log_line(
+        "diag device=%llu still payload arrived: since_last_submit_ms=%.2f "
+        "since_last_arrival_ms=%.2f collector=%s debt=%llu arrivals_total=%llu "
+        "submits_total=%llu payload_sensor_ts=%lld last_stream_ts=%lld "
+        "stream_age_ms=%.2f",
+        static_cast<unsigned long long>(backend->device_instance_id),
+        camera2_detail::diag_ms_since(submit_ns),
+        camera2_detail::diag_ms_since(
+            backend->diag_last_arrival_ns.load(std::memory_order_acquire)),
+        peek ? "installed" : "none",
+        static_cast<unsigned long long>(backend->payload_ledger.outstanding()),
+        static_cast<unsigned long long>(
+            backend->diag_still_payloads_arrived.fetch_add(1, std::memory_order_relaxed) + 1),
+        static_cast<unsigned long long>(
+            backend->diag_still_requests_submitted.load(std::memory_order_relaxed)),
+        static_cast<long long>(payload_ts),
+        static_cast<long long>(backend->diag_last_stream_ts.load(std::memory_order_acquire)),
+        camera2_detail::diag_ms_since(
+            backend->diag_last_stream_frame_ns.load(std::memory_order_acquire)));
+    backend->diag_last_arrival_ns.store(arrived_ns, std::memory_order_release);
+  }
+
+  // Settle outstanding debt FIRST, before any collector can see this payload.
+  // A device that owes payloads from an abandoned capture must have that debt
+  // discharged by the next arrivals, whichever collector happens to be
+  // installed -- the whole point is that these payloads belong to a capture
+  // that is already over, and no later capture may adopt them.
+  if (backend->payload_ledger.claim_arrival_for_debt()) {
+    const OutstandingPayloadLedger::Snapshot after = backend->payload_ledger.snapshot();
+    camera2_detail::log_line(
+        "device=%llu discarded a late payload to settle abandoned-capture debt "
+        "(remaining=%llu settled_total=%llu)",
+        static_cast<unsigned long long>(backend->device_instance_id),
+        static_cast<unsigned long long>(after.outstanding),
+        static_cast<unsigned long long>(after.settled_total));
+    AImage_delete(image);
     return;
   }
 
@@ -1106,6 +1423,42 @@ void extract_result_facts(const ACameraMetadata* result, ResultFacts& out) {
     out.has_frame_duration = true;
     out.frame_duration_ns = entry.data.i64[0];
   }
+  if (ACameraMetadata_getConstEntry(result, ACAMERA_CONTROL_AE_STATE, &entry) == ACAMERA_OK &&
+      entry.count >= 1) {
+    out.has_ae_state = true;
+    out.ae_state = entry.data.u8[0];
+  }
+  if (ACameraMetadata_getConstEntry(result, ACAMERA_CONTROL_AWB_STATE, &entry) == ACAMERA_OK &&
+      entry.count >= 1) {
+    out.has_awb_state = true;
+    out.awb_state = entry.data.u8[0];
+  }
+  if (ACameraMetadata_getConstEntry(result, ACAMERA_CONTROL_AF_MODE, &entry) == ACAMERA_OK &&
+      entry.count >= 1) {
+    out.has_af_mode = true;
+    out.af_mode = entry.data.u8[0];
+  }
+  if (ACameraMetadata_getConstEntry(result, ACAMERA_CONTROL_AE_MODE, &entry) == ACAMERA_OK &&
+      entry.count >= 1) {
+    out.has_ae_mode = true;
+    out.ae_mode = entry.data.u8[0];
+  }
+  if (ACameraMetadata_getConstEntry(result, ACAMERA_LENS_STATE, &entry) == ACAMERA_OK &&
+      entry.count >= 1) {
+    out.has_lens_state = true;
+    out.lens_state = entry.data.u8[0];
+  }
+  if (ACameraMetadata_getConstEntry(result, ACAMERA_CONTROL_ENABLE_ZSL, &entry) == ACAMERA_OK &&
+      entry.count >= 1) {
+    out.has_enable_zsl = true;
+    out.enable_zsl = entry.data.u8[0];
+  }
+  if (ACameraMetadata_getConstEntry(result, ACAMERA_CONTROL_CAPTURE_INTENT, &entry) ==
+          ACAMERA_OK &&
+      entry.count >= 1) {
+    out.has_capture_intent = true;
+    out.capture_intent = entry.data.u8[0];
+  }
 }
 
 void on_capture_completed(void* context,
@@ -1124,6 +1477,32 @@ void on_capture_completed(void* context,
   if (!burst) return;
   ResultFacts facts{};
   extract_result_facts(result, facts);
+  // 3A convergence at the moment this result was produced. AE_STATE values:
+  // 0 INACTIVE, 1 SEARCHING, 2 CONVERGED, 3 LOCKED, 4 FLASH_REQUIRED,
+  // 5 PRECAPTURE. AWB_STATE: 0 INACTIVE, 1 SEARCHING, 2 CONVERGED, 3 LOCKED.
+  // AF_STATE: 0 INACTIVE, 1 PASSIVE_SCAN, 2 PASSIVE_FOCUSED, 3 ACTIVE_SCAN,
+  // 4 FOCUSED_LOCKED, 5 NOT_FOCUSED_LOCKED, 6 PASSIVE_UNFOCUSED.
+  // LENS_STATE: 0 STATIONARY, 1 MOVING.
+  // ZSL truth, read back from the result rather than assumed. CAPTURE_INTENT:
+  // 1 PREVIEW, 2 STILL_CAPTURE, 3 VIDEO_RECORD, 5 ZERO_SHUTTER_LAG.
+  // ENABLE_ZSL: 0 FALSE, 1 TRUE, -1 the device did not report the tag.
+  camera2_detail::log_line(
+      "zslprobe device=%llu enable_zsl=%d capture_intent=%d sensor_ts=%lld",
+      static_cast<unsigned long long>(backend->device_instance_id),
+      facts.has_enable_zsl ? static_cast<int>(facts.enable_zsl) : -1,
+      facts.has_capture_intent ? static_cast<int>(facts.capture_intent) : -1,
+      static_cast<long long>(facts.has_sensor_timestamp ? facts.sensor_timestamp_ns : -1));
+  camera2_detail::log_line(
+      "diag device=%llu capture result 3A: ae_state=%d awb_state=%d af_state=%d "
+      "af_mode=%d ae_mode=%d lens_state=%d sensor_ts=%lld",
+      static_cast<unsigned long long>(backend->device_instance_id),
+      facts.has_ae_state ? static_cast<int>(facts.ae_state) : -1,
+      facts.has_awb_state ? static_cast<int>(facts.awb_state) : -1,
+      facts.has_af_state ? static_cast<int>(facts.af_state) : -1,
+      facts.has_af_mode ? static_cast<int>(facts.af_mode) : -1,
+      facts.has_ae_mode ? static_cast<int>(facts.ae_mode) : -1,
+      facts.has_lens_state ? static_cast<int>(facts.lens_state) : -1,
+      static_cast<long long>(facts.has_sensor_timestamp ? facts.sensor_timestamp_ns : -1));
   {
     std::lock_guard<std::mutex> wl(burst->m);
     // Keyed by sensor timestamp so the right result reaches the right image
@@ -1153,6 +1532,22 @@ void on_repeating_capture_completed(void* context,
   if (!backend) return;
 
   ACameraMetadata_const_entry entry{};
+
+  // AE state, observed during a pilot stream. Camera2's precapture metering
+  // sequence (ACAMERA_CONTROL_AE_PRECAPTURE_TRIGGER) documents waiting for
+  // convergence; we do not drive that trigger, but AE_STATE is still the only
+  // signal a device offers about whether its exposure routine is running.
+  // Recorded independently of AF: a fixed-focus device still exposes.
+  if (ACameraMetadata_getConstEntry(result, ACAMERA_CONTROL_AE_STATE, &entry) == ACAMERA_OK &&
+      entry.count >= 1) {
+    {
+      std::lock_guard<std::mutex> al(backend->af_m);
+      backend->has_ae_state = true;
+      backend->ae_state = entry.data.u8[0];
+    }
+    backend->af_cv.notify_all();
+  }
+
   if (ACameraMetadata_getConstEntry(result, ACAMERA_CONTROL_AF_STATE, &entry) != ACAMERA_OK ||
       entry.count < 1) {
     return;
@@ -1164,6 +1559,117 @@ void on_repeating_capture_completed(void* context,
     backend->af_state = state;
   }
   backend->af_cv.notify_all();
+}
+
+// Diagnostic-only capture callbacks. Camera2 offers seven; this provider wired
+// two (completed, failed) and was therefore deaf to the rest -- including
+// onCaptureBufferLost, which is the platform explicitly reporting that a
+// buffer for an output will never arrive for a given frame. A capture whose
+// result metadata arrives while its payload never does looks identical to
+// "nothing happened" when that callback is not registered.
+//
+// These record only. None of them produces a fact, and none participates in
+// attribution.
+void on_capture_started_diag(void* context,
+                             ACameraCaptureSession* /*session*/,
+                             const ACaptureRequest* /*request*/,
+                             int64_t timestamp) {
+  auto* ctx = static_cast<ListenerCtx*>(context);
+  if (!ctx) return;
+  std::shared_ptr<DeviceBackend> backend = ctx->backend.lock();
+  if (!backend) return;
+  log_line("diag device=%llu onCaptureStarted sensor_timestamp=%lld",
+           static_cast<unsigned long long>(backend->device_instance_id),
+           static_cast<long long>(timestamp));
+  // The sensor mark, against both clocks as observed at the moment the
+  // platform reported the exposure starting.
+  log_line("tsprobe device=%llu event=started sensor_ns=%lld mono_ns=%llu boot_ns=%llu",
+           static_cast<unsigned long long>(backend->device_instance_id),
+           static_cast<long long>(timestamp),
+           static_cast<unsigned long long>(diag_mono_ns()),
+           static_cast<unsigned long long>(diag_boot_ns()));
+}
+
+void on_capture_buffer_lost_diag(void* context,
+                                 ACameraCaptureSession* /*session*/,
+                                 ACaptureRequest* /*request*/,
+                                 ACameraWindowType* window,
+                                 int64_t frame_number) {
+  auto* ctx = static_cast<ListenerCtx*>(context);
+  if (!ctx) return;
+  std::shared_ptr<DeviceBackend> backend = ctx->backend.lock();
+  if (!backend) return;
+  const char* which = "unknown";
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    if (window == backend->still_window) {
+      which = "still";
+    } else if (window == backend->stream_window) {
+      which = "stream";
+    }
+  }
+  log_line("diag device=%llu *** onCaptureBufferLost *** output=%s frame_number=%lld",
+           static_cast<unsigned long long>(backend->device_instance_id),
+           which, static_cast<long long>(frame_number));
+}
+
+// Marks the installed collector's sequence as over, and wakes the waiter.
+//
+// Matched by "there is a collector installed", not by sequence id: these
+// callbacks are registered per submission on the capture context, and
+// still_capture_mutex admits one device capture at a time, so a sequence
+// event arriving here belongs to the installed capture. The id is compared
+// only to catch that assumption breaking.
+void mark_capture_sequence_over(const std::shared_ptr<DeviceBackend>& backend,
+                                int sequence_id,
+                                const char* why) {
+  std::shared_ptr<BurstCollector> burst;
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    burst = backend->burst;
+  }
+  if (!burst) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> gl(burst->m);
+    if (burst->sequence_id >= 0 && burst->sequence_id != sequence_id) {
+      log_line("device=%llu sequence %s for seq=%d but the installed capture is seq=%d;"
+               " not settling it",
+               static_cast<unsigned long long>(backend->device_instance_id), why,
+               sequence_id, burst->sequence_id);
+      return;
+    }
+    burst->sequence_ended = true;
+  }
+  burst->cv.notify_all();
+}
+
+void on_capture_sequence_completed(void* context,
+                                   ACameraCaptureSession* /*session*/,
+                                   int sequence_id,
+                                   int64_t frame_number) {
+  auto* ctx = static_cast<ListenerCtx*>(context);
+  if (!ctx) return;
+  std::shared_ptr<DeviceBackend> backend = ctx->backend.lock();
+  if (!backend) return;
+  log_line("diag device=%llu onCaptureSequenceCompleted seq=%d last_frame_number=%lld",
+           static_cast<unsigned long long>(backend->device_instance_id),
+           sequence_id, static_cast<long long>(frame_number));
+  mark_capture_sequence_over(backend, sequence_id, "completed");
+}
+
+void on_capture_sequence_aborted(void* context,
+                                 ACameraCaptureSession* /*session*/,
+                                 int sequence_id) {
+  auto* ctx = static_cast<ListenerCtx*>(context);
+  if (!ctx) return;
+  std::shared_ptr<DeviceBackend> backend = ctx->backend.lock();
+  if (!backend) return;
+  log_line("device=%llu *** onCaptureSequenceAborted *** seq=%d",
+           static_cast<unsigned long long>(backend->device_instance_id),
+           sequence_id);
+  mark_capture_sequence_over(backend, sequence_id, "aborted");
 }
 
 void on_capture_failed(void* context,
@@ -1193,6 +1699,82 @@ void on_capture_failed(void* context,
 // ---- Characteristics ------------------------------------------------------
 
 void read_static_characteristics(const ACameraMetadata* meta, StaticCharacteristics& out) {
+  {
+    ACameraMetadata_const_entry keys{};
+    if (ACameraMetadata_getConstEntry(meta, ACAMERA_REQUEST_AVAILABLE_REQUEST_KEYS, &keys) ==
+        ACAMERA_OK) {
+      for (uint32_t i = 0; i < keys.count; ++i) {
+        if (keys.data.i32[i] == static_cast<int32_t>(ACAMERA_CONTROL_ENABLE_ZSL)) {
+          out.zsl_settable = true;
+          break;
+        }
+      }
+    }
+    // Whether this device runs an observable auto-exposure state machine.
+    //
+    // Decided from what the device ADVERTISES, not from what it happens to
+    // report at runtime. A device that omits CONTROL_AE_STATE from its result
+    // keys has no convergence to wait for; one that advertises it does, and
+    // waiting only for frames on such a device submits the still before
+    // exposure has settled. Both failure modes were measured: Quest passthrough
+    // sits at AE_STATE_INACTIVE forever (an AE wait becomes a dead 1200ms
+    // timeout), and S20+ camera 0 delivers 1 capture in 4 when the wait ends on
+    // frame arrival at AE_STATE_SEARCHING.
+    ACameraMetadata_const_entry result_keys{};
+    if (ACameraMetadata_getConstEntry(meta, ACAMERA_REQUEST_AVAILABLE_RESULT_KEYS,
+                                      &result_keys) == ACAMERA_OK) {
+      for (uint32_t i = 0; i < result_keys.count; ++i) {
+        if (result_keys.data.i32[i] == static_cast<int32_t>(ACAMERA_CONTROL_AE_STATE)) {
+          out.ae_state_reported = true;
+          break;
+        }
+      }
+    }
+    ACameraMetadata_const_entry caps{};
+    if (ACameraMetadata_getConstEntry(meta, ACAMERA_REQUEST_AVAILABLE_CAPABILITIES, &caps) ==
+        ACAMERA_OK) {
+      for (uint32_t i = 0; i < caps.count; ++i) {
+        const uint8_t cap = caps.data.u8[i];
+        if (cap != ACAMERA_REQUEST_AVAILABLE_CAPABILITIES_BACKWARD_COMPATIBLE) {
+          out.has_capability_beyond_backward_compatible = true;
+        }
+        if (!out.advertised_capabilities.empty()) out.advertised_capabilities += ",";
+        out.advertised_capabilities += std::to_string(static_cast<unsigned>(cap));
+      }
+    }
+    ACameraMetadata_const_entry skeys{};
+    if (ACameraMetadata_getConstEntry(meta, ACAMERA_REQUEST_AVAILABLE_SESSION_KEYS, &skeys) ==
+        ACAMERA_OK) {
+      for (uint32_t i = 0; i < skeys.count; ++i) {
+        out.session_keys.push_back(skeys.data.i32[i]);
+      }
+    }
+    ACameraMetadata_const_entry fps{};
+    if (ACameraMetadata_getConstEntry(meta, ACAMERA_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES,
+                                      &fps) == ACAMERA_OK) {
+      for (uint32_t i = 0; i + 1 < fps.count; i += 2) {
+        out.ae_fps_ranges.emplace_back(fps.data.i32[i], fps.data.i32[i + 1]);
+      }
+    }
+    // Prefer a FIXED range (min == max) with the highest rate: a fixed range
+    // pins the cadence, where a [min,max] range lets the device drop the pilot
+    // in low light and makes the still's wait for a slot unpredictable. Falls
+    // back to the highest max advertised.
+    for (const auto& r : out.ae_fps_ranges) {
+      const bool fixed = r.first == r.second;
+      const bool cur_fixed = out.pilot_fps_min == out.pilot_fps_max;
+      if (out.pilot_fps_max == 0 || (fixed && !cur_fixed) ||
+          (fixed == cur_fixed && r.second > out.pilot_fps_max)) {
+        out.pilot_fps_min = r.first;
+        out.pilot_fps_max = r.second;
+      }
+    }
+    ACameraMetadata_const_entry level{};
+    if (ACameraMetadata_getConstEntry(meta, ACAMERA_INFO_SUPPORTED_HARDWARE_LEVEL, &level) ==
+            ACAMERA_OK && level.count >= 1) {
+      out.hardware_level = static_cast<int32_t>(level.data.u8[0]);
+    }
+  }
   if (!meta) return;
   ACameraMetadata_const_entry entry{};
 
@@ -1376,6 +1958,42 @@ void read_static_characteristics(const ACameraMetadata* meta, StaticCharacterist
       }
     }
   }
+
+  // Smallest advertised YUV output, by area, EXCLUDING QCIF (176x144). Ties
+  // broken on width so the choice is deterministic across runs and devices.
+  //
+  // QCIF is excluded unconditionally rather than conditionally. Camera2:
+  //
+  //   "trying to configure a QCIF resolution stream together with any other
+  //    stream larger than 1920x1080 resolution (either width or height) might
+  //    not be supported, and capture session creation will fail if it is not."
+  //
+  // The devices that offer QCIF are the high-resolution ones the note warns
+  // about -- the S20+ advertises it alongside stills up to 4032x3024 -- so
+  // "smallest advertised" selects the one size most likely to make session
+  // creation fail on exactly the hardware where it is offered.
+  //
+  // The exclusion is unconditional because the pilot's size is fixed for the
+  // life of the session, while the other outputs are not: a caller may start a
+  // CamBANGStream, or set a larger still profile, at any point after the seam
+  // is realized. A conditional rule would have to be re-evaluated on every
+  // output-set change and could strand a session whose pilot was chosen when
+  // the constraint did not yet apply. One size up costs a negligible amount of
+  // bandwidth for frames that are discarded anyway.
+  constexpr uint32_t kQcifWidth = 176;
+  constexpr uint32_t kQcifHeight = 144;
+  for (const auto& size : out.supported_yuv_sizes) {
+    if (size.first == kQcifWidth && size.second == kQcifHeight) {
+      continue;
+    }
+    const uint64_t area = static_cast<uint64_t>(size.first) * size.second;
+    const uint64_t best = static_cast<uint64_t>(out.pilot_width) * out.pilot_height;
+    if (out.pilot_width == 0 || area < best ||
+        (area == best && size.first < out.pilot_width)) {
+      out.pilot_width = size.first;
+      out.pilot_height = size.second;
+    }
+  }
 }
 
 } // namespace
@@ -1526,6 +2144,74 @@ ProducerBackingCapabilities Camera2CameraProvider::stream_backing_capabilities(
 ProducerBackingCapabilities Camera2CameraProvider::capture_backing_capabilities(
     const CaptureRequest& /*req*/) const noexcept {
   return ProducerBackingCapabilities{true, false, false};
+}
+
+namespace {
+
+// Underflow is a bug, not a condition to absorb silently: it means a claim was
+// released twice or released by a path that never took it. Clamp so the seam
+// cannot be torn down beneath a live claimant, and say so.
+void release_seam_ref(std::atomic<uint32_t>& refs, const char* claimant,
+                      const std::string& hardware_id) {
+  uint32_t prev = refs.load(std::memory_order_acquire);
+  while (prev > 0) {
+    if (refs.compare_exchange_weak(prev, prev - 1, std::memory_order_acq_rel,
+                                   std::memory_order_acquire)) {
+      return;
+    }
+  }
+  camera2_detail::log_line("seam ref underflow claimant=%s hardware_id=%s", claimant,
+                           hardware_id.c_str());
+}
+
+}  // namespace
+
+void Camera2CameraProvider::retain_acquisition_seam_for_capture_(
+    const std::shared_ptr<camera2_detail::DeviceBackend>& backend) {
+  if (backend) {
+    backend->seam_capture_refs.fetch_add(1, std::memory_order_acq_rel);
+  }
+}
+
+void Camera2CameraProvider::retain_acquisition_seam_for_stream_(
+    const std::shared_ptr<camera2_detail::DeviceBackend>& backend) {
+  if (backend) {
+    backend->seam_stream_refs.fetch_add(1, std::memory_order_acq_rel);
+  }
+}
+
+// The capture-parent claim is a latch (0 or 1), not a counter, because the
+// contract requires repeated equivalent calls to be idempotent and Core issues
+// one on every profile-set. Counting them would pin the seam with phantom
+// claims that no caller can ever release.
+void Camera2CameraProvider::retain_acquisition_seam_for_capture_parent_(
+    const std::shared_ptr<camera2_detail::DeviceBackend>& backend) {
+  if (backend) {
+    backend->seam_capture_parent_refs.store(1, std::memory_order_release);
+  }
+}
+
+void Camera2CameraProvider::release_acquisition_seam_for_capture_(
+    const std::shared_ptr<camera2_detail::DeviceBackend>& backend) {
+  if (backend) {
+    release_seam_ref(backend->seam_capture_refs, "capture", backend->hardware_id);
+  }
+}
+
+void Camera2CameraProvider::release_acquisition_seam_for_stream_(
+    const std::shared_ptr<camera2_detail::DeviceBackend>& backend) {
+  if (backend) {
+    release_seam_ref(backend->seam_stream_refs, "stream", backend->hardware_id);
+  }
+}
+
+// Clearing a latch that is already clear is success, not underflow: the
+// contract requires release to be safe when no primed seam is held.
+void Camera2CameraProvider::release_acquisition_seam_for_capture_parent_(
+    const std::shared_ptr<camera2_detail::DeviceBackend>& backend) {
+  if (backend) {
+    backend->seam_capture_parent_refs.store(0, std::memory_order_release);
+  }
 }
 
 uint64_t Camera2CameraProvider::alloc_native_id_(NativeObjectType type) {
@@ -1975,6 +2661,78 @@ void Camera2CameraProvider::post_static_camera_facts_best_effort_(
         static_cast<long long>(fastest_ns), fastest_w, fastest_h);
   }
 
+  // ZSL availability: 4 = PRIVATE_REPROCESSING and 7 = YUV_REPROCESSING in the
+  // capability enum are the reprocessing capabilities application-operated ZSL
+  // needs; their absence bears on whether a ring-buffer path exists at all.
+  // hardware_level: 0 LIMITED, 1 FULL, 2 LEGACY, 3 LEVEL_3, 4 EXTERNAL.
+  {
+    // Cross-referenced against every tag this provider sets on a capture
+    // request, so a session-scoped key we modify per-frame is visible rather
+    // than inferred.
+    struct NamedTag { uint32_t tag; const char* name; };
+    static constexpr NamedTag kWeSet[] = {
+        {ACAMERA_CONTROL_AE_MODE, "CONTROL_AE_MODE"},
+        {ACAMERA_CONTROL_AE_EXPOSURE_COMPENSATION, "CONTROL_AE_EXPOSURE_COMPENSATION"},
+        {ACAMERA_CONTROL_AWB_LOCK, "CONTROL_AWB_LOCK"},
+        {ACAMERA_CONTROL_AF_TRIGGER, "CONTROL_AF_TRIGGER"},
+        {ACAMERA_SENSOR_EXPOSURE_TIME, "SENSOR_EXPOSURE_TIME"},
+        {ACAMERA_SENSOR_SENSITIVITY, "SENSOR_SENSITIVITY"},
+        {ACAMERA_SENSOR_FRAME_DURATION, "SENSOR_FRAME_DURATION"},
+    };
+    std::string keys;
+    for (int32_t k : chars.session_keys) {
+      if (!keys.empty()) keys += ",";
+      keys += std::to_string(k);
+    }
+    std::string conflicts;
+    for (const NamedTag& t : kWeSet) {
+      for (int32_t k : chars.session_keys) {
+        if (static_cast<uint32_t>(k) == t.tag) {
+          if (!conflicts.empty()) conflicts += ",";
+          conflicts += t.name;
+          break;
+        }
+      }
+    }
+    camera2_detail::log_line(
+        "sessionkeys device=%llu count=%zu keys=[%s] we_set_per_request=[%s]",
+        static_cast<unsigned long long>(device_instance_id), chars.session_keys.size(),
+        keys.c_str(), conflicts.empty() ? "none" : conflicts.c_str());
+  }
+  camera2_detail::log_line(
+      "pilotgeom device=%llu chosen=%ux%u from %zu advertised YUV sizes (QCIF excluded)",
+      static_cast<unsigned long long>(device_instance_id), chars.pilot_width,
+      chars.pilot_height, chars.supported_yuv_sizes.size());
+  {
+    std::string ranges;
+    for (const auto& r : chars.ae_fps_ranges) {
+      if (!ranges.empty()) ranges += ",";
+      ranges += "[" + std::to_string(r.first) + "-" + std::to_string(r.second) + "]";
+    }
+    camera2_detail::log_line(
+        "fpscap device=%llu advertised=%s pilot_choice=[%d-%d]",
+        static_cast<unsigned long long>(device_instance_id), ranges.c_str(),
+        static_cast<int>(chars.pilot_fps_min), static_cast<int>(chars.pilot_fps_max));
+  }
+  camera2_detail::log_line(
+      "zslcap device=%llu enable_zsl_settable=%s ae_state_reported=%s hardware_level=%d "
+      "beyond_backward_compatible=%s capabilities=[%s]",
+      static_cast<unsigned long long>(device_instance_id),
+      chars.zsl_settable ? "yes" : "no", chars.ae_state_reported ? "yes" : "no",
+      static_cast<int>(chars.hardware_level),
+      chars.has_capability_beyond_backward_compatible ? "yes" : "no",
+      chars.advertised_capabilities.c_str());
+
+  // Whether this device's sensor marks can be compared with another camera's.
+  // Recorded per device because it decides whether a cross-device skew is a
+  // measurement or an artefact (camera_fact_model.md 12.1).
+  camera2_detail::log_line(
+      "device=%llu timestamp source=%s (sensor marks are on %s)",
+      static_cast<unsigned long long>(device_instance_id),
+      chars.timestamp_source_realtime ? "REALTIME" : "UNKNOWN",
+      chars.timestamp_source_realtime ? "CLOCK_BOOTTIME, a base shared by every camera"
+                                      : "CLOCK_MONOTONIC, meaningful only within this device");
+
   // Bracket-execution capability, recorded per device so the choice between
   // burst submission and manual-sensor bracketing rests on stated capability
   // rather than on one handset's observed behaviour.
@@ -2007,7 +2765,7 @@ void Camera2CameraProvider::post_static_camera_facts_best_effort_(
 }
 
 void Camera2CameraProvider::teardown_session_locked_(
-    const std::shared_ptr<DeviceBackend>& backend) {
+    const std::shared_ptr<camera2_detail::DeviceBackend>& backend) {
   // Caller holds backend->configure_mutex.
   if (!backend) {
     return;
@@ -2085,7 +2843,65 @@ void Camera2CameraProvider::teardown_session_locked_(
   }
 }
 
+ProviderResult Camera2CameraProvider::ensure_seam_realized_(
+    SeamClaimant claimant,
+    const std::shared_ptr<DeviceBackend>& backend,
+    uint32_t still_width,
+    uint32_t still_height,
+    uint32_t flow_width,
+    uint32_t flow_height) {
+  if (!backend) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+
+  // A caller's stream, when it exists, is itself a flowing output and the pilot
+  // is redundant beside it -- and a third simultaneous output is not a
+  // guaranteed configuration on a BACKWARD_COMPATIBLE-only device, where the
+  // LEGACY table tops out at PRIV PREVIEW + YUV PREVIEW + JPEG MAXIMUM. So the
+  // seam carries exactly one flow output: the caller's stream if there is one,
+  // otherwise the pilot.
+  bool has_caller_stream = flow_width != 0 && flow_height != 0;
+  uint32_t flow_w = flow_width;
+  uint32_t flow_h = flow_height;
+  if (!has_caller_stream) {
+    std::lock_guard<std::mutex> bl(backend->m);
+    if (backend->stream) {
+      has_caller_stream = true;
+      flow_w = backend->stream->width;
+      flow_h = backend->stream->height;
+    } else {
+      // Resolved at device open from advertised sizes; read, not derived.
+      flow_w = backend->chars.pilot_width;
+      flow_h = backend->chars.pilot_height;
+    }
+  }
+  if (flow_w == 0 || flow_h == 0) {
+    // The device advertised no usable YUV output size. Refusing here names the
+    // cause; letting it through would surface as an opaque session
+    // configuration failure at the next capture.
+    camera2_detail::log_line(
+        "device=%llu cannot realize seam: no advertised YUV output size for the pilot",
+        static_cast<unsigned long long>(backend->device_instance_id));
+    return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
+  }
+
+  camera2_detail::log_line(
+      "seam device=%llu realize claimant=%s flow=%s %ux%u still=%ux%u",
+      static_cast<unsigned long long>(backend->device_instance_id),
+      claimant == SeamClaimant::Stream
+          ? "stream"
+          : (claimant == SeamClaimant::Capture ? "capture" : "capture_parent"),
+      has_caller_stream ? "caller_stream" : "pilot", flow_w, flow_h, still_width,
+      still_height);
+
+  return ensure_session_configured_(claimant, !has_caller_stream, backend,
+                                    /*want_stream=*/true, flow_w, flow_h,
+                                    /*want_still=*/true, still_width, still_height);
+}
+
 ProviderResult Camera2CameraProvider::ensure_session_configured_(
+    SeamClaimant requester,
+    bool flow_is_pilot,
     const std::shared_ptr<DeviceBackend>& backend,
     bool want_stream,
     uint32_t stream_width,
@@ -2101,6 +2917,10 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
   }
 
   std::lock_guard<std::mutex> configure_lock(backend->configure_mutex);
+  // Set inside the locked section below when the session about to be replaced
+  // is carrying a producing stream that the new one will carry too. Consulted
+  // after the swap, to put the flow back.
+  bool restore_flow_after = false;
   {
     std::lock_guard<std::mutex> bl(backend->m);
     if (backend->closed || backend->failed || !backend->device) {
@@ -2114,12 +2934,103 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
                          (!want_still || (backend->cfg_still_w == still_width &&
                                           backend->cfg_still_h == still_height));
     if (matches) {
+      camera2_detail::log_line(
+          "diag device=%llu session reused (stream=%s still=%s) age_ms=%.2f",
+          static_cast<unsigned long long>(backend->device_instance_id),
+          want_stream ? "yes" : "no", want_still ? "yes" : "no",
+          camera2_detail::diag_ms_since(
+              backend->diag_session_configured_ns.load(std::memory_order_acquire)));
       return ProviderResult::success();
     }
-    // Rebuilding the session cancels the repeating request, so a live stream
-    // pins the current output set. Deterministic refusal, never a silent
-    // stream interruption.
-    if (backend->repeating_active) {
+    camera2_detail::log_line(
+        "diag device=%llu session REBUILD required (want stream=%s %ux%u still=%s %ux%u; "
+        "have stream=%s %ux%u still=%s %ux%u) claimant=%s",
+        static_cast<unsigned long long>(backend->device_instance_id),
+        want_stream ? "yes" : "no", stream_width, stream_height,
+        want_still ? "yes" : "no", still_width, still_height,
+        backend->cfg_has_stream ? "yes" : "no", backend->cfg_stream_w, backend->cfg_stream_h,
+        backend->cfg_has_still ? "yes" : "no", backend->cfg_still_w, backend->cfg_still_h,
+        requester == SeamClaimant::Stream
+            ? "stream"
+            : (requester == SeamClaimant::Capture ? "capture" : "capture_parent"));
+    // A rebuild destroys the seam and everything running on it, so it is
+    // refused while another claimant holds it.
+    //
+    // This supersedes an earlier interlock that keyed off repeating_active.
+    // That tested a native side effect rather than a claim, so it refused a
+    // reconfigure whenever a repeating request happened to be outstanding --
+    // including after the stream owning it had been released -- and it did not
+    // refuse at all when an in-flight capture held the seam, which is the case
+    // that actually loses work.
+    //
+    // The decision is seam_reconfiguration_permitted
+    // (imaging/api/acquisition_seam_claims.h), shared with the WinRT provider
+    // and exercised host-native. EVERY claimant here arrives already counted:
+    // a capture reference is taken at admission, a stream's before realization
+    // is requested (see start_stream), and the capture parent latches before
+    // asking. That is not true of every provider -- WinRT's stream retains only
+    // once started -- which is why the ordering is stated by the caller rather
+    // than inferred from the claimant.
+    //
+    // The counts are re-read once into a snapshot: the decision and the
+    // diagnostics below must describe the same instant, and an earlier version
+    // that subtracted straight from the atomic loads could underflow to ~4.29
+    // billion had a claimant ever asked holding none.
+    SeamClaims live{};
+    live.stream_refs = backend->seam_stream_refs.load(std::memory_order_acquire);
+    live.capture_refs = backend->seam_capture_refs.load(std::memory_order_acquire);
+    live.capture_parent_refs =
+        backend->seam_capture_parent_refs.load(std::memory_order_acquire);
+    const SeamClaims others =
+        cambang::detail::without_own_claim(live, requester, OwnClaim::AlreadyHeld);
+
+    // IS THIS A PRESERVING REPROVISION? Only if the configuration being built
+    // carries the live stream's output forward AT ITS OWN GEOMETRY. Then the
+    // stream gaps across the swap and resumes unchanged, which is what lets
+    // seam_reprovision_permitted be asked instead of the stricter question.
+    //
+    // Asserted from the actual arguments, never assumed: ensure_seam_realized_
+    // resolves the flow to the caller's stream when one exists, but a caller
+    // that passed a different geometry -- or dropped the stream output -- would
+    // be destroying the stream, not preserving it, and must not get the
+    // permissive answer. The header cannot check this; only here can.
+    const bool preserves_live_stream =
+        want_stream && backend->stream != nullptr &&
+        backend->stream->width == stream_width &&
+        backend->stream->height == stream_height;
+    // Whether the flow has to be put back afterwards. Read before
+    // teardown_session_locked_ clears it.
+    restore_flow_after =
+        preserves_live_stream && backend->stream->producing && backend->repeating_active;
+
+    const bool permitted =
+        preserves_live_stream
+            ? seam_reprovision_permitted(live, requester, OwnClaim::AlreadyHeld)
+            : seam_reconfiguration_permitted(live, requester, OwnClaim::AlreadyHeld);
+    if (!permitted) {
+      // Refused. The branches below only choose the error code and the
+      // diagnostic; the decision above is the single authority, so a provider
+      // and the shared policy cannot drift apart.
+      if (others.capture_refs > 0) {
+        camera2_detail::log_line(
+            "device=%llu session rebuild refused: %u capture claim(s) live",
+            static_cast<unsigned long long>(backend->device_instance_id),
+            others.capture_refs);
+        return ProviderResult::failure(ProviderError::ERR_BUSY);
+      }
+      if (others.stream_refs > 0) {
+        camera2_detail::log_line(
+            "device=%llu session rebuild refused: %u stream claim(s) live",
+            static_cast<unsigned long long>(backend->device_instance_id),
+            others.stream_refs);
+        return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
+      }
+      // A retained-profile claim held by someone else. Previously not consulted
+      // at all here, so a stream could rebuild the seam out from under a primed
+      // capture parent and leave Core believing a primed seam still existed.
+      camera2_detail::log_line(
+          "device=%llu session rebuild refused: capture-parent claim live",
+          static_cast<unsigned long long>(backend->device_instance_id));
       return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
     }
     // Geometry the device does not actually offer for YUV_420_888 must fail
@@ -2146,7 +3057,8 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
   auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
   const bool completed = control_.run_bounded(
       [result, backend, want_stream, stream_width, stream_height, want_still,
-       still_width, still_height](const BoundedControlExecutor::AbandonToken& t) {
+       still_width, still_height,
+       flow_is_pilot](const BoundedControlExecutor::AbandonToken& t) {
         ConfigureResult local;
 
         ACameraDevice* device = nullptr;
@@ -2190,10 +3102,47 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
         camera_status_t cs = ACAMERA_OK;
 
         if (want_stream) {
-          ms = AImageReader_new(static_cast<int32_t>(stream_width),
-                                static_cast<int32_t>(stream_height),
-                                AIMAGE_FORMAT_YUV_420_888, kStreamReaderMaxImages,
-                                &stream_reader);
+          // PRIVATE for the pilot, YUV for a caller's stream.
+          //
+          // The pilot's frames are counted and deleted without a single plane
+          // being read, and Camera2 states a PRIVATE reader "is more efficient,
+          // compared with ... AIMAGE_FORMAT_YUV_420_888" when software access is
+          // not necessary. It also moves the session from YUV+YUV -- guaranteed
+          // only at FULL level or with BURST capability -- to PRIV+YUV, which is
+          // guaranteed from LEGACY upward.
+          //
+          // PRIVATE requires AImageReader_newWithUsage, introduced in API 26,
+          // and this builds at API 24, so the call is availability-guarded and
+          // falls back to YUV where it cannot be made. A YUV pilot still works;
+          // it is only less efficient.
+          bool pilot_private = false;
+          if (flow_is_pilot) {
+            if (__builtin_available(android 26, *)) {
+              ms = AImageReader_newWithUsage(
+                  static_cast<int32_t>(stream_width), static_cast<int32_t>(stream_height),
+                  AIMAGE_FORMAT_PRIVATE, AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE,
+                  kStreamReaderMaxImages, &stream_reader);
+              pilot_private = (ms == AMEDIA_OK && stream_reader != nullptr);
+              if (!pilot_private) {
+                camera2_detail::log_line(
+                    "device=%llu pilot PRIVATE reader refused (status=%d); falling back to YUV",
+                    static_cast<unsigned long long>(backend->device_instance_id),
+                    static_cast<int>(ms));
+                stream_reader = nullptr;
+              }
+            }
+          }
+          camera2_detail::log_line(
+              "flowformat device=%llu %s %ux%u format=%s",
+              static_cast<unsigned long long>(backend->device_instance_id),
+              flow_is_pilot ? "pilot" : "caller_stream", stream_width, stream_height,
+              pilot_private ? "PRIVATE" : "YUV_420_888");
+          if (!pilot_private) {
+            ms = AImageReader_new(static_cast<int32_t>(stream_width),
+                                  static_cast<int32_t>(stream_height),
+                                  AIMAGE_FORMAT_YUV_420_888, kStreamReaderMaxImages,
+                                  &stream_reader);
+          }
           if (ms != AMEDIA_OK || !stream_reader) {
             local.error = ProviderError::ERR_PLATFORM_CONSTRAINT;
             unwind();
@@ -2328,8 +3277,52 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
     root_id = backend->root_id;
     device_instance_id = backend->device_instance_id;
   }
+  backend->diag_session_configured_ns.store(camera2_detail::diag_mono_ns(),
+                                            std::memory_order_release);
   emit_native_created_(session_id, NativeObjectType::AcquisitionSession, root_id,
                        device_instance_id, 0, 0);
+
+  // PUT THE FLOW BACK. The stream was carried into the new session's output set,
+  // but a session swap cancels the repeating request, so without this the stream
+  // would sit "producing" and deliver nothing.
+  //
+  // Deliberately inside this function rather than left to the caller: the caller
+  // is a capture path that has no reason to know a stream was gapped, and a
+  // return between the swap and the restore would leave the stream dark with
+  // nobody responsible for it.
+  if (restore_flow_after) {
+    const ProviderResult resumed = submit_repeating_request_(backend);
+    if (!resumed.ok()) {
+      // THE SILENT FAILURE THIS EXISTS TO PREVENT. Reaching here means the
+      // session was replaced and the flow could not be restarted. Saying nothing
+      // would leave a stream that Core believes is FLOWING, delivering no frames,
+      // forever -- and nothing watches frame cadence, so nobody would ever find
+      // out. Report it as the stream failure it is.
+      uint64_t dark_stream_id = 0;
+      {
+        std::lock_guard<std::mutex> bl(backend->m);
+        if (backend->stream) {
+          dark_stream_id = backend->stream->stream_id;
+          backend->stream->producing = false;
+        }
+      }
+      camera2_detail::log_line(
+          "device=%llu reprovision restored the session but could not restart the "
+          "repeating request (rc=%u); reporting stream=%llu failed",
+          static_cast<unsigned long long>(device_instance_id),
+          static_cast<unsigned>(resumed.code),
+          static_cast<unsigned long long>(dark_stream_id));
+      if (dark_stream_id != 0) {
+        strand_.post_stream_error(dark_stream_id, resumed.code);
+        strand_.post_stream_stopped(dark_stream_id, resumed.code);
+      }
+      return resumed;
+    }
+    camera2_detail::log_line(
+        "device=%llu reprovision complete: stream flow restored at %ux%u",
+        static_cast<unsigned long long>(device_instance_id),
+        stream_width, stream_height);
+  }
   return ProviderResult::success();
 }
 
@@ -2510,13 +3503,37 @@ ProviderResult Camera2CameraProvider::start_stream(
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
 
-  // Provision the still output alongside the stream at the same geometry, so
-  // still capture while streaming works without a session rebuild. A capture
-  // at a different geometry is refused while producing; see the header.
-  ProviderResult pr = ensure_session_configured_(dev.backend, true, profile.width,
-                                                 profile.height, true, profile.width,
-                                                 profile.height);
+  // Provision the still output alongside the stream, AT THE RETAINED STILL
+  // GEOMETRY where Core has given us one. Outputs are fixed at session
+  // creation, so whichever still geometry is declared here is the one a capture
+  // can later use without reprovisioning the session. The
+  // stream's own geometry is the fallback, and it is only ever a guess -- it was
+  // the unconditional choice before, which is precisely why a capture at any
+  // other geometry needed a reprovision.
+  uint32_t still_w = profile.width;
+  uint32_t still_h = profile.height;
+  {
+    std::lock_guard<std::mutex> bl(dev.backend->m);
+    // Only if the device actually advertises it; an unsupported retained
+    // geometry must not take the stream's session configuration down with it.
+    if (dev.backend->retained_still_w != 0 && dev.backend->retained_still_h != 0 &&
+        dev.backend->chars.supports_size(dev.backend->retained_still_w,
+                                         dev.backend->retained_still_h)) {
+      still_w = dev.backend->retained_still_w;
+      still_h = dev.backend->retained_still_h;
+    }
+  }
+
+  // Claim the seam before asking for realization, so the reference reflects
+  // the whole window in which the stream depends on it -- and so the refusal
+  // check above can discount this stream's own claim rather than mistaking it
+  // for a competing one. Released again if realization fails: an unstarted
+  // stream must not pin a seam.
+  retain_acquisition_seam_for_stream_(dev.backend);
+  ProviderResult pr = ensure_seam_realized_(SeamClaimant::Stream, dev.backend, still_w,
+                                            still_h, profile.width, profile.height);
   if (!pr.ok()) {
+    release_acquisition_seam_for_stream_(dev.backend);
     return pr;
   }
 
@@ -2547,15 +3564,44 @@ ProviderResult Camera2CameraProvider::start_stream(
     production->pool.push_back(std::move(slot));
   }
 
-  // Build and submit the repeating request on the control thread; it is a
-  // backend call and must stay off the core thread's own stack.
+  const ProviderResult submitted = submit_repeating_request_(dev.backend);
+  if (!submitted.ok()) {
+    return submitted;
+  }
+
+  {
+    std::lock_guard<std::mutex> bl(dev.backend->m);
+    if (dev.backend->failed || dev.backend->closed) {
+      return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
+    }
+    production->producing = true;
+    dev.backend->stream = production;
+  }
+
+  st.started = true;
+  strand_.post_stream_started(stream_id);
+  return ProviderResult::success();
+}
+
+// Builds and submits the repeating request that makes a caller's stream flow.
+//
+// Extracted from start_stream so the preserving-reprovision path in
+// ensure_session_configured_ can restore the flow after swapping the session.
+// The two must stay one implementation: a restore that built the request
+// differently would produce a stream that resumed with different behaviour from
+// the one the caller started.
+ProviderResult Camera2CameraProvider::submit_repeating_request_(
+    const std::shared_ptr<DeviceBackend>& backend) {
+  if (!backend) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  // Backend calls, so off the core thread's own stack.
   struct StartResult {
     ProviderError error = ProviderError::ERR_PROVIDER_FAILED;
     bool ok = false;
   };
   auto result = std::make_shared<StartResult>();
   auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
-  std::shared_ptr<DeviceBackend> backend = dev.backend;
   const bool completed = control_.run_bounded(
       [result, backend](const BoundedControlExecutor::AbandonToken& t) {
         StartResult local;
@@ -2636,18 +3682,6 @@ ProviderResult Camera2CameraProvider::start_stream(
   if (!result->ok) {
     return ProviderResult::failure(result->error);
   }
-
-  {
-    std::lock_guard<std::mutex> bl(dev.backend->m);
-    if (dev.backend->failed || dev.backend->closed) {
-      return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
-    }
-    production->producing = true;
-    dev.backend->stream = production;
-  }
-
-  st.started = true;
-  strand_.post_stream_started(stream_id);
   return ProviderResult::success();
 }
 
@@ -2697,6 +3731,10 @@ ProviderResult Camera2CameraProvider::stop_stream(uint64_t stream_id) {
   }
 
   st_it->second.started = false;
+  // The stream no longer needs the seam. This is the only release point for a
+  // stream claim: destroy_stream refuses while started, so a started stream
+  // can only reach destruction through here, exactly once per start.
+  release_acquisition_seam_for_stream_(backend);
   if (!already_stopped_by_error) {
     // Posting after producing=false under the backend lock guarantees no
     // frame for this stream lands after the stopped fact.
@@ -2818,9 +3856,33 @@ void Camera2CameraProvider::capture_worker_main_() noexcept {
       in_flight_captures_.erase(
           InFlightKey{job.request.capture_id, job.request.device_instance_id});
     }
+    // The capture is terminal, so its claim on the acquisition seam ends here.
+    release_acquisition_seam_for_capture_(job.backend);
     capture_cv_.notify_all();
   }
 }
+
+namespace {
+
+// Applies the lens freeze to a request. Shared by the pilot and the still so
+// they cannot disagree about where the lens should be.
+void apply_frozen_lens(ACaptureRequest* request, float distance,
+                       uint64_t device_instance_id, const char* which) {
+  const uint8_t af_off = ACAMERA_CONTROL_AF_MODE_OFF;
+  const bool mode_ok =
+      ACaptureRequest_setEntry_u8(request, ACAMERA_CONTROL_AF_MODE, 1, &af_off) == ACAMERA_OK;
+  const bool dist_ok =
+      ACaptureRequest_setEntry_float(request, ACAMERA_LENS_FOCUS_DISTANCE, 1, &distance) ==
+      ACAMERA_OK;
+  if (!mode_ok || !dist_ok) {
+    camera2_detail::log_line(
+        "device=%llu lens freeze incomplete on %s request (af_mode=%s focus_distance=%s)",
+        static_cast<unsigned long long>(device_instance_id), which,
+        mode_ok ? "ok" : "FAILED", dist_ok ? "ok" : "FAILED");
+  }
+}
+
+}  // namespace
 
 bool Camera2CameraProvider::capture_burst_(
     const std::shared_ptr<DeviceBackend>& backend,
@@ -2828,11 +3890,25 @@ bool Camera2CameraProvider::capture_burst_(
     uint32_t height,
     uint32_t format_fourcc,
     const std::vector<MemberRequestSpec>& specs,
-    std::vector<CapturedMemberFrame>& out_frames) noexcept {
+    std::vector<CapturedMemberFrame>& out_frames,
+    const char* purpose,
+    uint64_t capture_id) noexcept {
   out_frames.assign(specs.size(), CapturedMemberFrame{});
   if (!backend || specs.empty()) {
     for (auto& f : out_frames) f.error = ProviderError::ERR_BAD_STATE;
     return false;
+  }
+
+  // Snapshotted before the collector is installed: if this device owed payloads
+  // when the burst began, or discharged any while it ran, then a payload here
+  // that matches no result of ours cannot be assumed to be ours (see the
+  // positional-pairing guard below).
+  const OutstandingPayloadLedger::Snapshot ledger_at_start =
+      backend->payload_ledger.snapshot();
+  bool stream_producing_for_diag = false;
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    stream_producing_for_diag = backend->stream && backend->stream->producing;
   }
 
   auto burst = std::make_shared<BurstCollector>();
@@ -2872,12 +3948,14 @@ bool Camera2CameraProvider::capture_burst_(
         ACameraCaptureSession* session = nullptr;
         ANativeWindow* window = nullptr;
         bool awb_lock_available = false;
+        bool ae_lock_available = false;
         {
           std::lock_guard<std::mutex> bl(backend->m);
           device = backend->device;
           session = backend->session;
           window = backend->still_window;
           awb_lock_available = backend->chars.awb_lock_available;
+          ae_lock_available = backend->chars.ae_lock_available;
         }
         if (!device || !session || !window) {
           local.error = ProviderError::ERR_BAD_STATE;
@@ -2971,6 +4049,24 @@ bool Camera2CameraProvider::capture_burst_(
             }
           }
 
+          // DIAGNOSTIC: pin AE for the still. The pilot has already waited for
+          // convergence on devices that report it, so this holds those values
+          // rather than letting AE continue evaluating into the capture.
+          if (kFreezeLensForTest) {
+            apply_frozen_lens(request, kFrozenLensFocusDistance,
+                              backend->device_instance_id, "still");
+          }
+
+          if (kLockAeForStillTest && ae_lock_available) {
+            const uint8_t ae_lock = ACAMERA_CONTROL_AE_LOCK_ON;
+            if (ACaptureRequest_setEntry_u8(request, ACAMERA_CONTROL_AE_LOCK, 1, &ae_lock) !=
+                ACAMERA_OK) {
+              camera2_detail::log_line(
+                  "device=%llu could not set AE_LOCK on still request",
+                  static_cast<unsigned long long>(backend->device_instance_id));
+            }
+          }
+
           if (spec.set_af_trigger) {
             const uint8_t trigger = spec.af_trigger;
             if (ACaptureRequest_setEntry_u8(request, ACAMERA_CONTROL_AF_TRIGGER, 1,
@@ -2987,13 +4083,47 @@ bool Camera2CameraProvider::capture_burst_(
         capture_cbs.context = backend->capture_ctx.get();
         capture_cbs.onCaptureCompleted = &camera2_detail::on_capture_completed;
         capture_cbs.onCaptureFailed = &camera2_detail::on_capture_failed;
+        // The remaining callbacks are diagnostic. onCaptureBufferLost in
+        // particular is the platform reporting that a payload will never
+        // arrive; without it, a lost buffer and a withheld one are
+        // indistinguishable from here.
+        capture_cbs.onCaptureStarted = &camera2_detail::on_capture_started_diag;
+        capture_cbs.onCaptureBufferLost = &camera2_detail::on_capture_buffer_lost_diag;
+        capture_cbs.onCaptureSequenceCompleted =
+            &camera2_detail::on_capture_sequence_completed;
+        capture_cbs.onCaptureSequenceAborted =
+            &camera2_detail::on_capture_sequence_aborted;
 
         // One submission for the whole bundle: Camera2 runs the requests
         // back-to-back on consecutive sensor frames instead of the caller
         // reintroducing a pipeline round trip between each member.
+        // Retain the sequence id. It is the only handle the NDK gives us on
+        // "this submission", and onCaptureSequenceCompleted/Aborted report
+        // against it.
+        int sequence_id = -1;
         cs = ACameraCaptureSession_capture(session, &capture_cbs,
                                            static_cast<int>(requests.size()),
-                                           requests.data(), nullptr);
+                                           requests.data(), &sequence_id);
+        if (cs == ACAMERA_OK) {
+          std::shared_ptr<BurstCollector> installed;
+          {
+            std::lock_guard<std::mutex> bl(backend->m);
+            installed = backend->burst;
+          }
+          if (installed) {
+            bool already_over = false;
+            {
+              std::lock_guard<std::mutex> gl(installed->m);
+              // The sequence can end before this line runs, so do not clobber
+              // a settlement that has already been recorded for it.
+              installed->sequence_id = sequence_id;
+              already_over = installed->sequence_ended;
+            }
+            if (already_over) {
+              installed->cv.notify_all();
+            }
+          }
+        }
         unwind();
         if (cs != ACAMERA_OK) {
           local.error = camera2_detail::provider_error_from_camera_status(cs);
@@ -3015,6 +4145,55 @@ bool Camera2CameraProvider::capture_burst_(
     return false;
   }
 
+  // Submission trace. The gap between this and the arrival line is the number
+  // that matters: a platform holding a payload until the next request shows up
+  // as a submit with no arrival, then an arrival within milliseconds of the
+  // NEXT submit.
+  {
+    const uint64_t submitted_ns = camera2_detail::diag_mono_ns();
+    // Request mark on both clocks, so request->sensor latency is computable
+    // whichever base this device's sensor marks use. Emitted as its own line to
+    // keep it machine-readable.
+    camera2_detail::log_line(
+        "pilotstate device=%llu capture=%llu frames_total=%llu since_last_frame_ms=%.2f",
+        static_cast<unsigned long long>(backend->device_instance_id),
+        static_cast<unsigned long long>(capture_id),
+        static_cast<unsigned long long>(
+            backend->diag_pilot_frames.load(std::memory_order_acquire)),
+        camera2_detail::diag_ms_since(
+            backend->diag_last_pilot_frame_ns.load(std::memory_order_acquire)));
+    camera2_detail::log_line(
+        "tsprobe device=%llu capture=%llu event=submit mono_ns=%llu boot_ns=%llu members=%zu",
+        static_cast<unsigned long long>(backend->device_instance_id),
+        static_cast<unsigned long long>(capture_id),
+        static_cast<unsigned long long>(submitted_ns),
+        static_cast<unsigned long long>(camera2_detail::diag_boot_ns()),
+        specs.size());
+    camera2_detail::log_line(
+        "diag device=%llu capture=%llu purpose=%s submitted %zu request(s): "
+        "idle_since_last_submit_ms=%.2f idle_since_last_arrival_ms=%.2f "
+        "session_age_ms=%.2f stream_producing=%s submits_total=%llu "
+        "last_stream_ts=%lld stream_age_ms=%.2f",
+        static_cast<unsigned long long>(backend->device_instance_id),
+        static_cast<unsigned long long>(capture_id),
+        purpose,
+        specs.size(),
+        camera2_detail::diag_ms_since(
+            backend->diag_last_submit_ns.load(std::memory_order_acquire)),
+        camera2_detail::diag_ms_since(
+            backend->diag_last_arrival_ns.load(std::memory_order_acquire)),
+        camera2_detail::diag_ms_since(
+            backend->diag_session_configured_ns.load(std::memory_order_acquire)),
+        stream_producing_for_diag ? "yes" : "no",
+        static_cast<unsigned long long>(
+            backend->diag_still_requests_submitted.fetch_add(
+                specs.size(), std::memory_order_relaxed) + specs.size()),
+        static_cast<long long>(backend->diag_last_stream_ts.load(std::memory_order_acquire)),
+        camera2_detail::diag_ms_since(
+            backend->diag_last_stream_frame_ns.load(std::memory_order_acquire)));
+    backend->diag_last_submit_ns.store(submitted_ns, std::memory_order_release);
+  }
+
   // Wait for every member's image. Metadata never gates a frame: a device that
   // delivers pixels but no result still produces truthful pixels, just with
   // fewer facts.
@@ -3028,13 +4207,79 @@ bool Camera2CameraProvider::capture_burst_(
   std::map<int64_t, ResultFacts> results_by_time;
   std::vector<ResultFacts> results_in_order;
   bool settled = false;
+  size_t failed_count = 0;
+  bool sequence_ended = false;
+  bool grace_was_paid = false;
   {
     std::unique_lock<std::mutex> wl(burst->m);
-    settled = burst->cv.wait_for(wl, std::chrono::milliseconds(kCaptureSampleWaitMs),
-                                 [&burst] { return burst->settled(); });
+    const auto sample_deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(kCaptureSampleWaitMs);
+
+    // First wait: everything accounted for, or the platform closes the sequence.
+    // burst->settled() cannot end this wait on sequence end alone -- the grace
+    // flag is still false -- so the predicate names both conditions itself.
+    settled = burst->cv.wait_until(wl, sample_deadline, [&burst] {
+      return burst->settled() || burst->sequence_ended;
+    });
+
+    // Second wait: the sequence closed with members missing. A buffer whose
+    // delivery callback was already running when completion fired is still on
+    // its way, so give it a bounded grace rather than snapshotting mid-copy.
+    // Never extends past the sample deadline the caller was promised.
+    if (settled && capture_awaits_in_flight_grace(burst->progress())) {
+      grace_was_paid = true;
+      const auto grace_deadline = std::min(
+          sample_deadline, std::chrono::steady_clock::now() +
+                               std::chrono::milliseconds(kSequenceEndInFlightGraceMs));
+      burst->cv.wait_until(wl, grace_deadline, [&burst] {
+        return capture_accounted_members(burst->progress()) >= burst->expected;
+      });
+    }
+    burst->in_flight_grace_elapsed = true;
+    settled = burst->settled();
+
     images = burst->images;
     results_by_time = burst->results_by_time;
     results_in_order = burst->results_in_order;
+    failed_count = burst->failed_count;
+    sequence_ended = burst->sequence_ended;
+  }
+
+  // Abandoning this burst short leaves the platform still holding those
+  // payloads; it may deliver them into a later capture on this device. Record
+  // the shortfall so the next arrivals discharge it instead of being adopted.
+  // A member the platform explicitly failed owes nothing -- there is no payload
+  // in flight for it.
+  //
+  // Neither does a member whose SEQUENCE has ended. The platform has closed the
+  // submission; there is no payload in flight to be delivered late, so there is
+  // no debt to record. Recording one here was the defect this replaces: on a
+  // device that simply produced one image fewer than requested, the unpayable
+  // debt consumed the next capture's own payload, which re-incurred it, and the
+  // device delivered nothing ever again. Measured on Quest 3 as 2 -> 0 -> 0 -> 0
+  // with submits and arrivals differing by exactly one for the whole run.
+  CaptureSequenceProgress progress{};
+  progress.expected = specs.size();
+  progress.arrived = images.size();
+  progress.failed = failed_count;
+  progress.sequence_ended = sequence_ended;
+
+  const size_t accounted = capture_accounted_members(progress);
+  if (capture_finished_short(progress)) {
+    const size_t shortfall = specs.size() - accounted;
+    if (capture_outstanding_payload_debt(progress) == 0) {
+      camera2_detail::log_line(
+          "device=%llu capture short by %zu payload(s) but its sequence has ended;"
+          " nothing is outstanding, so no debt is recorded",
+          static_cast<unsigned long long>(backend->device_instance_id), shortfall);
+    } else {
+      backend->payload_ledger.record_abandoned(static_cast<uint64_t>(specs.size()),
+                                               static_cast<uint64_t>(accounted));
+      camera2_detail::log_line(
+          "device=%llu abandoned burst short by %zu payload(s); outstanding debt now %llu",
+          static_cast<unsigned long long>(backend->device_instance_id), shortfall,
+          static_cast<unsigned long long>(backend->payload_ledger.outstanding()));
+    }
   }
 
   // Sensor timestamps are monotonic within a device, so ascending timestamp is
@@ -3065,14 +4310,18 @@ bool Camera2CameraProvider::capture_burst_(
       used += n;
     }
     camera2_detail::log_line(
-        "burst collect: expected=%zu images=%zu failed=%zu no_timestamp=%zu "
+        "burst collect: device=%llu capture=%llu purpose=%s "
+        "expected=%zu images=%zu failed=%zu no_timestamp=%zu "
         "results_by_time=%zu results_unkeyed=%zu strays_total=%llu settled=%s "
-        "raw_deltas_ms=[%s]",
+        "grace_paid=%s raw_deltas_ms=[%s]",
+        static_cast<unsigned long long>(backend->device_instance_id),
+        static_cast<unsigned long long>(capture_id),
+        purpose,
         burst->expected, images.size(), static_cast<size_t>(0) + burst->failed_count,
         missing_timestamps, results_by_time.size(), results_in_order.size(),
         static_cast<unsigned long long>(
             backend->stray_still_images.load(std::memory_order_relaxed)),
-        settled ? "yes" : "no", deltas);
+        settled ? "yes" : "no", grace_was_paid ? "yes" : "no", deltas);
   }
 
   for (size_t i = 0; i < out_frames.size(); ++i) {
@@ -3105,7 +4354,16 @@ bool Camera2CameraProvider::capture_burst_(
         paired = true;
       }
     }
-    if (!paired && out_frames.size() == 1) {
+    // Positional fallback for a lone member, allowed only when this device is
+    // known to owe nothing. Timestamp pairing is what normally proves an image
+    // and a result describe the same frame; with debt in play an unmatched
+    // image may be a late payload from an abandoned capture, and pairing it
+    // positionally is exactly how a stale frame acquires a fresh capture's
+    // facts. Facts are enrichment and never gate pixels, so withholding them
+    // here is the conservative outcome, not a failure.
+    const bool device_owed_nothing =
+        backend->payload_ledger.owed_nothing_since(ledger_at_start);
+    if (!paired && out_frames.size() == 1 && device_owed_nothing) {
       if (!results_in_order.empty()) {
         out_frames[i].has_facts = true;
         out_frames[i].facts = results_in_order.front();
@@ -3113,6 +4371,11 @@ bool Camera2CameraProvider::capture_burst_(
         out_frames[i].has_facts = true;
         out_frames[i].facts = results_by_time.begin()->second;
       }
+    } else if (!paired && out_frames.size() == 1) {
+      camera2_detail::log_line(
+          "device=%llu withheld positional fact pairing: device had outstanding "
+          "payload debt, so an unmatched image cannot be assumed to be this capture's",
+          static_cast<unsigned long long>(backend->device_instance_id));
     }
   }
   return true;
@@ -3120,6 +4383,7 @@ bool Camera2CameraProvider::capture_burst_(
 
 bool Camera2CameraProvider::meter_manual_baseline_(
     const std::shared_ptr<DeviceBackend>& backend,
+    uint64_t capture_id,
     uint32_t width,
     uint32_t height,
     uint32_t format_fourcc,
@@ -3135,7 +4399,8 @@ bool Camera2CameraProvider::meter_manual_baseline_(
   // the focus-lock note in run_device_capture_job_).
   std::vector<MemberRequestSpec> specs(1);
   std::vector<CapturedMemberFrame> frames;
-  if (!capture_burst_(backend, width, height, format_fourcc, specs, frames) ||
+  if (!capture_burst_(backend, width, height, format_fourcc, specs, frames,
+                      "meter", capture_id) ||
       frames.empty()) {
     out_error = frames.empty() ? ProviderError::ERR_PROVIDER_FAILED : frames[0].error;
     return false;
@@ -3185,7 +4450,12 @@ void Camera2CameraProvider::submit_af_trigger_(
           if (backend->closed || backend->failed) return;
           device = backend->device;
           session = backend->session;
-          window = backend->still_window;
+          // The PILOT output, not the still output. A request must carry a
+          // target, and the pilot is always part of the seam -- so the frame
+          // this trigger produces lands on the reader whose images are
+          // discarded by design, instead of on the still reader where an extra
+          // image is indistinguishable from a bundle member.
+          window = backend->stream_window;
         }
         if (!device || !session || !window) return;
 
@@ -3195,10 +4465,10 @@ void Camera2CameraProvider::submit_af_trigger_(
                 ACAMERA_OK || !request) {
           return;
         }
-        // A request must carry a target; the still output is the only one
-        // guaranteed present. The resulting image is dropped by the still
-        // listener because no burst collector is installed, which is cheaper
-        // than threading a discard path through the collector.
+        // The resulting image is discarded either way: with no caller stream
+        // it is counted as a pilot frame and deleted; with one, it joins that
+        // stream's lossy frame flow. Both are preferable to the still reader,
+        // where an extra image cannot be told from a capture member.
         if (ACameraOutputTarget_create(window, &target) != ACAMERA_OK || !target ||
             ACaptureRequest_addTarget(request, target) != ACAMERA_OK ||
             ACaptureRequest_setEntry_u8(request, ACAMERA_CONTROL_AF_TRIGGER, 1,
@@ -3212,6 +4482,158 @@ void Camera2CameraProvider::submit_af_trigger_(
         ACaptureRequest_free(request);
       },
       token, kControlJobTimeoutMs);
+}
+
+// Starts the pilot stream repeating flow and waits, bounded, for AE to report
+// convergence. The caller stops the flow as soon as the still is taken.
+//
+// A false return is not necessarily failure: AE_STATE_INACTIVE means the
+// exposure routine is off or reset, not that it is still converging, and a
+// device that never leaves INACTIVE has no convergence to report.
+bool Camera2CameraProvider::start_pilot_stream_(
+    const std::shared_ptr<DeviceBackend>& backend, uint64_t capture_id) noexcept {
+  if (!backend) {
+    return false;
+  }
+  {
+    // Without this a capture would see the PREVIOUS pilot stream's settled state and
+    // skip waiting for its own.
+    std::lock_guard<std::mutex> al(backend->af_m);
+    backend->has_ae_state = false;
+    backend->ae_state = 0;
+  }
+
+  const uint64_t t0 = camera2_detail::diag_mono_ns();
+  const uint64_t frames_at_start =
+      backend->diag_pilot_frames.load(std::memory_order_acquire);
+  // Wait on AE convergence only where the device has an AE state machine that
+  // will actually run.
+  //
+  // Advertising CONTROL_AE_STATE as a result key is NOT sufficient: Quest
+  // passthrough advertises it and then reports AE_STATE_INACTIVE forever, so a
+  // result-key gate alone degenerates into a dead full-length timeout. Camera2
+  // documents the discriminator instead -- a LEGACY device never lists a
+  // capability beyond BACKWARD_COMPATIBLE, and AE precapture is not functional
+  // on LEGACY. A device offering nothing beyond BACKWARD_COMPATIBLE is
+  // therefore one whose exposure routine we must not wait on.
+  bool wait_for_ae = false;
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    wait_for_ae = backend->chars.ae_state_reported &&
+                  backend->chars.has_capability_beyond_backward_compatible;
+  }
+  auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
+  auto started = std::make_shared<bool>(false);
+  (void)control_.run_bounded(
+      [backend, started](const BoundedControlExecutor::AbandonToken& /*t*/) {
+        ACameraDevice* device = nullptr;
+        ACameraCaptureSession* session = nullptr;
+        ANativeWindow* window = nullptr;
+        {
+          std::lock_guard<std::mutex> bl(backend->m);
+          if (backend->closed || backend->failed) return;
+          device = backend->device;
+          session = backend->session;
+          window = backend->stream_window;
+        }
+        if (!device || !session || !window) return;
+
+        ACaptureRequest* request = nullptr;
+        ACameraOutputTarget* target = nullptr;
+        if (ACameraDevice_createCaptureRequest(device, TEMPLATE_PREVIEW, &request) !=
+                ACAMERA_OK || !request) {
+          return;
+        }
+        if (ACameraOutputTarget_create(window, &target) != ACAMERA_OK || !target ||
+            ACaptureRequest_addTarget(request, target) != ACAMERA_OK) {
+          if (target) ACameraOutputTarget_free(target);
+          ACaptureRequest_free(request);
+          return;
+        }
+        if (kFreezeLensForTest) {
+          apply_frozen_lens(request, kFrozenLensFocusDistance,
+                            backend->device_instance_id, "pilot");
+        }
+
+        ACameraCaptureSession_captureCallbacks cbs{};
+        cbs.context = backend->repeating_ctx.get();
+        cbs.onCaptureCompleted = &camera2_detail::on_repeating_capture_completed;
+        const camera_status_t cs =
+            ACameraCaptureSession_setRepeatingRequest(session, &cbs, 1, &request, nullptr);
+        ACameraOutputTarget_free(target);
+        ACaptureRequest_free(request);
+        if (cs == ACAMERA_OK) {
+          std::lock_guard<std::mutex> bl(backend->m);
+          backend->repeating_active = true;
+          *started = true;
+        }
+      },
+      token, kControlJobTimeoutMs);
+
+  if (!*started) {
+    camera2_detail::log_line(
+        "diag device=%llu capture=%llu pilot stream could not start",
+        static_cast<unsigned long long>(backend->device_instance_id),
+        static_cast<unsigned long long>(capture_id));
+    return false;
+  }
+
+  // Frames are the floor: the pipeline must be producing before a still is
+  // worth submitting, on every device.
+  const uint64_t want =
+      frames_at_start + static_cast<uint64_t>(kPilotStreamFrames);
+  bool got_frames = false;
+  {
+    std::unique_lock<std::mutex> ll(backend->pilot_m);
+    got_frames = backend->pilot_cv.wait_for(
+        ll, std::chrono::milliseconds(kPilotStreamWaitMs), [&backend, want] {
+          return backend->diag_pilot_frames.load(std::memory_order_acquire) >= want;
+        });
+  }
+
+  // Where the device advertises CONTROL_AE_STATE as a result key, frames alone
+  // are not enough: exposure may still be SEARCHING, and a still submitted then
+  // is not delivered. Where it does not advertise it, there is no convergence
+  // to wait for and frames are the whole signal.
+  bool ae_settled = false;
+  bool waited_for_ae = false;
+  if (got_frames && wait_for_ae) {
+    waited_for_ae = true;
+    const uint64_t remaining_ms = [&] {
+      const double spent = camera2_detail::diag_ms_since(t0);
+      const double left = static_cast<double>(kPilotStreamWaitMs) - spent;
+      return left > 0.0 ? static_cast<uint64_t>(left) : 0ull;
+    }();
+    std::unique_lock<std::mutex> al(backend->af_m);
+    ae_settled = backend->af_cv.wait_for(
+        al, std::chrono::milliseconds(remaining_ms), [&backend] {
+          if (!backend->has_ae_state) return false;
+          const uint8_t s = backend->ae_state;
+          // CONVERGED/LOCKED/FLASH_REQUIRED all mean AE has decided.
+          // INACTIVE is not a convergence stage -- it means the routine is off
+          // or reset -- so it never satisfies this.
+          return s == ACAMERA_CONTROL_AE_STATE_CONVERGED ||
+                 s == ACAMERA_CONTROL_AE_STATE_LOCKED ||
+                 s == ACAMERA_CONTROL_AE_STATE_FLASH_REQUIRED;
+        });
+  }
+
+  uint8_t final_state = 0;
+  {
+    std::lock_guard<std::mutex> al(backend->af_m);
+    final_state = backend->has_ae_state ? backend->ae_state : 255;
+  }
+  camera2_detail::log_line(
+      "pilotprobe device=%llu capture=%llu frames=%s got=%llu ae_gate=%s "
+      "ae_waited=%s ae_settled=%s ae_state=%d elapsed_ms=%.2f",
+      static_cast<unsigned long long>(backend->device_instance_id),
+      static_cast<unsigned long long>(capture_id), got_frames ? "yes" : "no",
+      static_cast<unsigned long long>(
+          backend->diag_pilot_frames.load(std::memory_order_acquire) - frames_at_start),
+      wait_for_ae ? "yes" : "no", waited_for_ae ? "yes" : "no",
+      ae_settled ? "yes" : "no", static_cast<int>(final_state),
+      camera2_detail::diag_ms_since(t0));
+  return got_frames && (!wait_for_ae || ae_settled);
 }
 
 void Camera2CameraProvider::reset_observed_af_state_(
@@ -3304,16 +4726,77 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
     // While a stream produces, the session output set is pinned; the capture
     // must fit it. Otherwise the session is rebuilt still-only at the
     // requested geometry.
-    ProviderResult pr =
-        stream_producing
-            ? ensure_session_configured_(backend, true, stream_w, stream_h, true,
-                                         job.request.width, job.request.height)
-            : ensure_session_configured_(backend, false, 0, 0, true, job.request.width,
-                                         job.request.height);
+    // With no stream of its own, a still is taken cold: nothing has metered,
+    // and Camera2 documents a still as following a 3A sequence that
+    // converges. Configure the session in the shape the platform's own
+    // The seam already carries a flow output, so this either reuses it or
+    // rebuilds for a still geometry change. The pilot only needs RUNNING when
+    // the caller has no stream of its own producing into it.
+    const bool pilot_this_capture = kPilotStreamEnabled && !stream_producing;
+
+    ProviderResult pr = ensure_seam_realized_(SeamClaimant::Capture, backend,
+                                              job.request.width, job.request.height);
     if (!pr.ok()) {
       fail(pr.code);
       return;
     }
+
+    // Runs before the still and stops after it. Not a keep-alive: the flow
+    // exists for the duration of this capture's metering and no longer.
+    // The pilot runs for the LIFETIME OF THE SEAM, not for one capture.
+    //
+    // Cycling it per capture left the ring buffer empty at every request: a
+    // device-operated ZSL has nothing captured "in the past" to draw on
+    // (ACAMERA_CONTROL_ENABLE_ZSL is documented entirely in terms of preceding
+    // PREVIEW-intent requests), and each still waited on a pipeline starting
+    // from cold. Left running, the pipeline is already producing when the
+    // request arrives.
+    //
+    // Started once and not stopped here. It is torn down with the seam, and it
+    // is skipped entirely when the caller has a stream of its own -- that
+    // stream IS the flow, and setRepeatingRequest would replace it.
+    bool pilot_running = false;
+    if (pilot_this_capture) {
+      bool already_flowing = false;
+      if (kPersistentPilotTest) {
+        std::lock_guard<std::mutex> bl(backend->m);
+        already_flowing = backend->repeating_active;
+      }
+      if (!already_flowing) {
+        (void)start_pilot_stream_(backend, capture_id);
+      }
+      // Under the persistent arm the flow is left running and torn down with
+      // the seam; per-capture stops it below.
+      pilot_running = !kPersistentPilotTest;
+    }
+    // Per-capture arm: the pilot is stopped as soon as this capture is done, so
+    // the next one starts from a pipeline that is not producing.
+    struct PilotStop {
+      Camera2CameraProvider* self;
+      const std::shared_ptr<DeviceBackend>* backend;
+      bool* running;
+      ~PilotStop() {
+        if (*running) {
+          auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
+          const std::shared_ptr<DeviceBackend>& b = *backend;
+          (void)self->control_.run_bounded(
+              [b](const BoundedControlExecutor::AbandonToken&) {
+                ACameraCaptureSession* session = nullptr;
+                {
+                  std::lock_guard<std::mutex> bl(b->m);
+                  session = b->session;
+                }
+                if (session) {
+                  ACameraCaptureSession_stopRepeating(session);
+                }
+                std::lock_guard<std::mutex> bl(b->m);
+                b->repeating_active = false;
+              },
+              token, kControlJobTimeoutMs);
+          *running = false;
+        }
+      }
+    } pilot_stop{this, &backend, &pilot_running};
 
     uint64_t session_id = 0;
     StaticCharacteristics chars;
@@ -3325,6 +4808,20 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
       }
       session_id = backend->acquisition_session_id;
       chars = backend->chars;
+    }
+    if (session_id == 0) {
+      // ensure_session_configured_ reported success, so a native session
+      // exists, but no AcquisitionSession id was minted for it. Every frame
+      // and terminal fact this capture produces would name session 0, i.e.
+      // claim to belong to a seam that was never reported to Core. Fail
+      // instead: a capture must not execute against a seam Core cannot see.
+      camera2_detail::log_line(
+          "device=%llu capture=%llu refused: session realized but no"
+          " AcquisitionSession id was minted",
+          static_cast<unsigned long long>(device_id),
+          static_cast<unsigned long long>(capture_id));
+      fail(ProviderError::ERR_PROVIDER_FAILED);
+      return;
     }
 
     const auto& members = job.request.still_image_bundle.members;
@@ -3412,6 +4909,14 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
       // frames -- pointing a temporary flow at the still reader was tried and
       // corrupted bundle collection, because its images are indistinguishable
       // from capture members once they reach that reader.
+      //
+      // That warning was proved again by moving this block out to cover the
+      // sequential path too: every single-member capture then fired an AF
+      // trigger whose discarded still went to the still reader, producing 31
+      // strays and halving delivery (S20+ camera 1, 26/27 -> 8/16). The lock
+      // stays here, on the bracket path, where the extra still is worth its
+      // cost. The trigger now targets the PILOT output rather than the still
+      // reader, so the frame it discards cannot be mistaken for a member.
       const bool focus_lock_attempted =
           stream_producing && !chars.fixed_focus_at_infinity;
       bool focus_locked = false;
@@ -3458,7 +4963,8 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
       double baseline_exposure = 0.0;
       double baseline_sensitivity = 0.0;
       ProviderError meter_error = ProviderError::ERR_PROVIDER_FAILED;
-      if (!meter_manual_baseline_(backend, job.request.width, job.request.height,
+      if (!meter_manual_baseline_(backend, job.request.capture_id,
+                                  job.request.width, job.request.height,
                                   job.request.format_fourcc, baseline_exposure,
                                   baseline_sensitivity, meter_error)) {
         fail(meter_error);
@@ -3574,7 +5080,8 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
       }
 
       if (!capture_burst_(backend, job.request.width, job.request.height,
-                          job.request.format_fourcc, specs, frames)) {
+                          job.request.format_fourcc, specs, frames,
+                          "members_manual", job.request.capture_id)) {
         fail(frames.empty() ? ProviderError::ERR_PROVIDER_FAILED : frames[0].error);
         return;
       }
@@ -3596,7 +5103,8 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
         const std::vector<MemberRequestSpec> one{spec};
         std::vector<CapturedMemberFrame> single;
         if (!capture_burst_(backend, job.request.width, job.request.height,
-                            job.request.format_fourcc, one, single) ||
+                            job.request.format_fourcc, one, single,
+                            "member_ae", job.request.capture_id) ||
             single.empty()) {
           fail(single.empty() ? ProviderError::ERR_PROVIDER_FAILED : single[0].error);
           return;
@@ -3977,6 +5485,81 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
   }
 }
 
+AcquisitionCoexistence Camera2CameraProvider::acquisition_coexistence(
+    uint64_t device_instance_id,
+    const AcquisitionUseSet& proposed) noexcept {
+  std::lock_guard<std::mutex> state_lock(state_mutex_);
+  auto dev_it = devices_.find(device_instance_id);
+  if (dev_it == devices_.end() || !dev_it->second.backend) {
+    // Nothing is configured, so nothing can be disturbed. An unopened device is
+    // not a capability denial: Unsupported would tell Core the set can never be
+    // served, which is a claim about the hardware this cannot support.
+    return AcquisitionCoexistence::coexist();
+  }
+  std::lock_guard<std::mutex> bl(dev_it->second.backend->m);
+  const auto& backend = *dev_it->second.backend;
+
+  // Sizes first, because an unsupported size is a capability denial no ordering
+  // of operations can reach and must never be confused with a priority
+  // decision. supports_size reads characteristics cached at open.
+  if (proposed.has_stream &&
+      !backend.chars.supports_size(proposed.stream.width, proposed.stream.height)) {
+    return AcquisitionCoexistence::unsupported();
+  }
+  if (proposed.has_still &&
+      !backend.chars.supports_size(proposed.still.width, proposed.still.height)) {
+    return AcquisitionCoexistence::unsupported();
+  }
+
+  // Whether the realized session already carries each proposed output at the
+  // geometry proposed for it. Anything it does not carry has to be added, and
+  // on Camera2 adding an output means a new session.
+  const bool stream_already_configured =
+      !proposed.has_stream ||
+      (backend.cfg_has_stream && backend.cfg_stream_w == proposed.stream.width &&
+       backend.cfg_stream_h == proposed.stream.height);
+  const bool still_already_configured =
+      !proposed.has_still ||
+      (backend.cfg_has_still && backend.cfg_still_w == proposed.still.width &&
+       backend.cfg_still_h == proposed.still.height);
+  if (stream_already_configured && still_already_configured) {
+    return AcquisitionCoexistence::coexist();
+  }
+
+  // A reprovision is needed. It only disturbs anything if a stream is actually
+  // producing -- reprovisioning around a stream that is created but not started
+  // costs nothing observable.
+  const bool stream_producing = backend.stream && backend.stream->producing;
+  if (!stream_producing) {
+    return AcquisitionCoexistence::coexist();
+  }
+
+  // RECONFIGURE, not StreamMustYield. Camera2 can hold a stream output and a
+  // still output at different geometries in one session, so the far side of the
+  // swap serves both; what it cannot do is add an output to a live session. The
+  // stream therefore GAPS -- frames pause while the session is replaced and
+  // resume at the stream's own geometry -- rather than giving that geometry up.
+  //
+  // This answered StreamMustYield until the session swap learned to carry the
+  // stream's output forward and put its flow back
+  // (ensure_session_configured_/submit_repeating_request_). Before that the
+  // reprovision genuinely was unreachable with the stream up, because the claim
+  // policy refuses a plain reconfiguration under another claimant's claim, and
+  // answering Reconfigure would have promised Core something this provider would
+  // then refuse. Now the provider asks seam_reprovision_permitted for exactly
+  // the preserving case, so the promise is one it keeps.
+  //
+  // Killing a working viewfinder here was never a hardware constraint. It cost
+  // the stream only because the still geometry had not been predicted when the
+  // session was built, and arbitration_policy.md 6.2's preemption is for
+  // backends that cannot serve both -- which this one can.
+  //
+  // Reachable only when the still geometry was NOT declared at session creation.
+  // Where Core retained the profile before the stream started, both outputs are
+  // already there and the answer above is Coexist, with no gap at all.
+  return AcquisitionCoexistence::reconfigure();
+}
+
 ProviderResult Camera2CameraProvider::validate_and_admit_submission_locked_(
     const CaptureSubmission& submission,
     std::vector<DeviceCaptureJob>& out_jobs) {
@@ -4009,14 +5592,34 @@ ProviderResult Camera2CameraProvider::validate_and_admit_submission_locked_(
                                              supports_multi_image_still_sequence())) {
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
-    if (in_flight_captures_.count(
-            InFlightKey{req.capture_id, req.device_instance_id}) != 0) {
+    // Any in-flight capture on this device, not merely a duplicate of this
+    // request. Two captures on one device would contend for the single burst
+    // collector slot, and -- more seriously -- make outstanding-payload debt
+    // unattributable, since neither capture could know whose payload arrived.
+    //
+    // This refuses deterministically where the code previously serialised by
+    // blocking a worker on still_capture_mutex, which turned contention into
+    // latency the caller could not see. Core owns arbitration policy
+    // (capture_identity_and_lifecycle.md 3); this is the provider guarding the
+    // invariant it depends on, so a later policy change fails loudly here
+    // rather than silently misattributing payloads.
+    const bool device_already_capturing =
+        std::any_of(in_flight_captures_.begin(), in_flight_captures_.end(),
+                    [&req](const auto& entry) {
+                      return entry.first.device_instance_id == req.device_instance_id;
+                    });
+    if (device_already_capturing) {
+      camera2_detail::log_line(
+          "capture admission refused: device=%llu already has a capture in flight "
+          "-> ERR_BUSY",
+          static_cast<unsigned long long>(req.device_instance_id));
       return ProviderResult::failure(ProviderError::ERR_BUSY);
     }
     auto dev_it = devices_.find(req.device_instance_id);
     if (dev_it == devices_.end() || !dev_it->second.open) {
       return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
     }
+
     if (!dev_it->second.backend) {
       return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
     }
@@ -4035,20 +5638,19 @@ ProviderResult Camera2CameraProvider::validate_and_admit_submission_locked_(
             static_cast<unsigned long long>(req.rig_id), req.width, req.height);
         return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
       }
-      // A started stream pins the session output set; a capture that needs a
-      // different geometry cannot execute without rebuilding the session and
-      // dropping the live stream.
-      const auto& stream = dev_it->second.backend->stream;
-      if (stream && stream->producing &&
-          (stream->width != req.width || stream->height != req.height)) {
-        camera2_detail::log_line(
-            "capture admission refused: device=%llu rig=%llu request=%ux%u "
-            "differs from producing stream=%ux%u -> ERR_PLATFORM_CONSTRAINT",
-            static_cast<unsigned long long>(req.device_instance_id),
-            static_cast<unsigned long long>(req.rig_id), req.width, req.height,
-            stream->width, stream->height);
-        return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
-      }
+      // NOT REFUSED HERE any more: a capture whose geometry differs from a
+      // producing stream's. That refusal inverted arbitration_policy.md 2, which
+      // ranks triggered capture above repeating streams -- the stream is the
+      // thing that gives way, and deciding that is Core's job, not this
+      // provider's. Core asks acquisition_coexistence() before admission and
+      // acts on the answer; by the time a submission arrives here it has already
+      // been arbitrated. Refusing again would make the answer a lie and put the
+      // decision back in the adapter.
+      //
+      // What is still guarded is this provider's own invariant: the session
+      // output set. If the geometry asked for is not in the realized session,
+      // the capture path reprovisions it (see ensure_seam_realized_), which is what
+      // the coexistence answer promised when it said Reconfigure.
       if (req.still_image_bundle.members.size() > 1) {
         if (req.still_image_bundle.members.size() > kMaxBracketMembers) {
           return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
@@ -4071,6 +5673,145 @@ ProviderResult Camera2CameraProvider::validate_and_admit_submission_locked_(
     job.generation = capture_generation_;
     out_jobs.push_back(std::move(job));
   }
+
+  // Take the acquisition-seam capture references only once the WHOLE
+  // submission has validated. Grouped admission is atomic (brief section 5):
+  // admit every device job or none, so a reference must not be held for a
+  // submission that is about to be refused. Retaining inside the validation
+  // loop would leak a reference on any later device's rejection.
+  //
+  // Taken at ADMISSION rather than in the worker (lifecycle_model.md section 2;
+  // SyntheticProvider retains in validate_and_admit_capture_submission_locked_
+  // for the same reason). Realization may still complete on the control thread
+  // -- createCaptureSession is heavyweight and admission runs on the core
+  // thread, which must stay prompt and bounded (brief section 2) -- but the
+  // seam's LIFETIME is governed from the moment the capture is accepted,
+  // instead of the session being incidental configuration state left behind by
+  // whichever capture happened to run first.
+  for (DeviceCaptureJob& job : out_jobs) {
+    auto dev_it = devices_.find(job.request.device_instance_id);
+    if (dev_it != devices_.end()) {
+      job.backend = dev_it->second.backend;
+      retain_acquisition_seam_for_capture_(job.backend);
+    }
+  }
+  return ProviderResult::success();
+}
+
+ProviderResult Camera2CameraProvider::sync_capture_parent_priming(const CaptureRequest& req) {
+  if (!initialized_.load(std::memory_order_acquire)) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (req.device_instance_id == 0 || req.width == 0 || req.height == 0) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+
+  std::shared_ptr<DeviceBackend> backend;
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    auto it = devices_.find(req.device_instance_id);
+    if (it == devices_.end() || !it->second.open || !it->second.backend) {
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+    }
+    backend = it->second.backend;
+  }
+
+  // A latch, not a counter: the contract requires repeated equivalent calls to
+  // be idempotent, and Core calls this on every profile-set. SyntheticProvider
+  // holds the capture-parent claim the same way.
+  retain_acquisition_seam_for_capture_parent_(backend);
+
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    if (backend->closed || backend->failed || !backend->device) {
+      release_acquisition_seam_for_capture_parent_(backend);
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+    }
+  }
+
+  // Deliberately NOT short-circuited on "a session already exists". An earlier
+  // version returned success in that case, reasoning that creation should never
+  // re-create. That protected the wrong thing: what must not be destroyed is a
+  // session a live claimant depends on, and the claim check inside
+  // ensure_session_configured_ already refuses exactly that. Short-circuiting
+  // here additionally froze the seam at whatever geometry it was first built
+  // with, so a device whose retained still profile arrived after engage could
+  // never have a seam matching it.
+  //
+  // ensure_session_configured_ reuses a matching session at no cost, rebuilds a
+  // mismatched one when nothing forbids it, and refuses when a stream or an
+  // in-flight capture holds the seam.
+
+  // KNOWN GAP (Core-side, observed on Quest 3 2026-08-04): the geometry Core
+  // passes here is not the retained still-capture profile the caller set. A
+  // scene that sets a 1280x720 still profile before engage() produces a
+  // creation call at 640x480, so the seam this creates is destroyed and rebuilt
+  // by the very first capture. The creation call site
+  // (CoreRuntime::sync_capture_parent_priming_) is gated on
+  // `acquisition_session_id == 0`, so once a seam exists at the wrong geometry
+  // no later profile change re-creates it.
+  //
+  // Creating at the geometry we are given is still correct provider behaviour:
+  // the provider executes effective configuration it is handed (brief section
+  // 6) and must not invent geometry of its own. Fixing the geometry is Core's,
+  // and until it is fixed the creation path costs one extra session build per
+  // device rather than saving one.
+  //
+  // Remember the retained geometry before realizing. A stream started later
+  // reads it so the session it builds already carries the still output captures
+  // will ask for, which is what lets a differing still coexist with a stream on
+  // this backend instead of costing a reprovision.
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    backend->retained_still_w = req.width;
+    backend->retained_still_h = req.height;
+  }
+
+  // Realize (or re-realize) the seam at the geometry we were given.
+  ProviderResult pr =
+      ensure_seam_realized_(SeamClaimant::CaptureParent, backend, req.width, req.height);
+  if (!pr.ok()) {
+    // A creation that did not happen holds nothing. Reporting success here
+    // would tell Core a seam exists when none does.
+    release_acquisition_seam_for_capture_parent_(backend);
+    return pr;
+  }
+  return ProviderResult::success();
+}
+
+ProviderResult Camera2CameraProvider::release_capture_parent_priming(uint64_t device_instance_id) {
+  if (!initialized_.load(std::memory_order_acquire)) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (device_instance_id == 0) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+
+  std::shared_ptr<DeviceBackend> backend;
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    auto it = devices_.find(device_instance_id);
+    if (it == devices_.end() || !it->second.open || !it->second.backend) {
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+    }
+    backend = it->second.backend;
+  }
+
+  // Drops the claim, and nothing else. Zero references makes teardown
+  // permitted, not mandatory (see the DeviceBackend declaration), and this
+  // path must not take it.
+  //
+  // An earlier version tore the seam down here, on the reasoning that an
+  // explicit release states intent. Hardware disproved it. Core holds this
+  // claim for as long as the retained still profile stands, so the release
+  // that eventually arrives says the profile is changing or going away -- it
+  // is Core declining to keep a claim, not asking for destruction. Tearing
+  // down on it left the next capture rebuilding from nothing, discarding the
+  // whole benefit of having created the seam.
+  //
+  // Genuine teardown happens on close_device, shutdown, and a reconfigure that
+  // no live claimant forbids.
+  release_acquisition_seam_for_capture_parent_(backend);
   return ProviderResult::success();
 }
 

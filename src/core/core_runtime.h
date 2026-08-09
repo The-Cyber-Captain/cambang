@@ -888,6 +888,33 @@ private:
       std::deque<ProviderToCoreCommand>& facts) noexcept;
   void enqueue_request(CoreThread::Task task);
   void request_publish_from_core_unchecked();
+  // Whether shaping the acquisition seam for this retained still profile would
+  // gap, stop, or fail to serve any stream the device already has. Consulted in
+  // place of the old blanket "any stream means do not prime" rule.
+  bool priming_would_disturb_a_stream_(uint64_t device_instance_id,
+                                       const CaptureRequest& effective) const;
+
+  // Outcome of consulting the provider's coexistence answer before triggering a
+  // capture on a device that has streams running.
+  enum class CaptureCoexistenceOutcome : uint8_t {
+    // Nothing in the way, or whatever was in the way has now been stopped.
+    Proceed,
+    // The provider says no ordering serves this set. A capability denial: the
+    // capture cannot succeed, so no stream is stopped for it.
+    DenyUnavailable,
+    // A stream that had to yield could not be stopped, so the capture cannot
+    // proceed and the streams are left as they are.
+    DenyBusy,
+  };
+  // Applies arbitration_policy.md 2's priority order at capture admission:
+  // triggered capture outranks repeating streams, so a stream the backend
+  // cannot run alongside the capture is stopped rather than the capture being
+  // refused. Consults the provider per running stream; stops only those the
+  // provider says must yield, and only when it says so.
+  CaptureCoexistenceOutcome resolve_capture_stream_coexistence_(
+      uint64_t device_instance_id,
+      const CaptureRequest& req,
+      ICameraProvider* prov);
   void begin_capture_stream_preemption_(uint64_t capture_id, uint64_t device_instance_id);
   void begin_capture_stream_preemption_for_bundle_(const RigAdmittedRequestBundle& bundle);
   void release_result_safe_capture_stream_preemptions_();

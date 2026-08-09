@@ -49,8 +49,16 @@ Windows-specific selection remains explicit:
 ### 2.2 No silent ABI surprise
 
 On Windows systems where both MSVC and MinGW are present, the selected toolchain
-must be explicit or clearly reported. From Git Bash / MinGW environments,
-`use_mingw=yes` is the recommended explicit choice.
+must be explicit or clearly reported. **`use_mingw=auto` resolves to MSVC on
+every host**, so the default is the toolchain that can compile the Windows
+platform provider (§2.2.1), and the config banner always reports the resolved
+choice.
+
+Until 2026-08-02 `auto` sniffed the shell (`MSYSTEM` / `SHELL=bash`) and chose
+MinGW from Git Bash. That made one command build two different artifacts
+depending on where it was typed, and the MinGW answer silently dropped the
+WinRT provider. MinGW is now reached only by an explicit `use_mingw=yes`
+(§9.1).
 
 ### 2.2.1 The Windows platform provider requires MSVC
 
@@ -64,13 +72,22 @@ the quickest way to tell which one is on disk.
 To build a plugin that actually contains the Windows platform provider:
 
 ```sh
-scons gde=yes maintainer_tools=no use_mingw=no
+scons gde use_mingw=no godot_cpp=external -j8
 ```
 
-`maintainer_tools=no` is required: some maintainer tools do not compile under
-MSVC (for example `synthetic_timeline_verify.cpp` includes the libstdc++
-extension header `ext/stdio_filebuf.h`), so the tools and the platform-backed
-plugin are built with different toolchains by necessity.
+The maintainer tools build under the same toolchain, so Windows is a
+single-toolchain target end to end:
+
+```sh
+scons gde=no use_mingw=no godot_cpp=external -j8
+```
+
+This was not always true. Until 2026-08-02 `synthetic_timeline_verify.cpp`
+included the libstdc++ extension header `ext/stdio_filebuf.h`, which MSVC has
+no equivalent for, and this section previously recorded `maintainer_tools=no`
+as *required* on MSVC builds. That single file now uses a portable
+`std::streambuf` over the `FILE*` instead, and all maintainer tools compile,
+link and pass under MSVC. Nothing forces the two-toolchain split any more.
 
 Consequences worth knowing before validating platform-provider work:
 
@@ -119,12 +136,12 @@ Supported assignment-style variables are exactly:
 | `godot_cpp` | `delegated`, `external` | `delegated` | Select root handling for selected `godot-cpp` artifacts. |
 | `platform_runtime_validate` | `yes`, `no` | `no` | Include selected platform-backed runtime validation artifacts. |
 | `COMPDB_PATH` | path | `compile_commands.json` | Compilation database output path. |
-| `use_mingw` | `yes`, `no`, `auto` | `auto` | Windows MinGW selection, mirrored to `godot-cpp` when applicable. |
+| `use_mingw` | `yes`, `no`, `auto` | `auto` | Windows MinGW selection, mirrored to `godot-cpp` when applicable. `auto` resolves to MSVC (`no`) on every host; `yes` is a deliberate opt-in — see §2.2 and §9.1. |
 | `use_llvm` | `yes`, `no`, `auto` | `auto` | Windows MinGW-LLVM selection, meaningful with MinGW. |
 | `mingw_prefix` | path | empty | Optional MinGW installation prefix forwarded to `godot-cpp`. |
 | `windows_mingw_static_runtime` | `auto`, `yes`, `no` | `auto` | Windows MinGW GDE static-runtime link mode. `auto` enables it for Windows MinGW GDE builds. |
 | `warnings_as_errors` | `yes`, `no` | `no` | Treat compiler warnings as errors. |
-| `android_api_level` | Android API level | `24` | Android GDE NDK Clang target API level. |
+| `android_api_level` | Android API level | `26` | Android GDE NDK Clang target API level. 26 is a floor: the Camera2 provider calls `AImageReader_newWithUsage`, unavailable below it. |
 | `ndk_version` | Android NDK version | `28.1.13356709` | NDK version used with `ANDROID_HOME` / `ANDROID_SDK_ROOT` for Android GDE builds. |
 | `ANDROID_HOME` | path | process env fallback | Optional Android SDK root for Android GDE builds. |
 
@@ -156,17 +173,21 @@ is an emulator architecture. Hardware handsets in the validation matrix are
 **Do not pass `use_mingw` / `mingw_prefix` to Android builds.** They have no
 effect there (see §6.1) and imply a toolchain that was not selected.
 
+**Parallelise with `-j<n>`.** Both MSVC and MinGW builds are safe at `-j8`
+here; a full maintainer-tools build goes from ~90s to ~50s. MSVC was *not*
+safe to parallelise before 2026-08-02 — see §3.3.
+
 Working invocations:
 
 ```sh
 # Android GDE for hardware validation (Galaxy S20+ etc.)
-scons gde platform=android arch=arm64 godot_cpp=external
+scons gde platform=android arch=arm64 godot_cpp=external -j8
 
 # Windows GDE with the WinRT provider compiled (needs MSVC)
-scons gde platform=windows use_mingw=no godot_cpp=external
+scons gde platform=windows use_mingw=no godot_cpp=external -j8
 
 # Maintainer tools: host-native, platform defaults to the host
-scons gde=no godot_cpp=external
+scons gde=no use_mingw=no godot_cpp=external -j8
 ```
 
 ### 3.2 Optimization level: `-Og` is the development baseline
@@ -211,6 +232,21 @@ Notes and known gaps:
   requires.
 * Performance numbers are only comparable between runs built at the same
   optimization level. Record the level alongside any measurement.
+
+### 3.3 MSVC debug info uses `/Z7`, not `/Zi`
+
+Debug MSVC builds compile with `/Z7`, which puts debug info inside each `.obj`.
+`/Zi` writes it to a separate compiler PDB, and with no per-object `/Fd` every
+`cl.exe` in the build targeted one shared `vc140.pdb` at the repo root — so any
+`-j>1` MSVC build died immediately on `fatal error C1041: cannot open program
+database`. Serial builds never hit it, which is why it went unnoticed while
+MinGW was the Windows default.
+
+`/Z7` removes the shared file rather than serialising access to it. The two
+alternatives were rejected deliberately: `/FS` keeps the contention and routes
+it through an `mspdbsrv.exe` background process, and per-object `/Fd` leaves a
+`.pdb` beside every `.obj`. The linker still emits the real program database
+for each binary from `/DEBUG`.
 
 ---
 
@@ -323,12 +359,14 @@ This does not affect the Android artifact: `_create_android_gde_env` replaces
 `LINKFLAGS` to empty, specifically so the host/MSVC environment is not
 inherited.
 
-It is a latent sharp edge rather than a live fault, because maintainer tools
-are built in a separate invocation (`scons gde=no`) whose `platform` defaults
-to the host and resolves MinGW correctly. The trap is a single combined
-invocation such as `scons platform=android arch=arm64 godot_cpp=external`
-(no `gde` alias): maintainer tools would then build host-native under MSVC
-with `use_mingw=yes` silently ignored.
+Since 2026-08-02 this is close to inert: `use_mingw=auto` resolves to MSVC on
+every host (§2.2), so the host toolchain is MSVC whatever `platform=` says, and
+maintainer tools compile cleanly under it. The residue is that an explicit
+`use_mingw=yes` is silently ignored for the host environment whenever
+`platform=` is not `windows` — for example `scons platform=android arch=arm64
+use_mingw=yes godot_cpp=external` (no `gde` alias) builds host-native tools
+under MSVC regardless. The flag is inert there rather than wrong, which is why
+§3.1 says not to pass it to Android builds at all.
 
 The comment above the gate states the opposite intent — "Toolchain selection
 is intentionally host-oriented. `platform=<...>` selects the GDE target
@@ -601,60 +639,76 @@ This supports tools such as `clangd`, CLion, and other language servers using
 
 ---
 
-## 9. Windows / MinGW local workflow
+## 9. Windows local workflow
+
+Windows is an **MSVC** target: the `windows_winrt` platform provider is C++/
+WinRT and MinGW cannot compile it (§2.2.1). MinGW remains buildable and is kept
+as a synthetic-only diagnostic path, not as the Windows workflow.
 
 Prerequisites:
 
 - Godot 4.5.x Windows editor
-- MSYS2 MinGW x64 environment or equivalent MinGW-w64 toolchain
+- Visual Studio 2022 with the C++ toolset and Windows SDK (for C++/WinRT)
 - `scons`
 - `thirdparty/godot-cpp` submodule initialised and pinned to the intended Godot
-  minor version
+  minor version, with the selected artifacts prepared (`godot_cpp=external`
+  consumes them; see §7)
+- MinGW-w64 only if building the diagnostic path below
 
-Recommended command on the current Windows development machine:
-
-```sh
-scons use_mingw=yes mingw_prefix=/c/Compilers/mingw64
-```
-
-Shorter acceptable form if `use_mingw=auto` resolves correctly:
+GDE build (WinRT provider compiled in):
 
 ```sh
-scons mingw_prefix=/c/Compilers/mingw64
-```
-
-GDE-only build:
-
-```sh
-scons gde use_mingw=yes mingw_prefix=/c/Compilers/mingw64
+scons gde use_mingw=no godot_cpp=external -j8
 ```
 
 Maintainer-tools-only build:
 
 ```sh
-scons gde=no
-scons maintainer_tools
+scons gde=no use_mingw=no godot_cpp=external -j8
 ```
 
-Skip maintainer tools while building the selected GDE family:
+Both artifact families at once:
 
 ```sh
-scons maintainer_tools=no use_mingw=yes mingw_prefix=/c/Compilers/mingw64
+scons use_mingw=no godot_cpp=external -j8
 ```
 
-`mingw_prefix` is important because delegated `godot-cpp` MinGW discovery can
-otherwise find Git for Windows' bundled MinGW path. Passing
+`use_mingw=no` above is explicitness, not necessity: `auto` resolves to MSVC on
+every host (§2.2). Keeping it stated makes the intended toolchain visible in
+the command itself, which matters when the same shell history also contains
+§9.1's MinGW invocations.
+
+### 9.1 MinGW diagnostic path
+
+Only for isolating a problem to the toolchain, or for a deliberately
+synthetic-only Windows plugin. It cannot produce a platform-backed DLL.
+
+```sh
+scons gde use_mingw=yes mingw_prefix=/c/Compilers/mingw64 godot_cpp=external -j8
+```
+
+`mingw_prefix` matters here because delegated `godot-cpp` MinGW discovery can
+otherwise find Git for Windows' bundled MinGW path; passing
 `mingw_prefix=/c/Compilers/mingw64` steers `godot-cpp` to the intended compiler.
+
+Object trees do not collide between the toolchains — MSVC writes `.obj` and
+MinGW writes `.o` into the same directory — so switching back and forth is
+cheap. The flip side is that `out/*.exe` can end up a **mixed-toolchain set**,
+with some binaries from each and nothing in the filename to say which. When
+that distinction matters, rebuild the whole family in one invocation.
 
 ---
 
 ## 10. Windows / MinGW runtime linkage
 
+Applies only to the MinGW diagnostic path (§9.1); MSVC builds link the MSVC
+runtime and none of this is relevant to them.
+
 Windows MinGW GDE builds default to static MinGW compiler/runtime linkage for
-the CamBANG plugin DLL. The normal Windows MinGW GDE build therefore remains:
+the CamBANG plugin DLL:
 
 ```sh
-scons gde platform=windows use_mingw=yes mingw_prefix=/c/Compilers/mingw64
+scons gde platform=windows use_mingw=yes mingw_prefix=/c/Compilers/mingw64 godot_cpp=external
 ```
 
 With the default `windows_mingw_static_runtime=auto`, that build links MinGW

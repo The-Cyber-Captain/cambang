@@ -664,6 +664,40 @@ class BackingPlanEvaluationTestProvider final : public ICameraProvider {
     return backing_plan_evaluation_settle_delay_ns_;
   }
 
+  // Defaults to Coexist, so every existing check that uses this provider is
+  // unaffected. The preemption check sets it to model a constrained backend,
+  // which is the only way to reach Core's yield path host-native -- the two
+  // providers that really answer that way cannot be built or run here.
+  AcquisitionCoexistence acquisition_coexistence(
+      uint64_t,
+      const AcquisitionUseSet& proposed) noexcept override {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!proposed.has_stream || !proposed.has_still) {
+      return AcquisitionCoexistence::coexist();
+    }
+    if (proposed.stream.width == proposed.still.width &&
+        proposed.stream.height == proposed.still.height) {
+      return AcquisitionCoexistence::coexist();
+    }
+    return coexistence_for_differing_geometry_;
+  }
+
+  void set_coexistence_for_differing_geometry_for_test(AcquisitionCoexistence c) {
+    std::lock_guard<std::mutex> lk(mu_);
+    coexistence_for_differing_geometry_ = c;
+  }
+
+  uint64_t stream_reprovision_resume_timeout_ns() const noexcept override {
+    std::lock_guard<std::mutex> lk(mu_);
+    return reprovision_resume_timeout_ns_;
+  }
+
+  // Shortened by the reprovision checks so they do not sit out the real default.
+  void set_reprovision_resume_timeout_ns_for_test(uint64_t ns) {
+    std::lock_guard<std::mutex> lk(mu_);
+    reprovision_resume_timeout_ns_ = ns;
+  }
+
   ProducerBackingCapabilities stream_backing_capabilities(
       const CaptureProfile&,
       const PictureConfig&) const noexcept override {
@@ -1261,6 +1295,9 @@ private:
   ProducerBackingCapabilities stream_caps_{true, true, true};
   ProducerBackingCapabilities capture_caps_{true, true, true};
   uint64_t backing_plan_evaluation_settle_delay_ns_ = 0;
+  AcquisitionCoexistence coexistence_for_differing_geometry_ =
+      AcquisitionCoexistence::coexist();
+  uint64_t reprovision_resume_timeout_ns_ = kDefaultStreamReprovisionResumeTimeoutNs;
   std::map<uint64_t, DeviceState> devices_;
   std::map<uint64_t, PendingCapture> pending_captures_;
   std::map<uint64_t, StreamState> streams_;
@@ -1303,6 +1340,16 @@ public:
       ProviderError::ERR_PLATFORM_CONSTRAINT;
   static constexpr ProviderError kReleaseReturnCode =
       ProviderError::ERR_TRANSIENT_FAILURE;
+
+  // Deliberately NOT the interface default. A broker that fails to override the
+  // query answers Coexist on this backend's behalf, and Coexist is precisely the
+  // answer that makes Core skip arbitration -- so a default-shaped answer here
+  // would be indistinguishable from correct forwarding.
+  AcquisitionCoexistence acquisition_coexistence(
+      uint64_t,
+      const AcquisitionUseSet&) noexcept override {
+    return AcquisitionCoexistence::stream_must_yield(/*restorable=*/false);
+  }
 
   explicit BrokerPrimingForwardingRecordingProvider(
       std::shared_ptr<BrokerConcurrencyProbeState> concurrency_probe = {})
@@ -1612,6 +1659,19 @@ bool wait_for_stream_frame(const RecorderCallbacks& cb, uint64_t stream_id, Even
   return false;
 }
 
+bool wait_for_tagged_event(const RecorderCallbacks& cb, const char* tag, uint64_t id) {
+  for (int i = 0; i < kMaxIters; ++i) {
+    const auto events = cb.snapshot_events();
+    for (const auto& ev : events) {
+      if (ev.tag == tag && ev.id == id) {
+        return true;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+  }
+  return false;
+}
+
 bool wait_for_capture_completed_with_frames(const RecorderCallbacks& cb,
                                             uint64_t capture_id,
                                             size_t expected_frame_count) {
@@ -1682,6 +1742,23 @@ int count_events_by_tag_and_type(const std::vector<EventRec>& events, const char
   }
   return count;
 }
+
+// Native-object facts travel the callback strand, so they are observable only
+// after it has run. Poll rather than snapshot: reading immediately after the
+// call that caused the fact is a race that passes on a fast machine.
+bool wait_for_native_event_count(const RecorderCallbacks& cb,
+                                 const char* tag,
+                                 uint32_t type,
+                                 size_t expected) {
+  for (int i = 0; i < kMaxIters; ++i) {
+    if (count_events_by_tag_and_type(cb.snapshot_events(), tag, type) >= static_cast<int>(expected)) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  return false;
+}
+
 
 int count_events_by_tag_type_and_owner_stream(const std::vector<EventRec>& events,
                                               const char* tag,
@@ -3354,6 +3431,394 @@ bool run_synthetic_timeline_picture_appearance_check() {
   return assert_native_balance(cb_events_after_teardown, "synthetic_picture_appearance");
 }
 
+// Brief section 5.2: an abandoned capture's payload is never a later
+// capture's.
+//
+// Drives SyntheticProvider's section 11 withhold machinery: capture A's payload
+// is held back (A terminalizes ERR_TIMEOUT, as a provider that gave up
+// reports), then released when capture B pushes the pipeline. The obligation
+// under test is that the late payload still carries capture A's id -- a
+// provider must never re-tag it as the capture that happened to be running when
+// it arrived, which is precisely how a stale image acquires a fresh capture's
+// identity and a device starts running one image behind.
+//
+// This covers the identity-preserving half of section 5.2. The other half --
+// a payload arriving with no capture identity at all, as an ImageReader queue
+// delivers -- is internal to a provider and unobservable through the contract;
+// outstanding_payload_ledger_verify covers the accounting for that case, and
+// hardware validation covers the wiring.
+bool run_abandoned_capture_payload_attribution_check() {
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 64;
+  cfg.nominal.height = 64;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(cfg);
+
+  constexpr uint64_t kDevice = 1;
+  constexpr uint64_t kCaptureA = 9001;
+  constexpr uint64_t kCaptureB = 9002;
+
+  if (!provider.initialize(&cb).ok() ||
+      !provider.open_device("synthetic:0", kDevice, 2001).ok()) {
+    return false;
+  }
+
+  auto make_request = [](uint64_t capture_id) {
+    CaptureRequest req{};
+    req.capture_id = capture_id;
+    req.device_instance_id = kDevice;
+    req.width = 64;
+    req.height = 64;
+    req.format_fourcc = FOURCC_RGBA;
+    req.still_image_bundle = make_default_metered_still_image_bundle();
+    return req;
+  };
+
+  provider.arm_withheld_capture_payload_for_test(kDevice);
+
+  if (!provider.trigger_capture(make_request(kCaptureA)).ok()) {
+    return false;
+  }
+  if (!wait_for_tagged_event(cb, "capture_failed", kCaptureA)) {
+    std::fprintf(stderr,
+                 "abandoned-payload check: capture A did not terminalize failed\n");
+    return false;
+  }
+
+  // A withheld payload must not have been posted with its own capture.
+  {
+    const auto events = cb.snapshot_events();
+    for (const auto& ev : events) {
+      if (ev.tag == "frame" && ev.capture_id == kCaptureA) {
+        std::fprintf(stderr,
+                     "abandoned-payload check: capture A posted a frame despite being withheld\n");
+        return false;
+      }
+    }
+  }
+
+  if (!provider.trigger_capture(make_request(kCaptureB)).ok()) {
+    return false;
+  }
+  if (!wait_for_tagged_event(cb, "capture_completed", kCaptureB)) {
+    std::fprintf(stderr, "abandoned-payload check: capture B did not complete\n");
+    return false;
+  }
+
+  int frames_for_a = 0;
+  int frames_for_b = 0;
+  for (const auto& ev : cb.snapshot_events()) {
+    if (ev.tag != "frame") {
+      continue;
+    }
+    if (ev.capture_id == kCaptureA) {
+      ++frames_for_a;
+    } else if (ev.capture_id == kCaptureB) {
+      ++frames_for_b;
+    }
+  }
+
+  bool ok = true;
+  // The late payload surfaced, still owning its abandoned capture's identity.
+  if (frames_for_a != 1) {
+    std::fprintf(stderr,
+                 "abandoned-payload check: expected exactly 1 late frame carrying capture A's id, saw %d\n",
+                 frames_for_a);
+    ok = false;
+  }
+  // Capture B got its own payload and only its own. Two frames here would mean
+  // the late payload had been re-tagged as B -- the defect this guards.
+  if (frames_for_b != 1) {
+    std::fprintf(stderr,
+                 "abandoned-payload check: capture B must carry exactly its own payload, saw %d\n",
+                 frames_for_b);
+    ok = false;
+  }
+
+  if (!provider.close_device(kDevice).ok() || !provider.shutdown().ok()) {
+    return false;
+  }
+  return ok;
+}
+
+// capture_identity_and_lifecycle.md 3: at most one capture in flight per
+// device, refused deterministically rather than queued or serialised by
+// blocking.
+//
+// The rule is contract-level, not a Camera2 workaround: two captures on one
+// device contend for a single collector slot, and -- the reason it is load
+// bearing -- make outstanding-payload debt unattributable, since neither
+// capture could know whose payload arrived (brief 5.2).
+//
+// Coverage boundary: this binds the reference provider. Camera2 and WinRT
+// implement the same guard but are not reachable from this tool -- Camera2
+// cannot be built host-native and WinRT needs hardware -- so their conformance
+// rests on inspection and hardware runs.
+// A capture must not be admitted without an established acquisition seam.
+//
+// This binds lifecycle_model.md section 2 ("retained while stream and/or
+// capture references remain live") at the point it is easiest to get wrong:
+// a provider can appear correct while realizing the seam lazily inside its
+// capture worker, because by the time anything observable happens the session
+// exists. The distinction only shows up if the worker is prevented from
+// running -- so this check pauses the workers and asserts the seam is already
+// there. A provider that establishes lazily fails here and nowhere else.
+bool run_capture_admission_establishes_acquisition_seam_check() {
+  const uint32_t kAcqSession = static_cast<uint32_t>(NativeObjectType::AcquisitionSession);
+  bool ok = true;
+
+  // Phase 1: capture on a device with no stream and no priming.
+  {
+    RecorderCallbacks cb;
+    SyntheticProviderConfig cfg{};
+    cfg.endpoint_count = 1;
+    cfg.nominal.width = 8;
+    cfg.nominal.height = 8;
+    cfg.nominal.format_fourcc = FOURCC_RGBA;
+    SyntheticProvider provider(cfg);
+
+    constexpr uint64_t kDevice = 901;
+    constexpr uint64_t kCapture = 91000;
+
+    if (!provider.initialize(&cb).ok() ||
+        !provider.open_device("synthetic:0", kDevice, 90101).ok()) {
+      std::cerr << "FAIL capture seam establishment setup failed\n";
+      return false;
+    }
+
+    // Opening a device must not by itself realize an acquisition seam: there
+    // is no claimant yet, and a seam reported here would be a fabricated fact.
+    if (count_events_by_tag_and_type(cb.snapshot_events(), "native_created", kAcqSession) != 0) {
+      std::cerr << "FAIL open_device realized an acquisition session with no claimant\n";
+      ok = false;
+    }
+
+    // Workers paused, so nothing after this point can be attributed to the
+    // capture worker having run.
+    provider.set_capture_workers_paused_for_test(true);
+    const ProviderResult admitted = provider.trigger_capture(
+        make_direct_provider_default_still_capture_request(kCapture, kDevice, 8, 8,
+                                                           FOURCC_RGBA));
+    if (!admitted.ok()) {
+      std::cerr << "FAIL capture on an idle device must be admitted\n";
+      provider.set_capture_workers_paused_for_test(false);
+      (void)provider.shutdown();
+      return false;
+    }
+
+    const bool seam_seen =
+        wait_for_native_event_count(cb, "native_created", kAcqSession, 1);
+    const auto after_admission = cb.snapshot_events();
+    const int seam_id =
+        seam_seen ? find_native_create_id_by_type(after_admission, kAcqSession) : -1;
+    if (seam_id < 0) {
+      std::cerr << "FAIL capture admission must establish an acquisition session, "
+                   "not leave it to the capture worker\n";
+      ok = false;
+    } else {
+      // Ordering, not just presence: the seam is a precondition of the
+      // capture, so no capture fact may precede it.
+      const int seam_ix =
+          find_event_index(after_admission, "native_created", static_cast<uint64_t>(seam_id));
+      const int started_ix = find_event_index(after_admission, "capture_started", kCapture);
+      if (started_ix >= 0 && seam_ix > started_ix) {
+        std::cerr << "FAIL acquisition session was reported after the capture started\n";
+        ok = false;
+      }
+    }
+
+    provider.set_capture_workers_paused_for_test(false);
+    (void)provider.shutdown();
+  }
+
+  // Phase 2: priming establishes a seam, and releasing priming gives it back.
+  // Both directions matter -- a provider that primes but never releases pins
+  // the seam forever, which is indistinguishable from a leak.
+  {
+    RecorderCallbacks cb;
+    SyntheticProviderConfig cfg{};
+    cfg.endpoint_count = 1;
+    cfg.nominal.width = 8;
+    cfg.nominal.height = 8;
+    cfg.nominal.format_fourcc = FOURCC_RGBA;
+    SyntheticProvider provider(cfg);
+
+    constexpr uint64_t kDevice = 902;
+
+    if (!provider.initialize(&cb).ok() ||
+        !provider.open_device("synthetic:0", kDevice, 90201).ok()) {
+      std::cerr << "FAIL priming seam setup failed\n";
+      return false;
+    }
+
+    const CaptureRequest prime_req =
+        make_direct_provider_default_still_capture_request(0, kDevice, 8, 8, FOURCC_RGBA);
+    if (!provider.sync_capture_parent_priming(prime_req).ok()) {
+      std::cerr << "FAIL sync_capture_parent_priming must establish a seam\n";
+      ok = false;
+    }
+    if (!wait_for_native_event_count(cb, "native_created", kAcqSession, 1)) {
+      std::cerr << "FAIL priming must realize exactly one acquisition session\n";
+      ok = false;
+    }
+
+    // Idempotence: the contract requires repeated equivalent priming to be a
+    // no-op, so a second call must not report a second seam.
+    if (!provider.sync_capture_parent_priming(prime_req).ok()) {
+      std::cerr << "FAIL repeated equivalent priming must succeed\n";
+      ok = false;
+    }
+    if (count_events_by_tag_and_type(cb.snapshot_events(), "native_created", kAcqSession) != 1) {
+      std::cerr << "FAIL repeated priming realized a second acquisition session\n";
+      ok = false;
+    }
+
+    if (!provider.release_capture_parent_priming(kDevice).ok()) {
+      std::cerr << "FAIL release_capture_parent_priming must succeed when primed\n";
+      ok = false;
+    }
+    if (!wait_for_native_event_count(cb, "native_destroyed", kAcqSession, 1)) {
+      std::cerr << "FAIL releasing the last claim must destroy the acquisition session\n";
+      ok = false;
+    }
+
+    // Idempotent when nothing is held.
+    if (!provider.release_capture_parent_priming(kDevice).ok()) {
+      std::cerr << "FAIL release_capture_parent_priming must be safe when unprimed\n";
+      ok = false;
+    }
+
+    (void)provider.shutdown();
+  }
+
+  if (ok) {
+    std::cout << "OK capture admission establishes and retains the acquisition seam\n";
+  }
+  return ok;
+}
+
+bool run_per_device_single_capture_admission_check() {
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 2;
+  cfg.nominal.width = 8;
+  cfg.nominal.height = 8;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(cfg);
+
+  constexpr uint64_t kDeviceA = 801;
+  constexpr uint64_t kDeviceB = 802;
+  constexpr uint64_t kInFlightCapture = 81000;
+  constexpr uint64_t kSecondOnBusyDevice = 81001;
+  constexpr uint64_t kOnIdleDevice = 81002;
+  constexpr uint64_t kGroupedOverBusyDevice = 81003;
+  constexpr uint64_t kAfterTerminalCapture = 81004;
+
+  const auto make_request = [](uint64_t capture_id, uint64_t device_id) {
+    return make_direct_provider_default_still_capture_request(
+        capture_id, device_id, 8, 8, FOURCC_RGBA);
+  };
+  const auto count_event = [&](const char* tag, uint64_t capture_id) {
+    size_t count = 0;
+    for (const EventRec& event : cb.snapshot_events()) {
+      if (event.tag == tag && event.id == capture_id) {
+        ++count;
+      }
+    }
+    return count;
+  };
+
+  if (!provider.initialize(&cb).ok() ||
+      !provider.open_device("synthetic:0", kDeviceA, 80101).ok() ||
+      !provider.open_device("synthetic:1", kDeviceB, 80201).ok()) {
+    std::cerr << "FAIL per-device single capture setup failed\n";
+    return false;
+  }
+
+  // Hold a capture genuinely in flight on device A.
+  provider.set_capture_workers_paused_for_test(true);
+  if (!provider.trigger_capture(make_request(kInFlightCapture, kDeviceA)).ok()) {
+    std::cerr << "FAIL per-device single capture could not place a capture in flight\n";
+    (void)provider.shutdown();
+    return false;
+  }
+
+  bool ok = true;
+
+  // 1. A second capture on the busy device is refused, and specifically as BUSY.
+  const ProviderResult second = provider.trigger_capture(
+      make_request(kSecondOnBusyDevice, kDeviceA));
+  if (second.ok() || second.code != ProviderError::ERR_BUSY) {
+    std::cerr << "FAIL second capture on a busy device must be refused with ERR_BUSY\n";
+    ok = false;
+  }
+
+  // 2. The refusal is per device, not a global capture lock.
+  if (!provider.trigger_capture(make_request(kOnIdleDevice, kDeviceB)).ok()) {
+    std::cerr << "FAIL a capture on an idle device must still be admitted\n";
+    ok = false;
+  }
+
+  // 3. A grouped submission naming the busy device is rejected atomically:
+  //    no member may leave any fact behind, including the idle member
+  //    (brief 5: admit every device job or none, rejected submissions emit
+  //    no started/frame/terminal facts).
+  CaptureSubmission grouped{};
+  grouped.capture_id = kGroupedOverBusyDevice;
+  grouped.origin = CaptureSubmissionOrigin::RIG_CAPTURE;
+  grouped.rig_id = 88;
+  CaptureRequest grouped_a = make_request(grouped.capture_id, kDeviceA);
+  CaptureRequest grouped_b = make_request(grouped.capture_id, kDeviceB);
+  grouped_a.rig_id = grouped.rig_id;
+  grouped_b.rig_id = grouped.rig_id;
+  grouped.device_requests.push_back(grouped_a);
+  grouped.device_requests.push_back(grouped_b);
+  const ProviderResult grouped_result = provider.trigger_capture_submission(grouped);
+  if (grouped_result.ok() || grouped_result.code != ProviderError::ERR_BUSY) {
+    std::cerr << "FAIL grouped submission over a busy member must be refused with ERR_BUSY\n";
+    ok = false;
+  }
+  if (count_event("capture_started", kGroupedOverBusyDevice) != 0 ||
+      count_event("capture_completed", kGroupedOverBusyDevice) != 0 ||
+      count_event("capture_failed", kGroupedOverBusyDevice) != 0) {
+    std::cerr << "FAIL rejected grouped submission emitted facts\n";
+    ok = false;
+  }
+
+  // Let the in-flight work drain.
+  provider.set_capture_workers_paused_for_test(false);
+  const auto drained = [&]() {
+    return count_event("capture_completed", kInFlightCapture) == 1 &&
+           count_event("capture_completed", kOnIdleDevice) == 1;
+  };
+  bool settled = false;
+  for (int i = 0; i < kMaxIters && !settled; ++i) {
+    settled = drained();
+    if (!settled) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+  }
+  if (!settled) {
+    std::cerr << "FAIL per-device single capture work did not drain\n";
+    (void)provider.shutdown();
+    return false;
+  }
+
+  // 4. The refusal is transient. A provider that leaked its in-flight record
+  //    would still satisfy 1-3 while being permanently unusable.
+  if (!provider.trigger_capture(make_request(kAfterTerminalCapture, kDeviceA)).ok()) {
+    std::cerr << "FAIL device must admit again once its capture is terminal\n";
+    ok = false;
+  }
+
+  if (!provider.shutdown().ok()) {
+    return false;
+  }
+  return ok;
+}
+
 bool run_stub_provider_sanity_check() {
   RecorderCallbacks cb;
   StubProvider provider;
@@ -3469,12 +3934,24 @@ bool run_synthetic_provider_direct_sanity_check() {
 bool run_synthetic_capture_executor_correctness_check() {
   RecorderCallbacks cb;
   SyntheticProviderConfig cfg{};
-  cfg.endpoint_count = 2;
+  // One device per queued job. A device admits at most one capture at a time
+  // (capture_identity_and_lifecycle.md 3), so executor saturation can only be
+  // reached across devices -- stacking one device, as this check did before
+  // that rule existed, now fails at the second capture instead of filling the
+  // queue. The assertion is unchanged: saturation is a deterministic ERR_BUSY,
+  // never hidden queue growth (brief 5).
+  // kCaptureQueueCapacity (64) + kDeviceA + kDeviceB, with headroom. Under
+  // one-capture-per-device the queue depth is a device count, so saturating it
+  // needs that many distinct devices -- the constant now bounds concurrent
+  // capturing devices rather than per-device stacking.
+  cfg.endpoint_count = 70;
   cfg.nominal.width = 8;
   cfg.nominal.height = 8;
   cfg.nominal.format_fourcc = FOURCC_RGBA;
   SyntheticProvider provider(cfg);
 
+  constexpr uint64_t kFillDeviceBase = 7300;
+  constexpr uint64_t kFillRootBase = 730100;
   constexpr uint64_t kDeviceA = 701;
   constexpr uint64_t kDeviceB = 702;
   constexpr uint64_t kRootA = 70101;
@@ -3541,11 +4018,30 @@ bool run_synthetic_capture_executor_correctness_check() {
     return false;
   }
 
-  provider.set_capture_workers_paused_for_test(true);
   const size_t queued_prefix = snapshot.queue_capacity - 1;
+  if (queued_prefix + 2 > cfg.endpoint_count) {
+    std::cerr << "FAIL synthetic capture executor check needs one endpoint per queued job\n";
+    (void)provider.shutdown();
+    return false;
+  }
+  // Devices 2..N carry the queue fill; kDeviceA and kDeviceB stay idle so the
+  // grouped-rejection and tail/overflow assertions below exercise queue
+  // capacity rather than per-device busy-ness. Opened before the workers are
+  // paused -- device open is ordinary lifecycle work and should not be
+  // interleaved with a deliberately stalled executor.
+  for (size_t i = 0; i < queued_prefix; ++i) {
+    const std::string hardware_id = "synthetic:" + std::to_string(i + 2);
+    if (!provider.open_device(hardware_id, kFillDeviceBase + i, kFillRootBase + i).ok()) {
+      std::cerr << "FAIL synthetic capture executor could not open a queue-fill device\n";
+      (void)provider.shutdown();
+      return false;
+    }
+  }
+
+  provider.set_capture_workers_paused_for_test(true);
   for (size_t i = 0; i < queued_prefix; ++i) {
     if (!provider.trigger_capture(
-            make_request(kQueuedCaptureBase + i, kDeviceA)).ok()) {
+            make_request(kQueuedCaptureBase + i, kFillDeviceBase + i)).ok()) {
       std::cerr << "FAIL synthetic capture executor could not fill bounded queue\n";
       (void)provider.shutdown();
       return false;
@@ -3576,8 +4072,10 @@ bool run_synthetic_capture_executor_correctness_check() {
     (void)provider.shutdown();
     return false;
   }
+  // kDeviceB, not kDeviceA: A now holds the tail capture, so re-using it would
+  // return ERR_BUSY for per-device reasons and prove nothing about saturation.
   const ProviderResult overflow_result = provider.trigger_capture(
-      make_request(kRejectedOverflowCapture, kDeviceA));
+      make_request(kRejectedOverflowCapture, kDeviceB));
   snapshot = provider.capture_executor_snapshot_for_test();
   if (overflow_result.ok() || overflow_result.code != ProviderError::ERR_BUSY ||
       snapshot.queued_jobs != snapshot.queue_capacity ||
@@ -3736,9 +4234,12 @@ bool run_synthetic_capture_executor_correctness_check() {
 
   provider.set_capture_jobs_paused_after_dequeue_for_test(true);
   constexpr size_t kShutdownCaptureCount = 4;
+  // One device each: these are deliberately concurrent (they must still be
+  // in flight when shutdown lands), which one device can no longer carry. The
+  // queue-fill devices opened earlier are idle again by now.
   for (size_t i = 0; i < kShutdownCaptureCount; ++i) {
     if (!provider.trigger_capture(
-            make_request(kShutdownCaptureBase + i, kDeviceA)).ok()) {
+            make_request(kShutdownCaptureBase + i, kFillDeviceBase + i)).ok()) {
       std::cerr << "FAIL synthetic capture executor shutdown setup admission failed\n";
       (void)provider.shutdown();
       return false;
@@ -5494,6 +5995,130 @@ bool run_core_synthetic_three_member_realized_unknown_propagation_check() {
   return true;
 }
 
+// A provider's coexistence answer must agree with what it then does.
+//
+// acquisition_coexistence() is the only way Core can learn that a capture and a
+// live stream conflict on a given backend, so an answer that does not predict
+// the provider's behaviour is worse than no answer: Core acts on it, and the
+// refusal it did not expect is one it cannot attribute or report. This binds
+// the two together for the case they were measured to disagree on -- a device
+// capture at a geometry other than the producing stream's, which BOTH platform
+// providers refuse while arbitration_policy.md 2 says the stream is preempted.
+//
+// The rule is written out for every verdict even though the reference provider
+// answers only one of them, because the rule is what a platform provider is
+// held to and this file is where it is stated executably.
+//
+// Coverage boundary, and it is a real one: Camera2 cannot be built host-native
+// and WinRT needs hardware, so neither is reachable here. What this check binds
+// is the contract and the reference provider's conformance to it; the platform
+// providers' conformance rests on scene 911 and inspection.
+bool run_provider_coexistence_answer_matches_behaviour_check() {
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 64;
+  cfg.nominal.height = 64;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(cfg);
+
+  constexpr uint64_t kDevice = 43;
+  constexpr uint64_t kStream = 73;
+  constexpr uint64_t kCapture = 8003;
+
+  StreamRequest req{};
+  req.stream_id = kStream;
+  req.device_instance_id = kDevice;
+  req.intent = StreamIntent::VIEWFINDER;
+  req.profile.width = 64;
+  req.profile.height = 64;
+  req.profile.format_fourcc = FOURCC_RGBA;
+  req.profile.target_fps_min = 30;
+  req.profile.target_fps_max = 30;
+
+  // Deliberately NOT the stream's geometry. Same-geometry still capture while
+  // streaming already works everywhere and would prove nothing.
+  CaptureRequest cap = make_direct_provider_default_still_capture_request(
+      kCapture, kDevice, 32, 32, FOURCC_RGBA);
+
+  if (!provider.initialize(&cb).ok() ||
+      !provider.open_device("synthetic:0", kDevice, 4301).ok() ||
+      !provider.create_stream(req).ok() ||
+      !provider.start_stream(req.stream_id, req.profile, req.picture).ok()) {
+    std::cerr << "FAIL coexistence check setup failed\n";
+    return false;
+  }
+
+  AcquisitionUseSet proposed{};
+  proposed.has_stream = true;
+  proposed.stream = req.profile;
+  proposed.has_still = true;
+  proposed.still.width = cap.width;
+  proposed.still.height = cap.height;
+  proposed.still.format_fourcc = cap.format_fourcc;
+  const AcquisitionCoexistence verdict =
+      provider.acquisition_coexistence(kDevice, proposed);
+
+  const ProviderResult admitted = provider.trigger_capture(cap);
+
+  bool ok = true;
+  switch (verdict.verdict) {
+    case CoexistenceVerdict::Coexist:
+    case CoexistenceVerdict::Reconfigure:
+      // Both verdicts promise the capture is serviceable alongside the stream.
+      // A refusal here is the inversion this whole contract exists to catch.
+      if (!admitted.ok()) {
+        std::cerr << "FAIL provider answered " << coexistence_verdict_name(verdict.verdict)
+                  << " and then refused the capture\n";
+        ok = false;
+      }
+      break;
+    case CoexistenceVerdict::StreamMustYield:
+      // The provider says the two cannot be concurrent. Admitting anyway, with
+      // the stream still producing and nothing having stopped it, means the
+      // answer described a constraint the provider does not actually enforce --
+      // Core would leave a stream running that the provider claimed could not
+      // run.
+      if (admitted.ok()) {
+        std::cerr << "FAIL provider answered stream_must_yield and then admitted "
+                     "the capture with the stream still producing\n";
+        ok = false;
+      }
+      break;
+    case CoexistenceVerdict::Unsupported:
+      // No ordering serves this set, so the capture must not be admitted --
+      // admitting it would have Core preempt a working stream for a capture
+      // that was never going to succeed.
+      if (admitted.ok()) {
+        std::cerr << "FAIL provider answered unsupported and then admitted the capture\n";
+        ok = false;
+      }
+      break;
+  }
+
+  if (admitted.ok() && !wait_for_capture_completed_with_frames(cb, cap.capture_id, 1)) {
+    std::cerr << "FAIL coexistence check: admitted capture produced no frame evidence\n";
+    ok = false;
+  }
+
+  // Coexist is the strongest of the four: it promises the stream is not
+  // disturbed at all. Nothing may have stopped it.
+  if (verdict.verdict == CoexistenceVerdict::Coexist) {
+    const auto events = cb.snapshot_events();
+    if (find_event_index(events, "stream_stopped", kStream) >= 0) {
+      std::cerr << "FAIL provider answered coexist and the stream stopped anyway\n";
+      ok = false;
+    }
+  }
+
+  if (!provider.stop_stream(kStream).ok() || !provider.destroy_stream(kStream).ok() ||
+      !provider.close_device(kDevice).ok() || !provider.shutdown().ok()) {
+    std::cerr << "FAIL coexistence check teardown failed\n";
+    return false;
+  }
+  return ok;
+}
+
 bool run_synthetic_stream_plus_still_single_session_truth_check() {
   RecorderCallbacks cb;
   SyntheticProviderConfig cfg{};
@@ -5563,6 +6188,627 @@ bool run_synthetic_stream_plus_still_single_session_truth_check() {
     return false;
   }
   return assert_native_balance(cb_events, "synthetic_stream_plus_still");
+}
+
+// Core preempts a stream the backend cannot run alongside a capture, and says
+// so truthfully.
+//
+// arbitration_policy.md 2 ranks triggered capture above repeating streams and
+// 6.2 has the stream preempted to STOPPED while a capture is in flight. Both
+// platform providers did the reverse -- refused the capture and kept the stream
+// -- and neither is reachable from this tool, so the yield path is driven here
+// through a provider that answers StreamMustYield.
+//
+// Three things are asserted together, because any one alone would pass while
+// the feature was still broken: the capture is admitted, the stream actually
+// stopped, and the stop is reported as PREEMPTED rather than as the caller's
+// own stop or as a provider failure. The last is the one a caller has to be
+// able to act on -- a preempted viewfinder is restartable, a failed one is not.
+bool run_core_capture_preempts_yielding_stream_check() {
+  auto wait_until = [](const std::function<bool()>& predicate) {
+    for (int i = 0; i < kMaxIters; ++i) {
+      if (predicate()) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+    return false;
+  };
+
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
+  if (!rt.start() || !wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL capture-preemption runtime did not reach LIVE\n";
+    rt.stop();
+    return false;
+  }
+
+  BackingPlanEvaluationTestProvider provider;
+  const auto fail_with_cleanup = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    (void)provider.shutdown();
+    rt.stop();
+    rt.attach_provider(nullptr);
+    return false;
+  };
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    return fail_with_cleanup("FAIL capture-preemption provider init failed");
+  }
+  rt.attach_provider(&provider);
+
+  constexpr uint64_t kDeviceId = 91;
+  constexpr uint64_t kRootId = 9101;
+  constexpr uint64_t kStreamId = 9201;
+  constexpr uint64_t kCaptureId = 9301;
+
+  if (rt.try_open_device("backing_plan_eval:0", kDeviceId, kRootId) !=
+      TryOpenDeviceStatus::OK) {
+    return fail_with_cleanup("FAIL capture-preemption open_device failed");
+  }
+  if (rt.try_create_stream(kStreamId, kDeviceId, StreamIntent::VIEWFINDER,
+                           nullptr, nullptr, 0) != TryCreateStreamStatus::OK) {
+    return fail_with_cleanup("FAIL capture-preemption create_stream failed");
+  }
+  if (rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    return fail_with_cleanup("FAIL capture-preemption start_stream failed");
+  }
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec && rec->started;
+      })) {
+    return fail_with_cleanup("FAIL capture-preemption stream never started");
+  }
+
+  // The provider now says a still at any other geometry cannot run beside this
+  // stream. The stream template is 16x16, so 8x8 is "any other geometry".
+  provider.set_coexistence_for_differing_geometry_for_test(
+      AcquisitionCoexistence::stream_must_yield(/*restorable=*/true));
+
+  CaptureProfile still{};
+  still.width = 8;
+  still.height = 8;
+  still.format_fourcc = FOURCC_RGBA;
+  CaptureStillImageBundle bundle{};
+  bundle.members.push_back(CaptureStillImageMember{
+      0u, CaptureStillImageMemberRole::DEFAULT_METERED, 0});
+  if (rt.try_set_device_still_capture_profile(kDeviceId, still, bundle) !=
+      TrySetStillCaptureProfileStatus::OK) {
+    // Retention is not the capture. A conflict with a live stream is resolved
+    // when the capture is triggered, so the profile must still be retainable.
+    return fail_with_cleanup(
+        "FAIL capture-preemption retaining a profile that conflicts with a live "
+        "stream must still succeed");
+  }
+
+  const TryTriggerDeviceCaptureStatus triggered =
+      rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceId, kCaptureId);
+  if (triggered != TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL capture outranks a repeating stream and must be admitted, not refused");
+  }
+
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec && !rec->started;
+      })) {
+    return fail_with_cleanup(
+        "FAIL the stream the provider said must yield was left running");
+  }
+
+  // The projection, not just the registry: this is what a caller can see.
+  if (!wait_until([&]() {
+        auto s = buf.snapshot_copy();
+        if (!s) {
+          return false;
+        }
+        for (const auto& st : s->streams) {
+          if (st.stream_id == kStreamId) {
+            return st.stop_reason == CBStreamStopReason::PREEMPTED;
+          }
+        }
+        return false;
+      })) {
+    return fail_with_cleanup(
+        "FAIL a preempted stream must report stop_reason PREEMPTED, not USER or PROVIDER");
+  }
+
+  (void)provider.shutdown();
+  rt.stop();
+  rt.attach_provider(nullptr);
+  return true;
+}
+
+// A reprovision Core permitted, whose frames never come back, is reported as a
+// stream failure.
+//
+// This is the check the guarantee moved into Core to make possible. While it sat
+// in the provider it was unreachable: the code is in Camera2, which cannot be
+// built host-native, and a run where the reprovision works never exercises it.
+//
+// The failure it guards is silent by construction. A reprovision gaps a stream
+// deliberately and reports nothing while it does; if the flow never returns, the
+// stream stays marked started, no fact contradicts it, and nothing in Core
+// watches frame cadence -- so a permanently dark stream reads FLOWING forever
+// and no gate, snapshot or caller ever finds out.
+bool run_core_reports_reprovision_that_never_resumes_check() {
+  auto wait_until = [](const std::function<bool()>& predicate) {
+    for (int i = 0; i < kMaxIters; ++i) {
+      if (predicate()) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+    return false;
+  };
+
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
+  if (!rt.start() || !wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL reprovision-timeout runtime did not reach LIVE\n";
+    rt.stop();
+    return false;
+  }
+
+  BackingPlanEvaluationTestProvider provider;
+  const auto fail_with_cleanup = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    (void)provider.shutdown();
+    rt.stop();
+    rt.attach_provider(nullptr);
+    return false;
+  };
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    return fail_with_cleanup("FAIL reprovision-timeout provider init failed");
+  }
+  rt.attach_provider(&provider);
+
+  constexpr uint64_t kDeviceId = 97;
+  constexpr uint64_t kRootId = 9701;
+  constexpr uint64_t kStreamId = 9801;
+  constexpr uint64_t kCaptureId = 9901;
+
+  if (rt.try_open_device("backing_plan_eval:0", kDeviceId, kRootId) !=
+          TryOpenDeviceStatus::OK ||
+      rt.try_create_stream(kStreamId, kDeviceId, StreamIntent::VIEWFINDER,
+                           nullptr, nullptr, 0) != TryCreateStreamStatus::OK ||
+      rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    return fail_with_cleanup("FAIL reprovision-timeout setup failed");
+  }
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec && rec->started;
+      })) {
+    return fail_with_cleanup("FAIL reprovision-timeout stream never started");
+  }
+
+  // A backend that gaps the stream and serves both afterwards -- and then does
+  // not deliver. The provider emits frames only when told to, so simply never
+  // telling it models the flow that was cancelled and never restored.
+  provider.set_coexistence_for_differing_geometry_for_test(
+      AcquisitionCoexistence::reconfigure());
+  provider.set_reprovision_resume_timeout_ns_for_test(300ull * 1000ull * 1000ull);
+
+  CaptureProfile still{};
+  still.width = 8;
+  still.height = 8;
+  still.format_fourcc = FOURCC_RGBA;
+  CaptureStillImageBundle bundle{};
+  bundle.members.push_back(CaptureStillImageMember{
+      0u, CaptureStillImageMemberRole::DEFAULT_METERED, 0});
+  if (rt.try_set_device_still_capture_profile(kDeviceId, still, bundle) !=
+      TrySetStillCaptureProfileStatus::OK) {
+    return fail_with_cleanup("FAIL reprovision-timeout could not retain the profile");
+  }
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceId, kCaptureId) !=
+      TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL a Reconfigure verdict must not refuse the capture");
+  }
+
+
+  // THE PREMISE, READ FROM STATE. Without this a run in which Core never armed
+  // the expectation passes silently -- the stream simply keeps running, which is
+  // what the check wants to see -- and the check would be hollow. Read from the
+  // record rather than from any log line: this harness redirects stdout per
+  // check, so Core's own logging is discarded and cannot be reasoned from.
+  if (const auto* armed = rt.stream_record(kStreamId);
+      armed == nullptr || armed->frame_resume_deadline_ns == 0) {
+    return fail_with_cleanup(
+        "FAIL Core did not arm a frame-resumption expectation on a Reconfigure "
+        "verdict; this check proves nothing unless it did");
+  }
+
+  // Reconfigure does NOT stop the stream. Anything that stopped it here would
+  // mean Core had treated the verdict as a yield.
+  if (const auto* rec = rt.stream_record(kStreamId); !rec || !rec->started) {
+    return fail_with_cleanup(
+        "FAIL Core stopped the stream on a Reconfigure verdict; that verdict "
+        "gaps a stream, it does not take it");
+  }
+
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec && !rec->started;
+      })) {
+    return fail_with_cleanup(
+        "FAIL a reprovision whose frames never resumed was never reported; the "
+        "stream would read FLOWING forever while delivering nothing");
+  }
+  if (!wait_until([&]() {
+        auto snap = buf.snapshot_copy();
+        if (!snap) {
+          return false;
+        }
+        for (const auto& st : snap->streams) {
+          if (st.stream_id == kStreamId) {
+            return st.stop_reason == CBStreamStopReason::PROVIDER;
+          }
+        }
+        return false;
+      })) {
+    return fail_with_cleanup(
+        "FAIL a stream dark after a reprovision must report PROVIDER, not USER "
+        "or PREEMPTED -- nobody chose this");
+  }
+
+  (void)provider.shutdown();
+  rt.stop();
+  rt.attach_provider(nullptr);
+  return true;
+}
+
+// ...and a reprovision whose frames DO come back is never reported failed.
+//
+// The other half, and not optional. A watchdog that fires on healthy streams is
+// worse than no watchdog: it would take working viewfinders away for the crime
+// of a brief, expected gap. One frame is all it takes to disarm.
+bool run_core_does_not_report_a_reprovision_that_resumes_check() {
+  auto wait_until = [](const std::function<bool()>& predicate) {
+    for (int i = 0; i < kMaxIters; ++i) {
+      if (predicate()) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+    return false;
+  };
+
+  CoreRuntime rt;
+  if (!rt.start() || !wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL reprovision-resumes runtime did not reach LIVE\n";
+    rt.stop();
+    return false;
+  }
+
+  BackingPlanEvaluationTestProvider provider;
+  const auto fail_with_cleanup = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    (void)provider.shutdown();
+    rt.stop();
+    rt.attach_provider(nullptr);
+    return false;
+  };
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    return fail_with_cleanup("FAIL reprovision-resumes provider init failed");
+  }
+  rt.attach_provider(&provider);
+
+  constexpr uint64_t kDeviceId = 98;
+  constexpr uint64_t kRootId = 9801;
+  constexpr uint64_t kStreamId = 9901;
+  constexpr uint64_t kCaptureId = 9902;
+
+  if (rt.try_open_device("backing_plan_eval:0", kDeviceId, kRootId) !=
+          TryOpenDeviceStatus::OK ||
+      rt.try_create_stream(kStreamId, kDeviceId, StreamIntent::VIEWFINDER,
+                           nullptr, nullptr, 0) != TryCreateStreamStatus::OK ||
+      rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    return fail_with_cleanup("FAIL reprovision-resumes setup failed");
+  }
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec && rec->started;
+      })) {
+    return fail_with_cleanup("FAIL reprovision-resumes stream never started");
+  }
+
+  provider.set_coexistence_for_differing_geometry_for_test(
+      AcquisitionCoexistence::reconfigure());
+  provider.set_reprovision_resume_timeout_ns_for_test(300ull * 1000ull * 1000ull);
+
+  CaptureProfile still{};
+  still.width = 8;
+  still.height = 8;
+  still.format_fourcc = FOURCC_RGBA;
+  CaptureStillImageBundle bundle{};
+  bundle.members.push_back(CaptureStillImageMember{
+      0u, CaptureStillImageMemberRole::DEFAULT_METERED, 0});
+  if (rt.try_set_device_still_capture_profile(kDeviceId, still, bundle) !=
+      TrySetStillCaptureProfileStatus::OK) {
+    return fail_with_cleanup("FAIL reprovision-resumes could not retain the profile");
+  }
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceId, kCaptureId) !=
+      TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup("FAIL reprovision-resumes capture was not admitted");
+  }
+
+
+  // THE PREMISE, READ FROM STATE. Without this a run in which Core never armed
+  // the expectation passes silently -- the stream simply keeps running, which is
+  // what the check wants to see -- and the check would be hollow. Read from the
+  // record rather than from any log line: this harness redirects stdout per
+  // check, so Core's own logging is discarded and cannot be reasoned from.
+  if (const auto* armed = rt.stream_record(kStreamId);
+      armed == nullptr || armed->frame_resume_deadline_ns == 0) {
+    return fail_with_cleanup(
+        "FAIL Core did not arm a frame-resumption expectation on a Reconfigure "
+        "verdict; this check proves nothing unless it did");
+  }
+
+  // Settle the capture first. Core suppresses repeating-stream frames while a
+  // capture is in flight, so emitting the resumption frame before that would
+  // test frame suppression and resumption at once and conclude nothing about
+  // either. A real reprovision's frames resume once the capture that caused it
+  // has finished with the session.
+  (void)provider.emit_pending_capture(kCaptureId);
+
+  // Counted from HERE, not from zero: the stream may already have delivered
+  // frames before the reprovision, and any of those would satisfy a comparison
+  // against zero while proving nothing about resumption.
+  uint64_t frames_before = 0;
+  if (const auto* r = rt.stream_record(kStreamId); r != nullptr) {
+    frames_before = r->frames_received;
+  }
+
+  // The flow comes back, which is what a working reprovision looks like.
+  if (!provider.emit_stream_frame(kStreamId, true)) {
+    return fail_with_cleanup("FAIL reprovision-resumes could not emit a frame");
+  }
+  // The premise, checked rather than assumed: the frame must actually reach
+  // Core's registry, because that is what disarms the expectation. A frame the
+  // provider emitted but Core never integrated would make this check pass or
+  // fail for reasons that have nothing to do with the rule under test.
+  if (!wait_until([&]() {
+        const auto* r = rt.stream_record(kStreamId);
+        return r && r->frames_received > frames_before;
+      })) {
+    return fail_with_cleanup(
+        "FAIL reprovision-resumes emitted a frame that Core never integrated; "
+        "the check cannot say anything about the expectation without one");
+  }
+
+  // Well past the bound. The stream must still be running: one frame disarms it.
+  std::this_thread::sleep_for(std::chrono::milliseconds(900));
+  const auto* rec = rt.stream_record(kStreamId);
+  if (!rec || !rec->started) {
+    return fail_with_cleanup(
+        "FAIL a stream that resumed after its reprovision was reported failed "
+        "anyway; a watchdog that fires on healthy streams is worse than none");
+  }
+
+  (void)provider.shutdown();
+  rt.stop();
+  rt.attach_provider(nullptr);
+  return true;
+}
+
+// A provider that advertises a preempted stream as RESTORABLE must actually
+// accept it being restarted, at its own profile, once the capture settles.
+//
+// yielded_stream_restorable is an advertisement, and nothing in Core consumes it
+// today: 6.2 says a preempted viewfinder goes to STOPPED and Core leaves it
+// there. That is exactly why it needs binding. An advertisement with no consumer
+// and no check can be wrong indefinitely without anything noticing, and this one
+// is load-bearing for a token that IS consumed -- a caller seeing
+// stop_reason PREEMPTED infers "taken for a capture, restartable", and that
+// inference is only sound while every provider claiming StreamMustYield also
+// tells the truth about restorability.
+//
+// Binds the claim, not Core's policy. Core is free to go on not auto-restoring;
+// what may not happen is a provider promising a restart that then fails.
+bool run_preempted_stream_restorable_claim_check() {
+  auto wait_until = [](const std::function<bool()>& predicate) {
+    for (int i = 0; i < kMaxIters; ++i) {
+      if (predicate()) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+    return false;
+  };
+
+  CoreRuntime rt;
+  if (!rt.start() || !wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL restorable-claim runtime did not reach LIVE\n";
+    rt.stop();
+    return false;
+  }
+
+  BackingPlanEvaluationTestProvider provider;
+  const auto fail_with_cleanup = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    (void)provider.shutdown();
+    rt.stop();
+    rt.attach_provider(nullptr);
+    return false;
+  };
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    return fail_with_cleanup("FAIL restorable-claim provider init failed");
+  }
+  rt.attach_provider(&provider);
+
+  constexpr uint64_t kDeviceId = 95;
+  constexpr uint64_t kRootId = 9501;
+  constexpr uint64_t kStreamId = 9601;
+  constexpr uint64_t kCaptureId = 9701;
+
+  if (rt.try_open_device("backing_plan_eval:0", kDeviceId, kRootId) !=
+          TryOpenDeviceStatus::OK ||
+      rt.try_create_stream(kStreamId, kDeviceId, StreamIntent::VIEWFINDER,
+                           nullptr, nullptr, 0) != TryCreateStreamStatus::OK ||
+      rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    return fail_with_cleanup("FAIL restorable-claim setup failed");
+  }
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec && rec->started;
+      })) {
+    return fail_with_cleanup("FAIL restorable-claim stream never started");
+  }
+  const auto* before = rt.stream_record(kStreamId);
+  if (!before) {
+    return fail_with_cleanup("FAIL restorable-claim stream record missing");
+  }
+  const CaptureProfile stream_profile = before->profile;
+
+  // The claim under test.
+  provider.set_coexistence_for_differing_geometry_for_test(
+      AcquisitionCoexistence::stream_must_yield(/*restorable=*/true));
+
+  CaptureProfile still{};
+  still.width = 8;
+  still.height = 8;
+  still.format_fourcc = FOURCC_RGBA;
+  CaptureStillImageBundle bundle{};
+  bundle.members.push_back(CaptureStillImageMember{
+      0u, CaptureStillImageMemberRole::DEFAULT_METERED, 0});
+  if (rt.try_set_device_still_capture_profile(kDeviceId, still, bundle) !=
+      TrySetStillCaptureProfileStatus::OK) {
+    return fail_with_cleanup("FAIL restorable-claim could not retain the profile");
+  }
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceId, kCaptureId) !=
+      TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup("FAIL restorable-claim capture was not admitted");
+  }
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec && !rec->started;
+      })) {
+    return fail_with_cleanup("FAIL restorable-claim stream did not yield");
+  }
+
+  // Settle the capture. Restoring while it is still in flight would be refused
+  // for a reason that has nothing to do with the claim being tested.
+  (void)provider.emit_pending_capture(kCaptureId);
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec != nullptr;
+      })) {
+    return fail_with_cleanup("FAIL restorable-claim stream record vanished");
+  }
+
+  // THE CLAIM: restartable, at its own profile.
+  if (rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL provider advertised the yielded stream restorable and the restart "
+        "was refused");
+  }
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec && rec->started;
+      })) {
+    return fail_with_cleanup(
+        "FAIL restorable-claim restart was accepted but the stream never ran again");
+  }
+  const auto* after = rt.stream_record(kStreamId);
+  if (!after || after->profile.width != stream_profile.width ||
+      after->profile.height != stream_profile.height) {
+    return fail_with_cleanup(
+        "FAIL restorable-claim stream came back at a different profile than its own");
+  }
+
+  (void)provider.shutdown();
+  rt.stop();
+  rt.attach_provider(nullptr);
+  return true;
+}
+
+// The other side of the same rule: an Unsupported answer is a capability
+// denial, so the capture is refused and NOTHING is stopped for it. Kept
+// separate from the check above because the failure it guards is the
+// attractive over-generalisation -- treating "cannot coexist" as "preempt" and
+// destroying a working stream for a capture that could never have run.
+bool run_core_capture_unsupported_does_not_preempt_check() {
+  auto wait_until = [](const std::function<bool()>& predicate) {
+    for (int i = 0; i < kMaxIters; ++i) {
+      if (predicate()) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+    return false;
+  };
+
+  CoreRuntime rt;
+  if (!rt.start() || !wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL unsupported-no-preempt runtime did not reach LIVE\n";
+    rt.stop();
+    return false;
+  }
+
+  BackingPlanEvaluationTestProvider provider;
+  const auto fail_with_cleanup = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    (void)provider.shutdown();
+    rt.stop();
+    rt.attach_provider(nullptr);
+    return false;
+  };
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    return fail_with_cleanup("FAIL unsupported-no-preempt provider init failed");
+  }
+  rt.attach_provider(&provider);
+
+  constexpr uint64_t kDeviceId = 93;
+  constexpr uint64_t kRootId = 9301;
+  constexpr uint64_t kStreamId = 9401;
+  constexpr uint64_t kCaptureId = 9501;
+
+  if (rt.try_open_device("backing_plan_eval:0", kDeviceId, kRootId) !=
+          TryOpenDeviceStatus::OK ||
+      rt.try_create_stream(kStreamId, kDeviceId, StreamIntent::VIEWFINDER,
+                           nullptr, nullptr, 0) != TryCreateStreamStatus::OK ||
+      rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    return fail_with_cleanup("FAIL unsupported-no-preempt setup failed");
+  }
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec && rec->started;
+      })) {
+    return fail_with_cleanup("FAIL unsupported-no-preempt stream never started");
+  }
+
+  provider.set_coexistence_for_differing_geometry_for_test(
+      AcquisitionCoexistence::unsupported());
+
+  CaptureProfile still{};
+  still.width = 8;
+  still.height = 8;
+  still.format_fourcc = FOURCC_RGBA;
+  CaptureStillImageBundle bundle{};
+  bundle.members.push_back(CaptureStillImageMember{
+      0u, CaptureStillImageMemberRole::DEFAULT_METERED, 0});
+  (void)rt.try_set_device_still_capture_profile(kDeviceId, still, bundle);
+
+  const TryTriggerDeviceCaptureStatus triggered =
+      rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceId, kCaptureId);
+  if (triggered == TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL a capture the provider says is unserviceable must not be admitted");
+  }
+
+  const auto* rec = rt.stream_record(kStreamId);
+  if (!rec || !rec->started) {
+    return fail_with_cleanup(
+        "FAIL a stream must not be preempted for a capture that could never run");
+  }
+
+  (void)provider.shutdown();
+  rt.stop();
+  rt.attach_provider(nullptr);
+  return true;
 }
 
 bool run_core_measured_backing_plan_evaluation_check() {
@@ -7916,6 +9162,18 @@ bool run_broker_format_capability_forwarding_check() {
                              "capture capabilities not forwarded from backend");
   }
 
+  // Coexistence, same rule, and it is here because it was got wrong: Core holds
+  // the broker and never a provider, so an un-forwarded query answered Coexist
+  // for both platform providers and Core skipped arbitration entirely. Nothing
+  // failed -- the wrong answer is the permissive one, so it looks like success.
+  const AcquisitionCoexistence coexistence_via_broker =
+      broker.acquisition_coexistence(1, AcquisitionUseSet{});
+  if (coexistence_via_broker.verdict != CoexistenceVerdict::StreamMustYield ||
+      coexistence_via_broker.yielded_stream_restorable) {
+    return fail_with_cleanup("FAIL broker format capability forwarding "
+                             "acquisition_coexistence not forwarded from backend");
+  }
+
   if (!broker.shutdown().ok()) {
     std::cerr << "FAIL broker format capability forwarding shutdown failed\n";
     return false;
@@ -9846,6 +11104,9 @@ int main(int argc, char** argv) {
       {"run_synthetic_producer_output_form_mode_production_check", [] { return run_synthetic_producer_output_form_mode_production_check(); }},
       {"run_synthetic_live_gpu_backing_truth_check", [] { return run_synthetic_live_gpu_backing_truth_check(); }},
       {"run_synthetic_timeline_picture_appearance_check", [] { return run_synthetic_timeline_picture_appearance_check(); }},
+      {"run_abandoned_capture_payload_attribution_check", [] { return run_abandoned_capture_payload_attribution_check(); }},
+      {"run_per_device_single_capture_admission_check", [] { return run_per_device_single_capture_admission_check(); }},
+      {"run_capture_admission_establishes_acquisition_seam_check", [] { return run_capture_admission_establishes_acquisition_seam_check(); }},
       {"run_stub_provider_sanity_check", [] { return run_stub_provider_sanity_check(); }},
       {"run_synthetic_provider_direct_sanity_check", [] { return run_synthetic_provider_direct_sanity_check(); }},
       {"run_synthetic_capture_executor_correctness_check", [] { return run_synthetic_capture_executor_correctness_check(); }},
@@ -9861,6 +11122,12 @@ int main(int argc, char** argv) {
       {"run_core_capture_result_fact_resolution_check", [] { return run_core_capture_result_fact_resolution_check(); }},
       {"run_core_synthetic_three_member_realized_unknown_propagation_check", [] { return run_core_synthetic_three_member_realized_unknown_propagation_check(); }},
       {"run_synthetic_stream_plus_still_single_session_truth_check", [] { return run_synthetic_stream_plus_still_single_session_truth_check(); }},
+      {"run_provider_coexistence_answer_matches_behaviour_check", [] { return run_provider_coexistence_answer_matches_behaviour_check(); }},
+      {"run_core_capture_preempts_yielding_stream_check", [] { return run_core_capture_preempts_yielding_stream_check(); }},
+      {"run_core_capture_unsupported_does_not_preempt_check", [] { return run_core_capture_unsupported_does_not_preempt_check(); }},
+      {"run_preempted_stream_restorable_claim_check", [] { return run_preempted_stream_restorable_claim_check(); }},
+      {"run_core_reports_reprovision_that_never_resumes_check", [] { return run_core_reports_reprovision_that_never_resumes_check(); }},
+      {"run_core_does_not_report_a_reprovision_that_resumes_check", [] { return run_core_does_not_report_a_reprovision_that_resumes_check(); }},
       {"run_core_measured_backing_plan_evaluation_check", [] { return run_core_measured_backing_plan_evaluation_check(); }},
       {"run_core_capture_observation_regression_check", [] { return run_core_capture_observation_regression_check(); }},
       {"run_core_capture_bracket_whole_result_scoring_check", [] { return run_core_capture_bracket_whole_result_scoring_check(); }},

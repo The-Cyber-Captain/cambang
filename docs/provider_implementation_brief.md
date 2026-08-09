@@ -109,6 +109,15 @@ GPU-backed frames carry an opaque `primary_backing_artifact` plus a truthful
 `RetainedGpuBackingDescriptor` (display/materialization availability must
 match reality). See `architecture/pixel_payload_and_result_contract.md`.
 
+**Declare only postures you can actually deliver through.** Your
+`ProducerBackingCapabilities` is the *only* gate on Core's Backing Plan
+candidate set — nothing measures it. Core's access-cost evidence is gathered by
+calibrating results that were delivered, so a posture that fails to produce a
+payload generates no evidence at all and Core cannot rank its way off it
+(`pixel_payload_and_result_contract.md` §11.7.1). An over-declared posture is
+therefore not a performance mistake that evaluation will correct; it is a dead
+end evaluation is blind to.
+
 ## 5. Capture execution model
 
 * Hard-bound both concurrent capture workers and queued device jobs;
@@ -119,6 +128,116 @@ match reality). See `architecture/pixel_payload_and_result_contract.md`.
 * Cancellation on shutdown/restart is generation-based: workers observe a
   closed generation at their next checkpoint and terminalize as failed with
   `ERR_SHUTTING_DOWN` rather than delivering into a dead session.
+
+### 5.2 An abandoned capture's payloads are never a later capture's
+
+Giving up on a capture does not cancel the backend's obligation to produce it.
+A platform may deliver the payload later, and a stale payload wearing a fresh
+capture's facts is indistinguishable from a correct result.
+
+**An obligation only exists while the platform still has one.** Ask the backend
+whether the submission is over rather than inferring it from elapsed time. On
+Camera2 that is `onCaptureSequenceCompleted`/`Aborted`: once a sequence has
+ended, a member that never arrived is simply short, and no payload is
+outstanding for it.
+
+Getting this wrong is worse than not accounting at all, because the error
+compounds. A device that produces one image fewer than requested leaves a debt
+that can never be paid; the next capture's own payload discharges it, which
+leaves the next capture short, and the device delivers nothing again ever.
+Measured on Quest 3 as `2 -> 0 -> 0 -> 0` across a four-capture rig run, with
+submissions and arrivals differing by exactly one for the whole run. Settling on
+sequence end instead restored `2 -> 0 -> 2 -> 2` — the one genuine loss, and
+nothing more.
+
+**Sequence end settles the debt; it does not end the wait.** These are separate
+questions and conflating them costs images. Camera2 defines sequence completion
+over results and failures, not buffers, and does not order the buffer callback
+against it: on Galaxy S20+ camera 0 completion fires 7–13 ms *after* the
+buffer's delivery callback has begun. A capture that stops waiting the instant
+its sequence ends snapshots its collector mid-delivery, and the image lands in a
+collector nobody reads — 21 of 30 captures lost, every loss with completion
+falling between arrival and collection, none of the delivered ones. Camera 1 of
+the same device fires them in the opposite order and lost nothing, as did Quest
+3, where buffers preceded sequence end by 19–50 ms every time. **Callback
+ordering is a per-camera property; do not generalise it from one device.**
+
+So a capture that is short when its sequence ends waits out a bounded grace for
+buffers already in flight, then settles. The grace costs nothing on a capture
+that got everything it asked for, and does not change what is owed: a capture
+that waits out its grace and is still short owes nothing, exactly as it would
+have without one. Restoring the grace took S20+ camera 0 from 12/28 to 28/28
+with no change to its request→exposure latency.
+
+An earlier version of this section attributed that run to a still-only session
+withholding a buffer until the next request pushed the pipeline. The sequence
+trace does not support it: every payload arrives 3–9 ms after **its own**
+submission, streamed or not. The withholding was an artefact of attributing each
+capture's prompt payload to its predecessor.
+
+The obligation:
+
+* A payload delivered after its capture was abandoned **must not** be
+  attributed to any later capture. Discard it, and count the discard.
+* Attribution is **by accounting**: a capture abandoned with fewer payloads
+  than expected leaves that many owed, and the next arrivals discharge the debt
+  before any collector may claim one. Members the platform explicitly failed
+  owe nothing — no payload is in flight for them.
+* Attribution **must not** use acquisition marks. `camera_fact_model.md` §12.2
+  forbids acquisition timing as identity, freshness, or ordering evidence, and
+  marks may legitimately be identical across simultaneously triggered devices,
+  so they cannot discriminate even in principle.
+* Where an unmatched payload would otherwise be paired to metadata by position
+  (the degenerate single-member case), that pairing is permitted only while the
+  device owes nothing. Facts are enrichment and never gate pixels, so
+  withholding them is the conservative outcome.
+* Debt is per device and must not outlive it: settle or forgive it on close, or
+  a reopened device inherits discards that are not its own.
+
+`imaging/api/outstanding_payload_ledger.h` implements this accounting and is
+the expected mechanism. A provider whose backend model makes late delivery
+structurally impossible — one where each payload returns only to its own
+awaiting call, with no shared queue a later capture could drain — may state
+that instead, but must say so explicitly rather than leave the question open.
+
+### 5.3 An admitted capture must not wait on the caller
+
+Admission transfers ownership. From that point the provider owes a terminal
+fact, and obtaining the payload is *its* problem: it must drive whatever
+backend activity delivery requires, on its own initiative, within its declared
+`capture_admission_watchdog_timeout_ns()`.
+
+A provider must never depend on a later caller action — another capture, a
+stream start, any external request — to obtain a payload it has already
+accepted. Doing so makes correctness a property of caller behaviour: the
+capture appears to work when captures happen to be frequent, and stalls
+whenever the caller pauses. Worse, the payload then surfaces during a *later*
+capture, which is how §5.2's misattribution begins.
+
+Observed behaviour that motivates this, recorded as observation and not as
+explanation: on Quest 3 / Camera2, a rig member with no stream delivers its
+first capture after session configuration and then strands every subsequent
+one — capture *result metadata* arrives on time while the payload does not, and
+a stranded payload has been seen released 1.73 ms after the next capture's
+submission, 51 seconds after its own.
+
+**The mechanism is not yet established.** Result metadata arriving on time
+means the backend did process the request, so explanations resting on an
+inactive pipeline do not fit. Investigation continues; nothing in this section
+prescribes a remedy, and no session shape, submission pattern, or keep-alive
+scheme should be inferred from it.
+
+Per-provider positions:
+
+- **Synthetic** satisfies this inherently: payloads are produced and posted
+  within the capture worker.
+- **WinRT** satisfies it through `LowLagPhotoCapture::CaptureAsync()`, which
+  returns each payload to its own awaiting call and needs no ongoing activity.
+- **Camera2** does not currently satisfy it for devices with no user stream.
+  This is an open defect, not a documented design.
+
+A provider that cannot meet this obligation must fail the capture at admission
+rather than accept work it cannot complete unaided.
 
 ### 5.1 Multi-image bundles: coherence outranks per-image quality
 
@@ -200,6 +319,60 @@ if the effective config is invalid, fail deterministically.
   to tidy state; keep ownership relationships visible.
 * Still-capture callbacks alone do not satisfy retained AcquisitionSession
   truth when no concrete session seam was realized.
+
+### 7.1 The acquisition seam is reference-held, not incidental
+
+An AcquisitionSession exists because something needs it, and it is retained
+while that need lasts. Three independent claimants can hold one — a **stream**,
+a **device capture**, and **priming** — and a provider must be able to say which
+of them currently do.
+
+Two consequences that are easy to get wrong:
+
+* **Establish at admission, not on first use.** A capture that is admitted
+  without an established seam is a capture whose seam is whatever an earlier,
+  unrelated operation happened to leave behind. Failure to establish is an
+  admission failure, and a grouped submission rolls back whole (§5). Realizing
+  the *native* object may still be deferred to a bounded worker — session
+  configuration is heavyweight and admission runs on the core thread — but the
+  seam's lifetime is governed from the moment the capture is accepted.
+* **The operation is creation when none is in place.** A retained-profile set
+  and a capture on a device with no seam are both first-class reasons to create
+  one; neither is a fallback for the other, and neither is an optimisation. The
+  API name `sync_capture_parent_priming` predates this understanding and is
+  kept for compatibility, but do not implement it as warming, and do not
+  short-circuit it on "a session already exists". The seam must follow the
+  retained capture shape: on the engage path it is necessarily created from
+  your capture template, because the caller's retained still profile can only
+  be applied after the device has an instance id. Re-create when the shape
+  changes, and let the reference check refuse the rebuild if a stream or an
+  in-flight capture holds the seam. It must be idempotent for equivalent
+  requests.
+
+  **A stream or an in-flight capture — not the capture parent.** The
+  capture-parent claim must never refuse a reconfiguration, including one your
+  backend can only perform by replacing the seam's native object. Where the two
+  cannot be told apart, as on Camera2, keying the refusal on "is the object
+  replaced" excludes the capture parent in theory and includes it in practice,
+  and a retained still profile then blocks the geometry it exists to set. Key
+  it on whether anything is put back instead: a replacement that reports its
+  destroyed and created facts leaves Core knowing exactly where it stands,
+  which an outright teardown does not.
+* **Releasing a claim is not a request to destroy the seam.** Core holds the
+  capture-parent claim for as long as the retained still profile stands, so the
+  release that eventually arrives says the profile is changing or going away —
+  not that the seam should be destroyed. Drop the claim and leave the seam.
+
+References govern when teardown is **permitted**, not whether seam identity
+survives a reconfiguration. Where a backend's session object is 1:1 with the
+seam — Camera2's `ACameraCaptureSession` is — changing the output set really is
+a new seam and must be reported as one, with a destroyed fact for the old and a
+created fact for the new. Reporting continuity across a rebuild would be a
+fabricated fact, and the rule against fabricating destruction cuts both ways.
+
+Zero references makes teardown permitted, not mandatory. A provider may keep a
+warm session to avoid paying reconfiguration on the next capture, but an
+explicit release from Core is a statement of intent and must be honoured.
 
 ## 8. Camera facts and Image Acquisition Timing
 
@@ -299,8 +472,8 @@ never evidence that the contract permits it.
 
 A provider is not done until it passes, unmodified:
 
-* `out/provider_compliance_verify.exe` — the executable contract (currently
-  41 checks; the check source is the authoritative audit list).
+* `out/provider_compliance_verify.exe` — the executable contract. The check
+  source is the authoritative audit list; do not rely on a count quoted here.
 * `out/core_spine_smoke.exe`, `out/restart_boundary_verify.exe`,
   `out/verify_case_runner.exe --run-all` — lifecycle/restart/authored cases.
 * `out/core_thread_liveness_watchdog_verify.exe` — both prompt/bounded
