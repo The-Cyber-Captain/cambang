@@ -130,6 +130,31 @@ bool CoreAcquisitionSessionRegistry::on_native_object_destroyed(uint64_t native_
   return changed;
 }
 
+const CoreAcquisitionSessionRegistry::CaptureInFlight*
+CoreAcquisitionSessionRegistry::find_capture_in_flight_(
+    uint64_t capture_id, uint64_t device_instance_id) const {
+  const auto capture_it = captures_in_flight_.find(capture_id);
+  if (capture_it == captures_in_flight_.end()) {
+    return nullptr;
+  }
+  const auto device_it = capture_it->second.find(device_instance_id);
+  return device_it == capture_it->second.end() ? nullptr : &device_it->second;
+}
+
+void CoreAcquisitionSessionRegistry::forget_capture_in_flight_(
+    uint64_t capture_id, uint64_t device_instance_id) {
+  const auto capture_it = captures_in_flight_.find(capture_id);
+  if (capture_it == captures_in_flight_.end()) {
+    return;
+  }
+  capture_it->second.erase(device_instance_id);
+  // Prune once the last member of this capture has settled, so a long-lived
+  // registry does not accumulate empty per-capture maps.
+  if (capture_it->second.empty()) {
+    captures_in_flight_.erase(capture_it);
+  }
+}
+
 bool CoreAcquisitionSessionRegistry::on_capture_started(uint64_t device_instance_id,
                                                         uint64_t capture_id,
                                                         uint64_t started_ns,
@@ -186,7 +211,8 @@ bool CoreAcquisitionSessionRegistry::on_capture_started(uint64_t device_instance
     entry.capture_still_image_bundle = capture_still_image_bundle;
     changed = true;
   }
-  captures_in_flight_[capture_id] = CaptureInFlight{session_id, started_ns};
+  captures_in_flight_[capture_id][device_instance_id] =
+      CaptureInFlight{session_id, started_ns};
   return changed;
 }
 
@@ -197,30 +223,32 @@ bool CoreAcquisitionSessionRegistry::on_capture_completed(uint64_t device_instan
     return false;
   }
 
-  uint64_t session_id = resolve_live_session_id_for_device_(device_instance_id);
-  auto inflight_it = captures_in_flight_.find(capture_id);
-  if (inflight_it != captures_in_flight_.end()) {
-    session_id = inflight_it->second.acquisition_session_id;
-  }
+  // THIS device's record for this capture, never merely this capture's.
+  const CaptureInFlight* in_flight =
+      find_capture_in_flight_(capture_id, device_instance_id);
+  const uint64_t session_id = in_flight != nullptr
+      ? in_flight->acquisition_session_id
+      : resolve_live_session_id_for_device_(device_instance_id);
   if (session_id == 0) {
+    forget_capture_in_flight_(capture_id, device_instance_id);
     return false;
   }
   auto it = sessions_.find(session_id);
   if (it == sessions_.end()) {
-    captures_in_flight_.erase(capture_id);
+    forget_capture_in_flight_(capture_id, device_instance_id);
     return false;
   }
   AcquisitionSessionEntry& entry = it->second;
   ++entry.captures_completed;
   entry.last_capture_id = capture_id;
   entry.error_code = 0;
-  if (inflight_it != captures_in_flight_.end()) {
-    const uint64_t started_ns = inflight_it->second.started_ns;
+  if (in_flight != nullptr) {
+    const uint64_t started_ns = in_flight->started_ns;
     entry.last_capture_latency_ns = (completed_ns >= started_ns) ? (completed_ns - started_ns) : 0;
-    captures_in_flight_.erase(inflight_it);
   } else {
     entry.last_capture_latency_ns = 0;
   }
+  forget_capture_in_flight_(capture_id, device_instance_id);
   return true;
 }
 
@@ -232,30 +260,31 @@ bool CoreAcquisitionSessionRegistry::on_capture_failed(uint64_t device_instance_
     return false;
   }
 
-  uint64_t session_id = resolve_live_session_id_for_device_(device_instance_id);
-  auto inflight_it = captures_in_flight_.find(capture_id);
-  if (inflight_it != captures_in_flight_.end()) {
-    session_id = inflight_it->second.acquisition_session_id;
-  }
+  const CaptureInFlight* in_flight =
+      find_capture_in_flight_(capture_id, device_instance_id);
+  const uint64_t session_id = in_flight != nullptr
+      ? in_flight->acquisition_session_id
+      : resolve_live_session_id_for_device_(device_instance_id);
   if (session_id == 0) {
+    forget_capture_in_flight_(capture_id, device_instance_id);
     return false;
   }
   auto it = sessions_.find(session_id);
   if (it == sessions_.end()) {
-    captures_in_flight_.erase(capture_id);
+    forget_capture_in_flight_(capture_id, device_instance_id);
     return false;
   }
   AcquisitionSessionEntry& entry = it->second;
   ++entry.captures_failed;
   entry.last_capture_id = capture_id;
   entry.error_code = static_cast<int32_t>(error_code);
-  if (inflight_it != captures_in_flight_.end()) {
-    const uint64_t started_ns = inflight_it->second.started_ns;
+  if (in_flight != nullptr) {
+    const uint64_t started_ns = in_flight->started_ns;
     entry.last_capture_latency_ns = (failed_ns >= started_ns) ? (failed_ns - started_ns) : 0;
-    captures_in_flight_.erase(inflight_it);
   } else {
     entry.last_capture_latency_ns = 0;
   }
+  forget_capture_in_flight_(capture_id, device_instance_id);
   return true;
 }
 
@@ -354,16 +383,13 @@ bool CoreAcquisitionSessionRegistry::has_capture_in_flight_for_device(
   if (device_instance_id == 0) {
     return false;
   }
-  for (const auto& kv : captures_in_flight_) {
-    const uint64_t session_id = kv.second.acquisition_session_id;
-    if (session_id == 0) {
-      continue;
-    }
-    const auto it = sessions_.find(session_id);
-    if (it == sessions_.end()) {
-      continue;
-    }
-    if (it->second.device_instance_id == device_instance_id) {
+  // Asks the map directly now that the device is part of the key. The old form
+  // read each entry's session and compared THAT session's device, so an entry a
+  // rig sibling had overwritten reported the wrong device as busy -- and the
+  // real one as idle.
+  for (const auto& [capture_id, by_device] : captures_in_flight_) {
+    (void)capture_id;
+    if (by_device.find(device_instance_id) != by_device.end()) {
       return true;
     }
   }
@@ -382,9 +408,13 @@ uint64_t CoreAcquisitionSessionRegistry::resolve_session_id_for_capture(
     }
   }
   if (capture_id != 0) {
-    if (const auto it = captures_in_flight_.find(capture_id);
-        it != captures_in_flight_.end()) {
-      return it->second.acquisition_session_id;
+    // Scoped to the device this call was given. Resolving by capture_id alone
+    // returned a rig sibling's session, despite the caller having handed us the
+    // device that would have answered correctly.
+    if (const CaptureInFlight* in_flight =
+            find_capture_in_flight_(capture_id, device_instance_id);
+        in_flight != nullptr) {
+      return in_flight->acquisition_session_id;
     }
   }
   return resolve_live_session_id_for_device_(device_instance_id);

@@ -92,10 +92,36 @@ private:
     uint64_t started_ns = 0;
   };
 
+  // This device's record for this capture, or nullptr. BOTH ids are required:
+  // a rig capture shares one capture_id across its members, so the capture_id
+  // alone does not identify whose record it is.
+  const CaptureInFlight* find_capture_in_flight_(uint64_t capture_id,
+                                                 uint64_t device_instance_id) const;
+  // Drops this device's record and prunes the capture's map when it was the
+  // last member outstanding.
+  void forget_capture_in_flight_(uint64_t capture_id, uint64_t device_instance_id);
+
   std::map<uint64_t, AcquisitionSessionEntry> sessions_;
   std::unordered_map<uint64_t, uint64_t> device_live_session_id_;
   std::unordered_map<uint64_t, uint32_t> device_live_session_count_;
-  std::unordered_map<uint64_t, CaptureInFlight> captures_in_flight_;
+
+  // capture_id -> device_instance_id -> the session that started it.
+  //
+  // KEYED BY BOTH, and that is the whole point. A rig capture gives every
+  // member device the SAME capture_id, so a flat map keyed on capture_id alone
+  // had each member's on_capture_started overwrite the previous member's entry.
+  // The first member to settle was then credited to whichever member started
+  // last, and since that call erased the entry, later members fell through to
+  // their own device and were attributed correctly -- so exactly one member per
+  // rig capture landed on a sibling's session, chosen by callback ordering.
+  //
+  // Nested rather than a composite key to match
+  // CoreCaptureAssemblyRegistry::assemblies_by_capture_id_, which groups the
+  // same two ids the same way. It also does not depend on the one-capture-per-
+  // device rule: correct attribution should not rest on an invariant enforced
+  // somewhere else.
+  std::unordered_map<uint64_t, std::unordered_map<uint64_t, CaptureInFlight>>
+      captures_in_flight_;
   uint64_t next_capture_access_posture_epoch_ = 1;
 };
 

@@ -277,10 +277,11 @@ Hardware (required before acceptance):
 - Scene 911 on S20+ camera 0 and on the eMeet C970, operator-paced through all
   twelve gates. `TARGET` selects which. Criteria 4 and 5 are read from the
   `stream state after capture` line, not from the pass count.
-- **The Windows platform-backed suite, carried forward from the previous
-  tranche.** It was deliberately not run there: phase 2 changed shared Core code,
-  but the arbitration behaviour was about to change again, and validating a
-  configuration that is about to move is wasted. It belongs here, after the
-  `Reconfigure` path settles. Ask before starting the multi-scene ADB sweep.
+
+**Build the GDE, not just the verifiers.** `scons gde=no` links the maintainer
+tools only; a Core change is not in the plugin until `scons gde` (and
+`platform=android`) have run. Gates passing after `gde=no` says nothing about
+the surface a scene exercises, and a fix was reported as landed on that basis
+when the artifacts were a week old.
 
 Report un-run surfaces plainly. Native-tool PASS does not prove the Godot scene.
