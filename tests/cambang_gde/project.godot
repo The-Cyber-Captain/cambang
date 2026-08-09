@@ -22,10 +22,6 @@ maintainer/synthetic_producer_output_form="runtime_default"
 maintainer/synthetic_stream_capability_downgrades=""
 maintainer/synthetic_capture_capability_downgrades=""
 
-[debug]
-
-settings/stdout/print_fps=true
-
 [display]
 
 window/size/viewport_width=1920
