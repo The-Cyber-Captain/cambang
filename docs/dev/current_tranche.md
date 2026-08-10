@@ -1,123 +1,153 @@
 # Current tranche
 
-## Capture identity: split the device and rig id spaces
+## Capture completion: dispositions, cohort closure, and the simultaneity window
 
-Tranche 1 of the `capture_identity_and_lifecycle.md` implementation. Internal
-only — no Godot-facing surface changes.
+Tranche 2 of the `capture_identity_and_lifecycle.md` implementation. Internal
+only — no Godot-facing surface changes. Depends on tranche 1 (`82fe1e7`), which
+split the Device Capture and Rig Capture id spaces.
 
 ### Problem
 
-One monotonic `uint64`, minted at the Godot boundary as
-`CamBANGServer::next_capture_id_`, serves both device-triggered and
-rig-triggered captures, and a rig capture shares its id with every member.
-`arbitration_policy.md` §9 records this; `capture_identity_and_lifecycle.md`
-§2.1 replaces it.
+A rig capture has no notion of being finished. `CoreCaptureCohortRegistry`
+carries `OPEN` and `FAILED` and nothing else, `CoreCaptureAssemblyRegistry`
+carries `NONE`/`COMPLETED`/`FAILED` per device, and there is no cut-off. The
+consequences are all visible today:
 
-The consequence is not cosmetic. A rig capture and its members are
-indistinguishable by id, so no registry can separate "member of rig capture R
-on device D" from "standalone capture on device D". Per-member dispositions,
-the per-device in-flight guard, rig preemption and membership versioning all
-need that distinction, and none of them can be built while the ids collide.
+- `get_capture_result_set()` returns a partial set that is indistinguishable
+  from a final one. A caller polling it cannot tell "two of three so far" from
+  "two of three, and the third is never coming".
+- A member that timed out with a known provider error becomes an *absent array
+  entry*. The error code exists in the assembly record and never reaches the
+  caller, so a failure and a still-pending member look identical.
+- `RigState::active_capture_id`, `last_capture_id`, `captures_triggered`,
+  `captures_completed` and `captures_failed` are never written and project a
+  permanent 0 (found while closing tranche 1's scope item 7). A consumer cannot
+  read 0 there as "no capture yet".
+
+Every working scene hand-rolls its own completion detection because of this.
+`70_result_retrieval_verification.gd` carries 48 in-flight references and
+`870_to_image_soak_benchmark.gd` 17, all of it reconstructing state Core
+already has and does not expose.
 
 ### Decision
 
-Two internal id spaces, both session-scoped `uint64`, both minted at the
-boundary:
+**Per-member terminal disposition**, replacing the per-device
+`COMPLETED`/`FAILED` binary:
 
-- **Device Capture Id** — every device capture, whether standalone or a rig
-  member.
-- **Rig Capture Id** — the rig capture itself.
+`DELIVERED` | `FAILED(error)` | `LATE_EXCLUDED` | `PREEMPTED_BY_RIG` |
+`DEVICE_LOST` | `NEVER_ARRIVED`
 
-A rig trigger mints one Rig Capture Id and N Device Capture Ids, one per
-member. Cohort records key on the Rig Capture Id and carry the member map;
-assembly, result and acquisition-session records key on the Device Capture Id.
+The full vocabulary is defined here so the shape is settled once, but two
+values are **not reachable in this tranche and must not be faked**:
+`PREEMPTED_BY_RIG` needs rig-preempts-member arbitration (tranche 3), and
+`DEVICE_LOST` in its §5.3 sense needs membership lifecycle (tranche 4). A
+disposition no code path can produce is honest; one produced by guessing is
+not.
 
-Durable public ids (§2.2) and returning identity from a trigger (§4.1) are a
-later tranche. This one keeps `trigger_capture()` returning `Error` on both
-wrappers.
+**Cohort closure.** `CohortState` gains a completed state, and a closed cohort
+records `ALL_MEMBERS_TERMINAL` or `WINDOW_EXPIRED`.
+
+**The window is a simultaneity tolerance, not an impatience threshold.** A rig
+capture closes when every member is terminal or when the window expires,
+whichever comes first. A member arriving well outside it is not part of the
+same moment, and `LATE_EXCLUDED` is the correct outcome rather than a failure
+to wait. A six-device capture closing with four delivered, one failed and one
+late-excluded is a complete and truthful result.
+
+**Clock constraint, and it is load-bearing.** Lateness is measured on Core's
+own clock from capture admission. `camera_fact_model.md` §12.2 forbids using
+acquisition timing as ordering or latency evidence, and §12.1 notes Capture
+Date-Time is deliberately *shared* across one rig capture. Acquisition marks
+from separate devices may legitimately be identical and must never decide
+membership, lateness, ordering or identity.
+
+`capture_sequence_settlement.h` already solves the per-device version of this
+problem and solves it well, including the in-flight grace that a naive
+"settle on sequence end" gets wrong. Lift that reasoning to cohort level rather
+than reinventing it — in particular, decide explicitly what the cohort does
+about a member whose payload is mid-delivery when the window expires.
 
 ### Scope
 
-1. Two counters at the boundary, replacing `next_capture_id_`.
-2. `CoreCaptureCohortRegistry` keyed by rig capture id; `Participant` gains a
-   `device_capture_id`.
-3. `CoreCaptureAssemblyRegistry`, `CoreResultStore`,
-   `CoreAcquisitionSessionRegistry` keyed by device capture id.
-4. Boundary maps rig capture id to its member device capture ids;
-   `latest_capture_id_by_device_instance_id_` holds device capture ids.
-5. `CamBANGRig::get_result()` resolves via the rig capture id,
-   `CamBANGDevice::get_result()` via the device capture id. Signatures
-   unchanged.
-6. `get_capture_result_set_by_id(capture_id)` takes a rig capture id;
-   `get_capture_result_by_id(capture_id, device_instance_id)` takes a device
-   capture id. Both stay integer-keyed — they are the advanced/diagnostic
-   surface, and `device_instance_id` is already session-scoped, so a durable id
-   in the other position would advertise a durability the method cannot honour.
-7. Anything `snapshot_builder` / `state_snapshot_export` projects must name
-   which space it is in.
+1. Per-member disposition on `CoreCaptureAssemblyRegistry`, replacing the
+   `TerminalState` binary. Reachable values only.
+2. `CohortState` completion + closed reason on `CoreCaptureCohortRegistry`.
+3. The simultaneity window as a project-wide constant, driven off Core's clock
+   from admission, with cohort closure swept on the core thread alongside the
+   existing retention and admission-watchdog sweeps.
+4. A member's error code reaches its result. A failed member is a *present*
+   entry carrying its disposition and error, not an absent one.
+5. `get_capture_result_set()` distinguishes open from closed internally.
+6. Populate `RigState`'s capture counters and `last_capture_id` /
+   `active_capture_id`, and delete the "never written, always 0" caveats from
+   `state_snapshot.h` — they stop being true here. `cambang_server.cpp`'s rig
+   loop becomes reachable for the first time.
 
 ### Out of scope
 
-- Durable public ids (§2.2), result fields (§2.3), trigger returning identity
-  (§4.1), and the consumer migration that follows them.
-- Completion signals, canonical wrappers, outstanding set (§4.2, §4.5).
-- Dispositions, cohort closure, simultaneity window (§4.3, §4.4).
-- Per-device in-flight guard and rig preemption (§3).
-  `has_capture_in_flight_for_device()` stays snapshot-only here.
-- Provider concurrency capacity (§3.1). Settled: Camera2 NDK surfaces no
-  runtime concurrency information, the ingested ADC truth is the only gate, and
-  no `ICameraProvider` method will be added. §3.1's "providers therefore
-  declare their concurrent device-capture capacity" is wrong as written and is
-  corrected in the tranche that touches arbitration, not this one.
-- Rig membership lifecycle (§5).
+- Arbitration: per-device in-flight guard, rig-preempts-member (tranche 3).
+- Rig membership lifecycle and versioning (tranche 4).
+- Durable public ids, result fields, trigger returning identity (tranche 5).
+- Completion signals, canonical wrappers, outstanding set (tranche 6). Core
+  learns the truth here; exposing it is later.
+- `STARVED` and any general frame-cadence policy.
+
+### Open decision — the window value
+
+§4.4 says "project-wide constant" and does not give a number. This needs the
+maintainer's, not mine, and the two failure directions are asymmetric:
+
+- Too tight turns a slow-but-working camera into `LATE_EXCLUDED`. A camera that
+  goes quiet — no pilot frames, `ae_state=255`, payloads seconds late — is a
+  known real condition on this hardware, and excluding it silently makes a rig
+  return short in a way that looks exactly like a rig defect.
+- Too loose lets a genuinely staggered set pass as simultaneous, which is the
+  invariant the window exists to protect.
+
+Note the window measures admission-to-settlement on Core's clock, not exposure
+spread, so it is bounded below by payload delivery latency rather than by any
+tolerance about "the same instant". Proposed starting value **2000 ms**, to be
+confirmed or replaced before implementation.
 
 ### Acceptance criteria
 
-1. A rig capture and a standalone capture on one of its member devices, both in
-   flight, never collide on any registry key.
-2. Rig member results resolve to the correct device, and cohort membership is
-   recoverable from the rig capture id alone.
-3. No Godot-facing signature, return type, constant or dictionary key changes.
-   The 13 consumers that break under the public-identity tranche are untouched
-   by this one.
-4. Mutation proof: collapsing the two counters back into one must fail a check.
-   **Corrected during implementation** — this criterion originally named
-   `provider_compliance_verify`, on the assumption that the boundary's minting
-   could be driven host-native. It cannot: the counters live on
-   `CamBANGServer`, and every maintainer verifier constructs `CoreRuntime`
-   directly. Mutating the boundary minter to return the rig capture id was
-   confirmed to survive all nine gates.
-   The guarantee is therefore bound one level down, in
-   `CoreCaptureCohortRegistry::insert()`, which refuses a member whose Device
-   Capture Id equals its cohort's Rig Capture Id, duplicates a sibling's, or is
-   already owned by another live cohort. `phase3_snapshot_verify` proves all
-   three, and removing the first rejection fails that check. A single-counter
-   regression at the boundary now fails closed at the registry rather than
-   silently colliding — but note what this does and does not cover: the
-   boundary's own minting still has no host-native test, and does not get one
-   until something can drive `CamBANGServer` outside Godot.
-5. Existing gates green — and here a green `godot_test_suite.ps1` is meaningful
-   precisely because the public surface did not move.
+1. A cohort with one delivered, one failed and one late member closes with
+   three distinct dispositions and `WINDOW_EXPIRED`.
+2. A cohort whose members all settle closes `ALL_MEMBERS_TERMINAL` without
+   waiting out the window.
+3. A member that failed with a provider error is present in the result set
+   carrying that error. Mutation-proved: reverting it to an absent entry fails.
+4. Lateness is decided on Core's clock. A check fails if acquisition marks
+   influence membership, lateness or ordering — including the case where two
+   members carry identical marks, which is legitimate.
+5. `RigState` capture counters and last/active capture id are populated and
+   agree with the cohort's own record.
+6. `PREEMPTED_BY_RIG` and `DEVICE_LOST` have no producing path, and this is
+   asserted rather than left ambiguous.
+7. Existing gates green, including the nine deterministic verifiers.
 
 ### Validation expectations
 
 Deterministic (required):
 
-- `out/core_spine_smoke.exe`, `out/provider_compliance_verify.exe`,
-  `out/restart_boundary_verify.exe`, `out/verify_case_runner.exe --run-all`,
-  `out/core_thread_liveness_watchdog_verify.exe`,
-  `out/outstanding_payload_ledger_verify.exe`,
-  `out/capture_sequence_settlement_verify.exe`,
-  `out/acquisition_seam_claims_verify.exe`, `out/phase3_snapshot_verify.exe`.
+- The nine verifiers as listed in tranche 1's commit message.
+- Every new rule gets a mutation proof.
+- The window is exercised in both directions — a cohort that closes early on
+  all-terminal, and one that closes on expiry — using the synthetic provider's
+  virtual time rather than wall-clock sleeps.
 
 Godot (required):
 
-- `.\godot_test_suite.ps1` — covers 65 and 70.
-- `73_rig_capture_result_set_verification.tscn`, windowed. The rig result set
-  is the surface this tranche is most likely to break.
+- `.\godot_test_suite.ps1`.
+- `73_rig_capture_result_set_verification.tscn`, windowed. Tranche 1's
+  experience is the reason this is not optional: scene 73 caught an id-space
+  defect that all nine native gates missed, because their ids are hardcoded and
+  never collided.
 
-Hardware: not required. No provider or device behaviour changes in this
-tranche.
+Hardware: not required. No provider or device behaviour changes. Note that
+`LATE_EXCLUDED` against a genuinely slow device is only observable on hardware,
+so its real-world calibration is not proven by this tranche.
 
-**Build the GDE, not just the verifiers.** `scons gde=no` links the maintainer
-tools only; a Core change is not in the plugin until `scons gde` has run.
+**Build the GDE, not just the verifiers** — and build Android too. Tranche 1
+nearly shipped an uncompiled edit because `camera2_camera_provider.cpp`
+compiles only in `scons gde platform=android arch=arm64`.
