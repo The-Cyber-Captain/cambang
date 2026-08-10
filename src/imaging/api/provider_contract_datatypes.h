@@ -540,9 +540,18 @@ struct CaptureRequest {
 // one-device submission; a rig capture is represented as one grouped submission
 // containing all admitted member-device requests for a shared capture_id/rig_id.
 struct CaptureSubmission {
+  // Device Capture Id, and only meaningful for DEVICE_CAPTURE origin, where a
+  // submission wraps exactly one request and shares its id. A rig submission
+  // has N members with N distinct Device Capture Ids and no single one of its
+  // own, so this is 0 there -- see rig_capture_id.
   uint64_t capture_id = 0;
   CaptureSubmissionOrigin origin = CaptureSubmissionOrigin::DEVICE_CAPTURE;
   uint64_t rig_id = 0;
+  // Rig Capture Id, set for RIG_CAPTURE origin and 0 otherwise. A separate
+  // field because it is a separate id space: putting it in capture_id would
+  // make one field mean two incompatible things depending on origin, which is
+  // the confusion capture_identity_and_lifecycle.md 2.1 removes.
+  uint64_t rig_capture_id = 0;
   std::vector<CaptureRequest> device_requests{};
 };
 

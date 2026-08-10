@@ -22,7 +22,7 @@ public:
   void set_server_and_id(CamBANGServer* server, uint64_t rig_id) {
     server_ = server;
     rig_id_ = rig_id;
-    current_capture_id_ = 0;
+    current_rig_capture_id_ = 0;
   }
 
   uint64_t get_id() const { return rig_id_; }
@@ -35,7 +35,10 @@ protected:
 private:
   CamBANGServer* server_ = nullptr;
   uint64_t rig_id_ = 0;
-  uint64_t current_capture_id_ = 0;
+  // Rig Capture Id of this rig's most recent accepted trigger. Never a Device
+  // Capture Id -- the two spaces are disjoint and interchanging them silently
+  // resolves the wrong record.
+  uint64_t current_rig_capture_id_ = 0;
 };
 
 } // namespace cambang

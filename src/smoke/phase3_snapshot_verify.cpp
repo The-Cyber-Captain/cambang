@@ -427,10 +427,12 @@ static int test_capture_cohort_registry_basics() {
     return 1;
   }
   CoreCaptureCohortRegistry::CohortRecord rec{};
-  rec.capture_id = 77;
+  rec.rig_capture_id = 77;
   rec.rig_id = 7;
-  rec.expected_participants.push_back({1001, "hw:a"});
-  rec.expected_participants.push_back({1002, "hw:b"});
+  // Each member carries its own Device Capture Id, from a space disjoint from
+  // the cohort's 77; insert() rejects a participant without one.
+  rec.expected_participants.push_back({1001, "hw:a", 5001});
+  rec.expected_participants.push_back({1002, "hw:b", 5002});
   if (!cohorts.insert(rec)) {
     std::cerr << "FAIL: cohort insert rejected valid record\n";
     return 1;
@@ -467,15 +469,61 @@ static int test_capture_cohort_registry_basics() {
     return 1;
   }
   CoreCaptureCohortRegistry::CohortRecord dup{};
-  dup.capture_id = 77;
+  dup.rig_capture_id = 77;
   dup.rig_id = 99;
-  dup.expected_participants.push_back({9, "dup"});
+  dup.expected_participants.push_back({9, "dup", 5009});
   if (cohorts.insert(dup)) {
-    std::cerr << "FAIL: duplicate capture_id unexpectedly accepted\n";
+    std::cerr << "FAIL: duplicate rig_capture_id unexpectedly accepted\n";
+    return 1;
+  }
+  // Id-space separation, enforced rather than assumed. A member whose Device
+  // Capture Id equals its cohort's Rig Capture Id is the exact signature of a
+  // regression back to one shared counter; a cohort must refuse to hold it.
+  // This is the host-native gate for that regression: the counters themselves
+  // are minted at the Godot boundary, which no maintainer verifier can drive,
+  // so the guarantee is bound here at the registry that would have to accept
+  // the collision for it to do any damage.
+  CoreCaptureCohortRegistry::CohortRecord collapsed{};
+  collapsed.rig_capture_id = 88;
+  collapsed.rig_id = 8;
+  collapsed.expected_participants.push_back({1001, "hw:a", 88});
+  if (cohorts.insert(collapsed)) {
+    std::cerr << "FAIL: cohort accepted a member reusing the rig capture id\n";
+    return 1;
+  }
+  // Same collision one level down: two members sharing one Device Capture Id.
+  CoreCaptureCohortRegistry::CohortRecord shared_members{};
+  shared_members.rig_capture_id = 89;
+  shared_members.rig_id = 8;
+  shared_members.expected_participants.push_back({1001, "hw:a", 6001});
+  shared_members.expected_participants.push_back({1002, "hw:b", 6001});
+  if (cohorts.insert(shared_members)) {
+    std::cerr << "FAIL: cohort accepted two members sharing one device capture id\n";
+    return 1;
+  }
+  // A member id already owned by a live cohort must not be reused by another,
+  // or the reverse index would resolve one id to two cohorts.
+  CoreCaptureCohortRegistry::CohortRecord reused{};
+  reused.rig_capture_id = 90;
+  reused.rig_id = 8;
+  reused.expected_participants.push_back({1003, "hw:c", 5001});
+  if (cohorts.insert(reused)) {
+    std::cerr << "FAIL: cohort accepted a member id already owned by another cohort\n";
+    return 1;
+  }
+  // The reverse index resolves a member to its cohort, which is how provider
+  // facts (reported under member ids) are classified as rig-originated.
+  if (cohorts.rig_capture_id_for_device_capture(5001) != 77 ||
+      cohorts.rig_capture_id_for_device_capture(5002) != 77 ||
+      cohorts.rig_capture_id_for_device_capture(77) != 0 ||
+      cohorts.device_capture_id_for(77, 1001) != 5001 ||
+      cohorts.device_capture_id_for(77, 1002) != 5002) {
+    std::cerr << "FAIL: cohort member/rig id resolution incorrect\n";
     return 1;
   }
   cohorts.clear();
-  if (cohorts.contains(77) || cohorts.find(77).has_value()) {
+  if (cohorts.contains(77) || cohorts.find(77).has_value() ||
+      cohorts.rig_capture_id_for_device_capture(5001) != 0) {
     std::cerr << "FAIL: clear() did not remove cohort\n";
     return 1;
   }

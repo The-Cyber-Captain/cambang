@@ -69,6 +69,18 @@ public:
   static constexpr uint64_t DIRECT_DEVICE_INSTANCE_ID_BASE = 1000000000000ULL;
   static constexpr uint64_t DIRECT_ROOT_ID_BASE = 2000000000000ULL;
   static constexpr uint64_t DIRECT_STREAM_ID_BASE = 3000000000000ULL;
+  // Rig Capture Ids allocate from their own high range, following the same
+  // convention. Device Capture Ids deliberately keep starting at 1: they
+  // inherit the pre-existing capture_id space, and rebasing them would change
+  // every capture id in the system for no benefit.
+  //
+  // The separation has to be numeric, not merely conceptual. Two independent
+  // counters both starting at 1 produce a Rig Capture Id and a Device Capture
+  // Id with the same VALUE on the very first rig capture -- different spaces,
+  // identical number -- which is indistinguishable from a genuine collision to
+  // any consistency check, and makes a log or a debugger actively misleading.
+  // Scene 73 caught exactly that.
+  static constexpr uint64_t RIG_CAPTURE_ID_BASE = 4000000000000ULL;
 
   CamBANGServer();
   ~CamBANGServer() override;
@@ -298,7 +310,10 @@ private:
   // ERR_BUSY for every other category (tranche 7 deliberately maps only the
   // configuration gate; see docs/dev/current_tranche.md at that date).
   struct RigTriggerInternalResult {
-    uint64_t capture_id = 0;
+    // Rig Capture Id. Members' Device Capture Ids live in the cohort record
+    // and are reached through CoreRuntime, not returned here -- returning them
+    // is the public-identity tranche's job, not this one's.
+    uint64_t rig_capture_id = 0;
     godot::Error error = godot::ERR_BUSY;
   };
   RigTriggerInternalResult trigger_rig_capture_internal_(uint64_t rig_id);
@@ -391,7 +406,14 @@ private:
   // Godot-owned provider lifetime (e.g. ProviderBroker). This avoids relying on
   // temporary dev scaffolding to attach/initialize the provider.
   std::unique_ptr<ICameraProvider> provider_;
-  std::atomic<uint64_t> next_capture_id_{1};
+  // Two id spaces, not one counter (capture_identity_and_lifecycle.md 2.1).
+  // A Device Capture Id is drawn for every device capture, standalone or rig
+  // member; a Rig Capture Id names the rig capture itself. Both are
+  // session-scoped and both are minted here -- Core must not become a second
+  // allocator for either. Collapsing these back into one counter reintroduces
+  // the member/cohort collision and is caught by provider_compliance_verify.
+  std::atomic<uint64_t> next_device_capture_id_{1};
+  std::atomic<uint64_t> next_rig_capture_id_{RIG_CAPTURE_ID_BASE};
   std::atomic<uint64_t> next_rig_id_{1};
   std::atomic<uint64_t> next_direct_device_instance_id_{DIRECT_DEVICE_INSTANCE_ID_BASE};
   std::atomic<uint64_t> next_direct_root_id_{DIRECT_ROOT_ID_BASE};

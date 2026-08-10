@@ -3391,8 +3391,19 @@ static int test_capture_admission_context_smoke() {
   }
   const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(
       991, 99003, make_manual_rig_preflight(991, {"a", "b"}));
-  const auto first_rig = rt.smoke_capture_admission_context(99003, 1);
-  const auto second_rig = rt.smoke_capture_admission_context(99003, 2);
+  // Admission contexts are keyed by each member's own Device Capture Id, not
+  // by the cohort's 99003. The assertion is unchanged -- both members must
+  // still share one context -- only the key it is fetched under.
+  const auto first_rig = admitted.participants.size() > 0
+      ? rt.smoke_capture_admission_context(
+            admitted.participants[0].request.capture_id,
+            admitted.participants[0].request.device_instance_id)
+      : std::nullopt;
+  const auto second_rig = admitted.participants.size() > 1
+      ? rt.smoke_capture_admission_context(
+            admitted.participants[1].request.capture_id,
+            admitted.participants[1].request.device_instance_id)
+      : std::nullopt;
   if (!admitted.ok || !first_rig || !second_rig ||
       first_rig->capture_date_time.unix_epoch_nanoseconds() != 200 ||
       second_rig->capture_date_time.unix_epoch_nanoseconds() != 200 ||
@@ -3432,7 +3443,12 @@ static int test_capture_admission_context_smoke() {
   }
   const auto cleared = rt.smoke_admit_rig_cohort_from_preflight(
       991, 99004, make_manual_rig_preflight(991, {"a", "b"}));
-  const auto cleared_context = rt.smoke_capture_admission_context(99004, 1);
+  // Keyed by the member's own Device Capture Id, not the cohort's 99004.
+  const auto cleared_context = cleared.participants.empty()
+      ? std::nullopt
+      : rt.smoke_capture_admission_context(
+            cleared.participants[0].request.capture_id,
+            cleared.participants[0].request.device_instance_id);
   if (!cleared.ok || !cleared_context || cleared_context->geolocation ||
       cleared_context->capture_date_time.unix_epoch_nanoseconds() != 300) {
     std::cerr << "FAIL: cleared capture geolocation did not remain absent at admission\n";
@@ -3903,14 +3919,19 @@ static int test_rig_cohort_admission_from_preflight_smoke() {
 
   const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(8001, 9001, preflight_ok);
   if (!admitted.ok || admitted.failure != CoreRuntime::RigCohortAdmissionFailure::None ||
-      admitted.capture_id != 9001 || admitted.rig_id != 8001 || admitted.participants.size() != 1) {
+      admitted.rig_capture_id != 9001 || admitted.rig_id != 8001 || admitted.participants.size() != 1) {
     std::cerr << "Expected successful cohort admission from preflight\n";
     rt.stop();
     return 1;
   }
   const auto& p = admitted.participants[0];
+  // A member is stamped with its OWN Device Capture Id, never the cohort's
+  // 9001. Asserting inequality is the point: equality is the collision the
+  // split id spaces exist to remove, and this check is what catches a
+  // regression back to one counter.
   if (p.hardware_id != live_hw ||
-      p.request.capture_id != 9001 ||
+      p.request.capture_id == 0 ||
+      p.request.capture_id == admitted.rig_capture_id ||
       p.request.rig_id != 8001 ||
       p.request.device_instance_id != kDeviceInstanceId) {
     std::cerr << "Admitted request bundle stamping/traceability mismatch\n";
@@ -4227,7 +4248,7 @@ static int test_rig_bundle_submission_smoke() {
 
   // Multi-image request rejected when provider lacks multi-image capability.
   auto multi_member_invalid = admitted_ok;
-  multi_member_invalid.capture_id = 9104;
+  multi_member_invalid.rig_capture_id = 9104;
   multi_member_invalid.participants[0].request.capture_id = 9104;
   multi_member_invalid.participants[0].request.still_image_bundle.members.push_back(
       CaptureStillImageMember{1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET});
@@ -4247,7 +4268,7 @@ static int test_rig_bundle_submission_smoke() {
 
   // First participant synchronous failure: invalid device id in first entry.
   auto bad_first = admitted_ok;
-  bad_first.capture_id = 9102;
+  bad_first.rig_capture_id = 9102;
   bad_first.participants[0].request.capture_id = 9102;
   bad_first.participants[0].request.device_instance_id = 999999;
   if (!rt.smoke_admit_rig_cohort_from_preflight(8101, 9102, preflight_ok).ok) {
@@ -4267,7 +4288,7 @@ static int test_rig_bundle_submission_smoke() {
   // causes the provider submission to fail; grouped submission does not expose
   // per-participant partial progress.
   auto two_part = admitted_ok;
-  two_part.capture_id = 9103;
+  two_part.rig_capture_id = 9103;
   two_part.participants[0].request.capture_id = 9103;
   CoreRuntime::RigAdmittedParticipantRequest second = two_part.participants[0];
   second.request.capture_id = 9103;
@@ -4391,8 +4412,14 @@ static int test_cohort_aware_capture_result_set_smoke() {
   }
 
   // Emit expected participant + extra successful non-expected participant.
-  emit_capture(9202, admitted.participants[0].request.device_instance_id, 3);
-  emit_capture(9202, 4242, 4);
+  // Provider facts carry the MEMBER's Device Capture Id, not the cohort's
+  // 9202: 9202 keys no assembly and no result, so emitting under it would
+  // leave the cohort permanently empty.
+  const uint64_t member_capture_id = admitted.participants[0].request.capture_id;
+  emit_capture(member_capture_id, admitted.participants[0].request.device_instance_id, 3);
+  // Non-expected participant: a device that is not in the cohort, under its
+  // own unrelated Device Capture Id. It must still be excluded from the set.
+  emit_capture(member_capture_id + 500000, 4242, 4);
   if (!wait_until([&]() { return rt.get_capture_result_set(9202).size() == 1; }, 400, 5)) {
     std::cerr << "Cohort result-set smoke: admitted one-member cohort never converged to size 1\n";
     rt.stop();
@@ -4454,12 +4481,12 @@ static int test_server_facing_rig_orchestration_adapter_smoke() {
   }
 
   const uint64_t ok_capture_id = allocate_capture_id();
-  const auto success = rt.orchestrate_rig_capture_with_capture_id_for_server(8401, ok_capture_id);
-  if (!success.ok || success.capture_id != ok_capture_id || success.rig_id != 8401 || success.submitted_count != 1) {
+  const auto success = rt.orchestrate_rig_capture_with_capture_id_for_server(8401, ok_capture_id, CoreRuntime::smoke_default_device_capture_id_minter());
+  if (!success.ok || success.rig_capture_id != ok_capture_id || success.rig_id != 8401 || success.submitted_count != 1) {
     std::cerr << "Expected server-facing rig orchestration success. capture_id=" << ok_capture_id
               << " rig_id=8401"
               << " result_ok=" << (success.ok ? "true" : "false")
-              << " result_capture_id=" << success.capture_id
+              << " result_rig_capture_id=" << success.rig_capture_id
               << " result_rig_id=" << success.rig_id
               << " failure=" << static_cast<int>(success.failure)
               << " preflight_failure=" << static_cast<int>(success.preflight_failure)
@@ -4481,7 +4508,7 @@ static int test_server_facing_rig_orchestration_adapter_smoke() {
 
   // Failure path: missing rig should fail and should not expose cohort result set.
   const uint64_t bad_capture_id = allocate_capture_id();
-  const auto fail = rt.orchestrate_rig_capture_with_capture_id_for_server(999991, bad_capture_id);
+  const auto fail = rt.orchestrate_rig_capture_with_capture_id_for_server(999991, bad_capture_id, CoreRuntime::smoke_default_device_capture_id_minter());
   if (fail.ok || fail.failure != CoreRuntime::RigOrchestrationFailure::PreflightFailed) {
     rt.stop();
     return 1;
@@ -4611,7 +4638,7 @@ static int test_rig_orchestration_helper_smoke() {
 
   // Success.
   const auto success = rt.smoke_orchestrate_rig_capture_with_capture_id(8301, 9302);
-  if (!success.ok || success.capture_id != 9302 || success.submitted_count != 1) {
+  if (!success.ok || success.rig_capture_id != 9302 || success.submitted_count != 1) {
     rt.stop();
     return 1;
   }

@@ -72,12 +72,24 @@ struct RigState {
 
     std::vector<std::string> member_hardware_ids;
 
+    // Rig Capture Id (capture_identity_and_lifecycle.md 2.1), NOT a Device
+    // Capture Id -- a rig member's own id lives on that member's records. The
+    // two spaces are numerically disjoint (see CamBANGServer's
+    // RIG_CAPTURE_ID_BASE), so a value here can be told apart from a device
+    // capture id on sight.
+    //
+    // NOT POPULATED TODAY. Nothing writes CoreRigRegistry::RigRecord's
+    // active_capture_id or last_capture_id, so both project a permanent 0 and
+    // have done since before the id split. A consumer cannot read 0 here as
+    // "no capture yet" -- it means "never recorded". Populating them belongs
+    // with rig capture completion tracking, not with identity.
     uint64_t active_capture_id = 0;
     uint64_t capture_profile_version = 0;
     uint32_t capture_width = 0;
     uint32_t capture_height = 0;
     uint32_t capture_format = 0;
 
+    // Same caveat as active_capture_id: never written, always 0.
     uint64_t captures_triggered = 0;
     uint64_t captures_completed = 0;
     uint64_t captures_failed = 0;
@@ -231,6 +243,10 @@ struct AcquisitionSessionState {
     uint64_t captures_completed = 0;
     uint64_t captures_failed = 0;
 
+    // Device Capture Id, and live -- written by
+    // CoreAcquisitionSessionRegistry on capture start/completion. For a rig
+    // member this is that MEMBER's own id, not the cohort's Rig Capture Id,
+    // which is what makes a per-device result lookup off this field correct.
     uint64_t last_capture_id = 0;
     uint64_t last_capture_latency_ns = 0;
 

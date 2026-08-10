@@ -2536,9 +2536,9 @@ godot::Error CamBANGServer::trigger_device_capture(
     return godot::ERR_BUSY;
   }
 
-  uint64_t capture_id = next_capture_id_.fetch_add(1, std::memory_order_relaxed);
+  uint64_t capture_id = next_device_capture_id_.fetch_add(1, std::memory_order_relaxed);
   if (capture_id == 0) {
-    capture_id = next_capture_id_.fetch_add(1, std::memory_order_relaxed);
+    capture_id = next_device_capture_id_.fetch_add(1, std::memory_order_relaxed);
   }
 
   const TryTriggerDeviceCaptureStatus status =
@@ -2790,12 +2790,24 @@ CamBANGServer::RigTriggerInternalResult CamBANGServer::trigger_rig_capture_inter
     return out;
   }
 
-  uint64_t capture_id = next_capture_id_.fetch_add(1, std::memory_order_relaxed);
-  if (capture_id == 0) {
-    capture_id = next_capture_id_.fetch_add(1, std::memory_order_relaxed);
+  uint64_t rig_capture_id = next_rig_capture_id_.fetch_add(1, std::memory_order_relaxed);
+  if (rig_capture_id == 0) {
+    rig_capture_id = next_rig_capture_id_.fetch_add(1, std::memory_order_relaxed);
   }
 
-  const auto orchestration = runtime_.orchestrate_rig_capture_with_capture_id_for_server(rig_id, capture_id);
+  // Members draw from the device space, one id each. Core calls this on the
+  // core thread during admission -- the first point that knows the member
+  // count, because preflight resolves the participant list.
+  const CoreRuntime::DeviceCaptureIdMinter mint_device_capture_id = [this]() -> uint64_t {
+    uint64_t id = next_device_capture_id_.fetch_add(1, std::memory_order_relaxed);
+    if (id == 0) {
+      id = next_device_capture_id_.fetch_add(1, std::memory_order_relaxed);
+    }
+    return id;
+  };
+
+  const auto orchestration = runtime_.orchestrate_rig_capture_with_capture_id_for_server(
+      rig_id, rig_capture_id, mint_device_capture_id);
   if (!orchestration.ok) {
     const bool imaging_spec_gate =
         orchestration.failure == CoreRuntime::RigOrchestrationFailure::AdmissionFailed &&
@@ -2831,7 +2843,7 @@ CamBANGServer::RigTriggerInternalResult CamBANGServer::trigger_rig_capture_inter
     out.error = imaging_spec_gate ? godot::ERR_UNCONFIGURED : godot::ERR_BUSY;
     return out;
   }
-  out.capture_id = capture_id;
+  out.rig_capture_id = rig_capture_id;
   out.error = godot::OK;
   return out;
 }
@@ -3277,6 +3289,12 @@ void CamBANGServer::_arm_live_retained_result_access_calibration_from_snapshot_(
         session.device_instance_id);
   }
   for (const RigState& rig : latest_->rigs) {
+    // UNREACHABLE BODY TODAY, and not because of the id split: nothing writes
+    // RigRecord::last_capture_id, so this always continues (see RigState's
+    // field comment). Left in place rather than deleted because it is correct
+    // as written -- rig.last_capture_id is a Rig Capture Id and
+    // get_capture_result_set() takes exactly that -- so it starts working the
+    // moment rig capture completion is recorded, which is a later tranche.
     if (rig.last_capture_id == 0) {
       continue;
     }

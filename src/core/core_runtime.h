@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -420,10 +421,21 @@ enum class TryCloseDeviceStatus : uint8_t {
     CaptureRequest request{};
   };
 
+  // Draws one Device Capture Id. Supplied by the Godot boundary, which owns
+  // both id counters (see arbitration_policy.md 9 and
+  // capture_identity_and_lifecycle.md 2.1). Core cannot mint these itself: it
+  // must not become a second allocator for a space the boundary already owns.
+  // Called once per rig participant, on the core thread, during admission --
+  // the only point that knows how many members there are, because the
+  // participant list does not exist until preflight has run.
+  using DeviceCaptureIdMinter = std::function<uint64_t()>;
+
   struct RigAdmittedRequestBundle {
     bool ok = false;
     RigCohortAdmissionFailure failure = RigCohortAdmissionFailure::None;
-    uint64_t capture_id = 0;
+    // Rig Capture Id. Each participant's own Device Capture Id is on its
+    // request, never this value.
+    uint64_t rig_capture_id = 0;
     uint64_t rig_id = 0;
     std::vector<RigAdmittedParticipantRequest> participants;
   };
@@ -438,7 +450,7 @@ enum class TryCloseDeviceStatus : uint8_t {
   struct RigSubmissionResult {
     bool ok = false;
     RigSubmissionFailure failure = RigSubmissionFailure::None;
-    uint64_t capture_id = 0;
+    uint64_t rig_capture_id = 0;
     uint64_t rig_id = 0;
     size_t submitted_count = 0;
     size_t failed_index = 0;
@@ -458,7 +470,7 @@ enum class TryCloseDeviceStatus : uint8_t {
     bool ok = false;
     RigOrchestrationFailure failure = RigOrchestrationFailure::None;
     uint64_t rig_id = 0;
-    uint64_t capture_id = 0;
+    uint64_t rig_capture_id = 0;
     RigPreflightFailure preflight_failure = RigPreflightFailure::None;
     RigCohortAdmissionFailure admission_failure = RigCohortAdmissionFailure::None;
     RigSubmissionFailure submission_failure = RigSubmissionFailure::None;
@@ -484,18 +496,30 @@ enum class TryCloseDeviceStatus : uint8_t {
       uint64_t capture_id, uint64_t device_instance_id) const;
   RigPreflightResult preflight_rig_participants_materialize(uint64_t rig_id) const;
   bool smoke_set_rig_member_hardware_ids(uint64_t rig_id, std::vector<std::string> member_hardware_ids);
+  // Maintainer verifiers exercise admission and submission, not id allocation,
+  // so these default to a process-monotonic minter rather than making every
+  // call site hand-roll an allocator. The production path
+  // (orchestrate_rig_capture_with_capture_id_for_server) deliberately has no
+  // default: the boundary owns the counters and must say so.
+  static const DeviceCaptureIdMinter& smoke_default_device_capture_id_minter();
   RigAdmittedRequestBundle smoke_admit_rig_cohort_from_preflight(
       uint64_t rig_id,
-      uint64_t capture_id,
-      const RigPreflightResult& preflight);
+      uint64_t rig_capture_id,
+      const RigPreflightResult& preflight,
+      const DeviceCaptureIdMinter& mint_device_capture_id =
+          smoke_default_device_capture_id_minter());
   RigTriggerOrchestrationResult smoke_orchestrate_rig_capture_from_preflight(
       uint64_t rig_id,
-      uint64_t capture_id,
-      const RigPreflightResult& preflight);
+      uint64_t rig_capture_id,
+      const RigPreflightResult& preflight,
+      const DeviceCaptureIdMinter& mint_device_capture_id =
+          smoke_default_device_capture_id_minter());
   RigSubmissionResult smoke_submit_admitted_rig_bundle(const RigAdmittedRequestBundle& bundle);
   RigTriggerOrchestrationResult smoke_orchestrate_rig_capture_with_capture_id(
       uint64_t rig_id,
-      uint64_t capture_id);
+      uint64_t rig_capture_id,
+      const DeviceCaptureIdMinter& mint_device_capture_id =
+          smoke_default_device_capture_id_minter());
 
   struct ImagingSpecRetainedStateForSmoke {
     uint64_t imaging_spec_version = 0;
@@ -566,10 +590,12 @@ enum class TryCloseDeviceStatus : uint8_t {
   ReplaceExternalCameraDescriptionResult replace_external_camera_description_json_for_internal(
       const std::string& json_text);
 
-  // Server-internal adapter: caller supplies capture_id (no allocation here).
+  // Server-internal adapter: the caller supplies the Rig Capture Id and the
+  // minter for its members' Device Capture Ids. Core allocates neither.
   RigTriggerOrchestrationResult orchestrate_rig_capture_with_capture_id_for_server(
       uint64_t rig_id,
-      uint64_t capture_id) noexcept;
+      uint64_t rig_capture_id,
+      const DeviceCaptureIdMinter& mint_device_capture_id) noexcept;
 
 #if defined(CAMBANG_INTERNAL_SMOKE)
   CoreThread::PostResult try_post_core_thread_unchecked(CoreThread::Task task) {
@@ -929,18 +955,21 @@ private:
   RigPreflightResult preflight_rig_participants_materialize_(uint64_t rig_id) const;
   RigAdmittedRequestBundle admit_rig_cohort_from_preflight_(
       uint64_t rig_id,
-      uint64_t capture_id,
-      const RigPreflightResult& preflight);
+      uint64_t rig_capture_id,
+      const RigPreflightResult& preflight,
+      const DeviceCaptureIdMinter& mint_device_capture_id);
   RigTriggerOrchestrationResult orchestrate_rig_capture_from_preflight_(
       uint64_t rig_id,
-      uint64_t capture_id,
-      const RigPreflightResult& preflight);
+      uint64_t rig_capture_id,
+      const RigPreflightResult& preflight,
+      const DeviceCaptureIdMinter& mint_device_capture_id);
   RigCohortAdmissionFailure grouped_rig_imaging_spec_admission_failure_(
       const RigPreflightResult& preflight) const noexcept;
   RigSubmissionResult submit_admitted_rig_bundle_(const RigAdmittedRequestBundle& bundle);
   RigTriggerOrchestrationResult orchestrate_rig_capture_with_capture_id_(
       uint64_t rig_id,
-      uint64_t capture_id);
+      uint64_t rig_capture_id,
+      const DeviceCaptureIdMinter& mint_device_capture_id);
   CaptureAdmissionContext make_capture_admission_context_() const;
   CoreResolvedCaptureImageFacts resolve_capture_image_facts_(
       uint64_t capture_id, uint64_t device_instance_id,

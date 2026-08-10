@@ -3766,11 +3766,16 @@ bool run_per_device_single_capture_admission_check() {
   //    (brief 5: admit every device job or none, rejected submissions emit
   //    no started/frame/terminal facts).
   CaptureSubmission grouped{};
-  grouped.capture_id = kGroupedOverBusyDevice;
+  // Rig submission: rig_capture_id names the cohort, capture_id stays 0, and
+  // each member carries its own distinct Device Capture Id.
+  grouped.rig_capture_id = kGroupedOverBusyDevice;
+  grouped.capture_id = 0;
   grouped.origin = CaptureSubmissionOrigin::RIG_CAPTURE;
   grouped.rig_id = 88;
-  CaptureRequest grouped_a = make_request(grouped.capture_id, kDeviceA);
-  CaptureRequest grouped_b = make_request(grouped.capture_id, kDeviceB);
+  const uint64_t grouped_member_a = kGroupedOverBusyDevice + 1;
+  const uint64_t grouped_member_b = kGroupedOverBusyDevice + 2;
+  CaptureRequest grouped_a = make_request(grouped_member_a, kDeviceA);
+  CaptureRequest grouped_b = make_request(grouped_member_b, kDeviceB);
   grouped_a.rig_id = grouped.rig_id;
   grouped_b.rig_id = grouped.rig_id;
   grouped.device_requests.push_back(grouped_a);
@@ -3780,9 +3785,15 @@ bool run_per_device_single_capture_admission_check() {
     std::cerr << "FAIL grouped submission over a busy member must be refused with ERR_BUSY\n";
     ok = false;
   }
-  if (count_event("capture_started", kGroupedOverBusyDevice) != 0 ||
-      count_event("capture_completed", kGroupedOverBusyDevice) != 0 ||
-      count_event("capture_failed", kGroupedOverBusyDevice) != 0) {
+  // Counted under the MEMBER ids: a rejected rig submission emits no facts,
+  // and facts would now be reported under each member's own id, so counting
+  // the cohort id alone would pass vacuously.
+  if (count_event("capture_started", grouped_member_a) != 0 ||
+      count_event("capture_completed", grouped_member_a) != 0 ||
+      count_event("capture_failed", grouped_member_a) != 0 ||
+      count_event("capture_started", grouped_member_b) != 0 ||
+      count_event("capture_completed", grouped_member_b) != 0 ||
+      count_event("capture_failed", grouped_member_b) != 0) {
     std::cerr << "FAIL rejected grouped submission emitted facts\n";
     ok = false;
   }
@@ -4049,11 +4060,12 @@ bool run_synthetic_capture_executor_correctness_check() {
   }
 
   CaptureSubmission grouped{};
-  grouped.capture_id = kRejectedGroupedCapture;
+  grouped.rig_capture_id = kRejectedGroupedCapture;
+  grouped.capture_id = 0;
   grouped.origin = CaptureSubmissionOrigin::RIG_CAPTURE;
   grouped.rig_id = 77;
-  CaptureRequest grouped_a = make_request(grouped.capture_id, kDeviceA);
-  CaptureRequest grouped_b = make_request(grouped.capture_id, kDeviceB);
+  CaptureRequest grouped_a = make_request(kRejectedGroupedCapture + 1, kDeviceA);
+  CaptureRequest grouped_b = make_request(kRejectedGroupedCapture + 2, kDeviceB);
   grouped_a.rig_id = grouped.rig_id;
   grouped_b.rig_id = grouped.rig_id;
   grouped.device_requests.push_back(grouped_a);
@@ -4124,27 +4136,41 @@ bool run_synthetic_capture_executor_correctness_check() {
   }
 
   const auto submit_faulted_group = [&](
-      uint64_t capture_id,
+      uint64_t rig_capture_id,
       SyntheticProvider::CaptureAdmissionFaultForTest fault) {
     CaptureSubmission faulted_group = grouped;
-    faulted_group.capture_id = capture_id;
-    for (CaptureRequest& request : faulted_group.device_requests) {
-      request.capture_id = capture_id;
+    // Rig submission: the cohort is named by rig_capture_id, capture_id stays
+    // 0, and members take distinct Device Capture Ids derived from it.
+    faulted_group.rig_capture_id = rig_capture_id;
+    faulted_group.capture_id = 0;
+    std::vector<uint64_t> member_capture_ids;
+    member_capture_ids.reserve(faulted_group.device_requests.size());
+    for (size_t i = 0; i < faulted_group.device_requests.size(); ++i) {
+      const uint64_t member_capture_id = rig_capture_id + 1 + i;
+      faulted_group.device_requests[i].capture_id = member_capture_id;
+      member_capture_ids.push_back(member_capture_id);
     }
     provider.inject_next_capture_admission_fault_for_test(fault);
     const ProviderResult result =
         provider.trigger_capture_submission(faulted_group);
     const auto current = provider.capture_executor_snapshot_for_test();
     provider.advance(0);
+    // Facts are reported under member ids now, so silence is asserted there;
+    // asserting it under rig_capture_id alone would pass vacuously.
+    bool members_silent = true;
+    for (const uint64_t member_capture_id : member_capture_ids) {
+      members_silent = members_silent &&
+          count_event("capture_started", member_capture_id) == 0 &&
+          count_event("capture_completed", member_capture_id) == 0 &&
+          count_event("capture_failed", member_capture_id) == 0 &&
+          count_capture_frames(member_capture_id) == 0;
+    }
     return !result.ok() &&
            result.code == ProviderError::ERR_PROVIDER_FAILED &&
            current.queued_jobs == 0 && current.active_jobs == 0 &&
            current.in_flight_jobs == 0 &&
            current.paused_device_count == 0 &&
-           count_event("capture_started", capture_id) == 0 &&
-           count_event("capture_completed", capture_id) == 0 &&
-           count_event("capture_failed", capture_id) == 0 &&
-           count_capture_frames(capture_id) == 0;
+           members_silent;
   };
   if (!submit_faulted_group(
           kRetainAllocationFaultCapture,
@@ -5228,6 +5254,23 @@ bool run_provider_camera_fact_ingress_check() {
   if (!admitted.ok || admitted.participants.size() != 2) {
     return fail_with_cleanup("FAIL provider camera facts rig admission failed");
   }
+  // Members carry their own Device Capture Ids, so provider facts -- which are
+  // reported per device -- are posted and read under the member's id, never
+  // under the cohort's kCaptureId. Resolve them by device rather than by
+  // participant order, which preflight does not promise.
+  uint64_t capture_a = 0;
+  uint64_t capture_b = 0;
+  for (const auto& participant : admitted.participants) {
+    if (participant.request.device_instance_id == kDeviceA) {
+      capture_a = participant.request.capture_id;
+    } else if (participant.request.device_instance_id == kDeviceB) {
+      capture_b = participant.request.capture_id;
+    }
+  }
+  if (capture_a == 0 || capture_b == 0 || capture_a == capture_b) {
+    return fail_with_cleanup(
+        "FAIL provider camera facts rig members lack distinct device capture ids");
+  }
   const auto domain = CoordinateDomainPlatformDefined::create("image-fact-domain");
   const auto intrinsics = Intrinsics::create(
       200.0, 201.0, 100.0, 101.0, std::nullopt, 1280, 720, CoordinateDomain{*domain});
@@ -5264,31 +5307,31 @@ bool run_provider_camera_fact_ingress_check() {
   other_participant.pose = SourcedFact<CameraPose>{*pose, FactOrigin::NATIVE_REPORTED};
   other_participant.focus_state = SourcedFact<FocusState>{
       FocusState{FocusStateUnknown{}}, FactOrigin::NATIVE_REPORTED};
-  rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceA, 0, member_zero);
-  rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceA, 1, member_one);
-  rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceB, 0, other_participant);
-  rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceA, 2, member_one);
-  rt.provider_callbacks()->on_capture_image_facts(kCaptureId + 1, kDeviceA, 0, member_zero);
+  rt.provider_callbacks()->on_capture_image_facts(capture_a, kDeviceA, 0, member_zero);
+  rt.provider_callbacks()->on_capture_image_facts(capture_a, kDeviceA, 1, member_one);
+  rt.provider_callbacks()->on_capture_image_facts(capture_b, kDeviceB, 0, other_participant);
+  rt.provider_callbacks()->on_capture_image_facts(capture_a, kDeviceA, 2, member_one);
+  rt.provider_callbacks()->on_capture_image_facts(capture_a + 1000000, kDeviceA, 0, member_zero);
   ProviderCaptureImageFacts malformed_origin = member_zero;
   malformed_origin.focus_state->origin = static_cast<FactOrigin>(99);
-  rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceA, 0, malformed_origin);
+  rt.provider_callbacks()->on_capture_image_facts(capture_a, kDeviceA, 0, malformed_origin);
   ProviderCaptureImageFacts origin_barrier{};
   origin_barrier.focus_state = SourcedFact<FocusState>{
       FocusState{FocusStateUnknown{}}, FactOrigin::NATIVE_REPORTED};
-  rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceB, 1, origin_barrier);
+  rt.provider_callbacks()->on_capture_image_facts(capture_b, kDeviceB, 1, origin_barrier);
 
   // Member B/1 is a valid admitted identity and follows the malformed A/0
   // replacement. Its accepted timing is a positive FIFO barrier before A/0 is
   // inspected for transactional preservation.
   if (!wait_until([&] {
         const auto barrier =
-            rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceB, 1);
+            rt.provider_capture_image_facts_for_smoke(capture_b, kDeviceB, 1);
         return barrier && barrier->focus_state;
       })) {
     return fail_with_cleanup("FAIL provider camera facts invalid-origin rejection barrier failed");
   }
   const auto a0_after_invalid_origin =
-      rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceA, 0);
+      rt.provider_capture_image_facts_for_smoke(capture_a, kDeviceA, 0);
   if (!a0_after_invalid_origin || !a0_after_invalid_origin->intrinsics ||
       a0_after_invalid_origin->distortion || a0_after_invalid_origin->pose ||
       !a0_after_invalid_origin->focus_state ||
@@ -5307,20 +5350,20 @@ bool run_provider_camera_fact_ingress_check() {
   ProviderCaptureImageFacts malformed_transform = member_zero;
   malformed_transform.realized_image_transform->value.rotation =
       static_cast<ImageRotationDegrees>(99);
-  rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceA, 0, malformed_transform);
+  rt.provider_callbacks()->on_capture_image_facts(capture_a, kDeviceA, 0, malformed_transform);
   ProviderCaptureImageFacts transform_barrier = origin_barrier;
   transform_barrier.focus_state = SourcedFact<FocusState>{
       FocusState{FocusStateUnknown{}}, FactOrigin::NATIVE_REPORTED};
-  rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceB, 1, transform_barrier);
+  rt.provider_callbacks()->on_capture_image_facts(capture_b, kDeviceB, 1, transform_barrier);
   if (!wait_until([&] {
         const auto barrier =
-            rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceB, 1);
+            rt.provider_capture_image_facts_for_smoke(capture_b, kDeviceB, 1);
         return barrier && barrier->focus_state;
       })) {
     return fail_with_cleanup("FAIL provider camera facts invalid-transform rejection barrier failed");
   }
   const auto a0_after_invalid_transform =
-      rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceA, 0);
+      rt.provider_capture_image_facts_for_smoke(capture_a, kDeviceA, 0);
   if (!a0_after_invalid_transform || !a0_after_invalid_transform->intrinsics ||
       a0_after_invalid_transform->distortion || a0_after_invalid_transform->pose ||
       !a0_after_invalid_transform->focus_state ||
@@ -5336,9 +5379,9 @@ bool run_provider_camera_fact_ingress_check() {
     return fail_with_cleanup("FAIL provider camera facts invalid-transform replacement mutated prior record");
   }
 
-  const auto a0 = rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceA, 0);
-  const auto a1 = rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceA, 1);
-  const auto b0 = rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceB, 0);
+  const auto a0 = rt.provider_capture_image_facts_for_smoke(capture_a, kDeviceA, 0);
+  const auto a1 = rt.provider_capture_image_facts_for_smoke(capture_a, kDeviceA, 1);
+  const auto b0 = rt.provider_capture_image_facts_for_smoke(capture_b, kDeviceB, 0);
   if (!a0 || !a0->intrinsics || a0->distortion || a0->pose ||
       !a0->focus_state ||
       !std::holds_alternative<FocusAtInfinity>(a0->focus_state->value) ||
@@ -5352,15 +5395,15 @@ bool run_provider_camera_fact_ingress_check() {
       !b0->focus_state ||
       !std::holds_alternative<FocusStateUnknown>(b0->focus_state->value) ||
       b0->realized_image_transform ||
-      rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceA, 2) ||
-      rt.provider_capture_image_facts_for_smoke(kCaptureId + 1, kDeviceA, 0)) {
+      rt.provider_capture_image_facts_for_smoke(capture_a, kDeviceA, 2) ||
+      rt.provider_capture_image_facts_for_smoke(capture_a + 1000000, kDeviceA, 0)) {
     return fail_with_cleanup("FAIL provider camera facts capture-member identity/rejection failed");
   }
 
   rt.stop();
   if (!rt.start() || !wait_for_core_runtime_live(rt) ||
       rt.provider_camera_facts_for_smoke(kDeviceA) ||
-      rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceA, 0)) {
+      rt.provider_capture_image_facts_for_smoke(capture_a, kDeviceA, 0)) {
     return fail_with_cleanup("FAIL provider camera facts crossed a stop/start boundary");
   }
 
@@ -5566,13 +5609,25 @@ bool run_synthetic_provider_reference_camera_facts_check() {
   }
   const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(
       kRigId, kRigCapture, preflight);
+  // Each member's facts land under that member's own Device Capture Id; the
+  // cohort's kRigCapture keys no image facts at all now.
+  uint64_t rig_capture_a = 0;
+  uint64_t rig_capture_b = 0;
+  for (const auto& participant : admitted.participants) {
+    if (participant.request.device_instance_id == kDeviceA) {
+      rig_capture_a = participant.request.capture_id;
+    } else if (participant.request.device_instance_id == kDeviceB) {
+      rig_capture_b = participant.request.capture_id;
+    }
+  }
   if (!rig_requests_materialized || !admitted.ok ||
+      rig_capture_a == 0 || rig_capture_b == 0 || rig_capture_a == rig_capture_b ||
       !rt.smoke_submit_admitted_rig_bundle(admitted).ok ||
       !wait_until([&] {
-        const auto a0 = rt.provider_capture_image_facts_for_smoke(kRigCapture, kDeviceA, 0);
-        const auto a1 = rt.provider_capture_image_facts_for_smoke(kRigCapture, kDeviceA, 1);
-        const auto b0 = rt.provider_capture_image_facts_for_smoke(kRigCapture, kDeviceB, 0);
-        const auto b1 = rt.provider_capture_image_facts_for_smoke(kRigCapture, kDeviceB, 1);
+        const auto a0 = rt.provider_capture_image_facts_for_smoke(rig_capture_a, kDeviceA, 0);
+        const auto a1 = rt.provider_capture_image_facts_for_smoke(rig_capture_a, kDeviceA, 1);
+        const auto b0 = rt.provider_capture_image_facts_for_smoke(rig_capture_b, kDeviceB, 0);
+        const auto b1 = rt.provider_capture_image_facts_for_smoke(rig_capture_b, kDeviceB, 1);
         return a0 && a1 && b0 && b1 &&
                rectified_image_facts(*a0, 64, 48, 0) &&
                rectified_image_facts(*a1, 64, 48, 0) &&
@@ -5588,10 +5643,12 @@ bool run_synthetic_provider_reference_camera_facts_check() {
            std::tuple{kSingleCapture, kDeviceA, 0u},
            std::tuple{kBracketCapture, kDeviceA, 0u},
            std::tuple{kBracketCapture, kDeviceA, 1u},
-           std::tuple{kRigCapture, kDeviceA, 0u},
-           std::tuple{kRigCapture, kDeviceA, 1u},
-           std::tuple{kRigCapture, kDeviceB, 0u},
-           std::tuple{kRigCapture, kDeviceB, 1u}}) {
+           // Rig members report under their own Device Capture Ids, resolved
+           // from the admitted bundle above -- kRigCapture keys no events.
+           std::tuple{rig_capture_a, kDeviceA, 0u},
+           std::tuple{rig_capture_a, kDeviceA, 1u},
+           std::tuple{rig_capture_b, kDeviceB, 0u},
+           std::tuple{rig_capture_b, kDeviceB, 1u}}) {
     size_t facts_index = ordered_events.size();
     size_t frame_index = ordered_events.size();
     for (size_t i = 0; i < ordered_events.size(); ++i) {
@@ -5846,15 +5903,28 @@ bool run_core_capture_result_fact_resolution_check() {
     return fail_with_cleanup("FAIL core result fact resolution rig clock setup failed");
   }
   const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(kRigId, kRigCapture, preflight);
-  if (!admitted.ok || !rt.smoke_submit_admitted_rig_bundle(admitted).ok ||
+  // Results are stored per member, under that member's Device Capture Id.
+  // kRigCapture names the cohort and keys no result of its own.
+  uint64_t fact_capture_a = 0;
+  uint64_t fact_capture_b = 0;
+  for (const auto& participant : admitted.participants) {
+    if (participant.request.device_instance_id == kDeviceA) {
+      fact_capture_a = participant.request.capture_id;
+    } else if (participant.request.device_instance_id == kDeviceB) {
+      fact_capture_b = participant.request.capture_id;
+    }
+  }
+  if (!admitted.ok || fact_capture_a == 0 || fact_capture_b == 0 ||
+      fact_capture_a == fact_capture_b ||
+      !rt.smoke_submit_admitted_rig_bundle(admitted).ok ||
       !wait_until([&] {
-        return finalized_result(rt, kRigCapture, kDeviceA, 2) &&
-               finalized_result(rt, kRigCapture, kDeviceB, 2);
+        return finalized_result(rt, fact_capture_a, kDeviceA, 2) &&
+               finalized_result(rt, fact_capture_b, kDeviceB, 2);
       })) {
     return fail_with_cleanup("FAIL core result fact resolution rig capture did not finalize");
   }
-  const SharedCaptureResultData rig_a = rt.get_capture_result(kRigCapture, kDeviceA);
-  const SharedCaptureResultData rig_b = rt.get_capture_result(kRigCapture, kDeviceB);
+  const SharedCaptureResultData rig_a = rt.get_capture_result(fact_capture_a, kDeviceA);
+  const SharedCaptureResultData rig_b = rt.get_capture_result(fact_capture_b, kDeviceB);
   const auto* rig_a_member = rig_a ? rig_a->image_member_at(0) : nullptr;
   const auto* rig_a_member_1 = rig_a ? rig_a->image_member_at(1) : nullptr;
   const auto* rig_b_member = rig_b ? rig_b->image_member_at(0) : nullptr;

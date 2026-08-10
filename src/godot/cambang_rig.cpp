@@ -14,20 +14,20 @@ godot::Error CamBANGRig::trigger_capture() {
   }
   const CamBANGServer::RigTriggerInternalResult result =
       server_->trigger_rig_capture_internal_(rig_id_);
-  if (result.capture_id == 0) {
+  if (result.rig_capture_id == 0) {
     return result.error;
   }
-  current_capture_id_ = result.capture_id;
+  current_rig_capture_id_ = result.rig_capture_id;
   return godot::OK;
 }
 
 
 godot::TypedArray<CamBANGCaptureResult> CamBANGRig::get_result() const {
-  if (!server_ || rig_id_ == 0 || current_capture_id_ == 0 || !server_->is_running()) {
+  if (!server_ || rig_id_ == 0 || current_rig_capture_id_ == 0 || !server_->is_running()) {
     return godot::TypedArray<CamBANGCaptureResult>();
   }
   godot::TypedArray<CamBANGCaptureResult> results =
-      server_->get_capture_result_set_by_id(current_capture_id_);
+      server_->get_capture_result_set_by_id(current_rig_capture_id_);
   if (results.is_empty()) {
     return godot::TypedArray<CamBANGCaptureResult>();
   }

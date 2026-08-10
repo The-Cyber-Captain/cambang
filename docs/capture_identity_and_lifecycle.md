@@ -321,13 +321,3 @@ True at the time of writing, and contradicting the model above:
 - Rig membership is fixed at rig creation; there is no add/remove API.
 - `get_rig(...)` and `get_device_for_hardware_id(...)` instantiate a new wrapper
   on every call.
-- Per-device capture completion is misattributed for rig captures.
-  `CoreAcquisitionSessionRegistry::on_capture_completed` resolves the session
-  correctly for the device, then overwrites it from `captures_in_flight_`,
-  which is keyed by `capture_id` alone. Both rig members share one
-  `capture_id`, so they collide on one entry and the second member to complete
-  is credited to the first member's acquisition session. Totals are conserved;
-  the per-device split is wrong and varies run to run. Observed on Quest as
-  `triggered N / completed <N` on each of two sessions summing to 2N. A direct
-  consequence of the shared id space this document replaces; fixable now by
-  keying on `(capture_id, device_instance_id)`, or eliminated by section 2.
