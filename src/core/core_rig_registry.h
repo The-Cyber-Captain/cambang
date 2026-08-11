@@ -33,6 +33,18 @@ public:
     bool live = false;
   };
 
+  // Rig capture accounting. Before these existed, active_capture_id,
+  // last_capture_id and the three counters were declared, projected into the
+  // snapshot, and never written -- so a rig reported 0 captures after a
+  // successful one, and a consumer could not tell "none yet" from "never
+  // recorded". Ids here are Rig Capture Ids.
+  bool record_capture_triggered(uint64_t rig_id, uint64_t rig_capture_id);
+  // A cohort reaching a terminal outcome. `failed` distinguishes a cohort that
+  // failed outright (submission/execution) from one that closed having run;
+  // a closed cohort counts as completed even if individual members did not
+  // deliver, because the rig capture itself ran to a truthful conclusion.
+  bool record_capture_settled(uint64_t rig_id, uint64_t rig_capture_id, bool failed);
+
   bool retain_capture_profile(uint64_t rig_id,
                               uint32_t width,
                               uint32_t height,

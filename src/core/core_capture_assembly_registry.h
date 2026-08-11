@@ -18,11 +18,43 @@ namespace cambang {
 // on the calling (e.g. Godot) thread without a core-thread round trip.
 class CoreCaptureAssemblyRegistry final {
 public:
+  // Per-member terminal disposition (capture_identity_and_lifecycle.md 4.3).
+  // A member capture must always reach one of these; it must never simply
+  // disappear from a cohort.
+  //
+  // The full vocabulary is defined here so the shape settles once, but two
+  // values have NO PRODUCING PATH yet and must not be faked into existence:
+  //   PREEMPTED_BY_RIG  needs rig-preempts-member arbitration (section 3).
+  //   DEVICE_LOST       needs membership lifecycle (section 5.3).
+  // A disposition nothing can produce is honest; one produced by guessing is
+  // not. capture_completion_verify asserts both remain unreachable.
   enum class TerminalState : uint8_t {
     NONE = 0,
-    COMPLETED = 1,
+    // Settled with its payload. The old COMPLETED.
+    DELIVERED = 1,
+    // Settled with a provider error, which travels with it. The old FAILED.
     FAILED = 2,
+    // Terminal, but outside its cohort's simultaneity window, so not part of
+    // the same moment. Correct behaviour, not a failure to wait (section 4.4).
+    LATE_EXCLUDED = 3,
+    // A rig capture preempted this device's in-flight standalone capture.
+    PREEMPTED_BY_RIG = 4,
+    // The device was disengaged, closed or otherwise lost while this member
+    // was in flight. A resource event, not a configuration change.
+    DEVICE_LOST = 5,
+    // The cohort closed and this member produced nothing at all -- no payload
+    // and no error. Distinct from FAILED, which knows why.
+    NEVER_ARRIVED = 6,
   };
+
+  // Whether a disposition means the member settled with its payload intact.
+  // Everything else is terminal without a usable image.
+  static constexpr bool disposition_delivered(TerminalState s) noexcept {
+    return s == TerminalState::DELIVERED;
+  }
+  static constexpr bool disposition_is_terminal(TerminalState s) noexcept {
+    return s != TerminalState::NONE;
+  }
 
   struct DeviceCaptureAssembly {
     uint64_t capture_id = 0;
@@ -60,6 +92,20 @@ public:
   void mark_capture_failed(uint64_t capture_id, uint64_t device_instance_id, uint32_t error_code);
   bool is_assembly_successful(uint64_t capture_id, uint64_t device_instance_id) const;
   bool is_result_safe(uint64_t capture_id, uint64_t device_instance_id) const;
+
+  // A member's disposition and, where it has one, the error that travels with
+  // it. Deliberately NOT smoke-gated like find_for_smoke(): cohort closure
+  // needs this in shipping builds, and section 4.3 requires the error code to
+  // reach the caller rather than being reduced to an absent entry.
+  // An unknown (capture_id, device) is NONE, not an error -- a device admitted
+  // but not yet reporting is exactly the non-terminal case.
+  struct MemberDisposition {
+    TerminalState state = TerminalState::NONE;
+    bool has_error_code = false;
+    uint32_t error_code = 0;
+  };
+  MemberDisposition disposition_for(uint64_t capture_id,
+                                    uint64_t device_instance_id) const;
 
   // Capture-admission watchdog (icamera_provider.h's
   // capture_admission_watchdog_timeout_ns() contract): finds every device

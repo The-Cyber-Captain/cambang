@@ -502,6 +502,12 @@ enum class TryCloseDeviceStatus : uint8_t {
   // (orchestrate_rig_capture_with_capture_id_for_server) deliberately has no
   // default: the boundary owns the counters and must say so.
   static const DeviceCaptureIdMinter& smoke_default_device_capture_id_minter();
+  // Cohort record as the closure sweep leaves it. Read directly: the registry
+  // is self-locking, so this needs no core-thread round trip.
+  std::optional<CoreCaptureCohortRegistry::CohortRecord> smoke_capture_cohort(
+      uint64_t rig_capture_id) const {
+    return capture_cohort_registry_.find(rig_capture_id);
+  }
   RigAdmittedRequestBundle smoke_admit_rig_cohort_from_preflight(
       uint64_t rig_id,
       uint64_t rig_capture_id,
@@ -970,6 +976,13 @@ private:
       uint64_t rig_id,
       uint64_t rig_capture_id,
       const DeviceCaptureIdMinter& mint_device_capture_id);
+  // Cohort closure, run once per core-thread sweep. Closes any OPEN cohort
+  // whose members are all terminal (ALL_MEMBERS_TERMINAL) or whose
+  // simultaneity window has expired (WINDOW_EXPIRED), and upgrades a member
+  // recorded NEVER_ARRIVED to LATE_EXCLUDED if its terminal fact turns up
+  // after its cohort closed. Core-thread only.
+  void sweep_capture_cohort_closure_(uint64_t now_ns);
+
   CaptureAdmissionContext make_capture_admission_context_() const;
   CoreResolvedCaptureImageFacts resolve_capture_image_facts_(
       uint64_t capture_id, uint64_t device_instance_id,
@@ -1481,6 +1494,27 @@ private:
   // participant could still legitimately be resolving.
   static constexpr uint64_t kCaptureCohortRetentionWindowNs =
       300ull * 1000ull * 1000ull * 1000ull; // 5 minutes
+
+  // Rig capture simultaneity window (capture_identity_and_lifecycle.md 4.4).
+  // NOT the retention window above, and not an impatience threshold: a member
+  // settling outside it is not part of the same moment, and excluding it is
+  // the correct outcome rather than a failure to wait.
+  //
+  // Measured on Core's own clock from cohort admission, so it is bounded below
+  // by payload DELIVERY latency, not by any tolerance about "the same
+  // instant". The two failure directions are asymmetric and neither is
+  // cost-free: too tight turns a slow-but-working camera into a member that
+  // never arrived, and a camera going quiet (no pilot frames, ae_state=255,
+  // payloads seconds late) is a real observed condition on this hardware,
+  // producing a short rig that looks exactly like a rig defect. Too loose
+  // lets a genuinely staggered set pass as simultaneous, which is the
+  // invariant this window exists to protect.
+  //
+  // 2s is a starting value chosen against that asymmetry and NOT yet
+  // calibrated against a slow device -- see the tranche's note that
+  // LATE_EXCLUDED's real-world behaviour is only observable on hardware.
+  static constexpr uint64_t kRigCaptureSimultaneityWindowNs =
+      2ull * 1000ull * 1000ull * 1000ull; // 2 seconds
 
   // Retention window for capture_assembly_registry_/result_store_ terminal
   // capture entries (ledger #52). Time-based, not supersession-based: see

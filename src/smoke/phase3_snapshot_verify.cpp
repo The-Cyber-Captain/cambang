@@ -530,6 +530,176 @@ static int test_capture_cohort_registry_basics() {
   return 0;
 }
 
+// Cohort closure (capture_identity_and_lifecycle.md 4.4). Registry-level: the
+// window arithmetic and the closed-outcome rules, independent of any provider.
+static int test_capture_cohort_closure() {
+  using Assembly = CoreCaptureAssemblyRegistry;
+  using Reason = CoreCaptureCohortRegistry::CohortClosedReason;
+  using State = CoreCaptureCohortRegistry::CohortState;
+
+  constexpr uint64_t kWindowNs = 2ull * 1000ull * 1000ull * 1000ull;
+  constexpr uint64_t kAdmittedNs = 10'000ull;
+
+  auto make_cohort = [&](uint64_t rig_capture_id) {
+    CoreCaptureCohortRegistry::CohortRecord rec{};
+    rec.rig_capture_id = rig_capture_id;
+    rec.rig_id = 9;
+    rec.created_ns = kAdmittedNs;
+    rec.admitted_ns = kAdmittedNs;
+    rec.expected_participants.push_back({1001, "hw:a", rig_capture_id + 101});
+    rec.expected_participants.push_back({1002, "hw:b", rig_capture_id + 102});
+    return rec;
+  };
+  auto outcome = [](uint64_t device_instance_id, uint64_t device_capture_id,
+                    Assembly::TerminalState disposition, bool has_error,
+                    uint32_t error) {
+    CoreCaptureCohortRegistry::MemberOutcome o{};
+    o.device_instance_id = device_instance_id;
+    o.device_capture_id = device_capture_id;
+    o.disposition = disposition;
+    o.has_error_code = has_error;
+    o.error_code = error;
+    return o;
+  };
+
+  CoreCaptureCohortRegistry cohorts;
+
+  // A cohort is OPEN and enumerable as such until it closes.
+  if (!cohorts.insert(make_cohort(1000))) {
+    std::cerr << "FAIL: closure fixture cohort rejected\n";
+    return 1;
+  }
+  if (cohorts.open_cohort_ids() != std::vector<uint64_t>{1000}) {
+    std::cerr << "FAIL: open cohort not enumerated as open\n";
+    return 1;
+  }
+
+  // All members terminal: closes ALL_MEMBERS_TERMINAL, and a FAILED member is
+  // PRESENT carrying its error. Section 4.3's whole point: a member that failed
+  // with a known provider error must not be reduced to an absent entry.
+  std::vector<CoreCaptureCohortRegistry::MemberOutcome> settled;
+  settled.push_back(outcome(1001, 1101, Assembly::TerminalState::DELIVERED, false, 0));
+  settled.push_back(outcome(1002, 1102, Assembly::TerminalState::FAILED, true, 42));
+  if (!cohorts.close(1000, Reason::ALL_MEMBERS_TERMINAL, 20'000, settled)) {
+    std::cerr << "FAIL: close() rejected a valid all-terminal cohort\n";
+    return 1;
+  }
+  const auto closed = cohorts.find(1000);
+  if (!closed || closed->state != State::CLOSED ||
+      closed->closed_reason != Reason::ALL_MEMBERS_TERMINAL ||
+      closed->closed_ns != 20'000 || closed->member_outcomes.size() != 2 ||
+      closed->member_outcomes[1].disposition != Assembly::TerminalState::FAILED ||
+      !closed->member_outcomes[1].has_error_code ||
+      closed->member_outcomes[1].error_code != 42) {
+    std::cerr << "FAIL: closed cohort did not record members and error codes\n";
+    return 1;
+  }
+  if (!cohorts.open_cohort_ids().empty()) {
+    std::cerr << "FAIL: closed cohort still enumerated as open\n";
+    return 1;
+  }
+
+  // Idempotent: a second close must not rewrite the outcome. A cohort that
+  // flipped reason after the fact would report a different capture than the
+  // one that happened.
+  if (cohorts.close(1000, Reason::WINDOW_EXPIRED, 30'000, settled)) {
+    std::cerr << "FAIL: close() overwrote an already-closed cohort\n";
+    return 1;
+  }
+  const auto still_closed = cohorts.find(1000);
+  if (!still_closed || still_closed->closed_reason != Reason::ALL_MEMBERS_TERMINAL ||
+      still_closed->closed_ns != 20'000) {
+    std::cerr << "FAIL: rejected re-close still mutated the cohort\n";
+    return 1;
+  }
+
+  // Window arithmetic is on the supplied clock, from admission. Inside the
+  // window there is nothing to close; at the boundary there is.
+  if (!cohorts.insert(make_cohort(2000))) {
+    std::cerr << "FAIL: window fixture cohort rejected\n";
+    return 1;
+  }
+  const auto delay_inside = cohorts.next_window_expiry_delay_ns(kAdmittedNs, kWindowNs);
+  if (!delay_inside.has_value() || *delay_inside != kWindowNs) {
+    std::cerr << "FAIL: window delay at admission should be the full window\n";
+    return 1;
+  }
+  const auto delay_at_expiry =
+      cohorts.next_window_expiry_delay_ns(kAdmittedNs + kWindowNs, kWindowNs);
+  if (!delay_at_expiry.has_value() || *delay_at_expiry != 0) {
+    std::cerr << "FAIL: window delay at expiry should be zero\n";
+    return 1;
+  }
+
+  // Window expiry with one member never heard from: NEVER_ARRIVED, not
+  // LATE_EXCLUDED -- nothing has arrived to be late.
+  std::vector<CoreCaptureCohortRegistry::MemberOutcome> expired;
+  expired.push_back(outcome(1001, 2101, Assembly::TerminalState::DELIVERED, false, 0));
+  expired.push_back(outcome(1002, 2102, Assembly::TerminalState::NEVER_ARRIVED, false, 0));
+  if (!cohorts.close(2000, Reason::WINDOW_EXPIRED, kAdmittedNs + kWindowNs, expired)) {
+    std::cerr << "FAIL: close() rejected a window-expired cohort\n";
+    return 1;
+  }
+  const auto never_arrived = cohorts.closed_members_never_arrived();
+  if (never_arrived.size() != 1 || never_arrived[0].first != 2000 ||
+      never_arrived[0].second != 1002) {
+    std::cerr << "FAIL: never-arrived member not enumerated for late upgrade\n";
+    return 1;
+  }
+  if (cohorts.next_window_expiry_delay_ns(kAdmittedNs, kWindowNs).has_value()) {
+    std::cerr << "FAIL: closed cohort still scheduling a window deadline\n";
+    return 1;
+  }
+
+  // The late upgrade is deliberately narrow. NEVER_ARRIVED becomes
+  // LATE_EXCLUDED; a member that closed DELIVERED told the truth and must not
+  // be relabelled; and the cohort's closed_reason never changes.
+  if (!cohorts.mark_member_late_excluded(2000, 1002)) {
+    std::cerr << "FAIL: never-arrived member could not be upgraded to late\n";
+    return 1;
+  }
+  if (cohorts.mark_member_late_excluded(2000, 1001)) {
+    std::cerr << "FAIL: a DELIVERED member was relabelled late\n";
+    return 1;
+  }
+  if (cohorts.mark_member_late_excluded(2000, 1002)) {
+    std::cerr << "FAIL: late upgrade was not idempotent\n";
+    return 1;
+  }
+  const auto upgraded = cohorts.find(2000);
+  if (!upgraded || upgraded->closed_reason != Reason::WINDOW_EXPIRED ||
+      upgraded->member_outcomes[1].disposition != Assembly::TerminalState::LATE_EXCLUDED ||
+      upgraded->member_outcomes[0].disposition != Assembly::TerminalState::DELIVERED) {
+    std::cerr << "FAIL: late upgrade altered the wrong member or the reason\n";
+    return 1;
+  }
+  if (!cohorts.closed_members_never_arrived().empty()) {
+    std::cerr << "FAIL: upgraded member still listed as never-arrived\n";
+    return 1;
+  }
+
+  // A FAILED cohort is not OPEN and must not be closed over: submission
+  // failure is a different outcome from a capture that ran and settled.
+  if (!cohorts.insert(make_cohort(3000))) {
+    std::cerr << "FAIL: failed-path fixture cohort rejected\n";
+    return 1;
+  }
+  if (!cohorts.mark_failed(3000, 1001, 7,
+                           CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION)) {
+    std::cerr << "FAIL: mark_failed rejected\n";
+    return 1;
+  }
+  if (cohorts.close(3000, Reason::ALL_MEMBERS_TERMINAL, 40'000, settled)) {
+    std::cerr << "FAIL: a FAILED cohort was closed over\n";
+    return 1;
+  }
+  if (!cohorts.open_cohort_ids().empty()) {
+    std::cerr << "FAIL: a FAILED cohort was enumerated as open\n";
+    return 1;
+  }
+  return 0;
+}
+
 static int test_still_capture_profile_visibility_audit_truth() {
   constexpr uint64_t kAuditDeviceId = 501;
   constexpr uint64_t kAuditRigId = 701;
@@ -1455,6 +1625,7 @@ static int test_scoped_resource_telemetry_runtime_framebuffer_lease_integration(
 
 int main() {
   if (int r = test_capture_cohort_registry_basics()) return r;
+  if (int r = test_capture_cohort_closure()) return r;
   if (int r = test_scoped_resource_telemetry_default_and_projection()) return r;
   if (int r = test_scoped_resource_telemetry_runtime_framebuffer_lease_integration()) return r;
   if (int r = test_topology_detached_and_retirement()) return r;

@@ -80,7 +80,7 @@ void CoreCaptureAssemblyRegistry::mark_capture_completed(uint64_t capture_id, ui
   std::lock_guard<std::mutex> lock(mutex_);
   DeviceCaptureAssembly& assembly =
       get_or_create_assembly(assemblies_by_capture_id_, capture_id, device_instance_id);
-  assembly.terminal_state = TerminalState::COMPLETED;
+  assembly.terminal_state = TerminalState::DELIVERED;
   assembly.has_failure_error_code = false;
   assembly.failure_error_code = 0;
 }
@@ -112,7 +112,26 @@ bool CoreCaptureAssemblyRegistry::is_assembly_successful(uint64_t capture_id,
   }
   const DeviceCaptureAssembly& assembly = dev_it->second;
   return assembly.has_default_image_retained &&
-         assembly.terminal_state == TerminalState::COMPLETED;
+         assembly.terminal_state == TerminalState::DELIVERED;
+}
+
+CoreCaptureAssemblyRegistry::MemberDisposition
+CoreCaptureAssemblyRegistry::disposition_for(uint64_t capture_id,
+                                             uint64_t device_instance_id) const {
+  MemberDisposition out{};
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto cap_it = assemblies_by_capture_id_.find(capture_id);
+  if (cap_it == assemblies_by_capture_id_.end()) {
+    return out;
+  }
+  const auto dev_it = cap_it->second.find(device_instance_id);
+  if (dev_it == cap_it->second.end()) {
+    return out;
+  }
+  out.state = dev_it->second.terminal_state;
+  out.has_error_code = dev_it->second.has_failure_error_code;
+  out.error_code = dev_it->second.failure_error_code;
+  return out;
 }
 
 bool CoreCaptureAssemblyRegistry::is_result_safe(uint64_t capture_id,
@@ -127,11 +146,19 @@ bool CoreCaptureAssemblyRegistry::is_result_safe(uint64_t capture_id,
     return false;
   }
   const DeviceCaptureAssembly& assembly = dev_it->second;
-  if (assembly.terminal_state == TerminalState::FAILED) {
+  // "Safe" means the answer is settled: the caller will not get a different
+  // one later. Every terminal disposition except DELIVERED settles without an
+  // image, so there is nothing further to wait for. DELIVERED additionally
+  // needs its payload actually retained. Written against the terminal
+  // predicate rather than enumerating dispositions, so a value added later
+  // cannot silently fall through to "not safe" and hang a caller.
+  if (!disposition_is_terminal(assembly.terminal_state)) {
+    return false;
+  }
+  if (!disposition_delivered(assembly.terminal_state)) {
     return true;
   }
-  return assembly.has_default_image_retained &&
-         assembly.terminal_state == TerminalState::COMPLETED;
+  return assembly.has_default_image_retained;
 }
 
 std::vector<CoreCaptureAssemblyRegistry::TimedOutAssembly>

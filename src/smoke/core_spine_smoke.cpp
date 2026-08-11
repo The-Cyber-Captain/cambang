@@ -4312,6 +4312,236 @@ static int test_rig_bundle_submission_smoke() {
   return 0;
 }
 
+// Cohort closure through CoreRuntime's sweep, not the registry in isolation.
+// This is the check that proves the mechanism actually runs: the registry
+// tests in phase3_snapshot_verify prove the rules, and would keep passing even
+// if sweep_capture_cohort_closure_() were never called.
+static int test_capture_cohort_closure_sweep_smoke() {
+  using Assembly = CoreCaptureAssemblyRegistry;
+  using Reason = CoreCaptureCohortRegistry::CohortClosedReason;
+  using State = CoreCaptureCohortRegistry::CohortState;
+
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+  rt.attach_provider(&prov);
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
+  if (!rt.smoke_set_rig_member_hardware_ids(8601, {eps[0].hardware_id})) { rt.stop(); return 1; }
+  const auto preflight = wait_for_rig_preflight_ok(rt, 8601);
+  if (!preflight.ok) {
+    print_rig_preflight_result("Preflight failed before cohort closure sweep smoke", preflight);
+    rt.stop();
+    return 1;
+  }
+
+  const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(8601, 9601, preflight);
+  if (!admitted.ok || admitted.participants.empty()) {
+    std::cerr << "Cohort closure sweep: admission failed\n";
+    rt.stop();
+    return 1;
+  }
+  const uint64_t member_capture_id = admitted.participants[0].request.capture_id;
+  const uint64_t member_device_id = admitted.participants[0].request.device_instance_id;
+
+  // An admitted cohort with nothing reported must stay OPEN. Closing here
+  // would mean the sweep decides completion off something other than its
+  // members' dispositions.
+  for (int i = 0; i < 5; ++i) {
+    (void)rt.smoke_capture_cohort(9601);
+  }
+  const auto still_open = rt.smoke_capture_cohort(9601);
+  if (!still_open || still_open->state != State::OPEN) {
+    std::cerr << "Cohort closure sweep: cohort closed before any member settled\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Report the member terminal. The sweep must then close the cohort
+  // ALL_MEMBERS_TERMINAL, well inside the simultaneity window.
+  static std::vector<uint8_t> bytes(2 * 2 * 4, 7);
+  FrameView frame{};
+  frame.capture_id = member_capture_id;
+  frame.device_instance_id = member_device_id;
+  frame.stream_id = 0;
+  frame.width = 2;
+  frame.height = 2;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.data = bytes.data();
+  frame.size_bytes = bytes.size();
+  frame.stride_bytes = 0;
+  frame.release = [](void*, const FrameView*) {};
+  frame.release_user = nullptr;
+  rt.provider_callbacks()->on_capture_started(member_capture_id, member_device_id);
+  rt.provider_callbacks()->on_frame(frame);
+  rt.provider_callbacks()->on_capture_completed(member_capture_id, member_device_id);
+
+  if (!wait_until([&]() {
+        const auto c = rt.smoke_capture_cohort(9601);
+        return c && c->state == State::CLOSED;
+      }, 4000, 5)) {
+    std::cerr << "Cohort closure sweep: cohort never closed after its member settled\n";
+    rt.stop();
+    return 1;
+  }
+  const auto closed = rt.smoke_capture_cohort(9601);
+  if (!closed || closed->closed_reason != Reason::ALL_MEMBERS_TERMINAL ||
+      closed->member_outcomes.size() != 1 ||
+      closed->member_outcomes[0].device_instance_id != member_device_id ||
+      closed->member_outcomes[0].device_capture_id != member_capture_id ||
+      closed->member_outcomes[0].disposition != Assembly::TerminalState::DELIVERED) {
+    std::cerr << "Cohort closure sweep: closed cohort did not record a DELIVERED member\n";
+    rt.stop();
+    return 1;
+  }
+  // Two dispositions have no producing path until later tranches. Nothing in
+  // a completed rig capture may invent them.
+  for (const auto& o : closed->member_outcomes) {
+    if (o.disposition == Assembly::TerminalState::PREEMPTED_BY_RIG ||
+        o.disposition == Assembly::TerminalState::DEVICE_LOST) {
+      std::cerr << "Cohort closure sweep: a disposition with no producing path was produced\n";
+      rt.stop();
+      return 1;
+    }
+  }
+
+  // Rig-level accounting must agree with the cohort's own record. Before this
+  // tranche these counters were declared, projected into the snapshot, and
+  // never written -- a rig reported 0 captures after a successful one.
+  if (!wait_for_snapshot_pred(buf, [](const CamBANGStateSnapshot& snap) {
+        for (const auto& rig : snap.rigs) {
+          if (rig.rig_id == 8601) {
+            return rig.captures_triggered == 1 && rig.captures_completed == 1 &&
+                   rig.captures_failed == 0 && rig.last_capture_id == 9601 &&
+                   rig.active_capture_id == 0;
+          }
+        }
+        return false;
+      })) {
+    std::cerr << "Cohort closure sweep: rig capture counters did not reflect the closed cohort\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+// Criterion 1: a cohort whose member never reports must close WINDOW_EXPIRED
+// through CoreRuntime's own sweep and timer, not merely in registry isolation.
+// Then the member's late arrival must become LATE_EXCLUDED.
+static int test_capture_cohort_window_expiry_sweep_smoke() {
+  using Assembly = CoreCaptureAssemblyRegistry;
+  using Reason = CoreCaptureCohortRegistry::CohortClosedReason;
+  using State = CoreCaptureCohortRegistry::CohortState;
+
+  CoreRuntime rt;
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+  rt.attach_provider(&prov);
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
+  if (!rt.smoke_set_rig_member_hardware_ids(8701, {eps[0].hardware_id})) { rt.stop(); return 1; }
+  const auto preflight = wait_for_rig_preflight_ok(rt, 8701);
+  if (!preflight.ok) {
+    print_rig_preflight_result("Preflight failed before window expiry smoke", preflight);
+    rt.stop();
+    return 1;
+  }
+  const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(8701, 9701, preflight);
+  if (!admitted.ok || admitted.participants.empty()) {
+    std::cerr << "Window expiry: admission failed\n";
+    rt.stop();
+    return 1;
+  }
+  const uint64_t member_capture_id = admitted.participants[0].request.capture_id;
+  const uint64_t member_device_id = admitted.participants[0].request.device_instance_id;
+
+  // Nothing is reported. The core thread must wake on the window deadline on
+  // its own -- there is no other traffic to carry it there. Budget generously
+  // past the 2s window but far short of the 30s admission watchdog, so a pass
+  // here cannot be the watchdog doing the work instead.
+  //
+  // This is ALSO the binding check for clock provenance (criterion 4): the
+  // capture date-time here is a real unix-epoch value, so swapping the window
+  // origin from admitted_ns to the acquisition mark makes the threshold
+  // astronomically large and this cohort never closes. Mutation-proved.
+  //
+  // A dedicated "near-epoch mark" check was tried and deleted: it could not
+  // discriminate. ns_since_epoch_() counts from RUNTIME START on steady_clock,
+  // so at admission now_ns is a few hundred million ns while the window is
+  // 2e9 -- a tiny mark yields a threshold indistinguishable from the correct
+  // one for the first two seconds, which is precisely when such a check would
+  // look. It passed under the mutation, so it was proving nothing.
+  if (!wait_until([&]() {
+        const auto c = rt.smoke_capture_cohort(9701);
+        return c && c->state == State::CLOSED;
+      }, 8000, 25)) {
+    std::cerr << "Window expiry: cohort never closed on its simultaneity window\n";
+    rt.stop();
+    return 1;
+  }
+  const auto expired = rt.smoke_capture_cohort(9701);
+  if (!expired || expired->closed_reason != Reason::WINDOW_EXPIRED ||
+      expired->member_outcomes.size() != 1 ||
+      expired->member_outcomes[0].disposition != Assembly::TerminalState::NEVER_ARRIVED) {
+    std::cerr << "Window expiry: expected WINDOW_EXPIRED with a NEVER_ARRIVED member\n";
+    rt.stop();
+    return 1;
+  }
+  // NEVER_ARRIVED, not FAILED: the window closed this, not the admission
+  // watchdog. If the watchdog had won, the member would carry ERR_TIMEOUT.
+  if (expired->member_outcomes[0].has_error_code) {
+    std::cerr << "Window expiry: member carries an error, so the watchdog closed it, not the window\n";
+    rt.stop();
+    return 1;
+  }
+
+  // The member now settles, well after its cohort closed. It becomes
+  // LATE_EXCLUDED, and the cohort's reason must not be rewritten.
+  static std::vector<uint8_t> bytes(2 * 2 * 4, 3);
+  FrameView frame{};
+  frame.capture_id = member_capture_id;
+  frame.device_instance_id = member_device_id;
+  frame.stream_id = 0;
+  frame.width = 2;
+  frame.height = 2;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.data = bytes.data();
+  frame.size_bytes = bytes.size();
+  frame.stride_bytes = 0;
+  frame.release = [](void*, const FrameView*) {};
+  frame.release_user = nullptr;
+  rt.provider_callbacks()->on_capture_started(member_capture_id, member_device_id);
+  rt.provider_callbacks()->on_frame(frame);
+  rt.provider_callbacks()->on_capture_completed(member_capture_id, member_device_id);
+
+  if (!wait_until([&]() {
+        const auto c = rt.smoke_capture_cohort(9701);
+        return c && !c->member_outcomes.empty() &&
+               c->member_outcomes[0].disposition == Assembly::TerminalState::LATE_EXCLUDED;
+      }, 4000, 5)) {
+    std::cerr << "Window expiry: a member settling after closure was not marked LATE_EXCLUDED\n";
+    rt.stop();
+    return 1;
+  }
+  const auto after_late = rt.smoke_capture_cohort(9701);
+  if (!after_late || after_late->closed_reason != Reason::WINDOW_EXPIRED) {
+    std::cerr << "Window expiry: late arrival rewrote the cohort's closed reason\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
 static int test_cohort_aware_capture_result_set_smoke() {
   constexpr uint64_t kSecondDeviceInstanceId = 2;
   constexpr uint64_t kSecondRootId = 2;
@@ -5051,6 +5281,18 @@ int main(int argc, char** argv) {
                              [] { return test_cohort_aware_capture_result_set_smoke(); })) {
       if (reporter.verbose()) reporter.print_summary();
       reporter.print_fail_line("core_spine_smoke", "test_cohort_aware_capture_result_set_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_capture_cohort_closure_sweep_smoke",
+                             [] { return test_capture_cohort_closure_sweep_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_capture_cohort_closure_sweep_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_capture_cohort_window_expiry_sweep_smoke",
+                             [] { return test_capture_cohort_window_expiry_sweep_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_capture_cohort_window_expiry_sweep_smoke", r);
       return r;
     }
     if (int r = reporter.run("test_result_store_identity_survives_runtime_restart_smoke",

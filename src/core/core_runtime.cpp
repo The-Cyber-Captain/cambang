@@ -4067,6 +4067,99 @@ void CoreRuntime::finalize_completed_capture_facts_(
       });
 }
 
+void CoreRuntime::sweep_capture_cohort_closure_(uint64_t now_ns) {
+  assert(core_thread_.is_core_thread());
+
+  // Two passes over distinct populations, deliberately not merged: OPEN
+  // cohorts may close, and already-CLOSED ones may learn that a member they
+  // gave up on has since settled.
+  //
+  // Note the lock discipline this shape exists to respect. Both registries are
+  // self-locking and the cross-registry ordering is documented as never
+  // nested, so every disposition is read out of the assembly registry BEFORE
+  // any cohort mutation is attempted -- never with a cohort lock held.
+  for (const uint64_t rig_capture_id : capture_cohort_registry_.open_cohort_ids()) {
+    const auto cohort = capture_cohort_registry_.find(rig_capture_id);
+    if (!cohort || cohort->state != CoreCaptureCohortRegistry::CohortState::OPEN) {
+      continue;
+    }
+
+    std::vector<CoreCaptureCohortRegistry::MemberOutcome> outcomes;
+    outcomes.reserve(cohort->expected_participants.size());
+    bool all_terminal = true;
+    for (const auto& participant : cohort->expected_participants) {
+      const auto disposition = capture_assembly_registry_.disposition_for(
+          participant.device_capture_id, participant.device_instance_id);
+      CoreCaptureCohortRegistry::MemberOutcome outcome{};
+      outcome.device_instance_id = participant.device_instance_id;
+      outcome.hardware_id = participant.hardware_id;
+      outcome.device_capture_id = participant.device_capture_id;
+      outcome.disposition = disposition.state;
+      outcome.has_error_code = disposition.has_error_code;
+      outcome.error_code = disposition.error_code;
+      if (!CoreCaptureAssemblyRegistry::disposition_is_terminal(disposition.state)) {
+        all_terminal = false;
+      }
+      outcomes.push_back(std::move(outcome));
+    }
+
+    if (all_terminal) {
+      if (capture_cohort_registry_.close(
+              rig_capture_id,
+              CoreCaptureCohortRegistry::CohortClosedReason::ALL_MEMBERS_TERMINAL,
+              now_ns,
+              std::move(outcomes))) {
+        (void)rigs_.record_capture_settled(cohort->rig_id, rig_capture_id, false);
+      }
+      continue;
+    }
+
+    // Not all terminal: the window decides. admitted_ns is Core's own clock
+    // (see CohortRecord's field comment on why an acquisition mark can never
+    // be used here).
+    if (cohort->admitted_ns == 0 ||
+        now_ns < cohort->admitted_ns + kRigCaptureSimultaneityWindowNs) {
+      continue;
+    }
+    for (auto& outcome : outcomes) {
+      if (CoreCaptureAssemblyRegistry::disposition_is_terminal(outcome.disposition)) {
+        continue;
+      }
+      // Closed without ever hearing from this member. NEVER_ARRIVED, not
+      // LATE_EXCLUDED: nothing has arrived to be late. It becomes
+      // LATE_EXCLUDED only if a terminal fact turns up afterwards.
+      outcome.disposition = CoreCaptureAssemblyRegistry::TerminalState::NEVER_ARRIVED;
+    }
+    if (capture_cohort_registry_.close(
+            rig_capture_id,
+            CoreCaptureCohortRegistry::CohortClosedReason::WINDOW_EXPIRED,
+            now_ns,
+            std::move(outcomes))) {
+      // A window-expired cohort still ran and reported a truthful outcome, so
+      // it counts as completed. captures_failed is for a cohort that failed
+      // outright, which mark_failed() records separately.
+      (void)rigs_.record_capture_settled(cohort->rig_id, rig_capture_id, false);
+    }
+  }
+
+  // Second pass: a member given up on that has since settled is LATE_EXCLUDED.
+  for (const auto& [rig_capture_id, device_instance_id] :
+       capture_cohort_registry_.closed_members_never_arrived()) {
+    const uint64_t device_capture_id =
+        capture_cohort_registry_.device_capture_id_for(rig_capture_id, device_instance_id);
+    if (device_capture_id == 0) {
+      continue;
+    }
+    const auto disposition = capture_assembly_registry_.disposition_for(
+        device_capture_id, device_instance_id);
+    if (!CoreCaptureAssemblyRegistry::disposition_is_terminal(disposition.state)) {
+      continue;
+    }
+    (void)capture_cohort_registry_.mark_member_late_excluded(
+        rig_capture_id, device_instance_id);
+  }
+}
+
 CoreRuntime::CaptureCoexistenceOutcome CoreRuntime::resolve_capture_stream_coexistence_(
     uint64_t device_instance_id,
     const CaptureRequest& req,
@@ -4893,6 +4986,12 @@ void CoreRuntime::on_core_timer_tick() {
       }
     }
 
+    // Cohort closure (capture_identity_and_lifecycle.md 4.4). Runs BEFORE
+    // retention: a cohort must be given the chance to close and record its
+    // members' outcomes before it can be retired for age, or a short-lived
+    // cohort would be discarded having never reported one.
+    sweep_capture_cohort_closure_(now_ns);
+
     // Cohort metadata retention (ledger #52): see
     // CoreCaptureCohortRegistry::retire_expired_cohorts()'s doc comment for
     // why a flat time-since-creation window is sufficient here.
@@ -5003,6 +5102,19 @@ void CoreRuntime::on_core_timer_tick() {
       if (!has_next_deadline_delay || *next_cohort_expiry_delay_ns < next_deadline_delay_ns) {
         has_next_deadline_delay = true;
         next_deadline_delay_ns = *next_cohort_expiry_delay_ns;
+      }
+    }
+    // Simultaneity-window expiry, distinct from the retention expiry above.
+    // Without this the core thread has no reason to wake for a cohort whose
+    // last member never reports, and closure would wait on unrelated traffic
+    // -- which on a quiet runtime could be indefinitely.
+    if (const auto next_window_delay_ns =
+            capture_cohort_registry_.next_window_expiry_delay_ns(
+                now_ns, kRigCaptureSimultaneityWindowNs);
+        next_window_delay_ns.has_value()) {
+      if (!has_next_deadline_delay || *next_window_delay_ns < next_deadline_delay_ns) {
+        has_next_deadline_delay = true;
+        next_deadline_delay_ns = *next_window_delay_ns;
       }
     }
     if (const auto next_assembly_retirement_delay_ns =
@@ -6453,6 +6565,10 @@ CoreRuntime::RigAdmittedRequestBundle CoreRuntime::admit_rig_cohort_from_preflig
   cohort.rig_capture_id = rig_capture_id;
   cohort.rig_id = rig_id;
   cohort.created_ns = ns_since_epoch_();
+  // Origin of the simultaneity window. Same instant as created_ns today, but
+  // kept as its own field because the two drive different windows (closure vs
+  // retention) and reading one for the other would silently couple them.
+  cohort.admitted_ns = cohort.created_ns;
   cohort.expected_participants.reserve(preflight.participants.size());
   for (size_t i = 0; i < preflight.participants.size(); ++i) {
     const auto& p = preflight.participants[i];
@@ -6469,6 +6585,10 @@ CoreRuntime::RigAdmittedRequestBundle CoreRuntime::admit_rig_cohort_from_preflig
   const bool context_set = capture_cohort_registry_.set_admission_context(rig_capture_id, context);
   assert(context_set);
   (void)context_set;
+
+  // Rig-level accounting. Recorded on admission, not on submission: the
+  // cohort exists from here, and a submission failure still settles it below.
+  (void)rigs_.record_capture_triggered(rig_id, rig_capture_id);
 
   std::vector<RigAdmittedParticipantRequest> participants;
   participants.reserve(preflight.participants.size());

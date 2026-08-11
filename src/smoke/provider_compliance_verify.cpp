@@ -9924,7 +9924,7 @@ bool run_core_synthetic_capture_plan_flip_with_live_stream_regression_check() {
   if (!raw_result_b || !assembly.has_value() ||
       !assembly->has_default_image_retained ||
       assembly->terminal_state !=
-          CoreCaptureAssemblyRegistry::TerminalState::COMPLETED ||
+          CoreCaptureAssemblyRegistry::TerminalState::DELIVERED ||
       !gated_result_b) {
     std::ostringstream oss;
     oss << "FAIL core synthetic live-stream plan flip capture B incomplete"

@@ -105,6 +105,106 @@ std::optional<CoreCaptureCohortRegistry::CohortRecord> CoreCaptureCohortRegistry
   return it->second;
 }
 
+bool CoreCaptureCohortRegistry::close(uint64_t rig_capture_id,
+                                      CohortClosedReason reason,
+                                      uint64_t closed_ns,
+                                      std::vector<MemberOutcome> member_outcomes) noexcept {
+  if (rig_capture_id == 0 || reason == CohortClosedReason::NONE) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto it = cohorts_.find(rig_capture_id);
+  if (it == cohorts_.end()) {
+    return false;
+  }
+  // Idempotent by design. A window sweep can run in the same tick as a final
+  // member's terminal fact; whichever closes first owns the outcome, and the
+  // loser must not rewrite it -- a cohort that flipped from
+  // ALL_MEMBERS_TERMINAL to WINDOW_EXPIRED after the fact would be reporting
+  // a different capture than the one that happened.
+  if (it->second.state != CohortState::OPEN) {
+    return false;
+  }
+  it->second.state = CohortState::CLOSED;
+  it->second.closed_reason = reason;
+  it->second.closed_ns = closed_ns;
+  it->second.member_outcomes = std::move(member_outcomes);
+  return true;
+}
+
+std::vector<uint64_t> CoreCaptureCohortRegistry::open_cohort_ids() const {
+  std::vector<uint64_t> open;
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (const auto& [rig_capture_id, record] : cohorts_) {
+    if (record.state == CohortState::OPEN) {
+      open.push_back(rig_capture_id);
+    }
+  }
+  return open;
+}
+
+std::vector<std::pair<uint64_t, uint64_t>>
+CoreCaptureCohortRegistry::closed_members_never_arrived() const {
+  std::vector<std::pair<uint64_t, uint64_t>> out;
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (const auto& [rig_capture_id, record] : cohorts_) {
+    if (record.state != CohortState::CLOSED) {
+      continue;
+    }
+    for (const auto& outcome : record.member_outcomes) {
+      if (outcome.disposition ==
+          CoreCaptureAssemblyRegistry::TerminalState::NEVER_ARRIVED) {
+        out.emplace_back(rig_capture_id, outcome.device_instance_id);
+      }
+    }
+  }
+  return out;
+}
+
+bool CoreCaptureCohortRegistry::mark_member_late_excluded(
+    uint64_t rig_capture_id, uint64_t device_instance_id) noexcept {
+  if (rig_capture_id == 0 || device_instance_id == 0) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto it = cohorts_.find(rig_capture_id);
+  if (it == cohorts_.end() || it->second.state != CohortState::CLOSED) {
+    return false;
+  }
+  for (auto& outcome : it->second.member_outcomes) {
+    if (outcome.device_instance_id != device_instance_id) {
+      continue;
+    }
+    // Only from NEVER_ARRIVED. A member that closed DELIVERED or FAILED
+    // already told the truth and must not be relabelled.
+    if (outcome.disposition !=
+        CoreCaptureAssemblyRegistry::TerminalState::NEVER_ARRIVED) {
+      return false;
+    }
+    outcome.disposition = CoreCaptureAssemblyRegistry::TerminalState::LATE_EXCLUDED;
+    return true;
+  }
+  return false;
+}
+
+std::optional<uint64_t> CoreCaptureCohortRegistry::next_window_expiry_delay_ns(
+    uint64_t now_ns, uint64_t window_ns) const {
+  std::optional<uint64_t> min_delay;
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (const auto& [rig_capture_id, record] : cohorts_) {
+    (void)rig_capture_id;
+    if (record.state != CohortState::OPEN || record.admitted_ns == 0) {
+      continue;
+    }
+    const uint64_t expiry_ns = record.admitted_ns + window_ns;
+    const uint64_t delay = expiry_ns > now_ns ? expiry_ns - now_ns : 0;
+    if (!min_delay.has_value() || delay < *min_delay) {
+      min_delay = delay;
+    }
+  }
+  return min_delay;
+}
+
 uint64_t CoreCaptureCohortRegistry::rig_capture_id_for_device_capture_locked_(
     uint64_t device_capture_id) const noexcept {
   const auto it = rig_capture_id_by_device_capture_id_.find(device_capture_id);

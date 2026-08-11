@@ -7,9 +7,11 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "core/capture_admission_context.h"
+#include "core/core_capture_assembly_registry.h"
 
 namespace cambang {
 
@@ -27,6 +29,30 @@ public:
   enum class CohortState : uint8_t {
     OPEN = 0,
     FAILED = 1,
+    // Every member reached a terminal disposition, or the simultaneity window
+    // expired. A CLOSED cohort's result set is final; an OPEN one's is a
+    // snapshot of work still in progress, and before this state existed the
+    // two were indistinguishable to any caller.
+    CLOSED = 2,
+  };
+
+  // Why a cohort closed (capture_identity_and_lifecycle.md 4.4).
+  enum class CohortClosedReason : uint8_t {
+    NONE = 0,
+    ALL_MEMBERS_TERMINAL = 1,
+    WINDOW_EXPIRED = 2,
+  };
+
+  // How one member of a closed cohort ended, mirroring the assembly registry's
+  // disposition so a closed cohort is self-describing without a second lookup.
+  struct MemberOutcome {
+    uint64_t device_instance_id = 0;
+    std::string hardware_id;
+    uint64_t device_capture_id = 0;
+    CoreCaptureAssemblyRegistry::TerminalState disposition =
+        CoreCaptureAssemblyRegistry::TerminalState::NONE;
+    bool has_error_code = false;
+    uint32_t error_code = 0;
   };
 
   enum class CohortFailurePhase : uint8_t {
@@ -63,6 +89,21 @@ public:
     // set by the caller before insert(); drives retire_expired_cohorts()
     // (ledger #52). Not reset by insert().
     uint64_t created_ns = 0;
+
+    // Closure (section 4.4). admitted_ns is the simultaneity window's origin
+    // and is Core's own clock, never an acquisition mark: camera_fact_model.md
+    // 12.2 forbids acquisition timing as ordering or latency evidence, and
+    // 12.1 notes Capture Date-Time is deliberately SHARED across one rig
+    // capture, so marks from separate devices may legitimately be identical
+    // and can decide nothing about membership, lateness or ordering.
+    uint64_t admitted_ns = 0;
+    CohortClosedReason closed_reason = CohortClosedReason::NONE;
+    uint64_t closed_ns = 0;
+    // Populated when the cohort closes: one entry per expected participant, in
+    // membership order. A member that failed appears here WITH its error --
+    // the absent-array-entry behaviour section 4.3 calls out is exactly what
+    // this replaces.
+    std::vector<MemberOutcome> member_outcomes;
   };
 
   void clear() noexcept;
@@ -76,6 +117,42 @@ public:
                    CohortFailurePhase phase) noexcept;
   bool contains(uint64_t rig_capture_id) const noexcept;
   std::optional<CohortRecord> find(uint64_t rig_capture_id) const noexcept;
+
+  // Close a cohort, recording why and how each member ended. Idempotent: a
+  // cohort already CLOSED or FAILED is left alone and false is returned, so a
+  // window sweep racing a final member's arrival cannot rewrite the outcome.
+  bool close(uint64_t rig_capture_id,
+             CohortClosedReason reason,
+             uint64_t closed_ns,
+             std::vector<MemberOutcome> member_outcomes) noexcept;
+
+  // Rig Capture Ids of every cohort still OPEN. Returned by value so the
+  // caller can resolve dispositions from the assembly registry without holding
+  // this registry's lock -- the cross-registry ordering is documented as never
+  // nested.
+  std::vector<uint64_t> open_cohort_ids() const;
+
+  // (Rig Capture Id, device_instance_id) for every member of a CLOSED cohort
+  // recorded NEVER_ARRIVED -- the only members that can still become
+  // LATE_EXCLUDED. Empty in the ordinary case where nothing was given up on.
+  std::vector<std::pair<uint64_t, uint64_t>> closed_members_never_arrived() const;
+
+  // Record that a member the cohort closed without (NEVER_ARRIVED) has since
+  // reached a terminal disposition: it becomes LATE_EXCLUDED. Deliberately
+  // narrow -- it upgrades ONLY from NEVER_ARRIVED, and never touches
+  // closed_reason. A member settling after the window is not part of that
+  // moment, but the cohort still closed for the reason it closed for, and
+  // rewriting that would report a different capture than the one that
+  // happened.
+  bool mark_member_late_excluded(uint64_t rig_capture_id,
+                                 uint64_t device_instance_id) noexcept;
+
+  // Delay until the next OPEN cohort's window expires, for CoreThread's timer
+  // deadline scheduling. Mirrors next_cohort_expiry_delay_ns(), which governs
+  // retention rather than closure -- the two are separate windows and must not
+  // be conflated.
+  std::optional<uint64_t> next_window_expiry_delay_ns(uint64_t now_ns,
+                                                      uint64_t window_ns) const;
 
   // Resolve a member's Device Capture Id from its cohort and device. Returns 0
   // when the cohort is unknown or the device is not one of its participants.
