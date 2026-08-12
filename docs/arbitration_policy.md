@@ -55,7 +55,24 @@ Repeating streams are always preemptible by triggered capture.
 This order governs contention *between* these classes. Contention *within* the
 triggered-capture class — a second device capture on a busy device, or a rig
 capture over a member's in-flight device capture — is defined in
-`capture_identity_and_lifecycle.md` §3.
+`capture_identity_and_lifecycle.md` §3 and is **implemented**:
+
+- A second device capture on a device that already has one admitted is denied.
+  The rule is keyed on Core's own admission record, not on provider-reported
+  `capture_started` facts, which are blind between Core admitting a capture and
+  the provider acknowledging it — the window a rapid double-trigger lands in.
+- A rig capture over a member's in-flight device capture preempts it. The
+  displaced capture terminalises `PREEMPTED_BY_RIG`, carries no error code
+  (it did not fail, it lost arbitration), and is aborted at the provider so
+  what it still owes cannot be attributed to a later capture on that device.
+- A second rig capture on a rig that already has one in flight is denied.
+  Scoped to the rig, not global: §5.5 gives a device at most one rig, so
+  cohorts never share participants and independent rigs need no arbitration
+  against one another.
+
+Providers keep redundant guards for the per-device rule alongside Core's, per
+`capture_identity_and_lifecycle.md` §6 — so a later policy change fails loudly
+at the seam rather than silently misattributing payloads.
 
 ### 2.1 Provider-fact integration priority
 
@@ -240,10 +257,24 @@ default: return error code but do not increment failure counters.
 
 ## 9. Capture IDs and determinism
 
-> **Superseded on implementation.** `capture_identity_and_lifecycle.md` splits
-> Device Capture and Rig Capture into separate id spaces with durable,
-> type-prefixed public ids. The shared-counter rule below is current behaviour
-> and remains authoritative until that design lands.
+> **Superseded — the shared-counter rule below is no longer current
+> behaviour.** Device Capture and Rig Capture now occupy separate id spaces
+> (`capture_identity_and_lifecycle.md` §2.1). A rig capture draws a Rig Capture
+> Id and each member draws its own Device Capture Id; they are never the same
+> value. Both are still session-scoped `uint64` minted at the Godot boundary,
+> and the spaces are numerically disjoint via `CamBANGServer`'s
+> `RIG_CAPTURE_ID_BASE`, so an id can be told apart on sight.
+>
+> The **durable, type-prefixed public ids** that section also describes are not
+> implemented: the ids remain session-scoped integers, and
+> `trigger_capture()` still returns `Error` rather than an identity. Read the
+> rest of this section as history, not as current behaviour.
+>
+> One rationale below is also worth correcting: boundary minting is described
+> as avoiding a core-thread round trip, but both trigger paths already block on
+> Core through `run_synchronous_command_`, so that round trip is paid either
+> way. Minting stays at the boundary because the boundary owns the counters,
+> not because it is cheaper.
 
 `capture_id` is a monotonic `uint64`, unique for the runtime session.
 Implementation note: it is minted at the Godot boundary

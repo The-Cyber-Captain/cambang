@@ -80,9 +80,64 @@ void CoreCaptureAssemblyRegistry::mark_capture_completed(uint64_t capture_id, ui
   std::lock_guard<std::mutex> lock(mutex_);
   DeviceCaptureAssembly& assembly =
       get_or_create_assembly(assemblies_by_capture_id_, capture_id, device_instance_id);
+  // A terminal disposition is FINAL. A payload arriving for a capture that was
+  // preempted, or failed by the admission watchdog, must not resurrect it: the
+  // caller has already been told how that capture ended, and a disposition
+  // that changes afterwards reports a different capture than the one that
+  // happened. This is what keeps a displaced capture's late payload from being
+  // presented as a delivered result (section 7).
+  if (disposition_is_terminal(assembly.terminal_state)) {
+    return;
+  }
   assembly.terminal_state = TerminalState::DELIVERED;
   assembly.has_failure_error_code = false;
   assembly.failure_error_code = 0;
+}
+
+void CoreCaptureAssemblyRegistry::mark_capture_preempted_by_rig(
+    uint64_t capture_id, uint64_t device_instance_id) {
+  if (capture_id == 0 || device_instance_id == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto cap_it = assemblies_by_capture_id_.find(capture_id);
+  if (cap_it == assemblies_by_capture_id_.end()) {
+    return;
+  }
+  const auto dev_it = cap_it->second.find(device_instance_id);
+  if (dev_it == cap_it->second.end()) {
+    return;
+  }
+  // Only a capture still in progress can be preempted. One that already
+  // settled keeps the outcome it earned -- relabelling a DELIVERED capture as
+  // displaced would discard a real result and lie about what happened.
+  if (disposition_is_terminal(dev_it->second.terminal_state)) {
+    return;
+  }
+  dev_it->second.terminal_state = TerminalState::PREEMPTED_BY_RIG;
+  // No error code: this is not a failure. The capture lost arbitration, and
+  // its disposition says so precisely.
+  dev_it->second.has_failure_error_code = false;
+  dev_it->second.failure_error_code = 0;
+}
+
+uint64_t CoreCaptureAssemblyRegistry::admitted_non_terminal_capture_id_for_device(
+    uint64_t device_instance_id) const {
+  if (device_instance_id == 0) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (const auto& [capture_id, by_device] : assemblies_by_capture_id_) {
+    const auto it = by_device.find(device_instance_id);
+    if (it == by_device.end()) {
+      continue;
+    }
+    if (it->second.has_admission_context &&
+        !disposition_is_terminal(it->second.terminal_state)) {
+      return capture_id;
+    }
+  }
+  return 0;
 }
 
 void CoreCaptureAssemblyRegistry::mark_capture_failed(uint64_t capture_id,
@@ -94,6 +149,12 @@ void CoreCaptureAssemblyRegistry::mark_capture_failed(uint64_t capture_id,
   std::lock_guard<std::mutex> lock(mutex_);
   DeviceCaptureAssembly& assembly =
       get_or_create_assembly(assemblies_by_capture_id_, capture_id, device_instance_id);
+  // Terminal is final, for the same reason as mark_capture_completed: a
+  // capture already reported as preempted did not subsequently fail, and
+  // relabelling it would contradict what its subscriber was told.
+  if (disposition_is_terminal(assembly.terminal_state)) {
+    return;
+  }
   assembly.terminal_state = TerminalState::FAILED;
   assembly.has_failure_error_code = true;
   assembly.failure_error_code = error_code;
@@ -113,6 +174,26 @@ bool CoreCaptureAssemblyRegistry::is_assembly_successful(uint64_t capture_id,
   const DeviceCaptureAssembly& assembly = dev_it->second;
   return assembly.has_default_image_retained &&
          assembly.terminal_state == TerminalState::DELIVERED;
+}
+
+bool CoreCaptureAssemblyRegistry::has_admitted_non_terminal_capture_for_device(
+    uint64_t device_instance_id) const {
+  if (device_instance_id == 0) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (const auto& [capture_id, by_device] : assemblies_by_capture_id_) {
+    (void)capture_id;
+    const auto it = by_device.find(device_instance_id);
+    if (it == by_device.end()) {
+      continue;
+    }
+    if (it->second.has_admission_context &&
+        !disposition_is_terminal(it->second.terminal_state)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 CoreCaptureAssemblyRegistry::MemberDisposition

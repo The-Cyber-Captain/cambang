@@ -414,6 +414,10 @@ enum class TryCloseDeviceStatus : uint8_t {
     ImagingSpecUnavailable = 4,
     ImagingSpecRejected = 5,
     DuplicateCaptureId = 6,
+    // This rig already has a capture in flight. Scoped to the rig, not global
+    // (see CoreCaptureCohortRegistry::has_open_cohort_for_rig). Maps to
+    // ERR_BUSY at the boundary like every non-configuration failure.
+    RigCaptureInFlight = 7,
   };
 
   struct RigAdmittedParticipantRequest {
@@ -492,6 +496,12 @@ enum class TryCloseDeviceStatus : uint8_t {
   bool smoke_set_capture_datetime_utc_nanoseconds(int64_t unix_epoch_nanoseconds);
   uint64_t smoke_capture_admission_clock_sample_count() const noexcept;
   void smoke_reset_capture_admission_clock_sample_count() noexcept;
+  // A capture's terminal disposition as Core holds it. Read directly: the
+  // assembly registry is self-locking.
+  CoreCaptureAssemblyRegistry::MemberDisposition smoke_capture_disposition(
+      uint64_t capture_id, uint64_t device_instance_id) const {
+    return capture_assembly_registry_.disposition_for(capture_id, device_instance_id);
+  }
   std::optional<CaptureAdmissionContext> smoke_capture_admission_context(
       uint64_t capture_id, uint64_t device_instance_id) const;
   RigPreflightResult preflight_rig_participants_materialize(uint64_t rig_id) const;

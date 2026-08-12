@@ -700,6 +700,64 @@ static int test_capture_cohort_closure() {
   return 0;
 }
 
+// The per-device single-capture rule's predicate (capture_identity_and_lifecycle.md
+// 3). Registry-level and provider-free: this is the question Core's admission
+// asks, and it must be answered from ADMISSION, not from provider-reported
+// capture_started facts.
+static int test_per_device_admitted_capture_predicate() {
+  using Assembly = CoreCaptureAssemblyRegistry;
+  constexpr uint64_t kDeviceA = 1001;
+  constexpr uint64_t kDeviceB = 1002;
+  constexpr uint64_t kCaptureA = 5001;
+  constexpr uint64_t kCaptureB = 5002;
+
+  CoreCaptureAssemblyRegistry assemblies;
+  CaptureStillImageBundle bundle = make_default_metered_still_image_bundle();
+  CaptureAdmissionContext context{};
+
+  if (assemblies.has_admitted_non_terminal_capture_for_device(kDeviceA)) {
+    std::cerr << "FAIL: an empty registry reported a device busy\n";
+    return 1;
+  }
+
+  // Admitted and not yet terminal: busy from the moment Core admits, with no
+  // provider fact required. A guard waiting for capture_started would be blind
+  // in exactly this window.
+  assemblies.record_admission_context(kCaptureA, kDeviceA, context, bundle, 1000);
+  if (!assemblies.has_admitted_non_terminal_capture_for_device(kDeviceA)) {
+    std::cerr << "FAIL: device not reported busy immediately on admission\n";
+    return 1;
+  }
+  // Scoped to the device. Devices are independent, and a predicate that
+  // answered globally would refuse captures the hardware could serve.
+  if (assemblies.has_admitted_non_terminal_capture_for_device(kDeviceB)) {
+    std::cerr << "FAIL: an unrelated device was reported busy\n";
+    return 1;
+  }
+
+  // Both dispositions an assembly can actually hold release the device.
+  //
+  // Only DELIVERED and FAILED are reachable here: LATE_EXCLUDED and
+  // NEVER_ARRIVED are recorded on the cohort's member outcomes, never on the
+  // assembly. So a mutation narrowing the predicate from "terminal" to "these
+  // two values" is behaviour-equivalent today and survives this check -- that
+  // is expected, not a gap. The predicate is written against terminality
+  // anyway so that a disposition gaining a producing path later releases the
+  // device automatically, instead of holding it busy forever.
+  assemblies.mark_capture_completed(kCaptureA, kDeviceA);
+  if (assemblies.has_admitted_non_terminal_capture_for_device(kDeviceA)) {
+    std::cerr << "FAIL: a DELIVERED capture still held its device busy\n";
+    return 1;
+  }
+  assemblies.record_admission_context(kCaptureB, kDeviceB, context, bundle, 2000);
+  assemblies.mark_capture_failed(kCaptureB, kDeviceB, 42);
+  if (assemblies.has_admitted_non_terminal_capture_for_device(kDeviceB)) {
+    std::cerr << "FAIL: a FAILED capture still held its device busy\n";
+    return 1;
+  }
+  return 0;
+}
+
 static int test_still_capture_profile_visibility_audit_truth() {
   constexpr uint64_t kAuditDeviceId = 501;
   constexpr uint64_t kAuditRigId = 701;
@@ -1626,6 +1684,7 @@ static int test_scoped_resource_telemetry_runtime_framebuffer_lease_integration(
 int main() {
   if (int r = test_capture_cohort_registry_basics()) return r;
   if (int r = test_capture_cohort_closure()) return r;
+  if (int r = test_per_device_admitted_capture_predicate()) return r;
   if (int r = test_scoped_resource_telemetry_default_and_projection()) return r;
   if (int r = test_scoped_resource_telemetry_runtime_framebuffer_lease_integration()) return r;
   if (int r = test_topology_detached_and_retirement()) return r;

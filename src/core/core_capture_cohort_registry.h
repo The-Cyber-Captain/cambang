@@ -126,6 +126,14 @@ public:
              uint64_t closed_ns,
              std::vector<MemberOutcome> member_outcomes) noexcept;
 
+  // Whether this rig already has a capture in flight (an OPEN cohort).
+  //
+  // Scoped to the rig, NOT global. Section 5.5 gives a device at most one rig,
+  // so cohorts never share participants and multiple rigs require no
+  // arbitration against one another -- a global denial would block two
+  // independent rigs from capturing at once for no reason.
+  bool has_open_cohort_for_rig(uint64_t rig_id) const noexcept;
+
   // Rig Capture Ids of every cohort still OPEN. Returned by value so the
   // caller can resolve dispositions from the assembly registry without holding
   // this registry's lock -- the cross-registry ordering is documented as never

@@ -132,6 +132,20 @@ bool CoreCaptureCohortRegistry::close(uint64_t rig_capture_id,
   return true;
 }
 
+bool CoreCaptureCohortRegistry::has_open_cohort_for_rig(uint64_t rig_id) const noexcept {
+  if (rig_id == 0) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (const auto& [rig_capture_id, record] : cohorts_) {
+    (void)rig_capture_id;
+    if (record.rig_id == rig_id && record.state == CohortState::OPEN) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::vector<uint64_t> CoreCaptureCohortRegistry::open_cohort_ids() const {
   std::vector<uint64_t> open;
   std::lock_guard<std::mutex> lock(mutex_);

@@ -107,6 +107,31 @@ public:
   MemberDisposition disposition_for(uint64_t capture_id,
                                     uint64_t device_instance_id) const;
 
+  // Whether this device has a capture Core has ADMITTED that has not reached a
+  // terminal disposition. This is the per-device single-capture rule's source
+  // of truth, and it is deliberately not
+  // CoreAcquisitionSessionRegistry::has_capture_in_flight_for_device(), which
+  // is populated from provider-reported capture_started facts.
+  //
+  // The difference is a real window, not a nicety: between Core admitting a
+  // capture and the provider acknowledging it, the session registry knows
+  // nothing, so a guard built on it would admit a second capture on a device
+  // that already has one -- precisely under the rapid double-trigger the rule
+  // exists to refuse. Admission is Core's own act and is known immediately.
+  bool has_admitted_non_terminal_capture_for_device(uint64_t device_instance_id) const;
+
+  // The Device Capture Id of this device's admitted, non-terminal capture, or
+  // 0. Companion to the predicate above, for the caller that must act on the
+  // capture rather than merely refuse because of it -- rig preemption needs to
+  // name what it is displacing.
+  uint64_t admitted_non_terminal_capture_id_for_device(uint64_t device_instance_id) const;
+
+  // Terminalise a capture as displaced by a rig capture (section 3). Distinct
+  // from mark_capture_failed: the capture did not fail, it lost arbitration,
+  // and its subscriber is owed that distinction rather than a generic error.
+  // Preemption must never be silent.
+  void mark_capture_preempted_by_rig(uint64_t capture_id, uint64_t device_instance_id);
+
   // Capture-admission watchdog (icamera_provider.h's
   // capture_admission_watchdog_timeout_ns() contract): finds every device
   // assembly that is admitted (has_admission_context) but still non-terminal

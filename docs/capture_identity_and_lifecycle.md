@@ -2,15 +2,30 @@
 
 ## 0. Status
 
-**Design intent. Not yet implemented.**
+**Partially implemented. Landing tranche by tranche; §9 is the ledger.**
+
+| | Landed |
+|---|---|
+| §2.1 separate id spaces | `82fe1e7` |
+| §4.3 dispositions, §4.4 cohort closure and the simultaneity window | `c44e787` |
+| §3 within-class arbitration | tranche 3, in progress |
+| §2.2/§2.3/§4.1 durable public ids, result fields, trigger identity | not started |
+| §4.2/§4.5 signals, canonical wrappers, outstanding set | not started |
+| §5 rig membership lifecycle | not started |
 
 This document defines the target model for capture identity, capture
-arbitration, capture completion reporting, and rig-membership lifecycle. Until
-the implementation lands, **source and tests remain the authority for current
-behaviour**; §9 records what is true today and how it differs.
+arbitration, capture completion reporting, and rig-membership lifecycle. Where
+it and the source disagree, **source and tests remain the authority**; §9
+records what is true today and how it still differs. §9 is updated by each
+tranche as it lands — a status section that drifts is worse than none, because
+it is read as current.
 
-This document supersedes `arbitration_policy.md` §9's shared-counter rule on
-implementation. It depends on, and must not contradict, `camera_fact_model.md`
+The **public API is still the pre-implementation one**: `trigger_capture()`
+returns `Error`, there are no completion signals, and capture ids are
+session-scoped integers. Everything landed so far is internal.
+
+This document supersedes `arbitration_policy.md` §9's shared-counter rule,
+which is done. It depends on, and must not contradict, `camera_fact_model.md`
 §12 (acquisition timing and capture date-time).
 
 ---
@@ -107,10 +122,23 @@ A rig result set asserts that its images are of one moment. A provider that
 cannot execute all members concurrently would deliver a *staggered* set that
 looks simultaneous.
 
-Providers therefore declare their concurrent device-capture capacity, and Core
-**refuses a Rig Capture it cannot execute simultaneously** rather than
-delivering a staggered set. Simultaneity is a checked invariant, not an
-aspiration.
+Core therefore **refuses a Rig Capture it cannot execute simultaneously**
+rather than delivering a staggered set. Simultaneity is a checked invariant,
+not an aspiration.
+
+**The capacity is ingested, not declared by the provider.** An earlier draft of
+this section said providers declare their concurrent device-capture capacity.
+They do not, and on the platforms this project targets they cannot: Camera2
+NDK surfaces no runtime concurrency information. The authority is the
+camera-concurrency truth ingested through
+`CamBANGServer.ingest_camera_description(...)` before `start()`, held as
+`allowed_camera_id_combinations`.
+
+That gate exists and fails closed: a rig whose exact member combination has no
+accepted truth is refused at creation and again at trigger, with
+`ERR_UNCONFIGURED` — a permanent, caller-fixable configuration gap rather than
+busy-ness. No `ICameraProvider` capacity method exists, and none should be
+added; the sentence this replaces invited exactly that.
 
 ---
 
@@ -303,21 +331,34 @@ not wait on it.
 
 ## 9. Implementation-status guardrails (current)
 
-True at the time of writing, and contradicting the model above:
+Still true, and still contradicting the model above:
 
-- `capture_id` is a single monotonic `uint64` shared by device- and
-  rig-triggered captures (`arbitration_policy.md` §9). Rig and member ids are
-  the same value.
 - `CamBANGDevice.trigger_capture()` and `CamBANGRig.trigger_capture()` return
-  `Error` only; the minted id is discarded at the boundary.
+  `Error` only; the minted id is discarded at the boundary. Capture ids remain
+  session-scoped `uint64`; there are no durable `dc_`/`rc_` public ids.
 - There is no completion signal for either capture kind. `CamBANGRig` exposes
   `get_id`, `trigger_capture`, `get_result` and nothing else.
-- `get_result()` returns a partial set that is indistinguishable from a final
-  one, with no expected-member count and no per-member disposition.
-- Cohort state is `OPEN` or `FAILED` only — there is no completion state, no
-  cut-off, and no per-member disposition.
-- There is no in-flight capture guard in Core; per-device serialisation happens
-  incidentally, inside a platform provider, by blocking.
-- Rig membership is fixed at rig creation; there is no add/remove API.
+- **A caller still cannot tell a partial result set from a final one.** Core
+  now knows — cohorts close and record per-member dispositions — but none of
+  that is exposed, so `get_result()` looks exactly as it did. This is the one
+  entry that changed underneath without changing at the surface.
+- Rig membership is fixed at rig creation; there is no add/remove API, and no
+  `rig_membership_version`.
 - `get_rig(...)` and `get_device_for_hardware_id(...)` instantiate a new wrapper
-  on every call.
+  on every call, so per-object signals would be unreliable by construction.
+- `PREEMPTED_BY_RIG` has a producing path; `DEVICE_LOST` does not, and will not
+  until §5 lands.
+
+Resolved, kept briefly so a reader coming from an older draft is not misled:
+
+- ~~One `capture_id` shared by device- and rig-triggered captures~~ — separate
+  id spaces, numerically disjoint (`82fe1e7`).
+- ~~Cohort state is `OPEN` or `FAILED` only~~ — cohorts close with a reason and
+  per-member dispositions (`c44e787`).
+- ~~No in-flight capture guard in Core; serialisation happens incidentally
+  inside a platform provider by blocking~~ — Core denies a second capture on a
+  device it has already admitted one for, and providers keep redundant guards
+  alongside (tranche 3).
+- ~~Per-device capture completion is misattributed for rig captures~~ — fixed
+  before this work began; `captures_in_flight_` is keyed by
+  `(capture_id, device_instance_id)`.

@@ -67,6 +67,12 @@ unpredictably, and cannot be reasoned about from outside.
 6. Correct `arbitration_policy.md` §2's forward reference and
    `capture_identity_and_lifecycle.md` §3.1's "providers therefore declare
    their concurrent device-capture capacity" — see below.
+7. **Update `capture_identity_and_lifecycle.md` §0 and §9 to match what has
+   landed.** This is a standing obligation of every tranche in this branch from
+   here on, not a one-off: §9 is the ledger of how the source still differs
+   from the model, and a status section that drifts is worse than none because
+   it is read as current. Tranche 3 also catches up the entries tranches 1 and
+   2 left stale.
 
 ### Out of scope
 

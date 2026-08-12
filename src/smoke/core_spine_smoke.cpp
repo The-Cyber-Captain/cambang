@@ -3424,12 +3424,21 @@ static int test_capture_admission_context_smoke() {
     rt.stop();
     return 1;
   }
+  // Re-triggering this rig is now refused as RigCaptureInFlight rather than
+  // DuplicateCaptureId: the cohort admitted above is still OPEN, and the
+  // per-rig in-flight rule is checked before any id is minted. That is the
+  // more accurate reason -- the rig is busy, and the id being reused is
+  // incidental. DuplicateCaptureId stays reachable once the cohort closes and
+  // an id is genuinely reused.
+  //
+  // The content of this check is unchanged and is the clock sample count: a
+  // refused admission must not sample a new capture context.
   const auto duplicate = rt.smoke_admit_rig_cohort_from_preflight(
       991, 99003, make_manual_rig_preflight(991, {"a", "b"}));
   if (duplicate.ok ||
-      duplicate.failure != CoreRuntime::RigCohortAdmissionFailure::DuplicateCaptureId ||
+      duplicate.failure != CoreRuntime::RigCohortAdmissionFailure::RigCaptureInFlight ||
       rt.smoke_capture_admission_clock_sample_count() != 3) {
-    std::cerr << "FAIL: duplicate rig capture ID sampled a capture context\n";
+    std::cerr << "FAIL: refused rig re-trigger sampled a capture context\n";
     rt.stop();
     return 1;
   }
@@ -3946,9 +3955,18 @@ static int test_rig_cohort_admission_from_preflight_smoke() {
     return 1;
   }
 
+  // Refused as RigCaptureInFlight, not DuplicateCaptureId: rig 8001's cohort
+  // from the admission above is still OPEN, and the per-rig in-flight rule is
+  // checked before an id is minted.
+  //
+  // Worth recording that this SHADOWS DuplicateCaptureId rather than removing
+  // it. That failure is now only reachable for a cohort that has already
+  // closed or failed and whose Rig Capture Id is then reused -- which the
+  // boundary's monotonic minting never does. It survives as a defensive check
+  // on the registry's uniqueness invariant, not as a live path.
   const auto dup_capture = rt.smoke_admit_rig_cohort_from_preflight(8001, 9001, preflight_ok);
-  if (dup_capture.ok || dup_capture.failure != CoreRuntime::RigCohortAdmissionFailure::DuplicateCaptureId) {
-    std::cerr << "Expected DuplicateCaptureId on second insert\n";
+  if (dup_capture.ok || dup_capture.failure != CoreRuntime::RigCohortAdmissionFailure::RigCaptureInFlight) {
+    std::cerr << "Expected RigCaptureInFlight when re-triggering a rig with an open cohort\n";
     rt.stop();
     return 1;
   }
@@ -4246,6 +4264,24 @@ static int test_rig_bundle_submission_smoke() {
     return 1;
   }
 
+  // The success-path cohort above is still OPEN, and a rig with a capture in
+  // flight refuses another (capture_identity_and_lifecycle.md 3). Let it
+  // settle before the next scenario rather than working around the rule --
+  // waiting here also exercises the release: a rig that never freed would be
+  // indistinguishable from one that refuses correctly, until the second
+  // capture anyone attempts.
+  //
+  // The later scenarios need no such wait: each fails submission, which marks
+  // its cohort FAILED, so the rig frees immediately.
+  if (!wait_until([&]() {
+        const auto c = rt.smoke_capture_cohort(9101);
+        return c && c->state != CoreCaptureCohortRegistry::CohortState::OPEN;
+      }, 8000, 10)) {
+    std::cerr << "Rig never freed after its successful capture settled\n";
+    rt.stop();
+    return 1;
+  }
+
   // Multi-image request rejected when provider lacks multi-image capability.
   auto multi_member_invalid = admitted_ok;
   multi_member_invalid.rig_capture_id = 9104;
@@ -4280,6 +4316,24 @@ static int test_rig_bundle_submission_smoke() {
   if (first_fail.ok || first_fail.failure != CoreRuntime::RigSubmissionFailure::TriggerFailed ||
       first_fail.submitted_count != 0 || first_fail.failed_index != 0) {
     std::cerr << "Expected first participant trigger failure\n";
+    rt.stop();
+    return 1;
+  }
+
+  // The first-fail cohort above is still OPEN, and deliberately so: a
+  // submission that fails inside trigger_capture_submission does NOT mark the
+  // cohort failed, because a non-atomic provider may already have admitted a
+  // prefix of the bundle (see submit_admitted_rig_bundle_). It therefore
+  // stays open until its simultaneity window expires, which is the only thing
+  // that can settle it here.
+  //
+  // So this waits for the window rather than for a failure that will not come.
+  // Budget past the 2s window.
+  if (!wait_until([&]() {
+        const auto c = rt.smoke_capture_cohort(9102);
+        return c && c->state != CoreCaptureCohortRegistry::CohortState::OPEN;
+      }, 8000, 25)) {
+    std::cerr << "Rig never freed after a submission-failed cohort hit its window\n";
     rt.stop();
     return 1;
   }
@@ -4872,12 +4926,17 @@ static int test_rig_orchestration_helper_smoke() {
     rt.stop();
     return 1;
   }
+  // Re-orchestrating rig 8301 while its cohort from the successful capture
+  // above is still OPEN is refused as RigCaptureInFlight, which shadows the
+  // DuplicateCaptureId this previously asserted. The rig being busy is the
+  // accurate reason; the id being reused is incidental.
   const auto admission_fail = rt.smoke_orchestrate_rig_capture_with_capture_id(8301, 9302);
   if (admission_fail.ok ||
       admission_fail.failure != CoreRuntime::RigOrchestrationFailure::AdmissionFailed ||
       admission_fail.preflight_failure != CoreRuntime::RigPreflightFailure::None ||
-      admission_fail.admission_failure != CoreRuntime::RigCohortAdmissionFailure::DuplicateCaptureId ||
+      admission_fail.admission_failure != CoreRuntime::RigCohortAdmissionFailure::RigCaptureInFlight ||
       admission_fail.submission_failure != CoreRuntime::RigSubmissionFailure::None) {
+    std::cerr << "Expected RigCaptureInFlight re-orchestrating a rig with an open cohort\n";
     rt.stop();
     return 1;
   }

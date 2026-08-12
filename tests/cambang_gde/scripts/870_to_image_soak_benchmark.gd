@@ -2338,6 +2338,19 @@ func _poll_one_capture_job(job: Dictionary) -> bool:
 			# indistinguishable in the record.
 			_acq_probe_mark_capture_failure(str(job.get("device_key", "")), "capture_timeout")
 			_acq_probe_devices[str(job.get("device_key", ""))]["capture_timeout_us"] = now - int(job.get("request_us", 0))
+		# A preflight capture that runs out of time must still settle the
+		# preflight state machine. _preflight_all_captures_finished() waits for
+		# capture_complete OR capture_failed per device, and both flags were
+		# only ever set at trigger time or on a delivered result -- so a capture
+		# that was accepted and then never completed left both false and the
+		# scene sat in stage "capture" forever. The 5s budget expired, the job
+		# was discarded, and nothing recorded that it had.
+		#
+		# Observed as exactly that: 870 platform-backed on WinRT logging
+		# "preflight start" and then nothing for four minutes, with no verdict.
+		if bool(job.get("is_preflight_capture", false)) and \
+				not bool(job.get("is_rig_member", false)):
+			_mark_preflight_capture_failure(str(job.get("device_key", "")))
 		_release_device_capture_inflight(str(job.get("device_key", "")))
 		_record_sample("device_capture", {
 			"status": "timeout",

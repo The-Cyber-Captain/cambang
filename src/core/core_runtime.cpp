@@ -6361,7 +6361,36 @@ TryTriggerDeviceCaptureStatus CoreRuntime::trigger_device_capture_with_capture_i
     return TryTriggerDeviceCaptureStatus::InvalidArgument;
   }
 
+  // Integrate first, then judge. Asking about in-flight state before draining
+  // pending provider facts would refuse on a capture that has already
+  // completed and simply not been integrated yet -- a guard reading stale
+  // state is worse than no guard, because it refuses work the device could
+  // serve and does so unpredictably.
   (void)integrate_pending_provider_facts_before_capture_request_();
+
+  // Per-device single-capture rule (capture_identity_and_lifecycle.md 3).
+  // Deterministic denial, never a queue: triggering is an imperative action
+  // about NOW, and deferring it manufactures the latency this project exists
+  // to avoid while looking accepted to the caller.
+  //
+  // Scoped to THIS device. A capture in flight elsewhere says nothing about
+  // this one -- devices are independent, and a guard that over-refuses would
+  // be a worse regression than the gap it closes.
+  //
+  // This deliberately covers a rig member's in-flight capture too: that member
+  // is an ordinary Device Capture and holds the device. The reverse direction
+  // -- a RIG capture over an in-flight standalone capture -- is preemption,
+  // not refusal, and is handled on the rig path.
+  // Keyed on Core's own admission record, NOT on
+  // acquisition_sessions_.has_capture_in_flight_for_device(): that is
+  // populated from provider-reported capture_started facts, so it is blind
+  // between Core admitting a capture and the provider acknowledging it -- the
+  // exact window a rapid double-trigger lands in. See
+  // has_admitted_non_terminal_capture_for_device()'s doc comment.
+  if (capture_assembly_registry_.has_admitted_non_terminal_capture_for_device(
+          device_instance_id)) {
+    return TryTriggerDeviceCaptureStatus::Busy;
+  }
 
   CaptureRequest req{};
   if (!materialize_capture_request_(device_instance_id, req)) {
@@ -6543,6 +6572,18 @@ CoreRuntime::RigAdmittedRequestBundle CoreRuntime::admit_rig_cohort_from_preflig
         rig_id, rig_capture_id, imaging_spec_failure);
   }
 
+  // Second rig capture on a rig that already has one in flight: deterministic
+  // denial (capture_identity_and_lifecycle.md 3). Never queued -- a trigger is
+  // an imperative action about NOW, and deferring it manufactures latency
+  // while looking accepted.
+  //
+  // Checked BEFORE any member's standalone capture is preempted below: a rig
+  // trigger that is going to be refused must not displace work on its way out.
+  if (capture_cohort_registry_.has_open_cohort_for_rig(rig_id)) {
+    return make_rig_admitted_failure(
+        rig_id, rig_capture_id, RigCohortAdmissionFailure::RigCaptureInFlight);
+  }
+
   // One Device Capture Id per member, drawn before anything is recorded so a
   // failure part-way through leaves no half-keyed cohort behind. The member
   // ids and the rig id come from different spaces and must never be compared.
@@ -6605,6 +6646,34 @@ CoreRuntime::RigAdmittedRequestBundle CoreRuntime::admit_rig_cohort_from_preflig
     ap.request.admission_context = context;
     ap.request.has_admission_context = true;
     participants.push_back(std::move(ap));
+  }
+
+  // Rig preempts a member's in-flight standalone capture (section 3). A rig
+  // capture outranks a device capture in arbitration_policy.md 2, so the
+  // displaced capture yields -- but never silently: it terminalises
+  // PREEMPTED_BY_RIG and reports that to its own subscriber rather than
+  // vanishing. This is the producing path tranche 2 defined and deliberately
+  // left open.
+  //
+  // Done after admission has fully committed, so a rig trigger that fails
+  // later cannot leave a device capture destroyed for a capture that never ran.
+  for (const auto& participant : participants) {
+    const uint64_t displaced_capture_id =
+        capture_assembly_registry_.admitted_non_terminal_capture_id_for_device(
+            participant.request.device_instance_id);
+    if (displaced_capture_id == 0 ||
+        displaced_capture_id == participant.request.capture_id) {
+      continue;
+    }
+    capture_assembly_registry_.mark_capture_preempted_by_rig(
+        displaced_capture_id, participant.request.device_instance_id);
+    // Settle what the displaced capture still owes the platform (section 7).
+    // Without this its outstanding payload can be delivered into a later
+    // capture on the same device and be attributed to it -- attribution must
+    // be by accounting, never by acquisition timing.
+    if (ICameraProvider* prov = provider_.load(std::memory_order_acquire)) {
+      (void)prov->abort_capture(displaced_capture_id);
+    }
   }
 
   const uint64_t admitted_ns = ns_since_epoch_();

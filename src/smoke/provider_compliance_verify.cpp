@@ -3699,6 +3699,298 @@ bool run_capture_admission_establishes_acquisition_seam_check() {
   return ok;
 }
 
+// CORE's per-device single-capture guard (capture_identity_and_lifecycle.md 3),
+// as distinct from the provider's redundant one below. Section 6 is explicit
+// that arbitration is Core's job and that providers keep redundant guards for
+// the invariants they depend on; both exist, and neither substitutes for the
+// other.
+//
+// This needs a provider that can hold a capture genuinely in flight.
+// StubProvider posts capture_started AND capture_completed synchronously, so a
+// capture is terminal before the next trigger is judged and the contended
+// state simply cannot occur -- an earlier attempt at this check against the
+// stub could not fail and was discarded.
+bool run_core_per_device_capture_guard_check() {
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 2;
+  cfg.nominal.width = 8;
+  cfg.nominal.height = 8;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "FAIL core per-device guard runtime start failed\n";
+    return false;
+  }
+  if (!wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL core per-device guard runtime did not reach LIVE\n";
+    rt.stop();
+    return false;
+  }
+  SyntheticProvider provider(cfg);
+  const auto fail_with_cleanup = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    provider.set_capture_workers_paused_for_test(false);
+    rt.stop();
+    rt.attach_provider(nullptr);
+    return false;
+  };
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    return fail_with_cleanup("FAIL core per-device guard provider init failed");
+  }
+  rt.attach_provider(&provider);
+
+  std::vector<CameraEndpoint> eps;
+  if (!provider.enumerate_endpoints(eps).ok() || eps.size() < 2) {
+    return fail_with_cleanup("FAIL core per-device guard needs two endpoints");
+  }
+  constexpr uint64_t kDeviceA = 8901;
+  constexpr uint64_t kDeviceB = 8902;
+  if (!provider.open_device(eps[0].hardware_id, kDeviceA, 89011).ok() ||
+      !provider.open_device(eps[1].hardware_id, kDeviceB, 89021).ok()) {
+    return fail_with_cleanup("FAIL core per-device guard open_device failed");
+  }
+  const auto wait_capture_ready = [&](uint64_t device_id) {
+    CaptureRequest req{};
+    for (int i = 0; i < 200; ++i) {
+      if (rt.materialize_capture_request(device_id, req) &&
+          req.device_instance_id == device_id) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return false;
+  };
+  if (!wait_capture_ready(kDeviceA) || !wait_capture_ready(kDeviceB)) {
+    return fail_with_cleanup("FAIL core per-device guard devices never became capture-ready");
+  }
+
+  // Hold whatever is admitted in flight, so the contended state is real rather
+  // than a race the check might win by accident.
+  provider.set_capture_workers_paused_for_test(true);
+
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceA, 89100) !=
+      TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup("FAIL core per-device guard refused the first capture on an idle device");
+  }
+  // The refusing direction.
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceA, 89101) !=
+      TryTriggerDeviceCaptureStatus::Busy) {
+    return fail_with_cleanup("FAIL core admitted a second capture on a device already capturing");
+  }
+  // The permitted direction, and the one an over-broad guard breaks. Devices
+  // are independent; refusing here would deny work the hardware can serve.
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceB, 89102) !=
+      TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup("FAIL core refused a capture on an idle second device");
+  }
+
+  // Releasing: once the in-flight work settles, the device admits again. A
+  // guard that latched would be indistinguishable from one that works, right
+  // up until the second capture anyone attempts.
+  provider.set_capture_workers_paused_for_test(false);
+  bool readmitted = false;
+  for (int i = 0; i < 400; ++i) {
+    if (rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceA, 89103) ==
+        TryTriggerDeviceCaptureStatus::OK) {
+      readmitted = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  if (!readmitted) {
+    return fail_with_cleanup("FAIL core never re-admitted a capture after the device settled");
+  }
+
+  rt.stop();
+  rt.attach_provider(nullptr);
+  (void)provider.shutdown();
+  return true;
+}
+
+// Rig preemption of a member's in-flight standalone capture
+// (capture_identity_and_lifecycle.md 3). A rig capture outranks a device
+// capture, so the standalone yields -- but never silently: it terminalises
+// PREEMPTED_BY_RIG rather than vanishing or being reported as a failure.
+//
+// Needs a provider that can hold a capture genuinely in flight, for the same
+// reason the per-device guard check does.
+bool run_core_rig_preempts_device_capture_check() {
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 2;
+  cfg.nominal.width = 8;
+  cfg.nominal.height = 8;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "FAIL rig preemption runtime start failed\n";
+    return false;
+  }
+  if (!wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL rig preemption runtime did not reach LIVE\n";
+    rt.stop();
+    return false;
+  }
+  SyntheticProvider provider(cfg);
+  const auto fail_with_cleanup = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    provider.set_capture_workers_paused_for_test(false);
+    rt.stop();
+    rt.attach_provider(nullptr);
+    return false;
+  };
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    return fail_with_cleanup("FAIL rig preemption provider init failed");
+  }
+  rt.attach_provider(&provider);
+
+  std::vector<CameraEndpoint> eps;
+  if (!provider.enumerate_endpoints(eps).ok() || eps.empty()) {
+    return fail_with_cleanup("FAIL rig preemption enumerate failed");
+  }
+  constexpr uint64_t kDevice = 9301;
+  constexpr uint64_t kRigId = 9310;
+  constexpr uint64_t kStandaloneCapture = 93100;
+  constexpr uint64_t kRigCapture = 4000000000000ull + 93101ull;
+  // Rig membership is expressed in hardware ids, and preflight resolves them
+  // against Core's device registry -- so Core needs the identity mapping for
+  // this instance before it can find the member at all.
+  if (rt.retain_device_identity(kDevice, eps[0].hardware_id) !=
+      CoreThread::PostResult::Enqueued) {
+    return fail_with_cleanup("FAIL rig preemption could not retain device identity");
+  }
+  if (!provider.open_device(eps[0].hardware_id, kDevice, 93011).ok()) {
+    return fail_with_cleanup("FAIL rig preemption open_device failed");
+  }
+  CaptureRequest probe{};
+  bool ready = false;
+  for (int i = 0; i < 200; ++i) {
+    if (rt.materialize_capture_request(kDevice, probe) && probe.device_instance_id == kDevice) {
+      ready = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  if (!ready) {
+    return fail_with_cleanup("FAIL rig preemption device never became capture-ready");
+  }
+
+  // The rig is configured and preflighted BEFORE anything is in flight, which
+  // is both the realistic order and the workable one: preflight materializes a
+  // capture request per participant, and a device already holding a paused
+  // capture will not materialize one.
+  if (!rt.smoke_set_rig_member_hardware_ids(kRigId, {eps[0].hardware_id})) {
+    return fail_with_cleanup("FAIL rig preemption could not set rig membership");
+  }
+  CoreRuntime::RigPreflightResult preflight{};
+  bool preflight_ok = false;
+  for (int i = 0; i < 200; ++i) {
+    preflight = rt.preflight_rig_participants_materialize(kRigId);
+    if (preflight.ok && preflight.failure == CoreRuntime::RigPreflightFailure::None &&
+        !preflight.participants.empty()) {
+      preflight_ok = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  if (!preflight_ok) {
+    return fail_with_cleanup("FAIL rig preemption rig preflight never succeeded");
+  }
+
+  // Now hold a standalone capture in flight on that member, so the rig has
+  // something to displace.
+  provider.set_capture_workers_paused_for_test(true);
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(kDevice, kStandaloneCapture) !=
+      TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup("FAIL rig preemption could not place a standalone capture in flight");
+  }
+  if (CoreCaptureAssemblyRegistry::disposition_is_terminal(
+          rt.smoke_capture_disposition(kStandaloneCapture, kDevice).state)) {
+    return fail_with_cleanup("FAIL rig preemption standalone capture settled before it could be displaced");
+  }
+
+  // The rig capture is ADMITTED, not refused. This is the distinction the rule
+  // turns on: a second DEVICE capture on a busy device is denied, but a RIG
+  // capture outranks and displaces.
+  const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(kRigId, kRigCapture, preflight);
+  if (!admitted.ok || admitted.participants.empty()) {
+    return fail_with_cleanup("FAIL a rig capture was refused over a member's in-flight device capture");
+  }
+
+  // The displaced capture is terminal, and specifically PREEMPTED_BY_RIG --
+  // not FAILED. It did not fail; it lost arbitration, and its subscriber is
+  // owed that distinction. It also carries no error code, because there is no
+  // error to report.
+  const auto displaced = rt.smoke_capture_disposition(kStandaloneCapture, kDevice);
+  if (displaced.state != CoreCaptureAssemblyRegistry::TerminalState::PREEMPTED_BY_RIG) {
+    return fail_with_cleanup("FAIL a displaced device capture did not terminalise PREEMPTED_BY_RIG");
+  }
+  if (displaced.has_error_code) {
+    return fail_with_cleanup("FAIL a preempted capture reported an error; it lost arbitration, it did not fail");
+  }
+
+  // The rig's own member capture is untouched by its own preemption pass.
+  const uint64_t member_capture_id = admitted.participants[0].request.capture_id;
+  if (CoreCaptureAssemblyRegistry::disposition_is_terminal(
+          rt.smoke_capture_disposition(member_capture_id, kDevice).state)) {
+    return fail_with_cleanup("FAIL the rig's own member capture was terminalised by its own preemption");
+  }
+
+  // Section 7: what the displaced capture still owes must never be attributed
+  // to the rig capture that replaced it. The dangerous case is a payload that
+  // was already in the platform's hands when the capture was displaced and
+  // arrives afterwards.
+  //
+  // Deliver exactly that -- a frame and a completion for the DISPLACED capture
+  // id, after preemption -- and require two things of it.
+  static std::vector<uint8_t> late_bytes(8 * 8 * 4, 11);
+  FrameView late{};
+  late.capture_id = kStandaloneCapture;
+  late.device_instance_id = kDevice;
+  late.stream_id = 0;
+  late.width = 8;
+  late.height = 8;
+  late.format_fourcc = FOURCC_RGBA;
+  late.data = late_bytes.data();
+  late.size_bytes = late_bytes.size();
+  late.stride_bytes = 0;
+  late.release = [](void*, const FrameView*) {};
+  late.release_user = nullptr;
+  rt.provider_callbacks()->on_frame(late);
+  rt.provider_callbacks()->on_capture_completed(kStandaloneCapture, kDevice);
+
+  // 1. It must not resurrect the displaced capture. Its subscriber was told
+  //    PREEMPTED_BY_RIG; a disposition that later reads DELIVERED would report
+  //    a different capture than the one that happened.
+  bool stayed_preempted = true;
+  for (int i = 0; i < 100; ++i) {
+    if (rt.smoke_capture_disposition(kStandaloneCapture, kDevice).state !=
+        CoreCaptureAssemblyRegistry::TerminalState::PREEMPTED_BY_RIG) {
+      stayed_preempted = false;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  if (!stayed_preempted) {
+    return fail_with_cleanup("FAIL a late payload resurrected a preempted capture");
+  }
+
+  // 2. It must not settle the rig's member capture, which is a DIFFERENT
+  //    Device Capture Id on the same device. Before the id spaces were split
+  //    these shared one id and this misattribution had nowhere to be caught.
+  if (CoreCaptureAssemblyRegistry::disposition_is_terminal(
+          rt.smoke_capture_disposition(member_capture_id, kDevice).state)) {
+    return fail_with_cleanup("FAIL a displaced capture's late payload settled the rig member's capture");
+  }
+
+  provider.set_capture_workers_paused_for_test(false);
+  rt.stop();
+  rt.attach_provider(nullptr);
+  (void)provider.shutdown();
+  return true;
+}
+
 bool run_per_device_single_capture_admission_check() {
   RecorderCallbacks cb;
   SyntheticProviderConfig cfg{};
@@ -11175,6 +11467,8 @@ int main(int argc, char** argv) {
       {"run_synthetic_live_gpu_backing_truth_check", [] { return run_synthetic_live_gpu_backing_truth_check(); }},
       {"run_synthetic_timeline_picture_appearance_check", [] { return run_synthetic_timeline_picture_appearance_check(); }},
       {"run_abandoned_capture_payload_attribution_check", [] { return run_abandoned_capture_payload_attribution_check(); }},
+      {"run_core_per_device_capture_guard_check", [] { return run_core_per_device_capture_guard_check(); }},
+      {"run_core_rig_preempts_device_capture_check", [] { return run_core_rig_preempts_device_capture_check(); }},
       {"run_per_device_single_capture_admission_check", [] { return run_per_device_single_capture_admission_check(); }},
       {"run_capture_admission_establishes_acquisition_seam_check", [] { return run_capture_admission_establishes_acquisition_seam_check(); }},
       {"run_stub_provider_sanity_check", [] { return run_stub_provider_sanity_check(); }},
