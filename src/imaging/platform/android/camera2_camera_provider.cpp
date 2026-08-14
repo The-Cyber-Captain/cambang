@@ -5567,7 +5567,20 @@ ProviderResult Camera2CameraProvider::validate_and_admit_submission_locked_(
   if (capture_admission_closed_) {
     return ProviderResult::failure(ProviderError::ERR_SHUTTING_DOWN);
   }
-  if (submission.capture_id == 0 || submission.device_requests.empty()) {
+  // A device submission is named by capture_id (a Device Capture Id); a rig
+  // submission by rig_capture_id, with capture_id deliberately 0. This check
+  // predated that split and rejected every rig submission on the spot --
+  // before reaching the coherence guard below, which REQUIRES
+  // submission.capture_id == 0 for a rig. The two contradicted each other.
+  //
+  // Measured on a Galaxy S20+ (2026-08-14, scene 870 platform-backed): all 27
+  // rig captures refused, orchestration failure=4 submission=3
+  // provider_error=2 (ERR_INVALID_ARGUMENT), from exactly here.
+  const bool rig_submission =
+      submission.origin == CaptureSubmissionOrigin::RIG_CAPTURE;
+  const bool submission_identified =
+      rig_submission ? submission.rig_capture_id != 0 : submission.capture_id != 0;
+  if (!submission_identified || submission.device_requests.empty()) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
   if (capture_queue_.size() + capture_active_jobs_ + submission.device_requests.size() >
