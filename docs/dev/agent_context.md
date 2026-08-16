@@ -123,8 +123,10 @@ intrinsic rescaling, coordinate-domain conversion, or approximate distortion
 model fitting.
 
 Godot-facing camera-fact APIs and result shapes remain explicitly gatekept. Do
-not add, rename, or retire public surfaces unless the active tranche records the
-approved change.
+not add, rename, or retire public surfaces without the maintainer's explicit
+agreement in conversation, named as a public-surface change at the time. The
+tranche file records what was agreed; it does not confer permission. See
+CLAUDE.md.
 
 ## Image acquisition timing
 

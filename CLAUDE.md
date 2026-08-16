@@ -8,10 +8,12 @@ This repo has its own agent-instruction chain that takes precedence over generic
 
 1. `AGENTS.md` — workflow rules (minimal high-confidence changes, never weaken tests to get PASS, never commit unless explicitly asked, required validation is a hard completion gate).
 2. `docs/dev/agent_context.md` — durable project expectations (source authority, public-API lock, snapshot/lifecycle rules, camera-fact model boundaries).
-3. `docs/dev/current_tranche.md` — the *active* work order only: scope, acceptance criteria, validation expectations. Reset it to its stub once a tranche is accepted and committed. Do not create tranche-completion records, remediation-plan backlogs, or deferred-task files anywhere in the repo — git history is the record of completed work; put validation detail in the commit message. Future work is queued only when the maintainer activates it in this file.
+3. `docs/dev/current_tranche.md` — the *active* work order only: **scope, and what is explicitly out of it. Nothing else.** Reset it to its stub once a tranche is accepted and committed. Do not create tranche-completion records, remediation-plan backlogs, or deferred-task files anywhere in the repo — git history is the record of completed work; put validation detail in the commit message. Future work is queued only when the maintainer activates it in this file.
+
+   **Do not write acceptance criteria or validation expectations into this file.** An agent that authors them then cites them back as though they came from elsewhere, and defers to them after disproving them — observed repeatedly, including a breaking schema change made on the authority of a scope item the agent had written itself, and a hardware-validation requirement naming scenes that cannot exercise the provider in question. Validation is agreed per change in conversation with the maintainer and recorded afterwards in the commit message, where it describes what was actually run rather than what was hoped for.
 4. `docs/INDEX.md` — canonical-vs-supplement doc hierarchy. When docs and source disagree: source and tests win; report the mismatch rather than silently picking one.
 
-The Godot-facing public API (methods, signals, constants, dictionary shapes) is **locked** unless the active tranche explicitly authorizes a change.
+The Godot-facing public API (methods, signals, constants, dictionary shapes) and `schema/` are **locked**. A change requires the maintainer's explicit agreement in conversation, named as a public-surface change at the time. A scope line in `current_tranche.md` is not sufficient authorization — the tranche file records what was agreed, it does not confer permission.
 
 ## Build
 

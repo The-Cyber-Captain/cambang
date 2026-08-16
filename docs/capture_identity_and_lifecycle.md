@@ -16,9 +16,13 @@
 This document defines the target model for capture identity, capture
 arbitration, capture completion reporting, and rig-membership lifecycle. Where
 it and the source disagree, **source and tests remain the authority**; §9
-records what is true today and how it still differs. §9 is updated by each
-tranche as it lands — a status section that drifts is worse than none, because
-it is read as current.
+records what is true today and how it still differs.
+
+**§0 and §9 are updated by whatever change lands a part of this model, in the
+same commit as the code.** Not by a work order that happens to remember to say
+so — that instruction has died with two tranche files already, and in between
+a comment asserting dead code survived the tranche that made it live. A status
+section that drifts is worse than none, because it is read as current.
 
 The **public API is still nearly the pre-implementation one**: `trigger_capture()`
 returns `Error`, there are no completion signals, and capture ids are
