@@ -1,145 +1,133 @@
 # Current tranche
 
-## Capture arbitration: the per-device guard and rig preemption
+## Rig membership lifecycle: versioning, mutation, and device loss
 
-Tranche 3 of the `capture_identity_and_lifecycle.md` implementation. Internal
-only — no Godot-facing surface changes. Depends on tranche 1 (`82fe1e7`, split
-id spaces) and tranche 2 (`c44e787`, dispositions and cohort closure).
+Tranche 4 of the `capture_identity_and_lifecycle.md` implementation. Depends on
+tranche 1 (`82fe1e7`, split id spaces), tranche 2 (`c44e787`, dispositions and
+cohort closure) and tranche 3 (`9084bfe`, arbitration).
+
+Additive at the Godot boundary — `CamBANGRig` gains methods — but changes no
+existing signature, return type, constant or dictionary key. The public API
+break remains tranche 5's.
 
 ### Problem
 
-`arbitration_policy.md` §2 defines contention *between* rig capture, device
-capture and streams. It says nothing about contention *within* the
-triggered-capture class, and Core enforces nothing there:
+Rig membership is fixed at creation. `CamBANGRig` exposes exactly `get_id`,
+`trigger_capture` and `get_result`; `CoreRigRegistry` holds
+`member_hardware_ids` with no version and no mutation path beyond
+`retain_member_hardware_ids`. Section 5 of the design is therefore entirely
+unimplemented, and three of its rules are currently unenforced rather than
+merely unexposed:
 
-- **There is no per-device in-flight guard.** `has_capture_in_flight_for_device()`
-  exists and is consumed by exactly one caller — `snapshot_builder` projecting
-  `CAPTURING`. Nothing refuses on it. Per-device serialisation happens
-  incidentally, inside a platform provider, by blocking.
-- **A rig capture cannot preempt a member's in-flight device capture.** §3 says
-  it must, and that the preempted capture terminalises as `PREEMPTED_BY_RIG`.
-  Tranche 2 defined that disposition and deliberately left it with no producing
-  path. This tranche is that path.
+- **No `rig_membership_version` (§5.2).** A stored result set cannot describe
+  the membership that produced it.
+- **`DEVICE_LOST` has no producing path (§5.3).** Tranche 2 defined the
+  disposition and deliberately left it unreachable. A device closed while one
+  of its member captures is in flight currently leaves that member to the
+  capture-admission watchdog, which reports `FAILED(ERR_TIMEOUT)` 30s later —
+  a resource event misreported as a timeout.
+- **One rig per device (§5.5) is not enforced.** Nothing in `create_rig` or
+  `retain_member_hardware_ids` rejects a device that already belongs to another
+  rig. §5.5 is load-bearing for tranche 3's per-rig arbitration scope: that
+  denial is per-rig precisely *because* cohorts cannot share participants. The
+  assumption is currently unchecked.
 
-The consequence today is that a refusal cannot be attributed. `ERR_BUSY` is
-returned for genuine busy-ness, for orchestration failure, and for
-materialization backlog alike — which has sent debugging the wrong way more
-than once, and which end users hit on slow hardware.
+§5.1 (snapshot at trigger) is believed already satisfied — a cohort's
+`expected_participants` are captured at admission from preflight — but that is
+incidental, not asserted. This tranche pins it.
 
 ### Decision
 
-**Core arbitrates; providers keep redundant guards.** §6 is explicit that
-arbitration is Core's responsibility, and equally that providers should carry
-redundant guards for the invariants they depend on — the per-device
-single-capture rule especially — so a later policy change fails loudly at the
-seam rather than silently misattributing payloads. Both halves are in scope;
-neither replaces the other.
+**Membership is declarative configuration, versioned forward (§6).** Adding or
+removing a member is accepted while live and applies from the next trigger. It
+is never `ERR_BUSY`, and it never alters a cohort already in flight.
 
-**The four within-class rules (§3):**
+**Device loss is a resource event, not a configuration change (§5.3).** A
+device closed, disengaged or lost while a member capture is in flight
+terminalises that member `DEVICE_LOST` — promptly, not via the 30s watchdog. A
+member capture must always reach a terminal disposition; it must never simply
+disappear from a cohort.
 
-| Situation | Rule |
-|---|---|
-| Second device capture on a device with one in flight | Deterministic denial |
-| Device capture on a different device | Permitted; devices are independent |
-| Rig capture over a member's in-flight device capture | Rig preempts; preempted capture terminalises `PREEMPTED_BY_RIG` |
-| Second rig capture while one is in flight | Deterministic denial |
-
-**Preemption is never silent.** The preempted device capture reports its own
-terminal disposition to its own subscriber. It does not simply vanish, and its
-result must not be attributed to the rig capture that displaced it.
-
-**Triggering is imperative and about *now*.** A denial is immediate and carries
-a reason. Queuing a trigger for later execution is never correct: it
-manufactures the latency this project exists to avoid, looks accepted, behaves
-unpredictably, and cannot be reasoned about from outside.
+**Removal settles what the device still owes (§5.4).** A device leaving a rig
+with abandoned or lost captures may still owe buffers to its provider. Removal
+must settle that accounting, or it becomes a new route by which a stale payload
+is attributed to an unrelated capture — including a standalone capture taken
+after the device has left the rig. Tranche 3 established the pattern for the
+preemption case; this is the same obligation on a different trigger.
 
 ### Scope
 
-1. Per-device in-flight guard in Core's device-capture admission, refusing a
-   second capture on a device that already has one.
-2. Second-rig-capture denial while a rig capture is in flight.
-3. Rig preemption of a member's in-flight device capture, terminalising it
-   `PREEMPTED_BY_RIG` — the producing path tranche 2 left open.
-4. A preempted capture's outstanding provider payload accounting is settled, so
-   a payload owed to the displaced capture cannot later be attributed to the
-   rig capture that replaced it (§7).
-5. Provider-side redundant guards for the per-device rule (§6).
-6. Correct `arbitration_policy.md` §2's forward reference and
-   `capture_identity_and_lifecycle.md` §3.1's "providers therefore declare
-   their concurrent device-capture capacity" — see below.
-7. **Update `capture_identity_and_lifecycle.md` §0 and §9 to match what has
-   landed.** This is a standing obligation of every tranche in this branch from
-   here on, not a one-off: §9 is the ledger of how the source still differs
-   from the model, and a status section that drifts is worse than none because
-   it is read as current. Tranche 3 also catches up the entries tranches 1 and
-   2 left stale.
+1. `rig_membership_version` on `CoreRigRegistry::RigRecord`, bumped on any
+   membership change, projected into the snapshot.
+2. Each cohort records the membership version it was admitted under.
+3. Add/remove member on `CamBANGRig` (additive public methods), applying from
+   the next trigger and never disturbing an in-flight cohort.
+4. One-rig-per-device enforced at rig creation and at membership change.
+5. `DEVICE_LOST` producing path: a device closed or disengaged with a member
+   capture in flight terminalises that member promptly.
+6. Removal settles the leaving device's outstanding provider payload
+   accounting.
+7. §5.1 pinned by a check rather than left incidental.
+8. **Update `capture_identity_and_lifecycle.md` §0 and §9 to match.** Standing
+   obligation of every tranche in this branch: §9 is the ledger of how the
+   source still differs from the model, and a status section that drifts is
+   read as current.
 
 ### Out of scope
 
-- **Narrowing `ERR_BUSY`.** §4.5 notes that admission can refuse for reasons
-  unrelated to busy-ness and that all of them surface as `ERR_BUSY` today.
-  Making a refusal attributable is worth doing and is tracked separately; doing
-  it here would mean changing a public error code mid-tranche, and tranche 5
-  owns the public surface.
-- Rig membership lifecycle and `DEVICE_LOST`'s producing path (tranche 4).
 - Durable public ids, result fields, trigger returning identity (tranche 5).
 - Completion signals, canonical wrappers, outstanding set (tranche 6).
-
-### Settled: §3.1 needs no provider capacity method
-
-§3.1 says "Providers therefore declare their concurrent device-capture
-capacity." **They do not, and on this hardware they cannot.** Camera2 NDK
-surfaces no runtime concurrency information, and the ingested camera-concurrency
-truth (`camera_concurrency_adc.h`, `allowed_camera_id_combinations`) is the only
-gate. That gate already exists and already fails closed: a rig combination with
-no accepted truth is refused with `ERR_UNCONFIGURED` before admission.
-
-So no `ICameraProvider` capacity method will be added. The doc sentence is
-wrong as written and, left alone, invites exactly the method we have decided
-against. Correcting it is scope item 6.
+- Narrowing `ERR_BUSY`.
+- The WinRT equal-geometry `Coexist` defect recorded in
+  `winrt_camera_provider.cpp`, and the scene-870 Android second-bundle stall
+  recorded in `eeb85af`. Both predate or sit outside this work.
 
 ### Acceptance criteria
 
-1. A second device capture on a device with one in flight is refused, and the
-   first capture is unaffected — it still reaches its own terminal disposition
-   with its own result.
-2. A device capture on a *different* device is admitted while the first is in
-   flight. Devices are independent, and a guard that over-refuses is worse than
-   none.
-3. A rig capture over a member's in-flight device capture preempts it. The
-   preempted capture terminalises `PREEMPTED_BY_RIG`, and its subscriber can
-   see that rather than silence.
-4. A second rig capture while one is in flight is refused.
-5. A payload owed to a preempted capture is never attributed to the rig capture
-   that displaced it.
-6. Every rule is mutation-proved: removing it must fail a check. The false-
-   positive direction gets its own check for criteria 1 and 2 — a guard that
-   refuses a legitimate capture would be a worse regression than the gap it
-   closes.
-7. Existing gates green, including the nine deterministic verifiers.
+1. Removing a member while that rig has a capture in flight does not alter the
+   in-flight cohort; the capture completes with the device as a participant,
+   and the removal applies from the next trigger. Adding behaves symmetrically.
+   Neither returns `ERR_BUSY`.
+2. `rig_membership_version` bumps on change, and a cohort reports the version it
+   was admitted under.
+3. A device closed while one of its member captures is in flight terminalises
+   that member `DEVICE_LOST`, **and specifically not** `FAILED(ERR_TIMEOUT)` —
+   the check must distinguish the two, or it proves nothing beyond the watchdog
+   still working.
+4. A device already in one rig cannot join another, at creation or by add.
+5. A payload owed by a removed device is never attributed to a later capture on
+   that device.
+6. Every rule mutation-proved. Criteria 1 and 4 get their false-positive
+   direction too: a membership change that wrongly refuses, or an enforcement
+   that rejects a legitimate rig, is worse than the gap it closes.
+7. Existing gates green.
 
 ### Validation expectations
 
 Deterministic (required):
 
 - The nine verifiers.
-- Both directions for the per-device guard: refusal when busy, admission when
-  not. A guard proven only in the refusing direction is half-proven.
-- Provider-side redundant guards exercised in `provider_compliance_verify`.
+- Both directions for criteria 1 and 4.
+- `DEVICE_LOST` proven against a device closed mid-capture, distinguished from
+  the watchdog path by disposition and by timing.
 
 Godot (required):
 
 - `.\godot_test_suite.ps1`.
 - `73_rig_capture_result_set_verification.tscn`, windowed.
-- `71_capture_session_matrix_v3.tscn`, which drives concurrent captures across
-  two devices and is the scene most likely to expose an over-refusing guard.
 
-Hardware (required before acceptance): **this tranche changes device
-behaviour.** Per-device serialisation currently happens by blocking inside a
-platform provider; moving the decision into Core changes what a real device
-does under contention, and no host-native check can stand in for that. Scene 71
-and scene 73 on the S20+ and on the eMeet C970.
+Hardware: **WinRT, not Android.** Scene 870 on the S20+ stalled in four of four
+post-fix runs for reasons unrelated to this work, and is not a usable vehicle
+until that is understood. WinRT with the C970 plus internal camera completed
+cleanly post-fix (rig 66/12/0) and is the working platform-backed path.
 
-**Build the GDE, not just the verifiers**, and build Android — the redundant
-provider guard lands in `camera2_camera_provider.cpp`, which compiles only in
-`scons gde platform=android arch=arm64`.
+Note what hardware can and cannot show here: membership mutation and
+one-rig-per-device are Core rules that a host-native check proves better than a
+scene does. `DEVICE_LOST` against a genuinely disengaged device is the part
+worth seeing on hardware, and 870 does not exercise device close mid-capture —
+so if that coverage is wanted it needs an explicit decision about how, not an
+assumption that an existing scene covers it.
+
+**Build the GDE, not just the verifiers**, and build Android — Core changes
+reach `camera2_camera_provider.cpp`'s compile only there, even when Android is
+not the validation vehicle.
