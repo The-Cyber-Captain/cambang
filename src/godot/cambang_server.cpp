@@ -1046,6 +1046,23 @@ static bool read_synthetic_producer_output_form_project_setting(
   return parse_synthetic_producer_output_form_mode(mode, out_mode);
 }
 
+// Calibration-probe trace, OFF by default.
+//
+// These lines were added as "transient instrumentation" and left on. A
+// calibration is armed per new capture result, so under a high capture rate
+// they dominate the log: measured on a Galaxy S20+ at 58,487 logcat lines
+// against 51 scene lines in one scene-870 run, which is enough to lose the
+// harness verdict in the noise and report a run that looked fine on screen as
+// a failure.
+//
+// Follows the existing cambang/maintainer pattern (see
+// imaging/synthetic/config.h) rather than adding a new mechanism: a project
+// setting, overridable by a command-line argument.
+static constexpr const char* kCalibrationProbeTraceProjectSetting =
+    "cambang/maintainer/calibration_probe_trace";
+static constexpr const char* kCalibrationProbeTraceCmdlinePrefix =
+    "--cambang-calibration-probe-trace=";
+
 static bool try_read_single_namespaced_cmdline_override(
     const std::string& prefix,
     std::string& out_value,
@@ -1080,6 +1097,24 @@ static bool try_read_single_namespaced_cmdline_override(
     return false;
   }
   return true;
+}
+
+// Whether the calibration-probe trace is enabled. Resolved once per query
+// against the project setting, with a command-line override, and defaulting to
+// off so a normal run is quiet.
+static bool calibration_probe_trace_enabled() {
+  std::string value;
+  bool found = false;
+  if (try_read_single_namespaced_cmdline_override(
+          std::string(kCalibrationProbeTraceCmdlinePrefix), value, found) &&
+      found) {
+    return value == "1" || value == "on" || value == "true";
+  }
+  godot::ProjectSettings* settings = godot::ProjectSettings::get_singleton();
+  if (!settings) {
+    return false;
+  }
+  return bool(settings->get_setting(kCalibrationProbeTraceProjectSetting, false));
 }
 
 static bool apply_synthetic_producer_output_form_cmdline_to_project_setting() {
@@ -3272,29 +3307,35 @@ void CamBANGServer::_arm_live_retained_result_access_calibration_from_snapshot_(
         armed.member_shape_signature != 0) {
       continue;
     }
-    // Transient instrumentation: puts calibration arming on the same timeline
-    // as the capture trace, so its cost can be read against a capture rather
-    // than inferred. Suppression keys on acquisition_session_id, so a provider
-    // that re-creates its seam re-arms a full materialisation.
-    godot::UtilityFunctions::print(godot::vformat(
-        "[CamBANG][calprobe] ARM capture device=%d session=%d capture=%d due_in_ms=%d",
-        static_cast<int64_t>(armed.device_instance_id),
-        static_cast<int64_t>(armed.acquisition_session_id),
-        static_cast<int64_t>(armed.capture_id),
-        static_cast<int64_t>((armed.due_after_ns > now_ns
-                                  ? (armed.due_after_ns - now_ns) : 0) / 1000000)));
+    // Maintainer trace, off unless cambang/maintainer/calibration_probe_trace
+    // is set. Puts calibration arming on the same timeline as the capture
+    // trace, so its cost can be read against a capture rather than inferred.
+    // Suppression keys on acquisition_session_id, so a provider that re-creates
+    // its seam re-arms a full materialisation.
+    if (calibration_probe_trace_enabled()) {
+      godot::UtilityFunctions::print(godot::vformat(
+          "[CamBANG][calprobe] ARM capture device=%d session=%d capture=%d due_in_ms=%d",
+          static_cast<int64_t>(armed.device_instance_id),
+          static_cast<int64_t>(armed.acquisition_session_id),
+          static_cast<int64_t>(armed.capture_id),
+          static_cast<int64_t>((armed.due_after_ns > now_ns
+                                    ? (armed.due_after_ns - now_ns) : 0) / 1000000)));
+    }
     pending_live_capture_retained_result_calibrations_[session.device_instance_id] =
         armed;
     completed_live_capture_retained_result_calibrations_.erase(
         session.device_instance_id);
   }
   for (const RigState& rig : latest_->rigs) {
-    // UNREACHABLE BODY TODAY, and not because of the id split: nothing writes
-    // RigRecord::last_capture_id, so this always continues (see RigState's
-    // field comment). Left in place rather than deleted because it is correct
-    // as written -- rig.last_capture_id is a Rig Capture Id and
-    // get_capture_result_set() takes exactly that -- so it starts working the
-    // moment rig capture completion is recorded, which is a later tranche.
+    // LIVE since c44e787, which populates RigRecord::last_capture_id when a
+    // cohort settles. The comment here previously said this body was
+    // unreachable "until a later tranche" -- that tranche landed, and the note
+    // was not updated with it. Corrected rather than left, because a comment
+    // asserting dead code is worse than none: it invites the next reader to
+    // skip the very path that runs.
+    //
+    // rig.last_capture_id is a Rig Capture Id and get_capture_result_set()
+    // takes exactly that, so the resolution below is correct as written.
     if (rig.last_capture_id == 0) {
       continue;
     }
@@ -3696,11 +3737,15 @@ void CamBANGServer::_process_armed_live_retained_result_access_calibration_(
     const double cal_ms =
         static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - cal_t0).count()) / 1000.0;
-    godot::UtilityFunctions::print(godot::vformat(
-        "[CamBANG][calprobe] RUN capture device=%d session=%d capture=%d elapsed_ms=%f",
-        static_cast<int64_t>(it->second.device_instance_id),
-        static_cast<int64_t>(it->second.acquisition_session_id),
-        static_cast<int64_t>(it->second.capture_id), cal_ms));
+    // Maintainer trace, off by default -- see calibration_probe_trace_enabled().
+    // The calibration itself always runs; only the reporting is gated.
+    if (calibration_probe_trace_enabled()) {
+      godot::UtilityFunctions::print(godot::vformat(
+          "[CamBANG][calprobe] RUN capture device=%d session=%d capture=%d elapsed_ms=%f",
+          static_cast<int64_t>(it->second.device_instance_id),
+          static_cast<int64_t>(it->second.acquisition_session_id),
+          static_cast<int64_t>(it->second.capture_id), cal_ms));
+    }
     completed_live_capture_retained_result_calibrations_[it->first] =
         it->second;
     it = pending_live_capture_retained_result_calibrations_.erase(it);
