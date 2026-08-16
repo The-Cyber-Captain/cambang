@@ -155,10 +155,12 @@ CoreRuntime::RigPreflightResult make_rig_preflight_failure(
 
 CoreRuntime::RigPreflightResult make_rig_preflight_success(
     uint64_t rig_id,
+    uint64_t rig_membership_version,
     std::vector<CoreRuntime::RigPreflightParticipant> participants) {
   CoreRuntime::RigPreflightResult out = make_rig_preflight_result_base(rig_id);
   out.ok = true;
   out.failure = CoreRuntime::RigPreflightFailure::None;
+  out.rig_membership_version = rig_membership_version;
   out.participants = std::move(participants);
   return out;
 }
@@ -6003,6 +6005,30 @@ TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) 
                                    static_cast<unsigned>(cr.code));
       return TryCloseDeviceStatus::ProviderRejected;
     }
+    // Section 5.3: a capture in flight on a device that has just been closed
+    // is terminalised DEVICE_LOST, promptly. Without this it sits non-terminal
+    // until the capture-admission watchdog fires ~30s later and reports
+    // FAILED(ERR_TIMEOUT) -- a resource event misreported as a timeout, and
+    // 30s during which the per-device guard treats the (now absent) device as
+    // busy.
+    //
+    // Applies to any in-flight capture on the device, not only a rig member's:
+    // a member capture IS an ordinary device capture (2.1), and a standalone
+    // one has the same claim to a truthful terminal disposition.
+    //
+    // Done after the provider has closed and before the device record is
+    // updated, so the capture is settled against the device that owned it.
+    for (;;) {
+      const uint64_t lost_capture_id =
+          capture_assembly_registry_.admitted_non_terminal_capture_id_for_device(
+              device_instance_id);
+      if (lost_capture_id == 0) {
+        break;
+      }
+      capture_assembly_registry_.mark_capture_device_lost(lost_capture_id,
+                                                          device_instance_id);
+    }
+
     const uint64_t now_ns = ns_since_epoch_();
     bool retain_capture_orphans = false;
     for (const auto& [key, state] : capture_retained_plan_evaluators_) {
@@ -6541,7 +6567,8 @@ CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_material
     participants.push_back(std::move(participant));
   }
 
-  return make_rig_preflight_success(rig_id, std::move(participants));
+  return make_rig_preflight_success(
+      rig_id, rig->rig_membership_version, std::move(participants));
 }
 
 CoreRuntime::RigAdmittedRequestBundle CoreRuntime::admit_rig_cohort_from_preflight_(
@@ -6605,6 +6632,8 @@ CoreRuntime::RigAdmittedRequestBundle CoreRuntime::admit_rig_cohort_from_preflig
   CoreCaptureCohortRegistry::CohortRecord cohort{};
   cohort.rig_capture_id = rig_capture_id;
   cohort.rig_id = rig_id;
+  // From the preflight, which read it alongside the participants.
+  cohort.rig_membership_version = preflight.rig_membership_version;
   cohort.created_ns = ns_since_epoch_();
   // Origin of the simultaneity window. Same instant as created_ns today, but
   // kept as its own field because the two drive different windows (closure vs
@@ -7037,6 +7066,42 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_
           static_cast<uint32_t>(ProviderError::ERR_BAD_STATE)));
 }
 
+CoreRigRegistry::MembershipChange CoreRuntime::try_add_rig_member_for_server(
+    uint64_t rig_id, const std::string& hardware_id) noexcept try {
+  if (rig_id == 0 || hardware_id.empty()) {
+    return CoreRigRegistry::MembershipChange::RigNotFound;
+  }
+  return run_synchronous_command_(
+      CoreRigRegistry::MembershipChange::RigNotFound,
+      [this, rig_id, hardware_id]() {
+        const auto result = rigs_.add_member(rig_id, hardware_id);
+        if (result == CoreRigRegistry::MembershipChange::Changed) {
+          request_publish_from_core_unchecked();
+        }
+        return result;
+      });
+} catch (...) {
+  return CoreRigRegistry::MembershipChange::RigNotFound;
+}
+
+CoreRigRegistry::MembershipChange CoreRuntime::try_remove_rig_member_for_server(
+    uint64_t rig_id, const std::string& hardware_id) noexcept try {
+  if (rig_id == 0 || hardware_id.empty()) {
+    return CoreRigRegistry::MembershipChange::RigNotFound;
+  }
+  return run_synchronous_command_(
+      CoreRigRegistry::MembershipChange::RigNotFound,
+      [this, rig_id, hardware_id]() {
+        const auto result = rigs_.remove_member(rig_id, hardware_id);
+        if (result == CoreRigRegistry::MembershipChange::Changed) {
+          request_publish_from_core_unchecked();
+        }
+        return result;
+      });
+} catch (...) {
+  return CoreRigRegistry::MembershipChange::RigNotFound;
+}
+
 bool CoreRuntime::retain_rig_member_hardware_ids(
     uint64_t rig_id,
     const std::vector<std::string>& member_hardware_ids) noexcept try {
@@ -7073,6 +7138,18 @@ bool CoreRuntime::create_rig_from_hardware_ids(
     if (!camera_concurrency::requested_camera_id_set_is_allowed(
             imaging_spec.camera_concurrency, member_hardware_ids)) {
       return false;
+    }
+    // Section 5.5: a device belongs to at most one rig. Checked here, at the
+    // creation path a caller actually uses, and in
+    // CoreRigRegistry::add_member -- NOT inside retain_member_hardware_ids.
+    // That bulk setter also carries synthetic scenario-staged rig topology
+    // (see start_scenario), which is authored data rather than a caller's
+    // request, and rejecting it there would fail scenario startup for a rule
+    // this tranche is not chartered to police in authored content.
+    for (const std::string& hardware_id : member_hardware_ids) {
+      if (rigs_.rig_owning_member(hardware_id, rig_id) != 0) {
+        return false;
+      }
     }
     if (!rigs_.retain_member_hardware_ids(rig_id, member_hardware_ids)) {
       return false;

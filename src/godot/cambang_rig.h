@@ -12,6 +12,7 @@ namespace cambang {
 
 class CamBANGServer;
 class CamBANGCaptureResult;
+class CamBANGDevice;
 
 class CamBANGRig final : public godot::RefCounted {
   GDCLASS(CamBANGRig, godot::RefCounted)
@@ -26,6 +27,23 @@ public:
   }
 
   uint64_t get_id() const { return rig_id_; }
+
+  // Membership mutation (capture_identity_and_lifecycle.md 5.1). Takes a
+  // device handle rather than a hardware-id string: the caller already holds
+  // CamBANGDevice objects, and making them round-trip through strings invites
+  // typos the type system would otherwise catch. The hardware id remains the
+  // participation identity internally (2.3).
+  //
+  // Declarative, not imperative. Both are accepted while the rig is live and
+  // apply FROM THE NEXT TRIGGER; neither disturbs a capture already in flight,
+  // and neither returns ERR_BUSY. Both are idempotent -- adding an existing
+  // member or removing a non-member succeeds without bumping the version.
+  //
+  // ERR_INVALID_PARAMETER when the handle names no device, the rig is unknown,
+  // or a removal would empty the rig.
+  godot::Error add_member(const godot::Ref<CamBANGDevice>& device);
+  godot::Error remove_member(const godot::Ref<CamBANGDevice>& device);
+
   godot::Error trigger_capture();
   godot::TypedArray<CamBANGCaptureResult> get_result() const;
 

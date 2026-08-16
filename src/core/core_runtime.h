@@ -400,6 +400,13 @@ enum class TryCloseDeviceStatus : uint8_t {
     bool ok = false;
     RigPreflightFailure failure = RigPreflightFailure::None;
     uint64_t rig_id = 0;
+    // The rig's membership version at the instant this preflight read its
+    // members (capture_identity_and_lifecycle.md 5.2). Carried on the
+    // preflight rather than re-read at admission ON PURPOSE: the version and
+    // the participant list must come from the SAME read, or a membership
+    // change landing between the two would stamp a cohort with a version that
+    // does not describe the members it actually ran.
+    uint64_t rig_membership_version = 0;
     size_t failure_member_index = 0;
     std::string failure_hardware_id;
     uint64_t failure_device_instance_id = 0;
@@ -496,6 +503,17 @@ enum class TryCloseDeviceStatus : uint8_t {
   bool smoke_set_capture_datetime_utc_nanoseconds(int64_t unix_epoch_nanoseconds);
   uint64_t smoke_capture_admission_clock_sample_count() const noexcept;
   void smoke_reset_capture_admission_clock_sample_count() noexcept;
+  // Record a capture admission directly, so a check can put a capture in
+  // flight without depending on a provider's completion timing. StubProvider
+  // completes synchronously, which makes an ordinary trigger useless for
+  // testing anything that must happen WHILE a capture is outstanding.
+  void smoke_record_capture_admission(uint64_t capture_id,
+                                      uint64_t device_instance_id) {
+    capture_assembly_registry_.record_admission_context(
+        capture_id, device_instance_id, CaptureAdmissionContext{},
+        make_default_metered_still_image_bundle(), ns_since_epoch_());
+  }
+
   // A capture's terminal disposition as Core holds it. Read directly: the
   // assembly registry is self-locking.
   CoreCaptureAssemblyRegistry::MemberDisposition smoke_capture_disposition(
@@ -557,6 +575,15 @@ enum class TryCloseDeviceStatus : uint8_t {
       uint32_t image_member_index) const;
 
 #endif
+
+  // Rig membership mutation, run ON THE CORE THREAD so the read-modify-write
+  // of the member list is atomic. Doing it at the boundary -- read members,
+  // compute a new list, retain it -- would race a concurrent change and could
+  // silently drop one.
+  CoreRigRegistry::MembershipChange try_add_rig_member_for_server(
+      uint64_t rig_id, const std::string& hardware_id) noexcept;
+  CoreRigRegistry::MembershipChange try_remove_rig_member_for_server(
+      uint64_t rig_id, const std::string& hardware_id) noexcept;
 
   bool retain_rig_member_hardware_ids(
       uint64_t rig_id,

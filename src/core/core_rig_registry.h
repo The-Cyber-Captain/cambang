@@ -15,6 +15,18 @@ public:
     std::string name;
     std::vector<std::string> member_hardware_ids;
 
+    // Bumped whenever member_hardware_ids actually changes
+    // (capture_identity_and_lifecycle.md 5.2). Membership is declarative
+    // configuration: accepted while live, versioned forward, applied from the
+    // next trigger. The version is what makes that transition observable, and
+    // what lets a stored result set describe the membership that produced it.
+    //
+    // Starts at 1 once membership is first retained, so 0 means "never set"
+    // and is distinguishable from "set once". Bumped only on a real change --
+    // retaining the same members again is not a version event, or a caller
+    // re-asserting its configuration each frame would invent history.
+    uint64_t rig_membership_version = 0;
+
     uint64_t active_capture_id = 0;
     uint64_t capture_profile_version = 0;
     uint32_t capture_width = 0;
@@ -51,6 +63,30 @@ public:
                               uint32_t format,
                               uint64_t capture_profile_version);
   bool retain_member_hardware_ids(uint64_t rig_id, std::vector<std::string> member_hardware_ids);
+
+  // Membership mutation (capture_identity_and_lifecycle.md 5.1). Declarative
+  // configuration: accepted while live, versioned forward, applied from the
+  // next trigger. Never touches a cohort already in flight -- a cohort
+  // snapshots its participants at admission.
+  enum class MembershipChange : uint8_t {
+    Changed = 0,      // membership differs now; version bumped
+    NoChange = 1,     // already in this state; idempotent, version untouched
+    RigNotFound = 2,
+    WouldEmptyRig = 3,  // removal refused: a rig needs at least one member
+    AlreadyInAnotherRig = 4,  // section 5.5: a device belongs to at most one rig
+  };
+
+  // The rig that already has this device as a member, ignoring `excluding_rig_id`,
+  // or 0 if none (capture_identity_and_lifecycle.md 5.5).
+  //
+  // This is load-bearing beyond tidiness: tranche 3 scopes its second-rig
+  // denial per rig *because* cohorts cannot share participants. If a device
+  // could sit in two rigs, two cohorts could contend for it and that denial
+  // would be looking at the wrong rig.
+  uint64_t rig_owning_member(const std::string& hardware_id,
+                             uint64_t excluding_rig_id) const noexcept;
+  MembershipChange add_member(uint64_t rig_id, const std::string& hardware_id);
+  MembershipChange remove_member(uint64_t rig_id, const std::string& hardware_id);
 
   void clear() noexcept { rigs_.clear(); }
 

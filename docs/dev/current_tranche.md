@@ -57,16 +57,36 @@ preemption case; this is the same obligation on a different trigger.
 
 ### Scope
 
-1. `rig_membership_version` on `CoreRigRegistry::RigRecord`, bumped on any
-   membership change, projected into the snapshot.
-2. Each cohort records the membership version it was admitted under.
+1. `rig_membership_version` on `CoreRigRegistry::RigRecord`, bumped on a real
+   membership change. Core-internal only.
+2. Each cohort records the membership version it was admitted under, so a rig
+   capture knows the membership it ran against (§5.2's "each Rig Capture
+   records the version it was admitted under"). Also Core-internal.
 3. Add/remove member on `CamBANGRig` (additive public methods), applying from
    the next trigger and never disturbing an in-flight cohort.
 4. One-rig-per-device enforced at rig creation and at membership change.
 5. `DEVICE_LOST` producing path: a device closed or disengaged with a member
    capture in flight terminalises that member promptly.
 6. Removal settles the leaving device's outstanding provider payload
-   accounting.
+   accounting. **CLOSED AS SATISFIED BY CONSTRUCTION** — no code written, and
+   deliberately so:
+   - §5.1 says removal does not disturb an in-flight cohort; that capture
+     completes. Removal therefore abandons nothing itself.
+   - An orderly device close cannot abandon a capture either: a provider pins
+     the device while one is in flight (`Camera2CameraProvider::close_device`
+     returns `ERR_BUSY`).
+   - The one path that genuinely abandons is rig preemption, and tranche 3
+     already aborts there — Core's single `abort_capture` call.
+   - Tranche 1's split id spaces mean a late payload carries its own Device
+     Capture Id, so Core cannot attribute it to a later capture (§7's hazard).
+
+   A removal-time sweep would abort captures already long settled: noise
+   rather than settlement.
+
+   **One real gap remains and is NOT this tranche's**: a capture failed by the
+   30s admission watchdog is abandoned with no `abort_capture`. Recorded at
+   `CoreCaptureAssemblyRegistry::sweep_admission_timeouts`, where it is
+   created. It belongs with arbitration/lifecycle work, not membership.
 7. §5.1 pinned by a check rather than left incidental.
 8. **Update `capture_identity_and_lifecycle.md` §0 and §9 to match.** Standing
    obligation of every tranche in this branch: §9 is the ledger of how the
@@ -75,6 +95,20 @@ preemption case; this is the same obligation on a different trigger.
 
 ### Out of scope
 
+- **The state snapshot.** `rig_membership_version` does NOT go into the
+  snapshot dictionary or `state_snapshot_schema.json`. §5.2 asks for two
+  things: the rig record carries the version, and each Rig Capture records the
+  version it was admitted under so a *stored result set* is self-describing.
+  A result field is §2.3, which is tranche 5. Nothing in the design asks for a
+  snapshot projection, and the snapshot dictionary is part of the locked
+  Godot-facing surface (CLAUDE.md) — a tranche may not widen it just because
+  the value happens to be nearby.
+
+  An earlier draft of this scope item said "projected into the snapshot" and
+  was implemented: the field was added to `RigState`, the builder, the export,
+  and to the schema's `required` array under `additionalProperties: false`,
+  which would have invalidated every stored snapshot lacking it. Reverted
+  before it ran. Recorded here so the same reasoning is not repeated.
 - Durable public ids, result fields, trigger returning identity (tranche 5).
 - Completion signals, canonical wrappers, outstanding set (tranche 6).
 - Narrowing `ERR_BUSY`.

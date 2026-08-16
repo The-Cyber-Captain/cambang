@@ -8,10 +8,10 @@
 |---|---|
 | §2.1 separate id spaces | `82fe1e7` |
 | §4.3 dispositions, §4.4 cohort closure and the simultaneity window | `c44e787` |
-| §3 within-class arbitration | tranche 3, in progress |
+| §3 within-class arbitration | `9084bfe` |
+| §5 rig membership lifecycle | tranche 4, in progress |
 | §2.2/§2.3/§4.1 durable public ids, result fields, trigger identity | not started |
 | §4.2/§4.5 signals, canonical wrappers, outstanding set | not started |
-| §5 rig membership lifecycle | not started |
 
 This document defines the target model for capture identity, capture
 arbitration, capture completion reporting, and rig-membership lifecycle. Where
@@ -20,9 +20,19 @@ records what is true today and how it still differs. §9 is updated by each
 tranche as it lands — a status section that drifts is worse than none, because
 it is read as current.
 
-The **public API is still the pre-implementation one**: `trigger_capture()`
+The **public API is still nearly the pre-implementation one**: `trigger_capture()`
 returns `Error`, there are no completion signals, and capture ids are
-session-scoped integers. Everything landed so far is internal.
+session-scoped integers. The single addition so far is
+`CamBANGRig.add_member` / `remove_member`, taking `CamBANGDevice` handles.
+Everything else landed is internal.
+
+**Hardware validation is thin, and should not be assumed from the commits.**
+The arbitration rules (§3) are proven host-native and mutation-proved, but
+have no hardware coverage: scene 870 stalls on the S20+ for reasons unrelated
+to this work, and the one platform-backed run that completed cleanly (WinRT,
+after the provider fix in `60d1533`) exercises capture and rig capture rather
+than contention. §5.3's `DEVICE_LOST` has no hardware coverage at all — no
+existing scene closes a device mid-capture.
 
 This document supersedes `arbitration_policy.md` §9's shared-counter rule,
 which is done. It depends on, and must not contradict, `camera_fact_model.md`
@@ -342,12 +352,24 @@ Still true, and still contradicting the model above:
   now knows — cohorts close and record per-member dispositions — but none of
   that is exposed, so `get_result()` looks exactly as it did. This is the one
   entry that changed underneath without changing at the surface.
-- Rig membership is fixed at rig creation; there is no add/remove API, and no
-  `rig_membership_version`.
 - `get_rig(...)` and `get_device_for_hardware_id(...)` instantiate a new wrapper
   on every call, so per-object signals would be unreliable by construction.
-- `PREEMPTED_BY_RIG` has a producing path; `DEVICE_LOST` does not, and will not
-  until §5 lands.
+- `NEVER_ARRIVED` and `LATE_EXCLUDED` are produced only by cohort closure;
+  every disposition now has a producing path except through the boundary,
+  which exposes none of them.
+- **§5.5 is enforced for callers but not for authored content.** `create_rig`
+  and `add_member` reject a device already in another rig;
+  `retain_member_hardware_ids` does not, and it carries synthetic
+  scenario-staged rig topology. A scenario can still stage two rigs sharing a
+  device.
+- **`create_rig` still takes hardware-id strings** while `add_member` /
+  `remove_member` take `CamBANGDevice` handles. The handle form is the better
+  surface; changing `create_rig` alters a bound signature and belongs with the
+  public-API work.
+- A capture failed by the 30s admission watchdog is abandoned without
+  `abort_capture`, so a provider with a shared delivery queue may still hold
+  its payloads (§7). Recorded at
+  `CoreCaptureAssemblyRegistry::sweep_admission_timeouts`.
 
 Resolved, kept briefly so a reader coming from an older draft is not misled:
 
@@ -362,3 +384,12 @@ Resolved, kept briefly so a reader coming from an older draft is not misled:
 - ~~Per-device capture completion is misattributed for rig captures~~ — fixed
   before this work began; `captures_in_flight_` is keyed by
   `(capture_id, device_instance_id)`.
+- ~~Rig membership is fixed at rig creation; there is no add/remove API, and no
+  `rig_membership_version`~~ — membership is versioned and mutable via
+  `CamBANGRig.add_member` / `remove_member`, applied from the next trigger
+  (tranche 4).
+- ~~`DEVICE_LOST` has no producing path~~ — a device closed with a capture in
+  flight terminalises it `DEVICE_LOST`, promptly and without an error code,
+  distinct from the watchdog's `FAILED(ERR_TIMEOUT)` (tranche 4). Note that an
+  orderly close is refused by a provider while a capture is in flight, so this
+  fires for genuine loss rather than for tidy shutdown.

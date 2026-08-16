@@ -132,6 +132,17 @@ public:
   // Preemption must never be silent.
   void mark_capture_preempted_by_rig(uint64_t capture_id, uint64_t device_instance_id);
 
+  // Terminalise a capture whose device was closed, disengaged or otherwise
+  // lost while it was in flight (capture_identity_and_lifecycle.md 5.3).
+  //
+  // A resource event, not a failure and not a configuration change, so it
+  // carries no error code. Distinct from the admission watchdog, which would
+  // eventually report the same capture as FAILED(ERR_TIMEOUT) 30s later --
+  // that is a different claim: the capture did not run out of time, its
+  // device went away. A member capture must always reach a terminal
+  // disposition; it must never simply vanish from a cohort.
+  void mark_capture_device_lost(uint64_t capture_id, uint64_t device_instance_id);
+
   // Capture-admission watchdog (icamera_provider.h's
   // capture_admission_watchdog_timeout_ns() contract): finds every device
   // assembly that is admitted (has_admission_context) but still non-terminal

@@ -121,6 +121,31 @@ void CoreCaptureAssemblyRegistry::mark_capture_preempted_by_rig(
   dev_it->second.failure_error_code = 0;
 }
 
+void CoreCaptureAssemblyRegistry::mark_capture_device_lost(
+    uint64_t capture_id, uint64_t device_instance_id) {
+  if (capture_id == 0 || device_instance_id == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto cap_it = assemblies_by_capture_id_.find(capture_id);
+  if (cap_it == assemblies_by_capture_id_.end()) {
+    return;
+  }
+  const auto dev_it = cap_it->second.find(device_instance_id);
+  if (dev_it == cap_it->second.end()) {
+    return;
+  }
+  // Terminal is final: a capture that already delivered keeps its result, and
+  // one already failed keeps its error. Losing the device afterwards does not
+  // rewrite what happened.
+  if (disposition_is_terminal(dev_it->second.terminal_state)) {
+    return;
+  }
+  dev_it->second.terminal_state = TerminalState::DEVICE_LOST;
+  dev_it->second.has_failure_error_code = false;
+  dev_it->second.failure_error_code = 0;
+}
+
 uint64_t CoreCaptureAssemblyRegistry::admitted_non_terminal_capture_id_for_device(
     uint64_t device_instance_id) const {
   if (device_instance_id == 0) {
@@ -242,6 +267,26 @@ bool CoreCaptureAssemblyRegistry::is_result_safe(uint64_t capture_id,
   return assembly.has_default_image_retained;
 }
 
+// OPEN GAP, recorded here because this is where it is created.
+//
+// A capture failed by this watchdog is ABANDONED without the provider ever
+// being told. Core marks it FAILED(ERR_TIMEOUT) and moves on; nothing calls
+// abort_capture. That is exactly the hazard
+// capture_identity_and_lifecycle.md 7 describes -- a provider that abandons a
+// submitted capture may still hold payloads that get delivered into a
+// subsequent capture on that device.
+//
+// Preemption settles its abandonment (CoreRuntime aborts the displaced
+// capture), and an orderly device close cannot abandon one because a provider
+// pins the device while a capture is in flight (Camera2 returns ERR_BUSY).
+// This path is the remaining producer of unsettled abandonment.
+//
+// NOT fixed in tranche 4: that tranche is rig membership lifecycle, and this
+// is the admission watchdog's. Mitigated in practice by the split id spaces
+// (tranche 1) -- a late payload carries its own Device Capture Id, so Core
+// cannot attribute it to a later capture -- but a provider with a shared
+// delivery queue and no outstanding-payload ledger (see
+// imaging/api/outstanding_payload_ledger.h) is not protected by that alone.
 std::vector<CoreCaptureAssemblyRegistry::TimedOutAssembly>
 CoreCaptureAssemblyRegistry::sweep_admission_timeouts(uint64_t now_ns, uint64_t timeout_ns) {
   std::vector<TimedOutAssembly> timed_out;

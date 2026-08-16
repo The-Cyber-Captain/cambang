@@ -77,6 +77,12 @@ public:
     // Rig Capture Id -- this registry's key. Never a Device Capture Id.
     uint64_t rig_capture_id = 0;
     uint64_t rig_id = 0;
+    // The rig's membership version this cohort was admitted under
+    // (capture_identity_and_lifecycle.md 5.2), so a rig capture is
+    // self-describing about the membership that produced it. Taken from the
+    // preflight that resolved the participants, never re-read at admission --
+    // see RigPreflightResult::rig_membership_version for why.
+    uint64_t rig_membership_version = 0;
     bool has_admission_context = false;
     CaptureAdmissionContext admission_context{};
     std::vector<Participant> expected_participants;

@@ -758,6 +758,225 @@ static int test_per_device_admitted_capture_predicate() {
   return 0;
 }
 
+// Rig membership versioning (capture_identity_and_lifecycle.md 5.2).
+// Registry-level: membership is declarative configuration, versioned forward,
+// and the version is what makes the transition observable.
+static int test_rig_membership_versioning() {
+  CoreRigRegistry rigs;
+  constexpr uint64_t kRig = 4101;
+
+  // Never set is 0, and distinguishable from "set once".
+  if (rigs.find(kRig) != nullptr) {
+    std::cerr << "FAIL: unknown rig present before retention\n";
+    return 1;
+  }
+  if (!rigs.retain_member_hardware_ids(kRig, {"hw:a", "hw:b"})) {
+    std::cerr << "FAIL: first membership retention rejected\n";
+    return 1;
+  }
+  const auto* rec = rigs.find(kRig);
+  if (!rec || rec->rig_membership_version != 1) {
+    std::cerr << "FAIL: first membership retention did not set version 1\n";
+    return 1;
+  }
+
+  // THE RULE MOST LIKELY TO ROT: re-retaining identical membership is a no-op,
+  // not a version event. A caller re-asserting its configuration every frame
+  // would otherwise manufacture a history of changes that never happened, and
+  // a cohort's recorded version would stop meaning anything.
+  if (!rigs.retain_member_hardware_ids(kRig, {"hw:a", "hw:b"})) {
+    std::cerr << "FAIL: idempotent membership retention rejected\n";
+    return 1;
+  }
+  rec = rigs.find(kRig);
+  if (!rec || rec->rig_membership_version != 1) {
+    std::cerr << "FAIL: re-retaining identical membership bumped the version\n";
+    return 1;
+  }
+
+  // A real change bumps once.
+  if (!rigs.retain_member_hardware_ids(kRig, {"hw:a", "hw:b", "hw:c"})) {
+    std::cerr << "FAIL: membership change rejected\n";
+    return 1;
+  }
+  rec = rigs.find(kRig);
+  if (!rec || rec->rig_membership_version != 2 ||
+      rec->member_hardware_ids.size() != 3) {
+    std::cerr << "FAIL: membership change did not bump the version once\n";
+    return 1;
+  }
+
+  // Order is part of membership identity: the same set in a different order is
+  // a different membership, because member index is positional.
+  if (!rigs.retain_member_hardware_ids(kRig, {"hw:c", "hw:b", "hw:a"})) {
+    std::cerr << "FAIL: reordered membership rejected\n";
+    return 1;
+  }
+  rec = rigs.find(kRig);
+  if (!rec || rec->rig_membership_version != 3) {
+    std::cerr << "FAIL: reordered membership did not bump the version\n";
+    return 1;
+  }
+
+  // Removal is a change like any other.
+  if (!rigs.retain_member_hardware_ids(kRig, {"hw:c"})) {
+    std::cerr << "FAIL: membership removal rejected\n";
+    return 1;
+  }
+  rec = rigs.find(kRig);
+  if (!rec || rec->rig_membership_version != 4 ||
+      rec->member_hardware_ids.size() != 1) {
+    std::cerr << "FAIL: membership removal did not bump the version\n";
+    return 1;
+  }
+
+  // Independent rigs version independently.
+  constexpr uint64_t kOther = 4102;
+  if (!rigs.retain_member_hardware_ids(kOther, {"hw:x"})) {
+    std::cerr << "FAIL: second rig retention rejected\n";
+    return 1;
+  }
+  const auto* other = rigs.find(kOther);
+  rec = rigs.find(kRig);
+  if (!other || other->rig_membership_version != 1 ||
+      !rec || rec->rig_membership_version != 4) {
+    std::cerr << "FAIL: rigs do not version independently\n";
+    return 1;
+  }
+  return 0;
+}
+
+// Rig membership mutation (capture_identity_and_lifecycle.md 5.1). Registry
+// level: the rules, independent of how the boundary spells them.
+static int test_rig_membership_mutation() {
+  using Change = CoreRigRegistry::MembershipChange;
+  CoreRigRegistry rigs;
+  constexpr uint64_t kRig = 4201;
+
+  if (rigs.add_member(kRig, "hw:a") != Change::RigNotFound) {
+    std::cerr << "FAIL: add to an unknown rig was not rejected\n";
+    return 1;
+  }
+  if (!rigs.retain_member_hardware_ids(kRig, {"hw:a", "hw:b"})) {
+    std::cerr << "FAIL: initial membership rejected\n";
+    return 1;
+  }
+  const uint64_t base_version = rigs.find(kRig)->rig_membership_version;
+
+  // Adding a new member changes membership and versions it.
+  if (rigs.add_member(kRig, "hw:c") != Change::Changed) {
+    std::cerr << "FAIL: adding a new member did not report a change\n";
+    return 1;
+  }
+  if (rigs.find(kRig)->rig_membership_version != base_version + 1 ||
+      rigs.find(kRig)->member_hardware_ids.size() != 3) {
+    std::cerr << "FAIL: add did not apply or did not version\n";
+    return 1;
+  }
+
+  // Idempotent: adding an existing member is not a change and must not bump.
+  // Membership is a set the caller declares, not operations to replay.
+  if (rigs.add_member(kRig, "hw:c") != Change::NoChange ||
+      rigs.find(kRig)->rig_membership_version != base_version + 1 ||
+      rigs.find(kRig)->member_hardware_ids.size() != 3) {
+    std::cerr << "FAIL: re-adding an existing member was not idempotent\n";
+    return 1;
+  }
+
+  // Removing a non-member is idempotent for the same reason.
+  if (rigs.remove_member(kRig, "hw:zzz") != Change::NoChange ||
+      rigs.find(kRig)->rig_membership_version != base_version + 1) {
+    std::cerr << "FAIL: removing a non-member was not idempotent\n";
+    return 1;
+  }
+
+  // Removal applies and versions.
+  if (rigs.remove_member(kRig, "hw:b") != Change::Changed ||
+      rigs.find(kRig)->rig_membership_version != base_version + 2 ||
+      rigs.find(kRig)->member_hardware_ids.size() != 2) {
+    std::cerr << "FAIL: remove did not apply or did not version\n";
+    return 1;
+  }
+
+  // A rig cannot be emptied by removal: an empty rig fails preflight with
+  // EmptyMembership and can never be triggered, so it would exist and be
+  // permanently useless.
+  if (rigs.remove_member(kRig, "hw:a") != Change::Changed) {
+    std::cerr << "FAIL: removing down to one member was refused too early\n";
+    return 1;
+  }
+  const uint64_t before_refusal = rigs.find(kRig)->rig_membership_version;
+  if (rigs.remove_member(kRig, "hw:c") != Change::WouldEmptyRig) {
+    std::cerr << "FAIL: removing the last member was allowed\n";
+    return 1;
+  }
+  if (rigs.find(kRig)->member_hardware_ids.size() != 1 ||
+      rigs.find(kRig)->rig_membership_version != before_refusal) {
+    std::cerr << "FAIL: a refused removal still mutated the rig\n";
+    return 1;
+  }
+  return 0;
+}
+
+// One rig per device (capture_identity_and_lifecycle.md 5.5). Load-bearing for
+// tranche 3: the second-rig denial is scoped per rig precisely because cohorts
+// cannot share participants.
+static int test_one_rig_per_device() {
+  using Change = CoreRigRegistry::MembershipChange;
+  CoreRigRegistry rigs;
+  constexpr uint64_t kRigA = 4301;
+  constexpr uint64_t kRigB = 4302;
+
+  if (!rigs.retain_member_hardware_ids(kRigA, {"hw:a", "hw:b"}) ||
+      !rigs.retain_member_hardware_ids(kRigB, {"hw:c", "hw:d"})) {
+    std::cerr << "FAIL: rig setup rejected\n";
+    return 1;
+  }
+
+  // The refusing direction: a device already in rig A cannot join rig B.
+  if (rigs.add_member(kRigB, "hw:a") != Change::AlreadyInAnotherRig) {
+    std::cerr << "FAIL: a device in another rig was allowed to join a second\n";
+    return 1;
+  }
+  if (rigs.find(kRigB)->member_hardware_ids.size() != 2) {
+    std::cerr << "FAIL: a refused cross-rig add still mutated the rig\n";
+    return 1;
+  }
+
+  // THE FALSE-POSITIVE DIRECTION, which matters at least as much: a device in
+  // NO rig joins freely, and re-adding a device to the rig it already belongs
+  // to stays idempotent rather than tripping the cross-rig rule against
+  // itself.
+  if (rigs.add_member(kRigB, "hw:e") != Change::Changed) {
+    std::cerr << "FAIL: an unowned device was refused\n";
+    return 1;
+  }
+  if (rigs.add_member(kRigA, "hw:a") != Change::NoChange) {
+    std::cerr << "FAIL: re-adding a device to its own rig tripped the cross-rig rule\n";
+    return 1;
+  }
+
+  // Once released from rig A, the device may join rig B -- the rule is about
+  // present membership, not history.
+  if (rigs.remove_member(kRigA, "hw:a") != Change::Changed) {
+    std::cerr << "FAIL: removal from the owning rig refused\n";
+    return 1;
+  }
+  if (rigs.add_member(kRigB, "hw:a") != Change::Changed) {
+    std::cerr << "FAIL: a released device could not join another rig\n";
+    return 1;
+  }
+
+  // rig_owning_member reports the owner, and ignores the excluded rig.
+  if (rigs.rig_owning_member("hw:a", 0) != kRigB ||
+      rigs.rig_owning_member("hw:a", kRigB) != 0 ||
+      rigs.rig_owning_member("hw:nobody", 0) != 0) {
+    std::cerr << "FAIL: rig_owning_member reported the wrong owner\n";
+    return 1;
+  }
+  return 0;
+}
+
 static int test_still_capture_profile_visibility_audit_truth() {
   constexpr uint64_t kAuditDeviceId = 501;
   constexpr uint64_t kAuditRigId = 701;
@@ -1685,6 +1904,9 @@ int main() {
   if (int r = test_capture_cohort_registry_basics()) return r;
   if (int r = test_capture_cohort_closure()) return r;
   if (int r = test_per_device_admitted_capture_predicate()) return r;
+  if (int r = test_rig_membership_versioning()) return r;
+  if (int r = test_rig_membership_mutation()) return r;
+  if (int r = test_one_rig_per_device()) return r;
   if (int r = test_scoped_resource_telemetry_default_and_projection()) return r;
   if (int r = test_scoped_resource_telemetry_runtime_framebuffer_lease_integration()) return r;
   if (int r = test_topology_detached_and_retirement()) return r;

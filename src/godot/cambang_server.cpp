@@ -2318,6 +2318,60 @@ void CamBANGServer::register_tracked_stream_wrapper_(uint64_t wrapper_object_id)
       _is_stream_result_live_by_identity_(stream->get_stream_id()));
 }
 
+godot::String CamBANGServer::resolve_hardware_id_for_instance(
+    uint64_t device_instance_id) const {
+  if (device_instance_id == 0 || !is_public_boundary_ready_() || !latest_) {
+    return godot::String();
+  }
+  // Read from the published snapshot, as the boundary's other identity lookups
+  // do. Tick-bounded, so a device opened in this same frame may not appear
+  // yet -- acceptable for membership, which is forward-looking configuration
+  // applied from the next trigger rather than something acted on immediately.
+  for (const DeviceState& device : latest_->devices) {
+    if (device.instance_id == device_instance_id) {
+      return godot::String(device.hardware_id.c_str());
+    }
+  }
+  return godot::String();
+}
+
+godot::Error CamBANGServer::add_rig_member_by_hardware_id(
+    uint64_t rig_id, const godot::String& hardware_id) {
+  if (rig_id == 0 || hardware_id.is_empty() || !is_public_boundary_ready_()) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+  const std::string hw(hardware_id.utf8().get_data());
+  switch (runtime_.try_add_rig_member_for_server(rig_id, hw)) {
+    case CoreRigRegistry::MembershipChange::Changed:
+    case CoreRigRegistry::MembershipChange::NoChange:
+      // Idempotent by design: the caller's declared end state holds either way.
+      return godot::OK;
+    case CoreRigRegistry::MembershipChange::AlreadyInAnotherRig:
+    case CoreRigRegistry::MembershipChange::WouldEmptyRig:
+    case CoreRigRegistry::MembershipChange::RigNotFound:
+      return godot::ERR_INVALID_PARAMETER;
+  }
+  return godot::ERR_INVALID_PARAMETER;
+}
+
+godot::Error CamBANGServer::remove_rig_member_by_hardware_id(
+    uint64_t rig_id, const godot::String& hardware_id) {
+  if (rig_id == 0 || hardware_id.is_empty() || !is_public_boundary_ready_()) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+  const std::string hw(hardware_id.utf8().get_data());
+  switch (runtime_.try_remove_rig_member_for_server(rig_id, hw)) {
+    case CoreRigRegistry::MembershipChange::Changed:
+    case CoreRigRegistry::MembershipChange::NoChange:
+      return godot::OK;
+    case CoreRigRegistry::MembershipChange::AlreadyInAnotherRig:
+    case CoreRigRegistry::MembershipChange::WouldEmptyRig:
+    case CoreRigRegistry::MembershipChange::RigNotFound:
+      return godot::ERR_INVALID_PARAMETER;
+  }
+  return godot::ERR_INVALID_PARAMETER;
+}
+
 bool CamBANGServer::_is_device_live_by_identity_(const godot::String& hardware_id,
                                                  uint64_t device_instance_id) const {
   if (!is_public_boundary_ready_() || !latest_) {
@@ -2439,6 +2493,17 @@ godot::Ref<CamBANGRig> CamBANGServer::get_rig(uint64_t rig_id) const {
   return out;
 }
 
+// INCONSISTENT WITH CamBANGRig::add_member/remove_member, and known to be so.
+//
+// This takes raw hardware-id strings while membership mutation takes
+// CamBANGDevice handles. The handle form is the better surface: the caller
+// already holds device objects, and routing them through strings invites typos
+// the type system would otherwise catch. Rig creation should take the same.
+//
+// Not changed here because it would alter an existing bound signature, which
+// is the locked Godot-facing surface -- that belongs with the public-API work
+// (capture_identity_and_lifecycle.md 2.2/2.3/4.1), not with membership
+// lifecycle. Left deliberately, not overlooked.
 godot::Ref<CamBANGRig> CamBANGServer::create_rig(
     const godot::PackedStringArray& member_hardware_ids) {
   if (!is_public_boundary_ready_()) {

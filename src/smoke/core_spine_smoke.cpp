@@ -4370,6 +4370,243 @@ static int test_rig_bundle_submission_smoke() {
 // This is the check that proves the mechanism actually runs: the registry
 // tests in phase3_snapshot_verify prove the rules, and would keep passing even
 // if sweep_capture_cohort_closure_() were never called.
+// A cohort records the rig membership version it was admitted under
+// (capture_identity_and_lifecycle.md 5.2), so a rig capture is self-describing
+// about the membership that produced it.
+static int test_rig_cohort_records_membership_version_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+  rt.attach_provider(&prov);
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
+  const std::string hw = eps[0].hardware_id;
+
+  // First membership -> version 1, and a cohort admitted under it says so.
+  if (!rt.smoke_set_rig_member_hardware_ids(8901, {hw})) { rt.stop(); return 1; }
+  auto preflight = wait_for_rig_preflight_ok(rt, 8901);
+  if (!preflight.ok) {
+    print_rig_preflight_result("Preflight failed before membership version smoke", preflight);
+    rt.stop();
+    return 1;
+  }
+  if (preflight.rig_membership_version != 1) {
+    std::cerr << "Membership version: preflight did not carry version 1\n";
+    rt.stop();
+    return 1;
+  }
+  const auto first = rt.smoke_admit_rig_cohort_from_preflight(8901, 9901, preflight);
+  const auto first_cohort = rt.smoke_capture_cohort(9901);
+  if (!first.ok || !first_cohort || first_cohort->rig_membership_version != 1) {
+    std::cerr << "Membership version: cohort did not record version 1\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Change membership. The IN-FLIGHT cohort must keep the version it was
+  // admitted under -- a cohort that silently adopted the new version would
+  // misdescribe the members it actually ran (section 5.1).
+  if (!rt.smoke_set_rig_member_hardware_ids(8901, {hw, hw})) { rt.stop(); return 1; }
+  const auto unchanged = rt.smoke_capture_cohort(9901);
+  if (!unchanged || unchanged->rig_membership_version != 1) {
+    std::cerr << "Membership version: an in-flight cohort adopted a later version\n";
+    rt.stop();
+    return 1;
+  }
+
+  // The first cohort is still OPEN, and a rig with a capture in flight refuses
+  // another (tranche 3). Nothing was ever reported for its member, so only the
+  // simultaneity window can settle it -- wait for that rather than working
+  // around the rule.
+  if (!wait_until([&]() {
+        const auto c = rt.smoke_capture_cohort(9901);
+        return c && c->state != CoreCaptureCohortRegistry::CohortState::OPEN;
+      }, 8000, 25)) {
+    std::cerr << "Membership version: first cohort never closed on its window\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Return to a single member. That is another real change, so the version
+  // advances again -- and unlike the two-member set above it resolves
+  // cleanly, because StubProvider exposes exactly one endpoint and two
+  // members sharing one hardware id makes preflight ambiguous by design.
+  if (!rt.smoke_set_rig_member_hardware_ids(8901, {hw})) { rt.stop(); return 1; }
+  auto preflight2 = wait_for_rig_preflight_ok(rt, 8901);
+  if (!preflight2.ok || preflight2.rig_membership_version != 3) {
+    std::cerr << "Membership version: preflight did not advance to version 3\n";
+    rt.stop();
+    return 1;
+  }
+  const auto second = rt.smoke_admit_rig_cohort_from_preflight(8901, 9902, preflight2);
+  const auto second_cohort = rt.smoke_capture_cohort(9902);
+  if (!second.ok || !second_cohort || second_cohort->rig_membership_version != 3) {
+    std::cerr << "Membership version: later cohort did not record version 3\n";
+    rt.stop();
+    return 1;
+  }
+  // And the earlier cohort is still stamped with the version it ran under.
+  const auto first_again = rt.smoke_capture_cohort(9901);
+  if (!first_again || first_again->rig_membership_version != 1) {
+    std::cerr << "Membership version: earlier cohort's version changed retroactively\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+// Device loss terminalises an in-flight capture DEVICE_LOST
+// (capture_identity_and_lifecycle.md 5.3), promptly and distinguishably.
+//
+// The distinction is the point. Before this, such a capture sat non-terminal
+// until the capture-admission watchdog fired ~30s later and reported
+// FAILED(ERR_TIMEOUT) -- so a check that only asserted "terminal eventually"
+// would pass on the watchdog alone and prove nothing. This asserts the
+// disposition, the absence of an error code, and that it happens immediately.
+static int test_device_close_terminalises_capture_device_lost_smoke() {
+  using Assembly = CoreCaptureAssemblyRegistry;
+  constexpr uint64_t kCapture = 9501;
+
+  constexpr uint64_t kLostDeviceId = 2;
+  constexpr uint64_t kLostRootId = 2;
+
+  CoreRuntime rt;
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+  rt.attach_provider(&prov);
+
+  // A second device with NO stream. The one setup_one_stream opens has a
+  // stream on it, and closing a device out from under a live stream is a
+  // different scenario with its own rejection -- not what section 5.3 is about.
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
+  if (rt.retain_device_identity(kLostDeviceId, eps[0].hardware_id) !=
+      CoreThread::PostResult::Enqueued) {
+    std::cerr << "Device loss: could not retain second device identity\n";
+    rt.stop();
+    return 1;
+  }
+  if (rt.try_open_device(eps[0].hardware_id, kLostDeviceId, kLostRootId) !=
+      TryOpenDeviceStatus::OK) {
+    std::cerr << "Device loss: could not open the second device\n";
+    rt.stop();
+    return 1;
+  }
+  if (!converge_stub_provider_core(rt, prov)) {
+    std::cerr << "Device loss: second device open did not converge\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Put a capture in flight by recording an admission directly: StubProvider
+  // completes captures synchronously, so a triggered capture is terminal
+  // before it could ever be lost. What is under test is Core's close path,
+  // not the provider's timing.
+  rt.smoke_record_capture_admission(kCapture, kLostDeviceId);
+  if (Assembly::disposition_is_terminal(
+          rt.smoke_capture_disposition(kCapture, kLostDeviceId).state)) {
+    std::cerr << "Device loss: capture was terminal before the device closed\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (rt.try_close_device(kLostDeviceId) != TryCloseDeviceStatus::OK) {
+    std::cerr << "Device loss: close_device failed\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Immediately after close -- no waiting. A watchdog-driven result would need
+  // ~30s, so an immediate read that already shows terminal cannot be the
+  // watchdog.
+  const auto lost = rt.smoke_capture_disposition(kCapture, kLostDeviceId);
+  if (lost.state != Assembly::TerminalState::DEVICE_LOST) {
+    std::cerr << "Device loss: capture did not terminalise DEVICE_LOST\n";
+    rt.stop();
+    return 1;
+  }
+  if (lost.has_error_code) {
+    std::cerr << "Device loss: DEVICE_LOST carried an error code; it is a "
+                 "resource event, not a failure\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+// Cohort membership is snapshotted at trigger (capture_identity_and_lifecycle.md
+// 5.1). Rig membership is forward-looking configuration: changing it while a
+// capture is in flight does not alter that capture's cohort, and does not
+// require ERR_BUSY.
+//
+// This was already true incidentally -- a cohort copies its participants from
+// preflight at admission -- but nothing asserted it, so nothing would have
+// noticed if a later change made membership late-bound.
+static int test_cohort_membership_snapshotted_at_trigger_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+  rt.attach_provider(&prov);
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
+  const std::string hw = eps[0].hardware_id;
+
+  if (!rt.smoke_set_rig_member_hardware_ids(9601, {hw})) { rt.stop(); return 1; }
+  const auto preflight = wait_for_rig_preflight_ok(rt, 9601);
+  if (!preflight.ok) {
+    print_rig_preflight_result("Preflight failed before snapshot-at-trigger smoke", preflight);
+    rt.stop();
+    return 1;
+  }
+  const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(9601, 9701, preflight);
+  if (!admitted.ok || admitted.participants.size() != 1) {
+    std::cerr << "Snapshot at trigger: admission failed\n";
+    rt.stop();
+    return 1;
+  }
+  const auto before = rt.smoke_capture_cohort(9701);
+  if (!before || before->expected_participants.size() != 1) {
+    std::cerr << "Snapshot at trigger: cohort did not record its participant\n";
+    rt.stop();
+    return 1;
+  }
+  const uint64_t admitted_device = before->expected_participants[0].device_instance_id;
+
+  // Change membership while the cohort is in flight. Accepted -- membership is
+  // declarative and applies from the next trigger -- and the mutation itself
+  // must not be refused as busy.
+  if (rt.try_add_rig_member_for_server(9601, "hw:added-mid-flight") !=
+      CoreRigRegistry::MembershipChange::Changed) {
+    std::cerr << "Snapshot at trigger: a membership change during an in-flight "
+                 "capture was refused\n";
+    rt.stop();
+    return 1;
+  }
+
+  // The in-flight cohort is untouched: same participant count, same device.
+  // A cohort that grew a member here would cross-contaminate its result set
+  // with a device that was never part of that moment.
+  const auto after = rt.smoke_capture_cohort(9701);
+  if (!after || after->expected_participants.size() != 1 ||
+      after->expected_participants[0].device_instance_id != admitted_device) {
+    std::cerr << "Snapshot at trigger: an in-flight cohort's membership changed\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
 static int test_capture_cohort_closure_sweep_smoke() {
   using Assembly = CoreCaptureAssemblyRegistry;
   using Reason = CoreCaptureCohortRegistry::CohortClosedReason;
@@ -5340,6 +5577,24 @@ int main(int argc, char** argv) {
                              [] { return test_cohort_aware_capture_result_set_smoke(); })) {
       if (reporter.verbose()) reporter.print_summary();
       reporter.print_fail_line("core_spine_smoke", "test_cohort_aware_capture_result_set_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_rig_cohort_records_membership_version_smoke",
+                             [] { return test_rig_cohort_records_membership_version_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_rig_cohort_records_membership_version_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_device_close_terminalises_capture_device_lost_smoke",
+                             [] { return test_device_close_terminalises_capture_device_lost_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_device_close_terminalises_capture_device_lost_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_cohort_membership_snapshotted_at_trigger_smoke",
+                             [] { return test_cohort_membership_snapshotted_at_trigger_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_cohort_membership_snapshotted_at_trigger_smoke", r);
       return r;
     }
     if (int r = reporter.run("test_capture_cohort_closure_sweep_smoke",

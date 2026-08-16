@@ -207,6 +207,20 @@ public:
                                          uint64_t device_instance_id);
   uint64_t resolve_endpoint_instance_id(const godot::String& hardware_id) const;
 
+  // Rig membership mutation, called by CamBANGRig once it has resolved a
+  // device handle to a hardware id. Hardware id is the participation identity
+  // (capture_identity_and_lifecycle.md 2.3); the public surface takes a
+  // CamBANGDevice so callers never handle the string themselves.
+  godot::Error add_rig_member_by_hardware_id(uint64_t rig_id,
+                                             const godot::String& hardware_id);
+  godot::Error remove_rig_member_by_hardware_id(uint64_t rig_id,
+                                                const godot::String& hardware_id);
+  // A CamBANGDevice built from an instance id carries no hardware id (see
+  // CamBANGDevice::set_server_and_instance, which clears it), so a handle from
+  // get_device() must be resolved through the runtime. Returns empty when the
+  // device is unknown.
+  godot::String resolve_hardware_id_for_instance(uint64_t device_instance_id) const;
+
 protected:
   static void _bind_methods();
 
