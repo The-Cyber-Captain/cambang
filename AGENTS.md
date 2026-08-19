@@ -7,7 +7,6 @@ Treat the repository source as authoritative.
 For non-trivial design, architecture, provider-boundary, snapshot, result-truth, or tranche work, read:
 
 * `docs/dev/agent_context.md`
-* `docs/dev/current_tranche.md` when it exists and is relevant to the active workstream
 
 Before changing code:
 
@@ -48,8 +47,8 @@ the repository's standing gates and whatever else was agreed for this change in
 conversation with the maintainer. Do not stop while a required command remains
 unrun.
 
-Validation is not specified in advance in `docs/dev/current_tranche.md` — see
-CLAUDE.md for why. Agree it per change, run it, then record in the commit
+Validation is never specified in advance in a repository file — see CLAUDE.md
+for why. Agree it per change, run it, then record in the commit
 message what was actually run and what it did or did not prove. If a command
 fails or stalls, investigate it, preserve the exact command and relevant
 output, and continue with any independent later checks. Fix the cause where it
