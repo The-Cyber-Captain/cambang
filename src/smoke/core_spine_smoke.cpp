@@ -4722,6 +4722,164 @@ static int test_capture_cohort_closure_sweep_smoke() {
   return 0;
 }
 
+// The boundary's completion signals (section 4.2) are emitted on the Godot
+// thread, which this host-native tool has none of. What it CAN bind is the
+// thing the signal is made of: Core queueing exactly one settlement per
+// capture, and exactly one per cohort closure, drained once and only once.
+// Without that, a settled signal is either missed or emitted repeatedly, and
+// both look identical to a caller counting outstanding work.
+static int test_capture_completion_queue_drain_smoke() {
+  using Assembly = CoreCaptureAssemblyRegistry;
+  using Reason = CoreCaptureCohortRegistry::CohortClosedReason;
+  using State = CoreCaptureCohortRegistry::CohortState;
+
+  CoreRuntime rt;
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+  rt.attach_provider(&prov);
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
+  if (!rt.smoke_set_rig_member_hardware_ids(8801, {eps[0].hardware_id})) { rt.stop(); return 1; }
+  const auto preflight = wait_for_rig_preflight_ok(rt, 8801);
+  if (!preflight.ok) {
+    print_rig_preflight_result("Preflight failed before settlement queue smoke", preflight);
+    rt.stop();
+    return 1;
+  }
+
+  // Anything queued by getting this far is setup noise, not the subject.
+  (void)rt.drain_finished_captures_for_server();
+  (void)rt.drain_closed_cohorts_for_server();
+
+  const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(8801, 9801, preflight);
+  if (!admitted.ok || admitted.participants.empty()) {
+    std::cerr << "Settlement queue: admission failed\n";
+    rt.stop();
+    return 1;
+  }
+  const uint64_t member_capture_id = admitted.participants[0].request.capture_id;
+  const uint64_t member_device_id = admitted.participants[0].request.device_instance_id;
+
+  // Admission alone settles nothing. A queue that reports work here would have
+  // the boundary announce a completion for a capture still in flight.
+  if (!rt.drain_finished_captures_for_server().empty() ||
+      !rt.drain_closed_cohorts_for_server().empty()) {
+    std::cerr << "Settlement queue: admission queued a settlement\n";
+    rt.stop();
+    return 1;
+  }
+
+  static std::vector<uint8_t> bytes(2 * 2 * 4, 3);
+  FrameView frame{};
+  frame.capture_id = member_capture_id;
+  frame.device_instance_id = member_device_id;
+  frame.stream_id = 0;
+  frame.width = 2;
+  frame.height = 2;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.data = bytes.data();
+  frame.size_bytes = bytes.size();
+  frame.stride_bytes = 0;
+  frame.release = [](void*, const FrameView*) {};
+  frame.release_user = nullptr;
+  rt.provider_callbacks()->on_capture_started(member_capture_id, member_device_id);
+  rt.provider_callbacks()->on_frame(frame);
+  rt.provider_callbacks()->on_capture_completed(member_capture_id, member_device_id);
+
+  if (!wait_until([&]() {
+        const auto c = rt.smoke_capture_cohort(9801);
+        return c && c->state == State::CLOSED;
+      }, 4000, 5)) {
+    std::cerr << "Settlement queue: cohort never closed\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto settled = rt.drain_finished_captures_for_server();
+  if (settled.size() != 1 ||
+      settled[0].capture_id != member_capture_id ||
+      settled[0].device_instance_id != member_device_id ||
+      settled[0].disposition != Assembly::TerminalState::DELIVERED ||
+      settled[0].has_error_code) {
+    std::cerr << "Settlement queue: delivered capture did not queue exactly one DELIVERED settlement\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto closed = rt.drain_closed_cohorts_for_server();
+  if (closed.size() != 1 || closed[0].rig_capture_id != 9801 ||
+      closed[0].rig_id != 8801 || closed[0].reason != Reason::ALL_MEMBERS_TERMINAL) {
+    std::cerr << "Settlement queue: closure did not queue exactly one cohort settlement\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Drained means consumed. A queue that re-reports would have the boundary
+  // emit capture_finished for the same capture on every subsequent tick.
+  if (!rt.drain_finished_captures_for_server().empty() ||
+      !rt.drain_closed_cohorts_for_server().empty()) {
+    std::cerr << "Settlement queue: a drained settlement was reported twice\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+// One rig per device (capture_identity_and_lifecycle.md 5.5) on the SCENARIO
+// STAGING path, not just the caller path. The scenario loader rejects a
+// document that puts one device in two rigs, but that check is per-document:
+// it cannot see a rig that already exists in the session. Without this, staging
+// a scenario over a caller-created rig leaves one device in two rigs, and two
+// cohorts can then contend for it with the denial naming the wrong rig.
+static int test_staged_rig_topology_rejects_shared_device_smoke() {
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
+  if (!rt.start()) return 1;
+  // Same setup as the neighbouring cohort tests: the synchronous command path
+  // this exercises needs a converged runtime, not merely a started one.
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+  rt.attach_provider(&prov);
+
+  // An existing rig owning hw:a.
+  if (!rt.retain_rig_member_hardware_ids(9001, {"hw:a", "hw:b"})) {
+    std::cerr << "Staged rig 5.5: first rig was refused\n";
+    rt.stop();
+    return 1;
+  }
+  // Re-retaining the SAME rig's membership is the ordinary idempotent case and
+  // must not be read as the rig conflicting with itself.
+  if (!rt.retain_rig_member_hardware_ids(9001, {"hw:a", "hw:b"})) {
+    std::cerr << "Staged rig 5.5: re-retaining a rig's own membership was refused\n";
+    rt.stop();
+    return 1;
+  }
+  // A different rig claiming a device the first already owns must be refused.
+  if (rt.retain_rig_member_hardware_ids(9002, {"hw:a", "hw:c"})) {
+    std::cerr << "Staged rig 5.5: a second rig was allowed to claim hw:a\n";
+    rt.stop();
+    return 1;
+  }
+  // A rig claiming only free devices is unaffected -- and this doubles as the
+  // proof that the refusal above was TOTAL rather than partial. hw:c did not
+  // conflict, so a half-applied refusal would have staged it into rig 9002,
+  // and this retention would then be refused in turn.
+  if (!rt.retain_rig_member_hardware_ids(9003, {"hw:c", "hw:d"})) {
+    std::cerr << "Staged rig 5.5: hw:c was claimed by the refused rig, or a "
+                 "non-conflicting rig was refused\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
 // Criterion 1: a cohort whose member never reports must close WINDOW_EXPIRED
 // through CoreRuntime's own sweep and timer, not merely in registry isolation.
 // Then the member's late arrival must become LATE_EXCLUDED.
@@ -5607,6 +5765,18 @@ int main(int argc, char** argv) {
                              [] { return test_capture_cohort_window_expiry_sweep_smoke(); })) {
       if (reporter.verbose()) reporter.print_summary();
       reporter.print_fail_line("core_spine_smoke", "test_capture_cohort_window_expiry_sweep_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_staged_rig_topology_rejects_shared_device_smoke",
+                             [] { return test_staged_rig_topology_rejects_shared_device_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_staged_rig_topology_rejects_shared_device_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_capture_completion_queue_drain_smoke",
+                             [] { return test_capture_completion_queue_drain_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_capture_completion_queue_drain_smoke", r);
       return r;
     }
     if (int r = reporter.run("test_result_store_identity_survives_runtime_restart_smoke",

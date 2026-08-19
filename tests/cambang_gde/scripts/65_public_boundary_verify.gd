@@ -355,8 +355,14 @@ func _assert_pre_baseline_public_boundary(context: String, accept_endpoint_start
 	if endpoint_handle.create_stream() != null:
 		_fail("FAIL: " + context + " endpoint handle create_stream() must return null before baseline")
 		return false
-	if endpoint_handle.trigger_capture() == OK:
+	var pre_baseline_trigger: Dictionary = endpoint_handle.trigger_capture()
+	if int(pre_baseline_trigger.get("error", FAILED)) == OK:
 		_fail("FAIL: " + context + " endpoint handle trigger_capture() must remain rejected before baseline")
+		return false
+	# A refused trigger mints no id. Returning one would leave the caller
+	# holding an id for a capture that was never admitted.
+	if int(pre_baseline_trigger.get("id", -1)) != 0:
+		_fail("FAIL: " + context + " refused trigger_capture() must return id 0")
 		return false
 	if accept_endpoint_startup_intent:
 		_startup_hardware_id = hardware_id
@@ -399,7 +405,7 @@ func _assert_pre_baseline_public_boundary(context: String, accept_endpoint_start
 	if CamBANGServer.get_stream_result_by_stream_id(1) != null:
 		_fail("FAIL: " + context + " stream result lookup must return null before baseline")
 		return false
-	if CamBANGServer.get_capture_result_by_id(1, 1) != null:
+	if CamBANGServer.get_capture_result_by_id(1) != null:
 		_fail("FAIL: " + context + " capture result lookup must return null before baseline")
 		return false
 	# get_capture_result_set_by_id() returns Array[CamBANGCaptureResult] (built-in

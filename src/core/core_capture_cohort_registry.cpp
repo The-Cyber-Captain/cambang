@@ -8,6 +8,7 @@ void CoreCaptureCohortRegistry::clear() noexcept {
   std::lock_guard<std::mutex> lock(mutex_);
   cohorts_.clear();
   rig_capture_id_by_device_capture_id_.clear();
+  closed_pending_.clear();
 }
 
 bool CoreCaptureCohortRegistry::insert(CohortRecord record) {
@@ -129,7 +130,16 @@ bool CoreCaptureCohortRegistry::close(uint64_t rig_capture_id,
   it->second.closed_reason = reason;
   it->second.closed_ns = closed_ns;
   it->second.member_outcomes = std::move(member_outcomes);
+  closed_pending_.push_back(ClosedCohort{rig_capture_id, it->second.rig_id, reason});
   return true;
+}
+
+std::vector<CoreCaptureCohortRegistry::ClosedCohort>
+CoreCaptureCohortRegistry::drain_closed_cohorts() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<ClosedCohort> out;
+  out.swap(closed_pending_);
+  return out;
 }
 
 bool CoreCaptureCohortRegistry::has_open_cohort_for_rig(uint64_t rig_id) const noexcept {

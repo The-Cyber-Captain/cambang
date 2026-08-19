@@ -477,11 +477,27 @@ enum class TryCloseDeviceStatus : uint8_t {
     SubmissionFailed = 4,
   };
 
+  // One admitted member: its hardware id and its own Device Capture Id.
+  // Carried out to the boundary so a rig trigger can return the member map
+  // (capture_identity_and_lifecycle.md 4.1) without a second lookup against
+  // the cohort registry -- the data is already in hand at admission.
+  struct RigTriggeredMember {
+    std::string hardware_id;
+    uint64_t device_capture_id = 0;
+    // Carried so the boundary can group unfinished member captures by
+    // device (4.5) without re-resolving the hardware id, which only
+    // resolves for endpoint-engaged devices.
+    uint64_t device_instance_id = 0;
+  };
+
   struct RigTriggerOrchestrationResult {
     bool ok = false;
     RigOrchestrationFailure failure = RigOrchestrationFailure::None;
     uint64_t rig_id = 0;
     uint64_t rig_capture_id = 0;
+    // Populated only on success. Empty on any refusal: a refused trigger mints
+    // nothing a caller could correlate against.
+    std::vector<RigTriggeredMember> members;
     RigPreflightFailure preflight_failure = RigPreflightFailure::None;
     RigCohortAdmissionFailure admission_failure = RigCohortAdmissionFailure::None;
     RigSubmissionFailure submission_failure = RigSubmissionFailure::None;
@@ -575,6 +591,67 @@ enum class TryCloseDeviceStatus : uint8_t {
       uint32_t image_member_index) const;
 
 #endif
+
+  // Settlement drains for the boundary's completion signals (section 4.2).
+  // Both registries are self-locking, so these need no core-thread round trip
+  // and are safe to call from the Godot tick.
+  std::vector<CoreCaptureAssemblyRegistry::FinishedCapture>
+  drain_finished_captures_for_server() {
+    return capture_assembly_registry_.drain_finished_captures();
+  }
+  // Where a Device Capture sits in a rig, if it does
+  // (capture_identity_and_lifecycle.md 2.3). Read from the self-locking
+  // cohort registry, so safe from the Godot thread without a core round trip.
+  //
+  // A Device Capture that was never a rig member simply has no cohort, which
+  // is how a result knows its origin is DEVICE rather than RIG -- the absence
+  // is the answer, not a lookup failure.
+  struct RigParticipationForServer {
+    uint64_t rig_capture_id = 0;
+    uint64_t rig_id = 0;
+    std::string hardware_id;
+    int32_t member_index = -1;
+  };
+  std::optional<RigParticipationForServer>
+  rig_participation_for_device_capture(uint64_t device_capture_id) const {
+    if (device_capture_id == 0) {
+      return std::nullopt;
+    }
+    const auto cohort = capture_cohort_registry_.find_by_device_capture_id(device_capture_id);
+    if (!cohort) {
+      return std::nullopt;
+    }
+    RigParticipationForServer out;
+    out.rig_capture_id = cohort->rig_capture_id;
+    out.rig_id = cohort->rig_id;
+    // Membership order, which is the order expected_participants was built in.
+    for (size_t i = 0; i < cohort->expected_participants.size(); ++i) {
+      if (cohort->expected_participants[i].device_capture_id == device_capture_id) {
+        out.hardware_id = cohort->expected_participants[i].hardware_id;
+        out.member_index = static_cast<int32_t>(i);
+        break;
+      }
+    }
+    return out;
+  }
+  // Per-member outcomes of a closed cohort (capture_identity_and_lifecycle.md
+  // 4.3). Read straight from the self-locking registry like the completion
+  // drains, so no core-thread round trip. Empty while the cohort is still
+  // open: outcomes are decided at closure, which is the moment the boundary
+  // emits rig_capture_finished.
+  std::vector<CoreCaptureCohortRegistry::MemberOutcome>
+  capture_member_outcomes_for_server(uint64_t rig_capture_id) const {
+    const auto cohort = capture_cohort_registry_.find(rig_capture_id);
+    if (!cohort ||
+        cohort->state != CoreCaptureCohortRegistry::CohortState::CLOSED) {
+      return {};
+    }
+    return cohort->member_outcomes;
+  }
+  std::vector<CoreCaptureCohortRegistry::ClosedCohort>
+  drain_closed_cohorts_for_server() {
+    return capture_cohort_registry_.drain_closed_cohorts();
+  }
 
   // Rig membership mutation, run ON THE CORE THREAD so the read-modify-write
   // of the member list is atomic. Doing it at the boundary -- read members,
@@ -747,6 +824,8 @@ enum class TryCloseDeviceStatus : uint8_t {
     return result_store_.get_latest_stream_result(stream_id);
   }
 
+  // Boundary-facing: a Device Capture Id is sufficient on its own (2.1).
+  SharedCaptureResultData get_capture_result(uint64_t capture_id) const;
   SharedCaptureResultData get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
   std::vector<SharedCaptureResultData> get_capture_result_set(uint64_t capture_id) const;
   void mark_stream_display_demand(uint64_t stream_id) {

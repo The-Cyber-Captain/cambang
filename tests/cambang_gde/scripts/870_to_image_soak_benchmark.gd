@@ -977,10 +977,12 @@ func _poll_setup() -> void:
 	# Stage 3: form the rig from the two engaged devices via the public API (once).
 	# Skipped outright when the equipment declares no authorized rig pair.
 	if _rig == null and not _skip_rig:
-		_rig = CamBANGServer.create_rig(PackedStringArray([
-			str(_devices[DEV_A].get("hardware_id", "")),
-			str(_devices[DEV_B].get("hardware_id", "")),
-		]))
+		var rig_dev_a = _devices[DEV_A].get("device", null)
+		var rig_dev_b = _devices[DEV_B].get("device", null)
+		if rig_dev_a == null or rig_dev_b == null:
+			_fail("setup: device handles missing at rig formation")
+			return
+		_rig = CamBANGServer.create_rig([rig_dev_a, rig_dev_b] as Array[CamBANGDevice])
 		if _rig == null:
 			_fail("setup: create_rig returned null (concurrency truth not authorizing the combination?)")
 			return
@@ -1023,8 +1025,10 @@ func _engage_setup_devices(endpoints: Array) -> bool:
 		if dev == null or int(dev.engage()) != OK:
 			_fail("setup: failed to engage %s" % hw)
 			return false
-		# Keep the direct engaged handle (create_stream needs it, not a
-		# get_device() snapshot handle) and take the instance id from it directly.
+		# Keep the engaged handle and take the instance id from it directly.
+		# Wrapper objects are canonical per id, so this is the same object
+		# get_device(instance_id) would return -- the distinction the older
+		# comment here drew between the two no longer exists.
 		info["device"] = dev
 		info["device_id"] = int(dev.get_instance_id())
 		_devices[device_key] = info
@@ -1449,7 +1453,7 @@ func _queue_settlement_probe_capture(device_key: String) -> void:
 		return
 	var baseline_capture_id := _device_last_capture_id(device_key)
 	var trigger_start := _now_us()
-	var err := int(device.trigger_capture())
+	var err := int(device.trigger_capture().get("error", FAILED))
 	var trigger_end := _now_us()
 	if err != OK:
 		_acq_probe_mark_capture_failure(device_key, "trigger_refused")
@@ -1547,7 +1551,7 @@ func _probe_bundle_supported() -> bool:
 		return true  # nothing to probe with; let the phases run and report normally
 	var baseline_capture_id := _device_last_capture_id(DEV_A)
 	var trigger_start := _now_us()
-	var err := int(device.trigger_capture())
+	var err := int(device.trigger_capture().get("error", FAILED))
 	var trigger_end := _now_us()
 	if err != OK:
 		# A refusal is synchronous and starts nothing, so there is no capture to
@@ -1805,7 +1809,7 @@ func _queue_preflight_capture(device_key: String) -> void:
 		return
 	var baseline_capture_id := _device_last_capture_id(device_key)
 	var trigger_start := _now_us()
-	var err := int(device.trigger_capture())
+	var err := int(device.trigger_capture().get("error", FAILED))
 	var trigger_end := _now_us()
 	if err != OK:
 		_mark_preflight_capture_failure(device_key)
@@ -2278,7 +2282,7 @@ func _request_device_capture(device_key: String, request_us: int) -> void:
 		return
 	var baseline_capture_id := _device_last_capture_id(device_key)
 	var trigger_start := _now_us()
-	var err := int(device.trigger_capture())
+	var err := int(device.trigger_capture().get("error", FAILED))
 	var trigger_end := _now_us()
 	if err != OK:
 		_increment_admission("device_capture", "rejected", err)
@@ -2505,7 +2509,7 @@ func _request_rig_capture(request_us: int) -> void:
 	for device_key in [DEV_A, DEV_B]:
 		before_by_device[device_key] = _device_last_capture_id(device_key)
 	var trigger_start := _now_us()
-	var err := int(_rig.trigger_capture())
+	var err := int(_rig.trigger_capture().get("error", FAILED))
 	var trigger_end := _now_us()
 	if err != OK:
 		_increment_admission("rig_capture", "rejected", err)

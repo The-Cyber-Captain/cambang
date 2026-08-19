@@ -424,7 +424,7 @@ func _process(delta: float) -> void:
 		_capture_settle += delta
 		if _capture_settle >= 2.0:
 			_capture_requested = true
-			var trig: int = int(_capture_device.trigger_capture())
+			var trig: int = int(_capture_device.trigger_capture().get("error", FAILED))
 			if trig != OK:
 				_capture_reported = true
 				_log("CAPTURE: trigger refused (%d)" % trig)

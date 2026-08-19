@@ -19,7 +19,7 @@ bool CoreRigRegistry::record_capture_triggered(uint64_t rig_id, uint64_t rig_cap
   return true;
 }
 
-bool CoreRigRegistry::record_capture_settled(uint64_t rig_id,
+bool CoreRigRegistry::record_capture_finished(uint64_t rig_id,
                                              uint64_t rig_capture_id,
                                              bool failed) {
   if (rig_id == 0 || rig_capture_id == 0) {

@@ -110,6 +110,36 @@ public:
   static constexpr int PIXEL_FORMAT_YUY2 = static_cast<int>(FOURCC_YUY2);
   static constexpr int PIXEL_FORMAT_UYVY = static_cast<int>(FOURCC_UYVY);
 
+  // Terminal disposition of one Device Capture, as carried by the
+  // capture_finished signals (capture_identity_and_lifecycle.md 4.3). Mirrors
+  // CoreCaptureAssemblyRegistry::TerminalState so a caller never writes a bare
+  // number: a completion whose reason cannot be named is only half reported.
+  //
+  // All six are bound because they are the model's vocabulary. Only four can
+  // reach capture_finished today -- LATE_EXCLUDED and NEVER_ARRIVED are
+  // produced solely as cohort member outcomes, and become caller-visible when
+  // 4.3's per-member reporting lands. See 9.4.
+  static constexpr int DISPOSITION_DELIVERED =
+      static_cast<int>(CoreCaptureAssemblyRegistry::TerminalState::DELIVERED);
+  static constexpr int DISPOSITION_FAILED =
+      static_cast<int>(CoreCaptureAssemblyRegistry::TerminalState::FAILED);
+  static constexpr int DISPOSITION_LATE_EXCLUDED =
+      static_cast<int>(CoreCaptureAssemblyRegistry::TerminalState::LATE_EXCLUDED);
+  static constexpr int DISPOSITION_PREEMPTED_BY_RIG =
+      static_cast<int>(CoreCaptureAssemblyRegistry::TerminalState::PREEMPTED_BY_RIG);
+  static constexpr int DISPOSITION_DEVICE_LOST =
+      static_cast<int>(CoreCaptureAssemblyRegistry::TerminalState::DEVICE_LOST);
+  static constexpr int DISPOSITION_NEVER_ARRIVED =
+      static_cast<int>(CoreCaptureAssemblyRegistry::TerminalState::NEVER_ARRIVED);
+
+  // Why a Rig Capture's cohort closed (4.4). WINDOW_EXPIRED means the
+  // simultaneity window ran out with members still outstanding -- the result
+  // set may be short, and that is the correct outcome rather than a failure.
+  static constexpr int COHORT_CLOSED_ALL_MEMBERS_TERMINAL =
+      static_cast<int>(CoreCaptureCohortRegistry::CohortClosedReason::ALL_MEMBERS_TERMINAL);
+  static constexpr int COHORT_CLOSED_WINDOW_EXPIRED =
+      static_cast<int>(CoreCaptureCohortRegistry::CohortClosedReason::WINDOW_EXPIRED);
+
   // User-facing control of core processing.
   godot::Error start(
       const godot::Variant& provider_kind = godot::Variant(),
@@ -158,13 +188,76 @@ public:
   godot::Ref<CamBANGDevice> get_device_for_hardware_id(const godot::String& hardware_id) const;
   godot::Ref<CamBANGDevice> get_device(uint64_t device_instance_id) const;
   godot::Ref<CamBANGRig> get_rig(uint64_t rig_id) const;
-  // Form a rig from two or more engaged devices' hardware ids and return its
-  // bound handle, or null if the ingested concurrency truth does not authorize
-  // the combination. The server mints the rig_id (like capture_id).
-  godot::Ref<CamBANGRig> create_rig(const godot::PackedStringArray& member_hardware_ids);
+  // Form a rig from two or more engaged devices and return its bound handle,
+  // or null if the ingested concurrency truth does not authorize the
+  // combination. The server mints the rig_id (like capture_id).
+  //
+  // Takes device handles, matching CamBANGRig::add_member/remove_member. The
+  // caller already holds CamBANGDevice objects; routing them out to hardware-id
+  // strings and back invites a typo that no type check can catch, and made rig
+  // creation the one place in the rig surface that spoke a different language
+  // from the rest of it.
+  godot::Ref<CamBANGRig> create_rig(const godot::TypedArray<CamBANGDevice>& members);
+  // Hardware id of a device handle, whichever way it was obtained: an endpoint
+  // handle carries it directly, one from get_device() resolves through the
+  // runtime. Empty when the handle names no device.
+  godot::String resolve_device_hardware_id(const godot::Ref<CamBANGDevice>& device) const;
   godot::Ref<CamBANGStreamResult> get_stream_result_by_stream_id(uint64_t stream_id) const;
-  godot::Ref<CamBANGCaptureResult> get_capture_result_by_id(uint64_t capture_id, uint64_t device_instance_id) const;
+  // Fetch one capture's result by the Device Capture Id a trigger returned.
+  //
+  // Took a device_instance_id alongside until the id spaces were split (2.1).
+  // That argument disambiguated nothing afterwards -- a Device Capture Id
+  // belongs to exactly one device -- and a parameter that outlives its reason
+  // teaches callers a constraint that is not real.
+  godot::Ref<CamBANGCaptureResult> get_capture_result_by_id(uint64_t capture_id) const;
   uint64_t get_latest_capture_id_for_device(uint64_t device_instance_id) const;
+
+  // Captures this boundary has minted and not yet seen finish
+  // (capture_identity_and_lifecycle.md 4.5). Returns:
+  //
+  //   {
+  //     by_device:    { <device_instance_id>: [ <device_capture_id>, ... ] },
+  //     rig_captures: [ <rig_capture_id>, ... ],
+  //     total:        int   // device captures + rig captures
+  //   }
+  //
+  // Rig-member captures appear under by_device like any other Device Capture,
+  // because that is what they are; the rig's own id appears in rig_captures.
+  //
+  // Exposed rather than left to each caller because a device's busy state is
+  // otherwise observable ONLY by being refused, and every non-trivial consumer
+  // written against this codebase has hand-rolled the same counter to avoid
+  // that.
+  //
+  // CAVEAT, and it is not about timing: an empty entry for a device does NOT
+  // guarantee the next trigger is admitted. Admission refuses for reasons
+  // unrelated to busy-ness -- materialization backlog, orchestration failure --
+  // and those surface as ERR_BUSY too. A caller still handles the trigger's
+  // own return.
+  godot::Dictionary get_unfinished_captures() const;
+
+  // What became of each member of a rig capture
+  // (capture_identity_and_lifecycle.md 4.3). One entry per member, in
+  // hardware-id order, whether or not that member produced an image:
+  //
+  //   { hardware_id: String, device_instance_id: int,
+  //     device_capture_id: int, disposition: int, error_code: int }
+  //
+  // This exists because a result set alone cannot answer the question a
+  // caller actually has. A member that failed contributes no result, so a
+  // two-camera rig that lost one returns a single result and no explanation --
+  // identical to a rig that only ever had one member. `disposition` compares
+  // against DISPOSITION_*; `error_code` is the provider error where one was
+  // reported, 0 otherwise.
+  //
+  // Empty until the rig capture finishes, which is what rig_capture_finished
+  // announces: outcomes are decided at cohort closure.
+  godot::Array get_capture_member_outcomes_by_id(uint64_t rig_capture_id) const;
+
+  // Rig participation of a Device Capture, for CamBANGCaptureResult's identity
+  // (2.3). Not bound: a caller reads it through the result it already holds.
+  std::optional<CoreRuntime::RigParticipationForServer>
+  rig_participation_for_device_capture(uint64_t device_capture_id) const;
   godot::TypedArray<CamBANGCaptureResult> get_capture_result_set_by_id(uint64_t capture_id) const;
   void report_capture_result_member_observation(
       const SharedCaptureResultData& data,
@@ -263,11 +356,17 @@ private:
   godot::Error _start_scenario_now_();
   void _drain_pending_scenario_start_after_baseline_();
   void _refresh_tracked_wrapper_live_states_from_snapshot_();
+  // Drains Core's settlement queues and emits, once per Godot tick.
+  void _emit_capture_completion_signals_();
   void _set_all_tracked_wrapper_live_states_false_();
   bool _is_device_live_by_identity_(const godot::String& hardware_id,
                                     uint64_t device_instance_id) const;
   bool _is_stream_result_live_by_identity_(uint64_t stream_id) const;
+  godot::Ref<CamBANGDevice> _canonical_device_for_hardware_id_(
+      const std::string& hardware_id, const godot::String& display_name) const;
+  godot::Ref<CamBANGRig> _canonical_rig_for_id_(uint64_t rig_id) const;
   void register_tracked_device_wrapper_(uint64_t wrapper_object_id);
+  void register_tracked_rig_wrapper_(uint64_t wrapper_object_id);
   void register_tracked_stream_wrapper_(uint64_t wrapper_object_id);
 
   static CamBANGServer* singleton_;
@@ -324,10 +423,10 @@ private:
   // ERR_BUSY for every other category (tranche 7 deliberately maps only the
   // configuration gate; see docs/dev/current_tranche.md at that date).
   struct RigTriggerInternalResult {
-    // Rig Capture Id. Members' Device Capture Ids live in the cohort record
-    // and are reached through CoreRuntime, not returned here -- returning them
-    // is the public-identity tranche's job, not this one's.
+    // Rig Capture Id, and each member's hardware id paired with that member's
+    // own Device Capture Id (capture_identity_and_lifecycle.md 4.1).
     uint64_t rig_capture_id = 0;
+    std::vector<CoreRuntime::RigTriggeredMember> members;
     godot::Error error = godot::ERR_BUSY;
   };
   RigTriggerInternalResult trigger_rig_capture_internal_(uint64_t rig_id);
@@ -446,6 +545,41 @@ private:
   std::unordered_map<uint64_t, uint64_t> latest_capture_id_by_device_instance_id_;
   std::unordered_set<uint64_t> tracked_device_wrapper_object_ids_;
   std::unordered_set<uint64_t> tracked_stream_wrapper_object_ids_;
+  std::unordered_set<uint64_t> tracked_rig_wrapper_object_ids_;
+
+  // Outstanding work (4.5). Godot-thread only: written by the trigger
+  // wrappers and erased by the per-tick completion drain, both of which run
+  // there, so no lock is needed and none should be added.
+  //
+  // An id enters only once its trigger was ACCEPTED. A refused trigger burns
+  // an id without returning it, and recording that would leave a capture
+  // outstanding forever that the caller was never told about.
+  std::unordered_map<uint64_t, uint64_t> unfinished_device_capture_device_by_id_;
+  std::unordered_set<uint64_t> unfinished_rig_capture_ids_;
+
+  // Canonical wrapper instances, one per id (section 4.2). A handle is only
+  // worth subscribing to if the next lookup returns the same object: with a
+  // fresh instance per call, a caller connects to a wrapper the server has
+  // already forgotten, and the signal it is waiting for fires on a different
+  // one. Identity comparison (a == b) also stops working, which is how a
+  // caller would naturally keep a set of devices.
+  //
+  // One map per accessor, because the two device handle kinds are not
+  // interchangeable: an endpoint handle resolves its instance id through the
+  // endpoint lifecycle, an instance handle carries it directly. Each accessor
+  // is canonical for its own key, which is what section 4.2 requires and what
+  // per-object signals need. Unifying them was tried and reverted -- see
+  // get_device().
+  //
+  // Strong refs: the server keeps these alive, which is the whole point --
+  // a canonical wrapper that dies when the caller drops it is not canonical.
+  // Cleared on stop(), because the ids they name do not survive the session.
+  mutable std::unordered_map<std::string, godot::Ref<CamBANGDevice>>
+      canonical_device_by_hardware_id_;
+  mutable std::unordered_map<uint64_t, godot::Ref<CamBANGDevice>>
+      canonical_device_by_instance_id_;
+  mutable std::unordered_map<uint64_t, godot::Ref<CamBANGRig>>
+      canonical_rig_by_id_;
 };
 
 } // namespace cambang

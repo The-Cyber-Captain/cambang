@@ -47,7 +47,7 @@ public:
     NEVER_ARRIVED = 6,
   };
 
-  // Whether a disposition means the member settled with its payload intact.
+  // Whether a disposition means the member finished with its payload intact.
   // Everything else is terminal without a usable image.
   static constexpr bool disposition_delivered(TerminalState s) noexcept {
     return s == TerminalState::DELIVERED;
@@ -106,6 +106,20 @@ public:
   };
   MemberDisposition disposition_for(uint64_t capture_id,
                                     uint64_t device_instance_id) const;
+
+  // Captures that reached a terminal disposition since the last drain
+  // (capture_identity_and_lifecycle.md 4.2). Queued at every transition site
+  // rather than discovered by scanning: the boundary drains this once per tick
+  // and emits, so the cost is proportional to what actually changed, and a
+  // capture is reported exactly once no matter how it finished.
+  struct FinishedCapture {
+    uint64_t capture_id = 0;
+    uint64_t device_instance_id = 0;
+    TerminalState disposition = TerminalState::NONE;
+    bool has_error_code = false;
+    uint32_t error_code = 0;
+  };
+  std::vector<FinishedCapture> drain_finished_captures();
 
   // Whether this device has a capture Core has ADMITTED that has not reached a
   // terminal disposition. This is the per-device single-capture rule's source
@@ -230,8 +244,13 @@ public:
 #endif
 
 private:
+  // Callers must already hold mutex_. Queues a completion exactly once, at the
+  // moment the disposition becomes terminal.
+  void note_finished_locked_(const DeviceCaptureAssembly& assembly);
+
   mutable std::mutex mutex_;
   std::map<uint64_t, std::map<uint64_t, DeviceCaptureAssembly>> assemblies_by_capture_id_;
+  std::vector<FinishedCapture> finished_pending_;
 };
 
 } // namespace cambang

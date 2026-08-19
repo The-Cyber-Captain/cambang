@@ -346,7 +346,7 @@ func _run_clocked_edge_pass(previous_gen: int) -> int:
 	var initial_baseline_progress := _get_capture_progress_snapshot(initial_device_id)
 	var initial_baseline_failed := int(initial_baseline_progress.get("captures_failed", 0))
 	var initial_baseline_completed := int(initial_baseline_progress.get("captures_completed", 0))
-	var initial_capture_err := int(initial_device_handle.trigger_capture())
+	var initial_capture_err := int(initial_device_handle.trigger_capture().get("error", FAILED))
 	_require(initial_capture_err == OK, "%s_initial: device.trigger_capture() failed err=%d" % [LABEL, initial_capture_err])
 	if _done:
 		return previous_gen
@@ -728,7 +728,7 @@ func _trigger_clocked_capture_access_only(
 	deadline_ns: int,
 	frame_step_ns: int
 ) -> Dictionary:
-	var capture_err := int(device.trigger_capture())
+	var capture_err := int(device.trigger_capture().get("error", FAILED))
 	_require(capture_err == OK, "%s: device.trigger_capture() failed err=%d" % [label, capture_err])
 	if _done:
 		return {}
@@ -817,7 +817,7 @@ func _trigger_capture_access_only(
 	var baseline_progress := _get_capture_progress_snapshot(device_instance_id)
 	var baseline_failed := int(baseline_progress.get("captures_failed", 0))
 	var baseline_completed := int(baseline_progress.get("captures_completed", 0))
-	var capture_err := int(device.trigger_capture())
+	var capture_err := int(device.trigger_capture().get("error", FAILED))
 	_require(capture_err == OK, "%s: device.trigger_capture() failed err=%d" % [label, capture_err])
 	if _done:
 		return {}

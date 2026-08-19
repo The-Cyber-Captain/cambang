@@ -1292,7 +1292,7 @@ func _trigger_and_wait_capture(device, ids: Dictionary, label: String):
 	var baseline_failed := int(baseline_progress.get("captures_failed", 0))
 	var baseline_completed := int(baseline_progress.get("captures_completed", 0))
 
-	var trigger_err := int(device.trigger_capture())
+	var trigger_err := int(device.trigger_capture().get("error", FAILED))
 	if trigger_err == ERR_UNAVAILABLE:
 		_fail("%s: device.trigger_capture() explicitly unavailable before result publication" % label)
 		return null

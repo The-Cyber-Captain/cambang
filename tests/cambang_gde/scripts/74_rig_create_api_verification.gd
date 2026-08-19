@@ -6,7 +6,7 @@ extends Node
 ## synthetic without a scenario, can form rigs -- previously rigs only existed via
 ## synthetic scenario staging). Contract:
 ## - with an ingested concurrency truth that authorizes the exact combination,
-##   create_rig(member_hardware_ids) returns a live CamBANGRig whose rig appears
+##   create_rig(devices) returns a live CamBANGRig whose rig appears
 ##   in the published snapshot,
 ## - a single-member request returns null (a rig needs >= 2 members),
 ## - with no authorizing truth (Unsupported), create_rig returns null (fail
@@ -89,14 +89,30 @@ func _run() -> void:
 		_fail("start(synthetic) failed")
 		return
 	await _wait_snapshot(2000)
-	if await _engage_live(HW_A, 4000) == null:
+	var dev_a = await _engage_live(HW_A, 4000)
+	if dev_a == null:
 		_fail("device %s did not become live" % HW_A)
 		return
-	if await _engage_live(HW_B, 4000) == null:
+	var dev_b = await _engage_live(HW_B, 4000)
+	if dev_b == null:
 		_fail("device %s did not become live" % HW_B)
 		return
 
-	var rig = CamBANGServer.create_rig(PackedStringArray([HW_A, HW_B]))
+	# Wrapper objects are canonical per id: asking again returns the SAME
+	# object, which is what makes a handle worth connecting a signal to and
+	# what makes identity comparison usable for keeping a set of devices.
+	if CamBANGServer.get_device_for_hardware_id(HW_A) != dev_a:
+		_fail("get_device_for_hardware_id(%s) returned a different wrapper instance" % HW_A)
+		return
+	# get_device(instance_id) is canonical for ITS key, not unified with the
+	# endpoint form: the two handle kinds resolve their instance id differently
+	# and merging them breaks a scenario-created device (scene 70).
+	var by_instance = CamBANGServer.get_device(dev_a.get_instance_id())
+	if by_instance == null or CamBANGServer.get_device(dev_a.get_instance_id()) != by_instance:
+		_fail("get_device(instance_id) is not canonical for its own id")
+		return
+
+	var rig = CamBANGServer.create_rig([dev_a, dev_b] as Array[CamBANGDevice])
 	if rig == null:
 		_fail("create_rig returned null for an authorized combination")
 		return
@@ -108,9 +124,17 @@ func _run() -> void:
 		_fail("created rig %d absent from published snapshot" % int(rig.get_id()))
 		return
 
+	if CamBANGServer.get_rig(int(rig.get_id())) != rig:
+		_fail("get_rig(%d) returned a different wrapper than create_rig" % int(rig.get_id()))
+		return
+
 	# --- C) arity: a single-member request forms no rig ------------------------
-	if CamBANGServer.create_rig(PackedStringArray([HW_A])) != null:
+	if CamBANGServer.create_rig([dev_a] as Array[CamBANGDevice]) != null:
 		_fail("create_rig accepted a single-member request")
+		return
+	# A handle that names no device is a caller error, not an empty slot.
+	if CamBANGServer.create_rig([dev_a, null] as Array[CamBANGDevice]) != null:
+		_fail("create_rig accepted a null device handle")
 		return
 
 	# --- B) gate: no authorizing truth -> fail closed --------------------------
@@ -122,7 +146,12 @@ func _run() -> void:
 		_fail("restart(synthetic) failed")
 		return
 	await _wait_snapshot(2000)
-	if CamBANGServer.create_rig(PackedStringArray([HW_A, HW_B])) != null:
+	var dev_a2 = CamBANGServer.get_device_for_hardware_id(HW_A)
+	var dev_b2 = CamBANGServer.get_device_for_hardware_id(HW_B)
+	if dev_a2 == null or dev_b2 == null:
+		_fail("device handles unavailable after restart under the Unsupported truth")
+		return
+	if CamBANGServer.create_rig([dev_a2, dev_b2] as Array[CamBANGDevice]) != null:
 		_fail("create_rig formed a rig under an Unsupported concurrency truth")
 		return
 

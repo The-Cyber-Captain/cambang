@@ -807,7 +807,7 @@ func _try_verify_stream_result() -> void:
 			"step %d FAIL: capture progress snapshot unavailable before trigger" % _step
 		)
 		var perf_initial_trigger_start_us := _perf_us()
-		var capture_err := int(device.trigger_capture())
+		var capture_err := int(device.trigger_capture().get("error", FAILED))
 		var perf_initial_trigger_end_us := _perf_us()
 		_initial_capture_trigger_us = perf_initial_trigger_start_us
 		_initial_capture_completion_wait_start_us = perf_initial_trigger_end_us
@@ -1462,7 +1462,7 @@ func _request_manual_capture() -> void:
 	_clear_capture_display_for_pending_request("manual capture requested")
 	var perf_manual_clear_end_us := _perf_us()
 	var perf_manual_trigger_start_us := _perf_us()
-	var capture_err := int(device.trigger_capture())
+	var capture_err := int(device.trigger_capture().get("error", FAILED))
 	var perf_manual_trigger_end_us := _perf_us()
 	_manual_capture_completion_wait_start_us = perf_manual_trigger_end_us
 	_latency_log("manual capture request buckets us: clear=%d trigger_call=%d request_to_return=%d err=%d elapsed_us=%d" % [

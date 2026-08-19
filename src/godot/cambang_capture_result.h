@@ -21,6 +21,11 @@ public:
   static constexpr int CAPABILITY_CHEAP = static_cast<int>(ResultCapability::CHEAP);
   static constexpr int CAPABILITY_EXPENSIVE = static_cast<int>(ResultCapability::EXPENSIVE);
   static constexpr int CAPABILITY_UNSUPPORTED = static_cast<int>(ResultCapability::UNSUPPORTED);
+  // Where this result came from (capture_identity_and_lifecycle.md 2.3).
+  // BRANCH ON THIS, never on whether a rig field looks empty: a rig capture
+  // whose member fields happen to be defaulted is not a device capture.
+  static constexpr int CAPTURE_ORIGIN_DEVICE = 0;
+  static constexpr int CAPTURE_ORIGIN_RIG = 1;
   static constexpr int IMAGE_ROLE_DEFAULT_METERED = 0;
   static constexpr int IMAGE_ROLE_ADDITIONAL_BRACKET = 1;
 
@@ -28,6 +33,28 @@ public:
 
   void set_data(SharedCaptureResultData data) { data_ = std::move(data); }
   void set_server(CamBANGServer* server) { server_ = server; }
+
+  // Identity of this result, with every key always present so a caller reads
+  // one shape (capture_identity_and_lifecycle.md 2.3):
+  //
+  //   { capture_origin: int, device_capture_id: int, rig_capture_id: int,
+  //     rig_member_hardware_id: String, rig_member_index: int,
+  //     device_instance_id: int }
+  //
+  // Origin DEVICE leaves rig_capture_id 0, rig_member_hardware_id empty and
+  // rig_member_index -1. Those are not "missing" values to test for; they are
+  // what the fields mean when there is no rig, which is why capture_origin
+  // exists to be branched on instead.
+  //
+  // Participation identity is the hardware id. rig_member_index is a
+  // convenience for this session only -- membership order is not guaranteed
+  // stable across runs, so an index is meaningless against a reloaded result.
+  // device_instance_id is session-scoped and must never be used as durable
+  // identity.
+  //
+  // Ids are session-scoped integers. 2.2's durable dc_/rc_ string form is not
+  // implemented, so none of these survive the session.
+  godot::Dictionary get_capture_identity() const;
 
   uint32_t get_width() const;
   uint32_t get_height() const;

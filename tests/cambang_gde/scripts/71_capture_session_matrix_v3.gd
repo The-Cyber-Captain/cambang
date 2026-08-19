@@ -388,7 +388,7 @@ func _trigger_capture_for_device(device_key: String) -> bool:
 		_append_log("WARN: get_device returned null for %s" % device_key)
 		return false
 
-	var capture_err: int = int(device.trigger_capture())
+	var capture_err: int = int(device.trigger_capture().get("error", FAILED))
 	if capture_err != OK:
 		_append_log("WARN: trigger_capture returned err=%d for %s" % [capture_err, device_key])
 		return false

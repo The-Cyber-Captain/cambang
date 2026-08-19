@@ -140,6 +140,17 @@ public:
   // independent rigs from capturing at once for no reason.
   bool has_open_cohort_for_rig(uint64_t rig_id) const noexcept;
 
+  // Cohorts that closed since the last drain (section 4.2). Same shape as the
+  // assembly registry's completion queue, and for the same reason: the
+  // boundary drains once per tick and emits, so a rig capture is reported
+  // exactly once.
+  struct ClosedCohort {
+    uint64_t rig_capture_id = 0;
+    uint64_t rig_id = 0;
+    CohortClosedReason reason = CohortClosedReason::NONE;
+  };
+  std::vector<ClosedCohort> drain_closed_cohorts();
+
   // Rig Capture Ids of every cohort still OPEN. Returned by value so the
   // caller can resolve dispositions from the assembly registry without holding
   // this registry's lock -- the cross-registry ordering is documented as never
@@ -206,6 +217,7 @@ private:
   // Member Device Capture Id -> owning Rig Capture Id. Maintained alongside
   // cohorts_ under the same lock; retirement removes both.
   std::map<uint64_t, uint64_t> rig_capture_id_by_device_capture_id_;
+  std::vector<ClosedCohort> closed_pending_;
 };
 
 } // namespace cambang

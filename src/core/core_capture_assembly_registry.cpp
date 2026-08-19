@@ -92,6 +92,7 @@ void CoreCaptureAssemblyRegistry::mark_capture_completed(uint64_t capture_id, ui
   assembly.terminal_state = TerminalState::DELIVERED;
   assembly.has_failure_error_code = false;
   assembly.failure_error_code = 0;
+  note_finished_locked_(assembly);
 }
 
 void CoreCaptureAssemblyRegistry::mark_capture_preempted_by_rig(
@@ -109,7 +110,7 @@ void CoreCaptureAssemblyRegistry::mark_capture_preempted_by_rig(
     return;
   }
   // Only a capture still in progress can be preempted. One that already
-  // settled keeps the outcome it earned -- relabelling a DELIVERED capture as
+  // finished keeps the outcome it earned -- relabelling a DELIVERED capture as
   // displaced would discard a real result and lie about what happened.
   if (disposition_is_terminal(dev_it->second.terminal_state)) {
     return;
@@ -119,6 +120,7 @@ void CoreCaptureAssemblyRegistry::mark_capture_preempted_by_rig(
   // its disposition says so precisely.
   dev_it->second.has_failure_error_code = false;
   dev_it->second.failure_error_code = 0;
+  note_finished_locked_(dev_it->second);
 }
 
 void CoreCaptureAssemblyRegistry::mark_capture_device_lost(
@@ -144,6 +146,7 @@ void CoreCaptureAssemblyRegistry::mark_capture_device_lost(
   dev_it->second.terminal_state = TerminalState::DEVICE_LOST;
   dev_it->second.has_failure_error_code = false;
   dev_it->second.failure_error_code = 0;
+  note_finished_locked_(dev_it->second);
 }
 
 uint64_t CoreCaptureAssemblyRegistry::admitted_non_terminal_capture_id_for_device(
@@ -183,6 +186,7 @@ void CoreCaptureAssemblyRegistry::mark_capture_failed(uint64_t capture_id,
   assembly.terminal_state = TerminalState::FAILED;
   assembly.has_failure_error_code = true;
   assembly.failure_error_code = error_code;
+  note_finished_locked_(assembly);
 }
 
 bool CoreCaptureAssemblyRegistry::is_assembly_successful(uint64_t capture_id,
@@ -221,6 +225,21 @@ bool CoreCaptureAssemblyRegistry::has_admitted_non_terminal_capture_for_device(
   return false;
 }
 
+void CoreCaptureAssemblyRegistry::note_finished_locked_(
+    const DeviceCaptureAssembly& assembly) {
+  finished_pending_.push_back(FinishedCapture{
+      assembly.capture_id, assembly.device_instance_id, assembly.terminal_state,
+      assembly.has_failure_error_code, assembly.failure_error_code});
+}
+
+std::vector<CoreCaptureAssemblyRegistry::FinishedCapture>
+CoreCaptureAssemblyRegistry::drain_finished_captures() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<FinishedCapture> out;
+  out.swap(finished_pending_);
+  return out;
+}
+
 CoreCaptureAssemblyRegistry::MemberDisposition
 CoreCaptureAssemblyRegistry::disposition_for(uint64_t capture_id,
                                              uint64_t device_instance_id) const {
@@ -253,7 +272,7 @@ bool CoreCaptureAssemblyRegistry::is_result_safe(uint64_t capture_id,
   }
   const DeviceCaptureAssembly& assembly = dev_it->second;
   // "Safe" means the answer is settled: the caller will not get a different
-  // one later. Every terminal disposition except DELIVERED settles without an
+  // one later. Every terminal disposition except DELIVERED finishes without an
   // image, so there is nothing further to wait for. DELIVERED additionally
   // needs its payload actually retained. Written against the terminal
   // predicate rather than enumerating dispositions, so a value added later
@@ -267,26 +286,20 @@ bool CoreCaptureAssemblyRegistry::is_result_safe(uint64_t capture_id,
   return assembly.has_default_image_retained;
 }
 
-// OPEN GAP, recorded here because this is where it is created.
+// This sweep declares a capture over WITHOUT the provider having said so, which
+// is the one state in which the provider may still be holding its buffers --
+// the hazard capture_identity_and_lifecycle.md 7 describes, where a payload
+// released later is delivered into a subsequent capture on that device and
+// attributed to it.
 //
-// A capture failed by this watchdog is ABANDONED without the provider ever
-// being told. Core marks it FAILED(ERR_TIMEOUT) and moves on; nothing calls
-// abort_capture. That is exactly the hazard
-// capture_identity_and_lifecycle.md 7 describes -- a provider that abandons a
-// submitted capture may still hold payloads that get delivered into a
-// subsequent capture on that device.
+// The caller settles that: CoreRuntime issues abort_capture for every assembly
+// this returns, the same way rig preemption does for a displaced capture. The
+// registry cannot do it itself -- it holds mutex_ here and has no provider
+// handle -- so the two halves must stay together. Returning a timed-out
+// assembly without aborting it re-opens the gap.
 //
-// Preemption settles its abandonment (CoreRuntime aborts the displaced
-// capture), and an orderly device close cannot abandon one because a provider
-// pins the device while a capture is in flight (Camera2 returns ERR_BUSY).
-// This path is the remaining producer of unsettled abandonment.
-//
-// NOT fixed in tranche 4: that tranche is rig membership lifecycle, and this
-// is the admission watchdog's. Mitigated in practice by the split id spaces
-// (tranche 1) -- a late payload carries its own Device Capture Id, so Core
-// cannot attribute it to a later capture -- but a provider with a shared
-// delivery queue and no outstanding-payload ledger (see
-// imaging/api/outstanding_payload_ledger.h) is not protected by that alone.
+// An orderly device close is not a producer of this: a provider pins the
+// device while a capture is in flight (Camera2 returns ERR_BUSY).
 std::vector<CoreCaptureAssemblyRegistry::TimedOutAssembly>
 CoreCaptureAssemblyRegistry::sweep_admission_timeouts(uint64_t now_ns, uint64_t timeout_ns) {
   std::vector<TimedOutAssembly> timed_out;
@@ -303,6 +316,7 @@ CoreCaptureAssemblyRegistry::sweep_admission_timeouts(uint64_t now_ns, uint64_t 
       assembly.terminal_state = TerminalState::FAILED;
       assembly.has_failure_error_code = true;
       assembly.failure_error_code = static_cast<uint32_t>(ProviderError::ERR_TIMEOUT);
+      note_finished_locked_(assembly);
       timed_out.push_back(TimedOutAssembly{capture_id, device_instance_id});
     }
   }
@@ -415,6 +429,10 @@ void CoreCaptureAssemblyRegistry::remove_assembly(uint64_t capture_id, uint64_t 
 void CoreCaptureAssemblyRegistry::clear() {
   std::lock_guard<std::mutex> lock(mutex_);
   assemblies_by_capture_id_.clear();
+  // Undrained completions belong to the session being torn down. Carrying them
+  // across a stop/start boundary would emit completions for captures that no
+  // longer exist, into a scene that has already moved on.
+  finished_pending_.clear();
 }
 
 #if defined(CAMBANG_INTERNAL_SMOKE)

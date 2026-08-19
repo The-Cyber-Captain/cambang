@@ -180,8 +180,8 @@ func _process(delta: float) -> void:
 
 
 func _do_capture():
-	var capture_err = device_00.trigger_capture()
-	print(\"capture_err %s\" % capture_err)
+	var capture = device_00.trigger_capture()
+	print(\"capture id=%s err=%s\" % [capture.get(\"id\", 0), capture.get(\"error\", FAILED)])
 	while device_00.get_result() == null:
 		#print(\"waiting\")
 		await get_tree().process_frame

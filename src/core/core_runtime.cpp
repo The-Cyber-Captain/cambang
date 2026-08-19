@@ -1540,6 +1540,20 @@ CoreRuntime::~CoreRuntime() {
   stop();
 }
 
+SharedCaptureResultData CoreRuntime::get_capture_result(uint64_t capture_id) const {
+  SharedCaptureResultData data = result_store_.get_capture_result(capture_id);
+  if (!data) {
+    return nullptr;
+  }
+  // Same gate as the two-argument form: an assembly that did not succeed is
+  // not a result to hand out. The device comes from the result itself, which
+  // is exactly why the caller no longer has to supply it.
+  if (!capture_assembly_registry_.is_assembly_successful(capture_id, data->device_instance_id)) {
+    return nullptr;
+  }
+  return data;
+}
+
 SharedCaptureResultData CoreRuntime::get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const {
   if (!capture_assembly_registry_.is_assembly_successful(
           capture_id, device_instance_id)) {
@@ -4111,7 +4125,7 @@ void CoreRuntime::sweep_capture_cohort_closure_(uint64_t now_ns) {
               CoreCaptureCohortRegistry::CohortClosedReason::ALL_MEMBERS_TERMINAL,
               now_ns,
               std::move(outcomes))) {
-        (void)rigs_.record_capture_settled(cohort->rig_id, rig_capture_id, false);
+        (void)rigs_.record_capture_finished(cohort->rig_id, rig_capture_id, false);
       }
       continue;
     }
@@ -4140,7 +4154,7 @@ void CoreRuntime::sweep_capture_cohort_closure_(uint64_t now_ns) {
       // A window-expired cohort still ran and reported a truthful outcome, so
       // it counts as completed. captures_failed is for a cohort that failed
       // outright, which mark_failed() records separately.
-      (void)rigs_.record_capture_settled(cohort->rig_id, rig_capture_id, false);
+      (void)rigs_.record_capture_finished(cohort->rig_id, rig_capture_id, false);
     }
   }
 
@@ -4985,6 +4999,16 @@ void CoreRuntime::on_core_timer_tick() {
                      static_cast<unsigned long long>(t.capture_id),
                      static_cast<unsigned long long>(t.device_instance_id),
                      static_cast<unsigned long long>(capture_admission_watchdog_timeout_ns));
+        // Settle what the abandoned capture still owes the platform
+        // (section 7), exactly as rig preemption does for a displaced capture.
+        // Core has just declared this capture over without the provider having
+        // said so, which is precisely the state in which the provider may
+        // still be holding its buffers -- and a payload released later can be
+        // delivered into a subsequent capture on the same device and attributed
+        // to it. Attribution must be by accounting, never by timing.
+        if (ICameraProvider* prov = provider_.load(std::memory_order_acquire)) {
+          (void)prov->abort_capture(t.capture_id);
+        }
       }
     }
 
@@ -6027,6 +6051,15 @@ TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) 
       }
       capture_assembly_registry_.mark_capture_device_lost(lost_capture_id,
                                                           device_instance_id);
+      // Settle what this capture still owes the platform (section 7), as the
+      // watchdog and rig preemption do. With this, EVERY path that terminalises
+      // a capture without a provider terminal fact settles its accounting at
+      // the moment of abandonment -- which is what makes section 5.4 hold by
+      // construction: a device leaving a rig can carry no unsettled capture,
+      // because none is ever left unsettled to carry.
+      if (ICameraProvider* prov = provider_.load(std::memory_order_acquire)) {
+        (void)prov->abort_capture(lost_capture_id);
+      }
     }
 
     const uint64_t now_ns = ns_since_epoch_();
@@ -6908,8 +6941,18 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_
     return make_rig_orchestration_submission_failure(submitted);
   }
 
-  return make_rig_orchestration_success(
+  RigTriggerOrchestrationResult success = make_rig_orchestration_success(
       rig_id, rig_capture_id, submitted.submitted_count);
+  // Carry each member's hardware id and its own Device Capture Id out to the
+  // boundary, taken from the admitted bundle rather than re-read: this is the
+  // same list the cohort was built from.
+  success.members.reserve(admitted.participants.size());
+  for (const auto& participant : admitted.participants) {
+    success.members.push_back(
+        RigTriggeredMember{participant.hardware_id, participant.request.capture_id,
+                          participant.request.device_instance_id});
+  }
+  return success;
 }
 
 CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_with_capture_id_(
@@ -7109,6 +7152,27 @@ bool CoreRuntime::retain_rig_member_hardware_ids(
     return false;
   }
   return run_synchronous_command_(false, [this, rig_id, member_hardware_ids]() {
+    // One rig per device (capture_identity_and_lifecycle.md 5.5), enforced on
+    // THIS path too. The scenario loader already rejects a document that puts
+    // one device in two rigs, but that check is per-document: it cannot see a
+    // rig the caller created earlier in the session. Staging a scenario over
+    // such a rig would leave one device in two rigs, and two cohorts could then
+    // contend for it with the denial looking at the wrong rig.
+    //
+    // excluding_rig_id is this rig, so re-retaining a rig's own membership --
+    // the ordinary idempotent case -- is not a conflict with itself.
+    for (const auto& hardware_id : member_hardware_ids) {
+      const uint64_t owner = rigs_.rig_owning_member(hardware_id, rig_id);
+      if (owner != 0) {
+        std::fprintf(stderr,
+                     "[CamBANG][Core] staged rig topology refused: device %s is already a member "
+                     "of rig %llu, so it cannot also join rig %llu (one rig per device).\n",
+                     hardware_id.c_str(),
+                     static_cast<unsigned long long>(owner),
+                     static_cast<unsigned long long>(rig_id));
+        return false;
+      }
+    }
     const bool retained =
         rigs_.retain_member_hardware_ids(rig_id, member_hardware_ids);
     request_publish_from_core_unchecked();

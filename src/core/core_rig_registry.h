@@ -55,7 +55,7 @@ public:
   // failed outright (submission/execution) from one that closed having run;
   // a closed cohort counts as completed even if individual members did not
   // deliver, because the rig capture itself ran to a truthful conclusion.
-  bool record_capture_settled(uint64_t rig_id, uint64_t rig_capture_id, bool failed);
+  bool record_capture_finished(uint64_t rig_id, uint64_t rig_capture_id, bool failed);
 
   bool retain_capture_profile(uint64_t rig_id,
                               uint32_t width,
