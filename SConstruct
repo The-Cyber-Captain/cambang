@@ -1141,6 +1141,7 @@ if build_gde_graph:
         os.path.join(gde_obj_dir, "godot", "cambang_result_convert.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_result_convert_timing.cpp"),
         os.path.join(gde_obj_dir, "godot", "state_snapshot_export.cpp"),
+        os.path.join(gde_obj_dir, "godot", "capture_compute_texture.cpp"),
         os.path.join(gde_obj_dir, "godot", "godot_gpu_display_service.cpp"),
         os.path.join(gde_obj_dir, "godot", "result_access_cost_evidence.cpp"),
         os.path.join(gde_obj_dir, "godot", "retained_result_access_calibration.cpp"),

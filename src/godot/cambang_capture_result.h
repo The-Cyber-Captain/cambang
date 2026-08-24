@@ -1,6 +1,7 @@
 #pragma once
 
 #include <godot_cpp/classes/image.hpp>
+#include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
@@ -87,6 +88,26 @@ public:
   int can_to_image_member(int image_member_index) const;
   godot::Ref<godot::Image> to_image_member(int image_member_index) const;
   int can_get_encoded_bytes() const;
+
+  // Capture Compute Texture (pixel_payload_and_result_contract.md 11.6.1).
+  //
+  // A GPU-resident, frozen texture of the image member, for running compute
+  // over the captured image. Not a display view -- there is no freshness or
+  // demand semantics here, and to_image_member() remains the CPU path,
+  // unchanged and unaffected.
+  //
+  // Reach the RenderingDevice texture the same way as for any CamBANG texture:
+  //   RenderingServer.texture_get_rd_texture(tex.get_rid())
+  // That route does not vary with which internal path produced the object.
+  //
+  // can_* reports READY when the member is already GPU-resident, EXPENSIVE
+  // when producing it means a full-frame upload, and UNSUPPORTED when there is
+  // no RenderingDevice (Compatibility) or no pixels to work from. Nothing is
+  // produced until asked for.
+  int can_get_compute_texture() const;
+  int can_get_compute_texture_member(int image_member_index) const;
+  godot::Ref<godot::Texture2D> get_compute_texture() const;
+  godot::Ref<godot::Texture2D> get_compute_texture_member(int image_member_index) const;
 
   godot::Variant get_display_view() const;
   godot::Ref<godot::Image> to_image() const;

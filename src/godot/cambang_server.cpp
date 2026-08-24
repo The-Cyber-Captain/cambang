@@ -1,5 +1,6 @@
 #include "godot/cambang_server.h"
 #include "godot/cambang_capture_result.h"
+#include "godot/capture_compute_texture.h"
 #include "godot/cambang_device.h"
 #include "godot/cambang_stream.h"
 #include "godot/cambang_stream_result.h"
@@ -1663,6 +1664,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
   has_latest_export_ = false;
   has_godot_counters_ = false;
   CamBANGStreamResult::clear_live_stream_cpu_display_views();
+  clear_capture_compute_texture_cache();
   result_access_cost_evidence::clear();
   _clear_live_retained_result_access_calibration_state_();
 
@@ -1701,6 +1703,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
     direct_stream_hardware_id_by_stream_id_.clear();
     latest_capture_id_by_device_instance_id_.clear();
     CamBANGStreamResult::clear_live_stream_cpu_display_views();
+  clear_capture_compute_texture_cache();
     result_access_cost_evidence::clear();
     _clear_live_retained_result_access_calibration_state_();
 
@@ -1781,6 +1784,7 @@ void CamBANGServer::stop() {
     provider_.reset();
   }
   CamBANGStreamResult::clear_live_stream_cpu_display_views();
+  clear_capture_compute_texture_cache();
   synthetic_gpu_backing_drain_render_releases_before_stop();
   drain_live_cpu_display_bridge_before_stop();
   result_access_cost_evidence::clear();
@@ -4210,6 +4214,7 @@ godot::Variant CamBANGServer::get_backing_plan_evaluation_diagnostics() const {
 godot::Dictionary CamBANGServer::get_result_access_timing_evidence() const {
   godot::Dictionary d = result_access_cost_evidence::snapshot();
   d["capture_materializations"] = capture_materialization_stats();
+  d["capture_compute_textures"] = capture_compute_texture_metrics();
   return d;
 }
 

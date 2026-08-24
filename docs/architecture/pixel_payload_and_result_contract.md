@@ -1332,12 +1332,34 @@ Recorded so a declared-but-unimplemented capability stays distinguishable from
 a working one. This section describes what is built, not what CamBANG intends;
 an absent entry means "not implemented yet", never "excluded by design".
 
-- **Nothing described in §11.6.1 is implemented.** There is no Capture Compute
-  Texture operation, no Operation Support entry for it, and no public accessor.
-  The section records an agreed contract, not present behaviour.
-- No compute-shader path of any kind exists in the tree. Neither `src/` nor the
-  Godot verification scenes create a compute pipeline or bind a compute uniform
-  set.
+- **The CPU-upload path is implemented; the native GPU-resident path is not
+  reachable on real hardware.** `CamBANGCaptureResult` exposes
+  `can_get_compute_texture()`, `can_get_compute_texture_member(i)`,
+  `get_compute_texture()` and `get_compute_texture_member(i)`. Production is
+  lazy and cached per retained member in the Godot layer
+  (`src/godot/capture_compute_texture.cpp`).
+- The cache is bounded by entry count and deliberately has **no** coupling to
+  Core's capture eviction. It cannot be: the texture is a Godot-layer object,
+  and Core must not own Godot display adapters. Dropping an entry is safe
+  because a caller holding the returned reference keeps the texture alive
+  independently -- eviction costs a later re-upload, never a dangling texture.
+  This narrows the "footprint is counted in the same retained-byte accounting"
+  intent above: the upload's footprint is visible in the
+  `capture_compute_textures` diagnostic, and is **not** an input to Core's
+  capture byte budget.
+- Verified in scene 74 (`74_capture_compute_texture_verify`), which dispatches a
+  real compute shader over the texture and cross-checks the result against a
+  CPU sum of the same member. Under the mobile renderer: support EXPENSIVE,
+  `ImageTexture` produced, resolved through
+  `RenderingServer.texture_get_rd_texture()`, repeat access served from cache
+  without a second upload, 921600 of 1280x720 pixels covered, and compute
+  content matching the CPU reference exactly (117539567 both sides). Headless
+  under Compatibility the same scene verdicts `expected_unsupported` with
+  support UNSUPPORTED and nothing produced.
+- The READY row is implemented (an already-GPU-resident member is wrapped
+  rather than uploaded) but is unexercised: no in-tree producer yields a
+  GPU-primary capture in a configuration the scene reaches, so only the
+  EXPENSIVE row has been run.
 - Core already retains a per-member GPU backing handle and a neutral descriptor
   for it (`CoreCaptureResultData::ImageMemberData::retained_gpu_backing` and
   `retained_gpu_backing_descriptor`, `src/core/core_result_store.h`), and
