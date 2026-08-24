@@ -2,8 +2,8 @@
 
 ## 0. Status
 
-**Implemented, bar two pre-existing gaps in §5.2 and §6. §9 is the ledger, and
-it cites source for every claim.**
+**Implemented, bar one pre-existing gap in §5.2. §9 is the ledger, and it cites
+source for every claim.**
 
 Per-section state, read from the code rather than from the tranche that claimed
 it. §9.2 says how each mandate is met; §9.8 lists what remains thin.
@@ -25,7 +25,7 @@ it. §9.2 says how each mandate is met; §9.8 lists what remains thin.
 | §5.2 membership versioning | partial — recorded in the cohort, not reachable by a caller | `42c540a` |
 | §5.4 removal settles provider state | complete | uncommitted |
 | §5.5 one rig per device | complete | `42c540a` + uncommitted |
-| §6 accept, refuse, or version | partial — warm policy carries no version | pre-existing |
+| §6 accept, refuse, or version | complete | pre-existing + uncommitted |
 | §7 attribution by accounting | complete — every abandonment path aborts | uncommitted |
 | §8 consequences | complete | uncommitted |
 
@@ -53,9 +53,10 @@ helper and the `capture_id > baseline` comparisons are gone.
 millisecond so a rig's members sort in the order they were minted. The internal
 `uint64` is unchanged and still keys Core.
 
-Two things remain partial, both pre-existing and neither introduced by this
-work: §5.2's membership version is recorded but not reachable by a caller, and
-§6's warm policy carries no version. §9.2 states both with source.
+One thing remains partial, pre-existing and not introduced by this work:
+§5.2's membership version is recorded on the cohort but not reachable by a
+caller, so a stored result set cannot say which membership produced it. §9.2
+states it with source.
 
 A note on how this document has been audited. An earlier version claimed every
 mandate was met on the strength of a search for the word "must" — which missed
@@ -346,8 +347,21 @@ on*.
 | Kind | Examples | Rule |
 |---|---|---|
 | Imperative action | trigger a device or rig capture | Fail fast with a reason (`ERR_BUSY`). Never queue for later execution |
-| Declarative configuration | still-capture profile, warm policy, rig membership | Accept while live, version it, apply forward. The version makes the transition observable |
+| Declarative configuration | still-capture profile, warm policy, rig membership | Accept while live, apply forward, and make the transition observable. Version it where something is stamped with the version |
 | Foundational truth | camera description / concurrency truth | Refuse while the runtime is LIVE |
+
+**A version is not the point; observability is.** A version earns its place
+when something else records which version it ran under, so a stored artifact can
+say what configuration produced it. `capture_profile_version` is stamped onto
+each capture at admission; `rig_membership_version` is recorded on each cohort.
+Both answer a question about an artifact that outlives the setting.
+
+Warm policy has no such consumer. It governs how long an idle device stays
+warm; no capture depends on it and nothing is stamped with it. Its applied
+value is published as `warm_hold_ms` in `DeviceState`, so a caller can already
+see it and see it change -- which is the observability the rule asks for. A
+version there would distinguish only "set to the same value again" from "no
+change", for no reader. It was left unversioned deliberately, not overlooked.
 
 A short queue with delayed application is the worst option for all three: it
 looks accepted, behaves unpredictably, and cannot be reasoned about from
@@ -453,13 +467,16 @@ recorded at `CamBANGServer::get_device` in `cambang_server.cpp`.
   but nothing at the boundary exposes it: not the snapshot, not
   `get_capture_identity()`, not `get_member_outcomes()`. The recording half is
   met; the self-describing half is not.
-- **§6 — declarative configuration is versioned so the transition is
-  observable.** Still-capture profile has `capture_profile_version` and rig
-  membership has `rig_membership_version`. Warm policy, named in §6's own
-  table, has no version anywhere in Core or the snapshot
-  (`CoreDeviceRegistry::set_warm_hold_ms`). Pre-existing, not introduced here.
 
 ### 9.2b How the contested mandates are met
+
+- **§6 — declarative configuration is observable.** Warm policy carries no
+  version and deliberately so: nothing is stamped with it, and its applied
+  value is already published as `warm_hold_ms` in `DeviceState`. §6 was amended
+  to say that a version is warranted where something records which version it
+  ran under -- true of the capture profile and rig membership, not of warm
+  policy. The rule previously read as though the version were the goal rather
+  than the observability it exists to provide.
 
 - **§8, second consequence — harnesses delete their hand-rolled completion
   detection.** Scene 569 awaits `capture_finished` instead of polling
