@@ -604,6 +604,34 @@ struct CaptureImageFrameMetadata {
   int32_t realized_exposure_compensation_milli_ev = 0;
 };
 
+// How a retained GPU backing's memory is describable to Core.
+//
+// This exists because `stride_bytes` and `format_fourcc` are only meaningful
+// for some GPU resources. The synthetic provider's backing is a linear RGBA8
+// texture CamBANG allocated itself, so both fields are exact. A real
+// platform-backed still is not: Camera2 delivers AIMAGE_FORMAT_PRIVATE through
+// an AHardwareBuffer whose layout is tiled or vendor-defined, and WinRT
+// delivers a D3D11 texture behind IDirect3DSurface. For those there is no
+// row stride Core can compute with, and the pixel format may be vendor-private.
+//
+// Defaulting to LINEAR keeps every descriptor written before this enum existed
+// truthful -- all of them are linear -- and makes the opaque case something a
+// provider has to declare deliberately.
+enum class GpuBackingLayoutKind : uint8_t {
+  // Rows of `stride_bytes`, pixels described by `format_fourcc`. Both fields
+  // are authoritative.
+  LINEAR = 0,
+  // A real GPU resource whose memory layout Core cannot describe. Producers
+  // must leave `stride_bytes` zero; `format_fourcc` may also be zero when even
+  // the pixel format is vendor-private. Nothing may compute a byte extent from
+  // this descriptor's stride -- use retained_gpu_backing_footprint_bytes().
+  //
+  // Named OPAQUE_EXTERNAL rather than the obvious OPAQUE because wingdi.h
+  // defines OPAQUE as a macro, and this header is reachable from every MSVC
+  // translation unit in the tree.
+  OPAQUE_EXTERNAL = 1,
+};
+
 // Neutral description of a retained GPU backing. This struct intentionally
 // carries only scalar identity, shape, and capability facts so provider/core
 // metadata can describe GPU-backed frames without exposing rendering-resource
@@ -611,17 +639,89 @@ struct CaptureImageFrameMetadata {
 struct RetainedGpuBackingDescriptor {
   bool valid = false;
   uint64_t stream_id = 0;
-  // Opaque provider-scoped backing identity or generation. Zero means the
-  // provider/core path knows a GPU backing exists but has no scalar identity.
+  // Opaque backing identity or generation. Zero means the provider/core path
+  // knows a GPU backing exists but has no scalar identity.
+  //
+  // Must be unique across the whole provider, not merely within one stream: it
+  // is what identifies a backing on its own, including for a still capture,
+  // whose stream_id is legitimately 0. A per-stream counter here would collide
+  // across streams in any descriptor-keyed cache. Recreating a backing must
+  // mint a fresh value so a stale generation is detectable.
   uint64_t backing_id = 0;
   uint32_t width = 0;
   uint32_t height = 0;
+  GpuBackingLayoutKind layout_kind = GpuBackingLayoutKind::LINEAR;
+  // Authoritative only for LINEAR. Must be zero for OPAQUE.
   uint32_t stride_bytes = 0;
+  // Authoritative only for LINEAR. May be zero for OPAQUE when the pixel
+  // format is vendor-private.
   uint32_t format_fourcc = 0;
+  // Producer-declared footprint of the GPU allocation, when the producer
+  // genuinely knows it. Zero means "not declared" and Core estimates instead;
+  // it does not mean the backing is free. Read through
+  // retained_gpu_backing_footprint_bytes() rather than directly, so retention
+  // accounting and access-cost evidence cannot disagree.
+  uint64_t allocation_size_bytes = 0;
   bool display_available = false;
+  // Display is available, but producing a Godot-usable texture from this
+  // backing costs real work the first time -- importing an AHardwareBuffer
+  // into Vulkan, or opening a D3D11 shared handle. A backing CamBANG already
+  // holds as a native texture leaves this false. Import must never be
+  // performed eagerly at retention time; this bit exists so display access can
+  // be classified honestly and the work deferred to actual demand.
+  bool display_requires_import = false;
   bool materialization_available = false;
   bool materialization_requires_gpu_readback = false;
 };
+
+// Deliberately conservative bytes-per-pixel used only when a GPU backing
+// declares no allocation size and has no linear stride to measure. It
+// over-counts every subsampled format (NV12 is 1.5), which is the safe
+// direction: retention accounting that over-counts evicts early, while
+// under-counting lets GPU allocations accumulate unbounded.
+inline constexpr uint64_t kUndeclaredGpuBackingBytesPerPixel = 4;
+
+// Single source of truth for "how much memory does this GPU backing occupy".
+// Three call sites previously open-coded this and two of them disagreed, one
+// silently yielding zero for any backing without a linear stride.
+inline uint64_t retained_gpu_backing_footprint_bytes(
+    const RetainedGpuBackingDescriptor& descriptor) noexcept {
+  if (!descriptor.valid) {
+    return 0;
+  }
+  if (descriptor.allocation_size_bytes != 0) {
+    return descriptor.allocation_size_bytes;
+  }
+  if (descriptor.layout_kind == GpuBackingLayoutKind::LINEAR &&
+      descriptor.stride_bytes != 0 && descriptor.height != 0) {
+    return static_cast<uint64_t>(descriptor.stride_bytes) *
+           static_cast<uint64_t>(descriptor.height);
+  }
+  if (descriptor.width != 0 && descriptor.height != 0) {
+    return static_cast<uint64_t>(descriptor.width) *
+           static_cast<uint64_t>(descriptor.height) *
+           kUndeclaredGpuBackingBytesPerPixel;
+  }
+  return 0;
+}
+
+// Whether a descriptor's own fields are mutually consistent. Core checks this
+// where a descriptor enters retention; provider compliance checks it at the
+// seam.
+inline bool retained_gpu_backing_descriptor_is_self_consistent(
+    const RetainedGpuBackingDescriptor& descriptor) noexcept {
+  if (!descriptor.valid) {
+    return true;
+  }
+  if (descriptor.width == 0 || descriptor.height == 0) {
+    return false;
+  }
+  if (descriptor.layout_kind == GpuBackingLayoutKind::OPAQUE_EXTERNAL &&
+      descriptor.stride_bytes != 0) {
+    return false;
+  }
+  return true;
+}
 
 // Frame view delivered from provider.
 // Provider retains buffer ownership until core calls release().

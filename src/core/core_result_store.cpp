@@ -223,8 +223,17 @@ RetainedGpuBackingDescriptor build_retained_gpu_backing_descriptor(
     descriptor.stream_id = frame.stream_id;
     descriptor.width = frame.width;
     descriptor.height = frame.height;
-    descriptor.stride_bytes = frame.stride_bytes;
-    descriptor.format_fourcc = frame.format_fourcc;
+    // frame.stride_bytes and frame.format_fourcc describe the CPU payload, not
+    // the GPU resource. Copying them onto an OPAQUE backing would invent a row
+    // stride for memory whose layout is tiled or vendor-defined, and would
+    // relabel a vendor-private surface with the sidecar's fourcc. Only a LINEAR
+    // backing shares its geometry with the CPU frame.
+    if (descriptor.layout_kind == GpuBackingLayoutKind::LINEAR) {
+      descriptor.stride_bytes = frame.stride_bytes;
+      descriptor.format_fourcc = frame.format_fourcc;
+    } else {
+      descriptor.stride_bytes = 0;
+    }
     return descriptor;
   }
 
@@ -240,6 +249,11 @@ RetainedGpuBackingDescriptor build_retained_gpu_backing_descriptor(
   descriptor.backing_id = 0;
   descriptor.width = frame.width;
   descriptor.height = frame.height;
+  // Declaring LINEAR here is the assumption this scaffold has always made
+  // implicitly by copying the CPU frame's stride and fourcc. It is stated
+  // rather than assumed so that a provider whose backing is not linear is
+  // required to supply its own descriptor instead of falling in here.
+  descriptor.layout_kind = GpuBackingLayoutKind::LINEAR;
   descriptor.stride_bytes = frame.stride_bytes;
   descriptor.format_fourcc = frame.format_fourcc;
   descriptor.display_available = static_cast<bool>(frame.primary_backing_artifact);
@@ -250,17 +264,20 @@ RetainedGpuBackingDescriptor build_retained_gpu_backing_descriptor(
 
 // Capture-result byte-budget accounting (ledger #53). Estimates a single
 // image member's resource footprint: literal bytes for a CPU_PACKED payload,
-// plus an estimated footprint for a GPU-backed member computed from
-// Core-visible, provider-agnostic descriptor metadata (width/height/stride)
-// -- never inspects the opaque retained_gpu_backing handle itself, which
-// would violate the Core/provider seam. A member may legitimately have both
-// (GPU-primary-with-CPU-sidecar posture), in which case both contribute.
+// plus the GPU backing's footprint from Core-visible, provider-agnostic
+// descriptor metadata -- never inspects the opaque retained_gpu_backing handle
+// itself, which would violate the Core/provider seam. A member may legitimately
+// have both (GPU-primary-with-CPU-sidecar posture), in which case both
+// contribute.
+//
+// The GPU term goes through retained_gpu_backing_footprint_bytes() rather than
+// multiplying stride by height here. A backing with no linear stride -- an
+// opaque platform resource, or a legacy descriptor whose producer left stride
+// at zero -- used to contribute exactly nothing to the budget, so such
+// allocations could accumulate without ever triggering eviction.
 uint64_t effective_member_bytes(const CoreCaptureResultData::ImageMemberData& member) noexcept {
   uint64_t bytes = member.payload.size_bytes();
-  if (member.retained_gpu_backing_descriptor.valid) {
-    bytes += static_cast<uint64_t>(member.retained_gpu_backing_descriptor.stride_bytes) *
-             static_cast<uint64_t>(member.retained_gpu_backing_descriptor.height);
-  }
+  bytes += retained_gpu_backing_footprint_bytes(member.retained_gpu_backing_descriptor);
   return bytes;
 }
 

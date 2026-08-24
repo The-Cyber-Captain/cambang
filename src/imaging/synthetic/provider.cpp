@@ -1084,6 +1084,13 @@ uint64_t SyntheticProvider::alloc_native_id_(NativeObjectType type) {
   return callbacks_->allocate_native_id(type);
 }
 
+// Provider-unique, never zero. Zero is reserved by the descriptor contract to
+// mean "no scalar identity supplied", so a minted identity must never collide
+// with it.
+uint64_t SyntheticProvider::mint_gpu_backing_identity_() {
+  return next_gpu_backing_identity_.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
 void SyntheticProvider::emit_native_create_device_(const DeviceState& d) {
   if (!callbacks_) {
     return;
@@ -2572,8 +2579,11 @@ bool SyntheticProvider::generate_device_capture_payloads_(
       fv.primary_backing_kind = ProducerBackingKind::GPU;
       fv.primary_backing_artifact = gpu_backing;
       fv.retained_gpu_backing_descriptor.valid = true;
+      // A still capture belongs to no stream, so stream_id is genuinely 0.
+      // backing_id must still be a real provider-unique identity: it is the
+      // only thing that distinguishes this retained backing from any other.
       fv.retained_gpu_backing_descriptor.stream_id = 0;
-      fv.retained_gpu_backing_descriptor.backing_id = 0;
+      fv.retained_gpu_backing_descriptor.backing_id = mint_gpu_backing_identity_();
       fv.retained_gpu_backing_descriptor.width = req.width;
       fv.retained_gpu_backing_descriptor.height = req.height;
       fv.retained_gpu_backing_descriptor.stride_bytes = job.stride_bytes;
@@ -3664,7 +3674,7 @@ bool SyntheticProvider::ensure_stream_live_gpu_backing_(
     return false;
   }
   const uint64_t native_id = alloc_native_id_(NativeObjectType::GpuBacking);
-  ++s.live_gpu_backing_generation;
+  s.live_gpu_backing_identity = mint_gpu_backing_identity_();
   if (native_id != 0 && callbacks_) {
     const auto dit = devices_.find(s.req.device_instance_id);
     const uint64_t root_id = (dit != devices_.end()) ? dit->second.root_id : 0;
@@ -3980,7 +3990,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     fv.retained_gpu_backing_descriptor.valid = true;
     fv.retained_gpu_backing_descriptor.stream_id = s.req.stream_id;
     fv.retained_gpu_backing_descriptor.backing_id =
-        (s.live_gpu_backing_native_id != 0) ? s.live_gpu_backing_native_id : s.live_gpu_backing_generation;
+        (s.live_gpu_backing_native_id != 0) ? s.live_gpu_backing_native_id : s.live_gpu_backing_identity;
     fv.retained_gpu_backing_descriptor.width = w;
     fv.retained_gpu_backing_descriptor.height = h;
     fv.retained_gpu_backing_descriptor.stride_bytes = stride;

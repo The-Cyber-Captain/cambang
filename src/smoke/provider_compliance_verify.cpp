@@ -3328,6 +3328,301 @@ bool run_synthetic_live_gpu_backing_truth_check() {
       cb.snapshot_events(), "synthetic_live_gpu_backing_truth");
 }
 
+// The descriptor is the only thing Core and the Godot display layer ever learn
+// about a GPU backing, so its self-description has to survive a producer whose
+// memory is not a linear RGBA8 grid. Everything below is contract, not
+// synthetic behaviour: it is what a Camera2 AHardwareBuffer or a WinRT
+// IDirect3DSurface will have to be describable in.
+bool run_gpu_backing_descriptor_layout_contract_check() {
+  RetainedGpuBackingDescriptor linear{};
+  linear.valid = true;
+  linear.width = 64;
+  linear.height = 32;
+  linear.stride_bytes = 64 * 4;
+  linear.format_fourcc = FOURCC_RGBA;
+  if (!retained_gpu_backing_descriptor_is_self_consistent(linear) ||
+      retained_gpu_backing_footprint_bytes(linear) != 64ull * 4ull * 32ull) {
+    std::cerr << "FAIL gpu backing descriptor layout contract linear footprint mismatch\n";
+    return false;
+  }
+
+  // An opaque backing must not carry a stride, and must still be accounted for.
+  // Before the layout kind existed this case contributed exactly zero bytes to
+  // the retention budget, so opaque allocations could accumulate unevicted.
+  RetainedGpuBackingDescriptor opaque{};
+  opaque.valid = true;
+  opaque.width = 64;
+  opaque.height = 32;
+  opaque.layout_kind = GpuBackingLayoutKind::OPAQUE_EXTERNAL;
+  if (!retained_gpu_backing_descriptor_is_self_consistent(opaque)) {
+    std::cerr << "FAIL gpu backing descriptor layout contract opaque rejected as inconsistent\n";
+    return false;
+  }
+  const uint64_t opaque_bytes = retained_gpu_backing_footprint_bytes(opaque);
+  if (opaque_bytes == 0 ||
+      opaque_bytes != 64ull * 32ull * kUndeclaredGpuBackingBytesPerPixel) {
+    std::cerr << "FAIL gpu backing descriptor layout contract opaque footprint not conservatively estimated\n";
+    return false;
+  }
+
+  // A producer that knows its real allocation size overrides the estimate.
+  RetainedGpuBackingDescriptor declared = opaque;
+  declared.allocation_size_bytes = 12345;
+  if (retained_gpu_backing_footprint_bytes(declared) != 12345ull) {
+    std::cerr << "FAIL gpu backing descriptor layout contract declared allocation size ignored\n";
+    return false;
+  }
+
+  // An opaque descriptor claiming a row stride is describing memory it cannot
+  // describe; that must be caught rather than silently multiplied out.
+  RetainedGpuBackingDescriptor opaque_with_stride = opaque;
+  opaque_with_stride.stride_bytes = 64 * 4;
+  if (retained_gpu_backing_descriptor_is_self_consistent(opaque_with_stride)) {
+    std::cerr << "FAIL gpu backing descriptor layout contract opaque stride accepted\n";
+    return false;
+  }
+
+  RetainedGpuBackingDescriptor degenerate{};
+  degenerate.valid = true;
+  if (retained_gpu_backing_descriptor_is_self_consistent(degenerate)) {
+    std::cerr << "FAIL gpu backing descriptor layout contract zero-extent descriptor accepted\n";
+    return false;
+  }
+  RetainedGpuBackingDescriptor absent{};
+  if (!retained_gpu_backing_descriptor_is_self_consistent(absent) ||
+      retained_gpu_backing_footprint_bytes(absent) != 0) {
+    std::cerr << "FAIL gpu backing descriptor layout contract absent backing mishandled\n";
+    return false;
+  }
+
+  // The one producer in tree that actually emits a GPU backing must satisfy the
+  // same invariants it will be held to when it is not the only one.
+  SyntheticGpuBackingTruthProbeScope runtime_scope;
+  RecorderCallbacks cb;
+  cb.display_demand_active.store(true, std::memory_order_release);
+
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 16;
+  cfg.nominal.height = 16;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  cfg.nominal.fps_num = 30;
+  cfg.nominal.fps_den = 1;
+  cfg.nominal.start_stream_warmup_ns = 0;
+  cfg.producer_output_form_mode = SyntheticProducerOutputFormMode::CpuAndGpu;
+
+  constexpr uint64_t kDeviceId = 8301;
+  constexpr uint64_t kRootId = 8302;
+  constexpr uint64_t kStreamId = 8303;
+  StreamRequest req{};
+  req.stream_id = kStreamId;
+  req.device_instance_id = kDeviceId;
+  req.intent = StreamIntent::PREVIEW;
+  req.profile.width = cfg.nominal.width;
+  req.profile.height = cfg.nominal.height;
+  req.profile.format_fourcc = cfg.nominal.format_fourcc;
+  req.profile.target_fps_min = cfg.nominal.fps_num;
+  req.profile.target_fps_max = cfg.nominal.fps_num;
+  req.requested_retained_plan =
+      CoreRetainedProductionPlan{CoreProductionPostureShape::GpuPrimaryWithCpuSidecar, true};
+
+  SyntheticProvider provider(cfg);
+  if (!provider.initialize(&cb).ok() ||
+      !provider.open_device("synthetic:0", kDeviceId, kRootId).ok() ||
+      !provider.create_stream(req).ok() ||
+      !provider.start_stream(kStreamId, req.profile, req.picture).ok()) {
+    std::cerr << "FAIL gpu backing descriptor layout contract setup failed\n";
+    (void)provider.shutdown();
+    return false;
+  }
+
+  constexpr uint64_t kFramePeriodNs = 33'333'334ull;
+  // The probe fails the first upload and its retry by design; advance past
+  // those before inspecting a published descriptor.
+  provider.advance(0);
+  provider.advance(kFramePeriodNs);
+
+  bool saw_gpu_frame = false;
+  for (const auto& event : cb.snapshot_events()) {
+    if (event.tag != "frame" || event.id != kStreamId || event.capture_id != 0) {
+      continue;
+    }
+    const RetainedGpuBackingDescriptor& d = event.retained_gpu_backing_descriptor;
+    if (!d.valid) {
+      continue;
+    }
+    saw_gpu_frame = true;
+    if (!retained_gpu_backing_descriptor_is_self_consistent(d)) {
+      std::cerr << "FAIL gpu backing descriptor layout contract synthetic descriptor self-inconsistent\n";
+      (void)provider.shutdown();
+      return false;
+    }
+    if (d.layout_kind != GpuBackingLayoutKind::LINEAR || d.stride_bytes == 0 ||
+        d.display_requires_import ||
+        retained_gpu_backing_footprint_bytes(d) == 0) {
+      std::cerr << "FAIL gpu backing descriptor layout contract synthetic descriptor is not a measurable linear backing\n";
+      (void)provider.shutdown();
+      return false;
+    }
+  }
+  if (!saw_gpu_frame) {
+    std::cerr << "FAIL gpu backing descriptor layout contract produced no GPU-backed frame to inspect\n";
+    (void)provider.shutdown();
+    return false;
+  }
+
+  if (!provider.stop_stream(kStreamId).ok() ||
+      !provider.destroy_stream(kStreamId).ok() ||
+      !provider.close_device(kDeviceId).ok() ||
+      !provider.shutdown().ok()) {
+    std::cerr << "FAIL gpu backing descriptor layout contract teardown failed\n";
+    return false;
+  }
+
+  // A still capture belongs to no stream, so its descriptor's stream_id is 0.
+  // That must not cost it its identity: backing_id has to be a real value, or
+  // the backing cannot be told apart from any other and every identity-gated
+  // display path silently declines it.
+  {
+    RecorderCallbacks cap_cb;
+    SyntheticProviderConfig cap_cfg{};
+    cap_cfg.endpoint_count = 1;
+    cap_cfg.nominal.width = 32;
+    cap_cfg.nominal.height = 32;
+    cap_cfg.nominal.format_fourcc = FOURCC_RGBA;
+    cap_cfg.producer_output_form_mode = SyntheticProducerOutputFormMode::GpuOnly;
+    constexpr uint64_t kCapDeviceId = 8311;
+    constexpr uint64_t kCaptureId = 8312;
+    SyntheticProvider cap_provider(cap_cfg);
+    if (!cap_provider.initialize(&cap_cb).ok() ||
+        !cap_provider.open_device("synthetic:0", kCapDeviceId, 8313).ok()) {
+      std::cerr << "FAIL gpu backing descriptor layout contract capture setup failed\n";
+      (void)cap_provider.shutdown();
+      return false;
+    }
+    CaptureRequest cap = make_direct_provider_default_still_capture_request(
+        kCaptureId, kCapDeviceId, 32, 32, FOURCC_RGBA);
+    if (!cap_provider.trigger_capture(cap).ok() ||
+        !wait_for_capture_completed_with_frames(cap_cb, kCaptureId, 1)) {
+      std::cerr << "FAIL gpu backing descriptor layout contract capture did not complete\n";
+      (void)cap_provider.shutdown();
+      return false;
+    }
+    bool saw_capture_backing = false;
+    for (const auto& ev : cap_cb.snapshot_events()) {
+      if (ev.tag != "frame" || ev.capture_id != kCaptureId) {
+        continue;
+      }
+      const RetainedGpuBackingDescriptor& d = ev.retained_gpu_backing_descriptor;
+      if (!d.valid) {
+        continue;
+      }
+      saw_capture_backing = true;
+      if (d.stream_id != 0) {
+        std::cerr << "FAIL gpu backing descriptor layout contract capture descriptor claims a stream\n";
+        (void)cap_provider.shutdown();
+        return false;
+      }
+      if (d.backing_id == 0 || !retained_gpu_backing_descriptor_is_self_consistent(d)) {
+        std::cerr << "FAIL gpu backing descriptor layout contract capture backing has no usable identity\n";
+        (void)cap_provider.shutdown();
+        return false;
+      }
+    }
+    if (!saw_capture_backing) {
+      std::cerr << "FAIL gpu backing descriptor layout contract produced no GPU-backed capture to inspect\n";
+      (void)cap_provider.shutdown();
+      return false;
+    }
+    if (!cap_provider.close_device(kCapDeviceId).ok() || !cap_provider.shutdown().ok()) {
+      std::cerr << "FAIL gpu backing descriptor layout contract capture teardown failed\n";
+      return false;
+    }
+  }
+
+  // backing_id is provider-scoped, not stream-scoped. Two concurrent streams
+  // must not both mint the same value: a descriptor-keyed cache would then
+  // serve one stream's texture for the other's frame.
+  {
+    RecorderCallbacks multi_cb;
+    multi_cb.display_demand_active.store(true, std::memory_order_release);
+    SyntheticProviderConfig multi_cfg{};
+    multi_cfg.endpoint_count = 1;
+    multi_cfg.nominal.width = 16;
+    multi_cfg.nominal.height = 16;
+    multi_cfg.nominal.format_fourcc = FOURCC_RGBA;
+    multi_cfg.nominal.fps_num = 30;
+    multi_cfg.nominal.fps_den = 1;
+    multi_cfg.nominal.start_stream_warmup_ns = 0;
+    multi_cfg.producer_output_form_mode = SyntheticProducerOutputFormMode::CpuAndGpu;
+
+    constexpr uint64_t kMultiDeviceId = 8321;
+    constexpr uint64_t kStreamA = 8323;
+    constexpr uint64_t kStreamB = 8324;
+    SyntheticProvider multi(multi_cfg);
+    if (!multi.initialize(&multi_cb).ok() ||
+        !multi.open_device("synthetic:0", kMultiDeviceId, 8322).ok()) {
+      std::cerr << "FAIL gpu backing descriptor layout contract multi-stream setup failed\n";
+      (void)multi.shutdown();
+      return false;
+    }
+    auto start_one = [&](uint64_t stream_id) -> bool {
+      StreamRequest r{};
+      r.stream_id = stream_id;
+      r.device_instance_id = kMultiDeviceId;
+      r.intent = StreamIntent::PREVIEW;
+      r.profile.width = multi_cfg.nominal.width;
+      r.profile.height = multi_cfg.nominal.height;
+      r.profile.format_fourcc = multi_cfg.nominal.format_fourcc;
+      r.profile.target_fps_min = multi_cfg.nominal.fps_num;
+      r.profile.target_fps_max = multi_cfg.nominal.fps_num;
+      r.requested_retained_plan =
+          CoreRetainedProductionPlan{CoreProductionPostureShape::GpuPrimaryWithCpuSidecar, true};
+      return multi.create_stream(r).ok() && multi.start_stream(stream_id, r.profile, r.picture).ok();
+    };
+    if (!start_one(kStreamA) || !start_one(kStreamB)) {
+      std::cerr << "FAIL gpu backing descriptor layout contract multi-stream start failed\n";
+      (void)multi.shutdown();
+      return false;
+    }
+    multi.advance(0);
+    multi.advance(kFramePeriodNs);
+
+    std::map<uint64_t, uint64_t> owner_by_backing_id;
+    for (const auto& ev : multi_cb.snapshot_events()) {
+      if (ev.tag != "frame" || ev.capture_id != 0) {
+        continue;
+      }
+      const RetainedGpuBackingDescriptor& d = ev.retained_gpu_backing_descriptor;
+      if (!d.valid || d.backing_id == 0) {
+        continue;
+      }
+      const auto it = owner_by_backing_id.find(d.backing_id);
+      if (it != owner_by_backing_id.end() && it->second != d.stream_id) {
+        std::cerr << "FAIL gpu backing descriptor layout contract backing_id " << d.backing_id
+                  << " reused across streams " << it->second << " and " << d.stream_id << "\n";
+        (void)multi.shutdown();
+        return false;
+      }
+      owner_by_backing_id.emplace(d.backing_id, d.stream_id);
+    }
+    if (owner_by_backing_id.size() < 2) {
+      std::cerr << "FAIL gpu backing descriptor layout contract multi-stream produced too few identified backings\n";
+      (void)multi.shutdown();
+      return false;
+    }
+    if (!multi.stop_stream(kStreamA).ok() || !multi.destroy_stream(kStreamA).ok() ||
+        !multi.stop_stream(kStreamB).ok() || !multi.destroy_stream(kStreamB).ok() ||
+        !multi.close_device(kMultiDeviceId).ok() || !multi.shutdown().ok()) {
+      std::cerr << "FAIL gpu backing descriptor layout contract multi-stream teardown failed\n";
+      return false;
+    }
+  }
+
+  return assert_native_balance(
+      cb.snapshot_events(), "gpu_backing_descriptor_layout_contract");
+}
+
 // ===== Family E: Synthetic frame/picture integration compliance =====
 
 bool run_synthetic_timeline_picture_appearance_check() {
@@ -11465,6 +11760,7 @@ int main(int argc, char** argv) {
       {"run_synthetic_parent_context_capability_downgrade_matrix_check", [] { return run_synthetic_parent_context_capability_downgrade_matrix_check(); }},
       {"run_synthetic_producer_output_form_mode_production_check", [] { return run_synthetic_producer_output_form_mode_production_check(); }},
       {"run_synthetic_live_gpu_backing_truth_check", [] { return run_synthetic_live_gpu_backing_truth_check(); }},
+      {"run_gpu_backing_descriptor_layout_contract_check", [] { return run_gpu_backing_descriptor_layout_contract_check(); }},
       {"run_synthetic_timeline_picture_appearance_check", [] { return run_synthetic_timeline_picture_appearance_check(); }},
       {"run_abandoned_capture_payload_attribution_check", [] { return run_abandoned_capture_payload_attribution_check(); }},
       {"run_core_per_device_capture_guard_check", [] { return run_core_per_device_capture_guard_check(); }},

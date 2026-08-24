@@ -443,7 +443,15 @@ inline CoreRetainedAccessTruth build_stream_retained_access_truth(const CoreStre
 
   if (result.payload_kind == ResultPayloadKind::GPU_SURFACE) {
     if (result.retained_gpu_backing) {
-      truth.display_view = ResultCapability::READY;
+      // READY means the display representation is already retained and needs
+      // no materialization work. That holds for a backing CamBANG already
+      // holds as a native texture. A backing that still has to be imported --
+      // an AHardwareBuffer into Vulkan, a shared D3D11 handle -- is supported
+      // but genuinely costs work on first display access, so it is EXPENSIVE
+      // and must not be imported eagerly to make this line read READY.
+      truth.display_view = result.retained_gpu_backing_descriptor.display_requires_import
+          ? ResultCapability::EXPENSIVE
+          : ResultCapability::READY;
     }
     if (has_current_cpu_payload) {
       truth.to_image = ResultCapability::CHEAP;
