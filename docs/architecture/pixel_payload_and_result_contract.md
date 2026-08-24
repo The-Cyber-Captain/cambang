@@ -1194,6 +1194,195 @@ artifact, `to_image_member()` prefers the current CPU bytes. The GPU
 materializer is used only when no current CPU sidecar is available. Capability
 and access-cost evidence must describe the route actually selected.
 
+### 11.6.1 Capture Compute Texture
+
+A **Capture Compute Texture** is a GPU-resident, frozen texture of one
+completed capture image member, obtainable for as long as that `CaptureResult`
+is retained, so that a caller can run GPU compute over the captured image.
+
+It is a capture-native concept. It is defined here, under the capture-result
+guardrail, because the guardrail above is the rule it must satisfy: this is not
+the stream display-view model extended to captures, and nothing in §11.4 or
+§11.4.1 applies to it.
+
+#### What it is not
+
+- **Not a display view.** Its purpose is compute, not presentation. It carries
+  no display-demand semantics, no freshness policy, no refresh, no staleness
+  question, and no live-view contract. A caller that only wants to show a
+  capture on screen does not need it.
+- **Not a replacement for `to_image_member()`.** CPU access is unchanged and
+  remains the path for saving, encoding, and pixel inspection. A Capture
+  Compute Texture is additive; asking for one never removes or degrades CPU
+  access to the same member.
+- **Not a per-frame or per-tick object.** One capture image member has one
+  Capture Compute Texture for the life of the retained result.
+
+The distinction from stream display state is not a naming convention. A stream
+display view is deliberately buffer-like and explicitly disclaims frozen
+historical image identity (§11.4). A Capture Compute Texture asserts the
+opposite: it is exactly the pixels of that member, frozen, for as long as the
+result exists. Reasoning that transfers from one to the other is wrong in both
+directions.
+
+#### Why it exists
+
+Two reasons, and the second is the one that must not be forgotten when the
+first is unavailable:
+
+1. When the source already delivers the captured image in GPU-resident form,
+   handing that to a compute shader avoids a GPU-to-CPU-to-GPU round trip.
+   That round trip is expensive everywhere and disproportionately expensive on
+   mobile hardware.
+2. When the source does not, a caller still needs a compute-usable texture,
+   and should get one by the same route rather than reimplementing the upload
+   per application. The cost differs; the availability of the capability does
+   not.
+
+#### Identity, immutability, and caching
+
+A retained capture image member is immutable. Its Capture Compute Texture is
+therefore safe to produce once and retain alongside the member: the pixels
+cannot change underneath it, so a retained texture can never be stale.
+
+This is the reverse of the stream case, where retained display state is updated
+in place while the stream flows and caching a materialized artifact would be
+wrong. The conclusion here is drawn from capture immutability, not imported
+from stream policy.
+
+#### Operation Support
+
+Capture Compute Texture availability is expressed as Operation Support
+(§6.x.3), using `ResultCapability`, per image member -- alongside
+`display_view`, `to_image`, and `encoded_bytes`, not folded into any of them.
+
+Provisional classification follows from Backing State:
+
+| Backing State for that member | Operation Support |
+| --- | --- |
+| A compute-usable GPU texture is already retained | `READY` |
+| No retained GPU texture; a CPU payload is retained; a GPU device exists | `EXPENSIVE` |
+| A GPU backing is retained but reaching a compute-usable texture requires a real import step | `EXPENSIVE` |
+| No GPU device is available to the runtime | `UNSUPPORTED` |
+| Neither a retained GPU backing nor a CPU payload | `UNSUPPORTED` |
+
+`EXPENSIVE` for the CPU-payload case is not a hedge. Producing the texture is a
+full-frame upload, which is the worked example of `EXPENSIVE` in §11.2.
+Reporting `UNSUPPORTED` there would be false -- the caller can have the
+texture, it simply costs -- and reporting `CHEAP` or `READY` would breach §11.3,
+because the method would be hiding a full-frame copy behind a cheap-sounding
+name.
+
+As with every other supported non-ready operation, bounded calibration may
+refine a supported non-ready classification to `CHEAP` from measured evidence.
+No path may be *declared* `CHEAP` without it.
+
+#### No eager materialization
+
+A Capture Compute Texture is produced on first request and not before.
+
+The reason is capture-specific. Capture results are retained per capture
+identity under a byte budget with eviction, so eager materialization scales GPU
+memory with retention depth: N retained results means N textures, most of which
+no caller ever samples. There is no comparable pressure where a single live
+artifact is retained. A caller that wants the cost paid earlier can ask
+earlier; CamBANG must not decide that on their behalf.
+
+Where a texture is produced, its footprint is counted in the same retained-byte
+accounting as the member's other backings, so eviction sees it.
+
+#### Obligations on the texture itself
+
+A Capture Compute Texture is only a Capture Compute Texture if a caller can
+actually compute over it:
+
+- The caller must be able to obtain a **RenderingDevice texture RID** by one
+  documented route that does not vary with which internal path produced the
+  texture. A capability whose access method depends on unstated internals is
+  not a capability.
+- The texture must have a pixel format the caller can reason about. A GPU
+  resource that can only be imported under a vendor-defined external format is
+  **not** a Capture Compute Texture: such an image is sampled-only, requires an
+  immutable sampler with a format conversion, and cannot be bound as a storage
+  image. If a native backing can only be reached that way, the honest answer
+  for that member is that the native path did not produce a Capture Compute
+  Texture -- fall back or report accordingly, rather than handing over
+  something the stated purpose cannot use.
+- Geometry and format must agree with the member's other truth. A Capture
+  Compute Texture that disagrees with `get_image_member()` about size, or with
+  the retained payload about colour interpretation, is a defect, not a variant.
+
+#### Lifetime and release
+
+The texture's lifetime is bounded by the retained result. It is released when
+the last of the retained member and any caller-held reference is dropped, and
+never before either.
+
+RID release follows the existing render-thread discipline: creation and release
+of rendering resources are marshaled to the render thread, and `free_rid()` is
+never called from an arbitrary thread.
+
+A caller that binds a Capture Compute Texture into its own rendering or compute
+work is responsible for dropping that binding before CamBANG is stopped, on the
+same terms as any other runtime-backed display object.
+
+#### Current implementation status
+
+Recorded so a declared-but-unimplemented capability stays distinguishable from
+a working one. This section describes what is built, not what CamBANG intends;
+an absent entry means "not implemented yet", never "excluded by design".
+
+- **Nothing described in §11.6.1 is implemented.** There is no Capture Compute
+  Texture operation, no Operation Support entry for it, and no public accessor.
+  The section records an agreed contract, not present behaviour.
+- No compute-shader path of any kind exists in the tree. Neither `src/` nor the
+  Godot verification scenes create a compute pipeline or bind a compute uniform
+  set.
+- Core already retains a per-member GPU backing handle and a neutral descriptor
+  for it (`CoreCaptureResultData::ImageMemberData::retained_gpu_backing` and
+  `retained_gpu_backing_descriptor`, `src/core/core_result_store.h`), and
+  already counts its footprint in the capture byte budget
+  (`effective_member_bytes`, `src/core/core_result_store.cpp`). Today that
+  backing's only use at the result seam is as a readback source for
+  `to_image_member()` when no CPU sidecar is current
+  (`src/godot/cambang_capture_result.cpp`).
+- A GPU-primary capture posture is reachable only from `SyntheticProvider`.
+  Both platform providers declare no GPU capture backing capability
+  (`capture_backing_capabilities` returns CPU-only in
+  `src/imaging/platform/android/camera2_camera_provider.cpp` and
+  `src/imaging/platform/windows/winrt_camera_provider.cpp`), so Core's capture
+  Backing Plan evaluation cannot select a GPU posture on real hardware. The
+  `EXPENSIVE` CPU-upload row of the table above is therefore the only row
+  reachable on any currently supported device.
+- The descriptor can distinguish a linear backing from an opaque external one
+  and can declare that display or import costs real work
+  (`GpuBackingLayoutKind`, `display_requires_import`,
+  `src/imaging/api/provider_contract_datatypes.h`). No producer sets the opaque
+  form yet.
+- **The RD-RID route is settled.** `Texture2D.get_rid()` returns a
+  RenderingServer texture RID on every CamBANG-provided display object, and the
+  single route to the underlying RenderingDevice texture is
+  `RenderingServer.texture_get_rd_texture(tex.get_rid())`. A Capture Compute
+  Texture accessor is expected to satisfy the same route rather than introduce
+  a second one.
+
+  This previously did not hold. `DeferredDisplayTexture2DRD` returned the
+  RenderingDevice RID from `_get_rid()` -- a different RID space -- which
+  drawing never noticed, because its `_draw*` overrides delegate to the
+  `Texture2DRD` and never resolve a RID. It now returns the delegate's
+  RenderingServer RID (`src/godot/synthetic_gpu_backing_bridge.cpp`). The
+  CPU-backed wrapper was never affected: it creates its texture with
+  `RenderingServer::texture_2d_create()`, so its RID was already in the right
+  space (`src/godot/cambang_stream_result_internal.cpp`).
+
+  Verified in scene 70 (`_verify_display_view_rid_route`), which asserts the
+  route on whichever wrapper the run produces and reports the class it saw.
+  Observed: `DeferredDisplayTexture2DRD` and `LiveCpuDisplayTexture2D` both
+  resolve to distinct, valid RD RIDs under the mobile renderer, and under
+  Compatibility the absence of a RenderingDevice is reported rather than
+  treated as a failure. With the fix reverted the same assertion fails with
+  `rd_rid=0`.
+
 ## 11.7 Access-cost evidence guardrail
 
 Real access-cost evidence exists to inform actual retained-result
