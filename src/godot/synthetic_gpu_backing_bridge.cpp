@@ -513,8 +513,28 @@ bool DeferredDisplayTexture2DRD::_has_alpha() const {
   return true;
 }
 
+// Resource::get_rid() is contractually the RenderingServer texture RID, and
+// this is a live bound virtual -- godot-cpp binds Resource::_get_rid, so
+// anything that resolves a Texture2D to a RID (a shader parameter, a direct
+// RenderingServer call) lands here.
+//
+// It used to return state_->snapshot_rid(), which is the RenderingDevice
+// texture RID from rd->texture_create(). That is a different RID space, so a
+// caller binding this texture to a shader would have handed RenderingServer an
+// identifier it does not own. Drawing never noticed, because the _draw*
+// overrides delegate to the Texture2DRD rather than going through a RID.
+//
+// The delegate already holds the correct value: set_texture_rd_rid() makes
+// RenderingServer wrap the RD texture, and Texture2DRD::get_rid() returns that
+// wrapper. Returning it also gives callers one uniform route to the underlying
+// RD texture that does not depend on which CamBANG path produced the object --
+// RenderingServer.texture_get_rd_texture(tex.get_rid()) -- which is the same
+// route that works for a plain ImageTexture.
+//
+// A null delegate means the wrapper has already been handed to the render
+// thread for release, so an empty RID is the truthful answer.
 godot::RID DeferredDisplayTexture2DRD::_get_rid() const {
-  return state_ ? state_->snapshot_rid() : godot::RID();
+  return texture_.is_valid() ? texture_->get_rid() : godot::RID();
 }
 
 void DeferredDisplayTexture2DRD::_draw(

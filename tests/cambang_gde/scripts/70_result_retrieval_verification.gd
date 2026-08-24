@@ -64,6 +64,7 @@ var _inspection_capture_poll_start_ms := 0
 
 var _device_instance_id := 0
 var _stream_id := 0
+var _display_view_rid_route_checked := false
 var _capture_device = null
 var _inspection_capture_device = null
 var _capture_profile_version_before_set := -1
@@ -732,6 +733,14 @@ func _try_verify_stream_result() -> void:
 
 	var device = CamBANGServer.get_device(_device_instance_id)
 	_require(device != null, "step %d FAIL: CamBANGServer.get_device() returned null" % _step)
+	# _require() records the failure and returns; it does not halt _process, so
+	# the next line would dereference the null it just reported. Any earlier
+	# failure in this scene tears the server down, which is exactly when
+	# get_device() starts returning null -- so a genuine assertion failure was
+	# followed by a SCRIPT ERROR here, and the runner then classified the run
+	# script_parse_load_failure instead of reporting the assertion that fired.
+	if device == null:
+		return
 	_require(device.get_class() == "CamBANGDevice", "step %d FAIL: get_device() must return CamBANGDevice" % _step)
 	if not _device_seam_verified:
 		_step_ok("device seam verified")
@@ -1368,6 +1377,7 @@ func _ensure_stream_panel_display_view_bound(stream_result = null, force_rebind:
 	var stream_display_view = latest_stream_result.get_display_view()
 	if not (stream_display_view is Texture2D):
 		return
+	_verify_display_view_rid_route(stream_display_view)
 	var current_texture = _stream_texture_rect.texture
 	if force_rebind or current_texture == null or current_texture != stream_display_view:
 		_stream_texture_rect.texture = stream_display_view
@@ -1377,6 +1387,39 @@ func _ensure_stream_panel_display_view_bound(stream_result = null, force_rebind:
 		"stream_id=%d" % latest_stream_result.get_stream_id(),
 		"(live display view bound)",
 	])
+
+
+# Texture2D.get_rid() must be a RenderingServer texture RID, whichever internal
+# path produced the view. The GPU-backed wrapper used to return the
+# RenderingDevice RID from rd->texture_create() instead, which drawing never
+# noticed because the _draw* overrides bypass the RID entirely -- but a shader
+# parameter or a direct RenderingServer call would have received an identifier
+# from the wrong RID space.
+#
+# This also pins the one route a caller has to the underlying RD texture:
+# RenderingServer.texture_get_rd_texture(tex.get_rid()). It has to work the same
+# way for the GPU-backed wrapper and for a plain CPU-backed texture, because a
+# caller cannot see which one they were handed. Under Compatibility there is no
+# RenderingDevice at all, so an empty RD RID there is the correct answer rather
+# than a failure.
+func _verify_display_view_rid_route(display_view: Texture2D) -> void:
+	if _display_view_rid_route_checked:
+		return
+	_display_view_rid_route_checked = true
+	var rs_rid: RID = display_view.get_rid()
+	_require(rs_rid.is_valid(),
+		"display_view.get_rid() returned an invalid RID (class=%s)" % display_view.get_class())
+	if RenderingServer.get_rendering_device() == null:
+		_append_status("display_view RID route: rs_rid=%d (no RenderingDevice; RD route not applicable)"
+			% rs_rid.get_id())
+		return
+	var rd_rid: RID = RenderingServer.texture_get_rd_texture(rs_rid)
+	_require(rd_rid.is_valid(),
+		("display_view.get_rid() did not resolve to an RD texture "
+		+ "(class=%s rs_rid=%d) -- get_rid() is not a RenderingServer texture RID")
+			% [display_view.get_class(), rs_rid.get_id()])
+	_append_status("display_view RID route: class=%s rs_rid=%d rd_rid=%d"
+		% [display_view.get_class(), rs_rid.get_id(), rd_rid.get_id()])
 
 
 func _on_capture_again_pressed() -> void:
