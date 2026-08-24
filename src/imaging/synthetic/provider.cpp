@@ -1776,7 +1776,13 @@ ProviderResult SyntheticProvider::validate_and_admit_capture_submission_locked_(
     set_failure_info("provider_not_accepting_captures", 0, nullptr);
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
-  if (submission.capture_id == 0 || submission.device_requests.empty()) {
+  const bool rig_submission =
+      submission.origin == CaptureSubmissionOrigin::RIG_CAPTURE;
+  // A rig submission is identified by rig_capture_id; capture_id is a Device
+  // Capture Id and is deliberately 0 there.
+  const bool submission_identified =
+      rig_submission ? submission.rig_capture_id != 0 : submission.capture_id != 0;
+  if (!submission_identified || submission.device_requests.empty()) {
     set_failure_info("invalid_submission_shape", 0, nullptr);
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
@@ -1794,7 +1800,10 @@ ProviderResult SyntheticProvider::validate_and_admit_capture_submission_locked_(
 
   std::map<uint64_t, bool> seen_devices;
   for (const CaptureRequest& req : submission.device_requests) {
-    if (req.capture_id != submission.capture_id || req.device_instance_id == 0 || req.width == 0 || req.height == 0) {
+    const bool coherent_capture_id = rig_submission
+        ? (req.capture_id != 0 && submission.capture_id == 0)
+        : (req.capture_id == submission.capture_id);
+    if (!coherent_capture_id || req.device_instance_id == 0 || req.width == 0 || req.height == 0) {
       set_failure_info("invalid_request_shape", req.device_instance_id, nullptr);
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }

@@ -565,7 +565,7 @@ func _capture_once() -> void:
 		_last_bundle_signature = signature
 		await get_tree().process_frame
 
-	var capture_err := int(_device.trigger_capture())
+	var capture_err := int(_device.trigger_capture().get("error", FAILED))
 	if capture_err != OK:
 		# Refused is a member-count signal, not "no bracket support": smaller
 		# counts work on this same camera. The provider caps the bundle size

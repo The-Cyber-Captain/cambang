@@ -51,7 +51,14 @@ public:
   godot::Error disengage();
   godot::Ref<CamBANGStream> create_stream(const godot::Variant& definition = godot::Variant());
 
-  godot::Error trigger_capture();
+  // Returns { id: int, error: int } (capture_identity_and_lifecycle.md 4.1).
+  // Both keys are always present. `id` is the Device Capture Id, session-scoped
+  // and 0 when the trigger was refused; `error` is OK or the refusal.
+  //
+  // Returning the id is what lets a caller know what it is waiting for: record
+  // it here, clear it on the matching completion signal, and outstanding work
+  // is known without polling anything (4.5).
+  godot::Dictionary trigger_capture();
   godot::Ref<CamBANGCaptureResult> get_result() const;
   godot::Error set_warm_policy(const godot::Dictionary& policy);
   godot::Error set_still_capture_profile(const godot::Dictionary& profile);

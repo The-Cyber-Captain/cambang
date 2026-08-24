@@ -72,17 +72,27 @@ struct RigState {
 
     std::vector<std::string> member_hardware_ids;
 
+    // Rig Capture Id (capture_identity_and_lifecycle.md 2.1), NOT a Device
+    // Capture Id -- a rig member's own id lives on that member's records. The
+    // two spaces are numerically disjoint (see CamBANGServer's
+    // RIG_CAPTURE_ID_BASE), so a value here can be told apart from a device
+    // capture id on sight.
+    //
+    // Populated: set when a rig capture is admitted and cleared when that
+    // same capture settles, so 0 genuinely means "no rig capture in flight".
     uint64_t active_capture_id = 0;
     uint64_t capture_profile_version = 0;
     uint32_t capture_width = 0;
     uint32_t capture_height = 0;
     uint32_t capture_format = 0;
 
+    // Populated on admission and on cohort settlement. A cohort that closed
+    // WINDOW_EXPIRED counts as completed: it ran and reported a truthful
+    // outcome. captures_failed is for a cohort that failed outright.
     uint64_t captures_triggered = 0;
     uint64_t captures_completed = 0;
     uint64_t captures_failed = 0;
 
-    uint64_t last_capture_id = 0;
     uint64_t last_capture_latency_ns = 0;
     uint64_t last_sync_skew_ns = 0;
 
@@ -231,7 +241,10 @@ struct AcquisitionSessionState {
     uint64_t captures_completed = 0;
     uint64_t captures_failed = 0;
 
-    uint64_t last_capture_id = 0;
+    // Device Capture Id, and live -- written by
+    // CoreAcquisitionSessionRegistry on capture start/completion. For a rig
+    // member this is that MEMBER's own id, not the cohort's Rig Capture Id,
+    // which is what makes a per-device result lookup off this field correct.
     uint64_t last_capture_latency_ns = 0;
 
     int32_t error_code = 0;

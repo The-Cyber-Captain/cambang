@@ -449,13 +449,25 @@ public:
   // ERR_NOT_SUPPORTED), that rollback is not guaranteed. Callers must not
   // treat a failure return here as proof that no device was admitted.
   virtual ProviderResult trigger_capture_submission(const CaptureSubmission& submission) {
-    if (submission.capture_id == 0 || submission.device_requests.empty()) {
+    // A device submission is named by capture_id (a Device Capture Id); a rig
+    // submission by rig_capture_id, with capture_id 0 and each member carrying
+    // its own Device Capture Id. See CaptureSubmission's field comments.
+    const bool rig_submission =
+        submission.origin == CaptureSubmissionOrigin::RIG_CAPTURE;
+    const bool identified =
+        rig_submission ? submission.rig_capture_id != 0 : submission.capture_id != 0;
+    if (!identified || submission.device_requests.empty()) {
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
-    for (const CaptureRequest& req : submission.device_requests) {
+    for (size_t i = 0; i < submission.device_requests.size(); ++i) {
+      const CaptureRequest& req = submission.device_requests[i];
       const ProviderResult pr = trigger_capture(req);
       if (!pr.ok()) {
-        (void)abort_capture(submission.capture_id);
+        // Roll back the already-admitted prefix under each member's OWN id.
+        // Aborting the cohort id would name nothing the provider admitted.
+        for (size_t j = 0; j < i; ++j) {
+          (void)abort_capture(submission.device_requests[j].capture_id);
+        }
         return pr;
       }
     }

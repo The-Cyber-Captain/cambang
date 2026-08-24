@@ -303,7 +303,7 @@ func _verify_capture_produces_result_and_decides(device_instance_id: int, label:
 		if _done:
 			return
 
-		var capture_err := int(device.trigger_capture())
+		var capture_err := int(device.trigger_capture().get("error", FAILED))
 		_require(capture_err == OK, "%s: device.trigger_capture() rejected (%d)" % [label, capture_err])
 		if _done:
 			return

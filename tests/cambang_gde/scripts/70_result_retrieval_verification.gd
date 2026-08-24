@@ -76,11 +76,12 @@ var _capture_triggered := false
 var _capture_baseline_progress: Dictionary = {}
 var _capture_completion_progress: Dictionary = {}
 var _capture_completion_seen := false
-var _expected_capture_id := 0
+var _triggered_capture_id := ""
+var _expected_capture_id := ""
 var _inspection_capture_baseline_progress: Dictionary = {}
 var _inspection_capture_completion_progress: Dictionary = {}
 var _inspection_capture_completion_seen := false
-var _inspection_expected_capture_id := 0
+var _inspection_expected_capture_id := ""
 var _stream_baseline_verified := false
 var _device_seam_verified := false
 var _status_panel_acquisition_session_detail_requested := false
@@ -156,7 +157,6 @@ func _scene70_default_capture_progress() -> Dictionary:
 		"captures_triggered": 0,
 		"captures_completed": 0,
 		"captures_failed": 0,
-		"last_capture_id": 0,
 		"active_capture_id": 0,
 	}
 
@@ -177,7 +177,7 @@ func _scene70_default_capture_entry(label: String) -> Dictionary:
 	return {
 		"label": label,
 		"capture_id": 0,
-		"expected_capture_id": 0,
+		"expected_capture_id": "",
 		"image_count": 0,
 		"expected_image_count": 0,
 		"capture_progress_baseline": _scene70_default_capture_progress(),
@@ -261,7 +261,7 @@ func _scene70_record_stream_to_image_request(
 func _scene70_record_capture_entry(
 	label: String,
 	capture_result,
-	expected_capture_id: int,
+	expected_capture_id: String,
 	image_count: int,
 	expected_image_count: int,
 	baseline_progress: Dictionary,
@@ -313,7 +313,14 @@ func _scene70_record_capture_entry(
 	})
 
 
-func _scene70_pick_capture_evaluation_report(device_instance_id: int, result_capture_id: int) -> Dictionary:
+func _scene70_pick_capture_evaluation_report(device_instance_id: int) -> Dictionary:
+	# Selected by device and parent kind.
+	#
+	# This used to add a scoring bonus when a report's observed_capture_id matched
+	# the result's. That correlation is gone: the reports carry Core's internal
+	# uint64, while a result's identity is the public dc_ id (2.2), and the two
+	# no longer share a form. Only a tie-break between equally-ranked reports is
+	# lost -- the capture-id clause never filtered anything out.
 	var snapshot_v: Variant = CamBANGServer.get_synthetic_metrics_snapshot()
 	var snapshot: Dictionary = snapshot_v if typeof(snapshot_v) == TYPE_DICTIONARY else {}
 	var reports_v: Variant = (snapshot as Dictionary).get("backing_plan_evaluation_reports", [])
@@ -338,22 +345,9 @@ func _scene70_pick_capture_evaluation_report(device_instance_id: int, result_cap
 		else:
 			continue
 		var candidate_evidence_v: Variant = report.get("candidate_evidence", [])
-		var candidate_evidence_count := 0
-		var exact_capture_match := false
 		if typeof(candidate_evidence_v) == TYPE_ARRAY:
-			var candidate_evidence: Array = candidate_evidence_v
-			candidate_evidence_count = candidate_evidence.size()
-			for evidence_v in candidate_evidence:
-				if typeof(evidence_v) != TYPE_DICTIONARY:
-					continue
-				var evidence: Dictionary = evidence_v
-				if int(evidence.get("observed_capture_id", 0)) == result_capture_id:
-					exact_capture_match = true
-					break
-			if candidate_evidence_count > 0:
+			if (candidate_evidence_v as Array).size() > 0:
 				parent_score += 10
-		if exact_capture_match:
-			parent_score += 100
 		if parent_score > best_score:
 			best_score = parent_score
 			best_report = report.duplicate(true)
@@ -398,15 +392,14 @@ func _scene70_poll_capture_evaluation_report(
 		_scene70_set_capture_report_poll_started(label, false)
 		return
 	var device_instance_id := int(capture_result.get_device_instance_id())
-	var result_capture_id := _capture_result_id(capture_result)
-	if device_instance_id <= 0 or result_capture_id <= 0:
+	if device_instance_id <= 0:
 		_scene70_set_capture_report_poll_started(label, false)
 		return
 
 	const MAX_POLL_FRAMES := 8
 	var report: Dictionary = {}
 	for poll_index in range(MAX_POLL_FRAMES):
-		report = _scene70_pick_capture_evaluation_report(device_instance_id, result_capture_id)
+		report = _scene70_pick_capture_evaluation_report(device_instance_id)
 		if not report.is_empty():
 			break
 		if poll_index + 1 < MAX_POLL_FRAMES:
@@ -807,7 +800,13 @@ func _try_verify_stream_result() -> void:
 			"step %d FAIL: capture progress snapshot unavailable before trigger" % _step
 		)
 		var perf_initial_trigger_start_us := _perf_us()
-		var capture_err := int(device.trigger_capture())
+		var capture := device.trigger_capture()
+		var capture_err := int(capture.get("error", FAILED))
+		# The id this capture was given (4.1). Correlation is against this, not
+		# against the snapshot's last_capture_id: the snapshot publishes state,
+		# and its capture ids are internal telemetry that no longer share a form
+		# with a result's public identity.
+		_triggered_capture_id = str(capture.get("id", ""))
 		var perf_initial_trigger_end_us := _perf_us()
 		_initial_capture_trigger_us = perf_initial_trigger_start_us
 		_initial_capture_completion_wait_start_us = perf_initial_trigger_end_us
@@ -822,7 +821,7 @@ func _try_verify_stream_result() -> void:
 		_capture_device = device
 		_capture_completion_seen = false
 		_capture_completion_progress = {}
-		_expected_capture_id = 0
+		_expected_capture_id = ""
 		_initial_capture_completion_poll_count = 0
 		_step_ok("capture trigger accepted after expected still profile became snapshot-visible")
 		_latency_log("initial capture trigger accepted elapsed_us=%d profile_request_to_trigger_return_us=%d" % [
@@ -881,7 +880,7 @@ func _try_verify_capture_result() -> void:
 			_initial_capture_completion_poll_count += 1
 			return
 		_capture_completion_progress = progress
-		_expected_capture_id = int(progress.get("last_capture_id", 0))
+		_expected_capture_id = _triggered_capture_id
 		_capture_completion_seen = true
 		_scene70_update_entry(_scene70_captures, "initial", {
 			"capture_progress_completion": _capture_completion_progress.duplicate(true),
@@ -905,10 +904,10 @@ func _try_verify_capture_result() -> void:
 		return
 
 	var result_capture_id := _capture_result_id(capture_result)
-	if _expected_capture_id > 0:
+	if _expected_capture_id != "":
 		_require(
 			result_capture_id == _expected_capture_id,
-			"step %d FAIL: capture result id mismatch (expected=%d observed=%d baseline=%s completion=%s)" % [
+			"step %d FAIL: capture result id mismatch (expected=%s observed=%s baseline=%s completion=%s)" % [
 				_step,
 				_expected_capture_id,
 				result_capture_id,
@@ -952,7 +951,7 @@ func _try_verify_capture_result() -> void:
 	var observed_member_count := int(capture_result.get_image_count())
 	_require(
 		observed_member_count == expected_member_count,
-		"step %d FAIL: capture get_image_count() mismatch for expected still profile (expected=%d observed=%d expected_capture_id=%d result_capture_id=%d applied_snapshot=%s baseline=%s completion=%s)" % [
+		"step %d FAIL: capture get_image_count() mismatch for expected still profile (expected=%d observed=%d expected_capture_id=%s result_capture_id=%s applied_snapshot=%s baseline=%s completion=%s)" % [
 			_step,
 			expected_member_count,
 			observed_member_count,
@@ -1056,7 +1055,7 @@ func _try_verify_capture_result() -> void:
 		int(strip_perf.get("deferred_jobs", 0)),
 		_perf_delta_us(perf_total_start_us, perf_total_end_us),
 		_perf_image_summary(capture_image),
-		_scene70_pick_capture_evaluation_report(int(capture_result.get_device_instance_id()), result_capture_id)
+		_scene70_pick_capture_evaluation_report(int(capture_result.get_device_instance_id()))
 	)
 	_step_ok("capture image displayed")
 	if not _scene70_initial_capture_report_poll_started:
@@ -1462,7 +1461,9 @@ func _request_manual_capture() -> void:
 	_clear_capture_display_for_pending_request("manual capture requested")
 	var perf_manual_clear_end_us := _perf_us()
 	var perf_manual_trigger_start_us := _perf_us()
-	var capture_err := int(device.trigger_capture())
+	var capture := device.trigger_capture()
+	var capture_err := int(capture.get("error", FAILED))
+	_triggered_capture_id = str(capture.get("id", ""))
 	var perf_manual_trigger_end_us := _perf_us()
 	_manual_capture_completion_wait_start_us = perf_manual_trigger_end_us
 	_latency_log("manual capture request buckets us: clear=%d trigger_call=%d request_to_return=%d err=%d elapsed_us=%d" % [
@@ -1483,7 +1484,7 @@ func _request_manual_capture() -> void:
 	_inspection_capture_device = device
 	_inspection_capture_completion_seen = false
 	_inspection_capture_completion_progress = {}
-	_inspection_expected_capture_id = 0
+	_inspection_expected_capture_id = ""
 	_inspection_capture_poll_start_ms = Time.get_ticks_msec()
 	_scene70_update_entry(_scene70_captures, "manual", {
 		"capture_progress_baseline": _inspection_capture_baseline_progress.duplicate(true),
@@ -1643,8 +1644,7 @@ func _capture_progress_from_record(record: Dictionary, source: String) -> Dictio
 		return {"available": false, "source": source}
 	var has_completed := record.has("captures_completed")
 	var has_failed := record.has("captures_failed")
-	var has_last_capture := record.has("last_capture_id")
-	if not has_completed and not has_failed and not has_last_capture:
+	if not has_completed and not has_failed:
 		return {"available": false, "source": source}
 	return {
 		"available": true,
@@ -1652,7 +1652,6 @@ func _capture_progress_from_record(record: Dictionary, source: String) -> Dictio
 		"captures_triggered": int(record.get("captures_triggered", 0)),
 		"captures_completed": int(record.get("captures_completed", 0)),
 		"captures_failed": int(record.get("captures_failed", 0)),
-		"last_capture_id": int(record.get("last_capture_id", 0)),
 		"active_capture_id": int(record.get("active_capture_id", 0)),
 	}
 
@@ -1670,22 +1669,19 @@ func _get_capture_progress_snapshot(device_instance_id: int) -> Dictionary:
 func _describe_capture_progress(progress: Dictionary) -> String:
 	if not bool(progress.get("available", false)):
 		return "capture_progress unavailable source=%s" % str(progress.get("source", "none"))
-	return "source=%s triggered=%d completed=%d failed=%d last_capture_id=%d active_capture_id=%d" % [
+	return "source=%s triggered=%d completed=%d failed=%d active_capture_id=%d" % [
 		str(progress.get("source", "unknown")),
 		int(progress.get("captures_triggered", 0)),
 		int(progress.get("captures_completed", 0)),
 		int(progress.get("captures_failed", 0)),
-		int(progress.get("last_capture_id", 0)),
 		int(progress.get("active_capture_id", 0)),
 	]
 
 
-func _capture_result_id(capture_result) -> int:
+func _capture_result_id(capture_result) -> String:
 	if capture_result == null:
-		return 0
-	if capture_result.has_method("get_capture_id"):
-		return int(capture_result.get_capture_id())
-	return 0
+		return ""
+	return str(capture_result.get_capture_identity().get("device_capture_id", ""))
 
 
 func _exercise_status_panel_acquisition_session_fixture_detail_visibility() -> void:
@@ -1751,7 +1747,7 @@ func _poll_inspection_capture_result() -> void:
 			_manual_capture_completion_poll_count += 1
 			return
 		_inspection_capture_completion_progress = progress
-		_inspection_expected_capture_id = int(progress.get("last_capture_id", 0))
+		_inspection_expected_capture_id = _triggered_capture_id
 		_inspection_capture_completion_seen = true
 		_scene70_update_entry(_scene70_captures, "manual", {
 			"capture_progress_completion": _inspection_capture_completion_progress.duplicate(true),
@@ -1767,7 +1763,7 @@ func _poll_inspection_capture_result() -> void:
 	if capture_result == null:
 		return
 	var result_capture_id := _capture_result_id(capture_result)
-	if _inspection_expected_capture_id > 0 and result_capture_id != _inspection_expected_capture_id:
+	if _inspection_expected_capture_id != "" and result_capture_id != _inspection_expected_capture_id:
 		return
 	var perf_manual_to_image_start_us := _perf_us()
 	var capture_image: Image = capture_result.to_image()
@@ -1795,7 +1791,7 @@ func _poll_inspection_capture_result() -> void:
 		"payload_kind=%d" % capture_result.get_payload_kind(),
 		"size=%dx%d" % [capture_result.get_width(), capture_result.get_height()],
 		"images=%d/%d additional=%s" % [returned_count, expected_count, str(bool(capture_result.has_additional_images()))],
-		"capture_id=%d expected=%d" % [result_capture_id, _inspection_expected_capture_id],
+		"capture_id=%s expected=%s" % [result_capture_id, _inspection_expected_capture_id],
 		"mode=manual capture",
 	])
 	var perf_manual_total_end_us := _perf_us()
@@ -1824,7 +1820,7 @@ func _poll_inspection_capture_result() -> void:
 		int(strip_perf.get("deferred_jobs", 0)),
 		_perf_delta_us(perf_manual_total_start_us, perf_manual_total_end_us),
 		_perf_image_summary(capture_image),
-		_scene70_pick_capture_evaluation_report(int(capture_result.get_device_instance_id()), result_capture_id)
+		_scene70_pick_capture_evaluation_report(int(capture_result.get_device_instance_id()))
 	)
 	if not _scene70_manual_capture_report_poll_started:
 		_scene70_manual_capture_report_poll_started = true

@@ -941,6 +941,15 @@ SharedStreamResultData CoreResultStore::get_latest_stream_result(uint64_t stream
   return it->second;
 }
 
+SharedCaptureResultData CoreResultStore::get_capture_result(uint64_t capture_id) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto cap_it = capture_results_by_capture_id_.find(capture_id);
+  if (cap_it == capture_results_by_capture_id_.end() || cap_it->second.size() != 1) {
+    return nullptr;
+  }
+  return cap_it->second.begin()->second;
+}
+
 SharedCaptureResultData CoreResultStore::get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const {
   std::lock_guard<std::mutex> lock(mutex_);
   const auto cap_it = capture_results_by_capture_id_.find(capture_id);

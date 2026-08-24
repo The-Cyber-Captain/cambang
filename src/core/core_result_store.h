@@ -528,6 +528,13 @@ public:
                                                               CoreResultPayloadCpu& out_payload);
 
   SharedStreamResultData get_latest_stream_result(uint64_t stream_id) const;
+  // A Device Capture Id identifies one device capture on its own: the id
+  // spaces were split (capture_identity_and_lifecycle.md 2.1) so nothing else
+  // can share it, and the per-device nesting below survives only because
+  // internal callers already hold the device. Returns null when the id names
+  // nothing, and also when it somehow names more than one device -- that would
+  // mean the id split had failed, and guessing which to return would hide it.
+  SharedCaptureResultData get_capture_result(uint64_t capture_id) const;
   SharedCaptureResultData get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
   std::vector<SharedCaptureResultData> get_capture_result_set(uint64_t capture_id) const;
   void remove_stream_result(uint64_t stream_id);

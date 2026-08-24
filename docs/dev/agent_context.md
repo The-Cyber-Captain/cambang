@@ -2,8 +2,6 @@
 
 This document gives repo-specific context for AI coding agents working on CamBANG. It supports the root `AGENTS.md` by recording durable project expectations that are too specific for the root file but too stable to repeat in every prompt.
 
-For active tranche work, `docs/dev/current_tranche.md` may provide additional current steering. Keep tranche-specific detail there, not here.
-
 ## Source authority
 
 The checked-out repository is authoritative.
@@ -123,8 +121,10 @@ intrinsic rescaling, coordinate-domain conversion, or approximate distortion
 model fitting.
 
 Godot-facing camera-fact APIs and result shapes remain explicitly gatekept. Do
-not add, rename, or retire public surfaces unless the active tranche records the
-approved change.
+not add, rename, or retire public surfaces without the maintainer's explicit
+agreement in conversation, named as a public-surface change at the time. The
+tranche file records what was agreed; it does not confer permission. See
+CLAUDE.md.
 
 ## Image acquisition timing
 
@@ -216,14 +216,13 @@ Keep documentation:
 
 Agent-guidance maintenance:
 
-* use `current_tranche.md` only for the maintainer-approved active work order
-  (scope, acceptance criteria, validation expectations, near-term
-  constraints); reset it to its stub once the tranche is accepted and
-  committed;
+* keep the active work order in conversation, not in a repository file. The
+  `current_tranche.md` this bullet used to describe was deleted: an agent that
+  writes its own scope down then cites it back as authority, which cost a
+  breaking schema change and a tranche reported complete over an unmet
+  mandate. See CLAUDE.md;
 * do not keep tranche-completion records, remediation-plan backlogs, or
   deferred-task lists as repository files — git history is the record of
-  completed work, and future work is queued only when the maintainer
-  activates it in `current_tranche.md`; put validation detail in commit
-  messages, not record files;
+  completed work; put validation detail in commit messages, not record files;
 * use `docs/dev/agent_context.md` only for durable cross-tranche expectations that should persist beyond the current workstream;
 * do not duplicate canonical architecture in either guidance file.

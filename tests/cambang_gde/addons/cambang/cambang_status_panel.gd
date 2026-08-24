@@ -4365,7 +4365,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 						["triggered", "captures_triggered", 3],
 						["completed", "captures_completed", 3],
 						["failed", "captures_failed", 3],
-						["last_capture_id", "last_capture_id", 3],
 						["last_capture_latency", "last_capture_latency_ns", 4],
 						["error_code", "error_code", 2],
 					],
@@ -5914,7 +5913,6 @@ func _counter_registry_for_row_kind(row_kind: String) -> Dictionary:
 				"triggered": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": false},
 				"completed": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": false},
 				"failed": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
-				"last_capture_id": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": false},
 				"last_capture_latency": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
 				"error_code": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
 			}
@@ -6154,7 +6152,7 @@ func _counter_preference_table() -> Dictionary:
 		},
 		"acquisition_session": {
 			"configuration": ["capture_prof", "capture_w", "capture_h", "capture_fmt", "bundle"],
-			"activity": ["triggered", "completed", "last_capture_id"],
+			"activity": ["triggered", "completed"],
 			"pressure_failure": ["failed", "last_capture_latency", "error_code"],
 		},
 		"rig": {

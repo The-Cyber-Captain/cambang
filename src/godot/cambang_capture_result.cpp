@@ -343,7 +343,38 @@ int64_t CamBANGCaptureResult::get_capture_datetime_unix_nanoseconds() const {
       : 0;
 }
 uint64_t CamBANGCaptureResult::get_device_instance_id() const { return data_ ? data_->device_instance_id : 0; }
-uint64_t CamBANGCaptureResult::get_capture_id() const { return data_ ? data_->capture_id : 0; }
+godot::Dictionary CamBANGCaptureResult::get_capture_identity() const {
+  godot::Dictionary out;
+  const uint64_t device_capture_id = data_ ? data_->capture_id : 0;
+
+  // Every key present in every case, including the empty one: a caller that
+  // has to test for a key's existence before reading it has two shapes to
+  // handle, and the second one only shows up in the field.
+  out["capture_origin"] = CAPTURE_ORIGIN_DEVICE;
+  out["device_capture_id"] =
+      server_ ? server_->device_capture_public_id(device_capture_id) : godot::String();
+  out["rig_capture_id"] = godot::String();
+  out["rig_member_hardware_id"] = godot::String();
+  out["rig_member_index"] = -1;
+  out["device_instance_id"] =
+      static_cast<uint64_t>(data_ ? data_->device_instance_id : 0);
+  if (!server_ || device_capture_id == 0) {
+    return out;
+  }
+
+  const auto participation = server_->rig_participation_for_device_capture(device_capture_id);
+  if (!participation) {
+    // No cohort claims this capture, so it was device-triggered. The absence
+    // IS the answer; it is not a failed lookup to be reported.
+    return out;
+  }
+  out["capture_origin"] = CAPTURE_ORIGIN_RIG;
+  out["rig_capture_id"] = server_->rig_capture_public_id(participation->rig_capture_id);
+  out["rig_member_hardware_id"] = godot::String(participation->hardware_id.c_str());
+  out["rig_member_index"] = static_cast<int64_t>(participation->member_index);
+  return out;
+}
+
 bool CamBANGCaptureResult::has_geolocation() const {
   return data_ && data_->has_admission_context && data_->admission_context.geolocation.has_value();
 }
@@ -626,7 +657,7 @@ void CamBANGCaptureResult::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_payload_kind"), &CamBANGCaptureResult::get_payload_kind);
   godot::ClassDB::bind_method(godot::D_METHOD("get_capture_datetime_unix_nanoseconds"), &CamBANGCaptureResult::get_capture_datetime_unix_nanoseconds);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device_instance_id"), &CamBANGCaptureResult::get_device_instance_id);
-  godot::ClassDB::bind_method(godot::D_METHOD("get_capture_id"), &CamBANGCaptureResult::get_capture_id);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_capture_identity"), &CamBANGCaptureResult::get_capture_identity);
   godot::ClassDB::bind_method(godot::D_METHOD("has_geolocation"), &CamBANGCaptureResult::has_geolocation);
   godot::ClassDB::bind_method(godot::D_METHOD("get_geolocation"), &CamBANGCaptureResult::get_geolocation);
 
@@ -653,6 +684,8 @@ void CamBANGCaptureResult::_bind_methods() {
   BIND_CONSTANT(CAPABILITY_CHEAP);
   BIND_CONSTANT(CAPABILITY_EXPENSIVE);
   BIND_CONSTANT(CAPABILITY_UNSUPPORTED);
+  BIND_CONSTANT(CAPTURE_ORIGIN_DEVICE);
+  BIND_CONSTANT(CAPTURE_ORIGIN_RIG);
   BIND_CONSTANT(IMAGE_ROLE_DEFAULT_METERED);
   BIND_CONSTANT(IMAGE_ROLE_ADDITIONAL_BRACKET);
 }

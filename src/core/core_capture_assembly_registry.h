@@ -18,11 +18,43 @@ namespace cambang {
 // on the calling (e.g. Godot) thread without a core-thread round trip.
 class CoreCaptureAssemblyRegistry final {
 public:
+  // Per-member terminal disposition (capture_identity_and_lifecycle.md 4.3).
+  // A member capture must always reach one of these; it must never simply
+  // disappear from a cohort.
+  //
+  // The full vocabulary is defined here so the shape settles once, but two
+  // values have NO PRODUCING PATH yet and must not be faked into existence:
+  //   PREEMPTED_BY_RIG  needs rig-preempts-member arbitration (section 3).
+  //   DEVICE_LOST       needs membership lifecycle (section 5.3).
+  // A disposition nothing can produce is honest; one produced by guessing is
+  // not. capture_completion_verify asserts both remain unreachable.
   enum class TerminalState : uint8_t {
     NONE = 0,
-    COMPLETED = 1,
+    // Settled with its payload. The old COMPLETED.
+    DELIVERED = 1,
+    // Settled with a provider error, which travels with it. The old FAILED.
     FAILED = 2,
+    // Terminal, but outside its cohort's simultaneity window, so not part of
+    // the same moment. Correct behaviour, not a failure to wait (section 4.4).
+    LATE_EXCLUDED = 3,
+    // A rig capture preempted this device's in-flight standalone capture.
+    PREEMPTED_BY_RIG = 4,
+    // The device was disengaged, closed or otherwise lost while this member
+    // was in flight. A resource event, not a configuration change.
+    DEVICE_LOST = 5,
+    // The cohort closed and this member produced nothing at all -- no payload
+    // and no error. Distinct from FAILED, which knows why.
+    NEVER_ARRIVED = 6,
   };
+
+  // Whether a disposition means the member finished with its payload intact.
+  // Everything else is terminal without a usable image.
+  static constexpr bool disposition_delivered(TerminalState s) noexcept {
+    return s == TerminalState::DELIVERED;
+  }
+  static constexpr bool disposition_is_terminal(TerminalState s) noexcept {
+    return s != TerminalState::NONE;
+  }
 
   struct DeviceCaptureAssembly {
     uint64_t capture_id = 0;
@@ -60,6 +92,70 @@ public:
   void mark_capture_failed(uint64_t capture_id, uint64_t device_instance_id, uint32_t error_code);
   bool is_assembly_successful(uint64_t capture_id, uint64_t device_instance_id) const;
   bool is_result_safe(uint64_t capture_id, uint64_t device_instance_id) const;
+
+  // A member's disposition and, where it has one, the error that travels with
+  // it. Deliberately NOT smoke-gated like find_for_smoke(): cohort closure
+  // needs this in shipping builds, and section 4.3 requires the error code to
+  // reach the caller rather than being reduced to an absent entry.
+  // An unknown (capture_id, device) is NONE, not an error -- a device admitted
+  // but not yet reporting is exactly the non-terminal case.
+  struct MemberDisposition {
+    TerminalState state = TerminalState::NONE;
+    bool has_error_code = false;
+    uint32_t error_code = 0;
+  };
+  MemberDisposition disposition_for(uint64_t capture_id,
+                                    uint64_t device_instance_id) const;
+
+  // Captures that reached a terminal disposition since the last drain
+  // (capture_identity_and_lifecycle.md 4.2). Queued at every transition site
+  // rather than discovered by scanning: the boundary drains this once per tick
+  // and emits, so the cost is proportional to what actually changed, and a
+  // capture is reported exactly once no matter how it finished.
+  struct FinishedCapture {
+    uint64_t capture_id = 0;
+    uint64_t device_instance_id = 0;
+    TerminalState disposition = TerminalState::NONE;
+    bool has_error_code = false;
+    uint32_t error_code = 0;
+  };
+  std::vector<FinishedCapture> drain_finished_captures();
+
+  // Whether this device has a capture Core has ADMITTED that has not reached a
+  // terminal disposition. This is the per-device single-capture rule's source
+  // of truth, and it is deliberately not
+  // CoreAcquisitionSessionRegistry::has_capture_in_flight_for_device(), which
+  // is populated from provider-reported capture_started facts.
+  //
+  // The difference is a real window, not a nicety: between Core admitting a
+  // capture and the provider acknowledging it, the session registry knows
+  // nothing, so a guard built on it would admit a second capture on a device
+  // that already has one -- precisely under the rapid double-trigger the rule
+  // exists to refuse. Admission is Core's own act and is known immediately.
+  bool has_admitted_non_terminal_capture_for_device(uint64_t device_instance_id) const;
+
+  // The Device Capture Id of this device's admitted, non-terminal capture, or
+  // 0. Companion to the predicate above, for the caller that must act on the
+  // capture rather than merely refuse because of it -- rig preemption needs to
+  // name what it is displacing.
+  uint64_t admitted_non_terminal_capture_id_for_device(uint64_t device_instance_id) const;
+
+  // Terminalise a capture as displaced by a rig capture (section 3). Distinct
+  // from mark_capture_failed: the capture did not fail, it lost arbitration,
+  // and its subscriber is owed that distinction rather than a generic error.
+  // Preemption must never be silent.
+  void mark_capture_preempted_by_rig(uint64_t capture_id, uint64_t device_instance_id);
+
+  // Terminalise a capture whose device was closed, disengaged or otherwise
+  // lost while it was in flight (capture_identity_and_lifecycle.md 5.3).
+  //
+  // A resource event, not a failure and not a configuration change, so it
+  // carries no error code. Distinct from the admission watchdog, which would
+  // eventually report the same capture as FAILED(ERR_TIMEOUT) 30s later --
+  // that is a different claim: the capture did not run out of time, its
+  // device went away. A member capture must always reach a terminal
+  // disposition; it must never simply vanish from a cohort.
+  void mark_capture_device_lost(uint64_t capture_id, uint64_t device_instance_id);
 
   // Capture-admission watchdog (icamera_provider.h's
   // capture_admission_watchdog_timeout_ns() contract): finds every device
@@ -148,8 +244,13 @@ public:
 #endif
 
 private:
+  // Callers must already hold mutex_. Queues a completion exactly once, at the
+  // moment the disposition becomes terminal.
+  void note_finished_locked_(const DeviceCaptureAssembly& assembly);
+
   mutable std::mutex mutex_;
   std::map<uint64_t, std::map<uint64_t, DeviceCaptureAssembly>> assemblies_by_capture_id_;
+  std::vector<FinishedCapture> finished_pending_;
 };
 
 } // namespace cambang

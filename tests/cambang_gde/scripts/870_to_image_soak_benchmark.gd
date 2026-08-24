@@ -215,6 +215,13 @@ var _minimum_completions_per_phase := -1
 var _hard_timeout_multiplier := -1.0
 var _superhuman_actions_per_tick := 3
 var _max_inflight_captures_per_device := 1
+# Public capture ids reported finished by the completion signal, id -> disposition.
+#
+# Section 8: this replaces the staleness guard the poll used to run (fetch
+# get_result(), compare its capture id against a per-job baseline). The signal
+# states which capture ended; nothing has to be inferred by comparing ids, and
+# the per-device last_capture_id bookkeeping that fed the baseline is gone.
+var _finished_captures := {}
 var _materialize_textures_in_headless := false
 
 var _started_us := 0
@@ -334,6 +341,15 @@ var _rig_textures := {}
 var _rig_rows := {}
 
 func _ready() -> void:
+	# One server-wide subscription for the whole soak (section 4.2). It covers
+	# both capture kinds -- a device capture and a rig closure arrive through the
+	# same signal, told apart by info.capture_origin -- so the poll below has a
+	# single place to ask "has this finished yet".
+	#
+	# Connected before anything is triggered: a completion cannot be observed by a
+	# subscription made after it fired.
+	if not CamBANGServer.capture_finished.is_connected(_on_capture_finished):
+		CamBANGServer.capture_finished.connect(_on_capture_finished)
 	_is_headless = DisplayServer.get_name() == "headless"
 	_started_us = _now_us()
 	_setup_started_ms = Time.get_ticks_msec()
@@ -977,10 +993,12 @@ func _poll_setup() -> void:
 	# Stage 3: form the rig from the two engaged devices via the public API (once).
 	# Skipped outright when the equipment declares no authorized rig pair.
 	if _rig == null and not _skip_rig:
-		_rig = CamBANGServer.create_rig(PackedStringArray([
-			str(_devices[DEV_A].get("hardware_id", "")),
-			str(_devices[DEV_B].get("hardware_id", "")),
-		]))
+		var rig_dev_a = _devices[DEV_A].get("device", null)
+		var rig_dev_b = _devices[DEV_B].get("device", null)
+		if rig_dev_a == null or rig_dev_b == null:
+			_fail("setup: device handles missing at rig formation")
+			return
+		_rig = CamBANGServer.create_rig([rig_dev_a, rig_dev_b] as Array[CamBANGDevice])
 		if _rig == null:
 			_fail("setup: create_rig returned null (concurrency truth not authorizing the combination?)")
 			return
@@ -1023,8 +1041,10 @@ func _engage_setup_devices(endpoints: Array) -> bool:
 		if dev == null or int(dev.engage()) != OK:
 			_fail("setup: failed to engage %s" % hw)
 			return false
-		# Keep the direct engaged handle (create_stream needs it, not a
-		# get_device() snapshot handle) and take the instance id from it directly.
+		# Keep the engaged handle and take the instance id from it directly.
+		# Wrapper objects are canonical per id, so this is the same object
+		# get_device(instance_id) would return -- the distinction the older
+		# comment here drew between the two no longer exists.
 		info["device"] = dev
 		info["device_id"] = int(dev.get_instance_id())
 		_devices[device_key] = info
@@ -1447,9 +1467,9 @@ func _queue_settlement_probe_capture(device_key: String) -> void:
 	if device == null:
 		_acq_probe_mark_capture_failure(device_key, "no_device_object")
 		return
-	var baseline_capture_id := _device_last_capture_id(device_key)
 	var trigger_start := _now_us()
-	var err := int(device.trigger_capture())
+	var capture: Dictionary = device.trigger_capture()
+	var err := int(capture.get("error", FAILED))
 	var trigger_end := _now_us()
 	if err != OK:
 		_acq_probe_mark_capture_failure(device_key, "trigger_refused")
@@ -1478,7 +1498,7 @@ func _queue_settlement_probe_capture(device_key: String) -> void:
 		"trigger_start_us": trigger_start,
 		"trigger_end_us": trigger_end,
 		"trigger_call_us": trigger_end - trigger_start,
-		"baseline_capture_id": baseline_capture_id,
+		"capture_id": str(capture.get("id", "")),
 		"bundle_label": _acq_probe_bundle_label,
 		"expected_member_count": _acq_probe_required_member_count,
 		"phase_index": -1,
@@ -1545,9 +1565,9 @@ func _probe_bundle_supported() -> bool:
 	var device = info.get("device", null)
 	if device == null:
 		return true  # nothing to probe with; let the phases run and report normally
-	var baseline_capture_id := _device_last_capture_id(DEV_A)
 	var trigger_start := _now_us()
-	var err := int(device.trigger_capture())
+	var capture: Dictionary = device.trigger_capture()
+	var err := int(capture.get("error", FAILED))
 	var trigger_end := _now_us()
 	if err != OK:
 		# A refusal is synchronous and starts nothing, so there is no capture to
@@ -1573,7 +1593,7 @@ func _probe_bundle_supported() -> bool:
 		"trigger_start_us": trigger_start,
 		"trigger_end_us": trigger_end,
 		"trigger_call_us": trigger_end - trigger_start,
-		"baseline_capture_id": baseline_capture_id,
+		"capture_id": str(capture.get("id", "")),
 		"bundle_label": label,
 		"expected_member_count": int(_current_bundle.get("member_count", 0)),
 		"phase_index": -1,
@@ -1715,9 +1735,6 @@ func _refresh_device_snapshot_cache(snapshot: Dictionary) -> void:
 		var device_key := _device_key_for_id(device_id)
 		if device_key == "":
 			continue
-		var info: Dictionary = _devices[device_key]
-		info["last_capture_id"] = int(rec.get("last_capture_id", int(info.get("last_capture_id", 0))))
-		_devices[device_key] = info
 
 
 func _still_profile_matches_members(still_profile: Dictionary, expected_members: Array) -> bool:
@@ -1803,9 +1820,9 @@ func _queue_preflight_capture(device_key: String) -> void:
 	if device == null:
 		_mark_preflight_capture_failure(device_key)
 		return
-	var baseline_capture_id := _device_last_capture_id(device_key)
 	var trigger_start := _now_us()
-	var err := int(device.trigger_capture())
+	var capture: Dictionary = device.trigger_capture()
+	var err := int(capture.get("error", FAILED))
 	var trigger_end := _now_us()
 	if err != OK:
 		_mark_preflight_capture_failure(device_key)
@@ -1821,7 +1838,7 @@ func _queue_preflight_capture(device_key: String) -> void:
 		"trigger_start_us": trigger_start,
 		"trigger_end_us": trigger_end,
 		"trigger_call_us": trigger_end - trigger_start,
-		"baseline_capture_id": baseline_capture_id,
+		"capture_id": str(capture.get("id", "")),
 		"bundle_label": str(_current_bundle.get("label", "")),
 		"expected_member_count": int(_current_bundle.get("member_count", 0)),
 		"phase_index": -1,
@@ -2276,9 +2293,9 @@ func _request_device_capture(device_key: String, request_us: int) -> void:
 	if device == null:
 		_increment_admission("device_capture", "rejected", ERR_UNAVAILABLE)
 		return
-	var baseline_capture_id := _device_last_capture_id(device_key)
 	var trigger_start := _now_us()
-	var err := int(device.trigger_capture())
+	var capture: Dictionary = device.trigger_capture()
+	var err := int(capture.get("error", FAILED))
 	var trigger_end := _now_us()
 	if err != OK:
 		_increment_admission("device_capture", "rejected", err)
@@ -2305,12 +2322,25 @@ func _request_device_capture(device_key: String, request_us: int) -> void:
 		"trigger_start_us": trigger_start,
 		"trigger_end_us": trigger_end,
 		"trigger_call_us": trigger_end - trigger_start,
-		"baseline_capture_id": baseline_capture_id,
+		"capture_id": str(capture.get("id", "")),
 		"bundle_label": str(_current_bundle.get("label", "")),
 		"expected_member_count": int(_current_bundle.get("member_count", 0)),
 		"phase_index": _phase_index,
 		"visual_sequence": _current_phase_visual_sequence,
 	})
+
+
+func _on_capture_finished(capture_id: String, info: Dictionary) -> void:
+	# Both kinds land here. The id alone is enough for the polls -- they hold the
+	# id their own trigger returned -- and the disposition is kept so a sample can
+	# say how a capture ended rather than only that it did.
+	if capture_id == "":
+		return
+	var origin := int(info.get("capture_origin", -1))
+	if origin == CamBANGCaptureResult.CAPTURE_ORIGIN_RIG:
+		_finished_captures[capture_id] = int(info.get("closed_reason", -1))
+	else:
+		_finished_captures[capture_id] = int(info.get("disposition", -1))
 
 
 func _poll_capture_jobs() -> void:
@@ -2338,6 +2368,19 @@ func _poll_one_capture_job(job: Dictionary) -> bool:
 			# indistinguishable in the record.
 			_acq_probe_mark_capture_failure(str(job.get("device_key", "")), "capture_timeout")
 			_acq_probe_devices[str(job.get("device_key", ""))]["capture_timeout_us"] = now - int(job.get("request_us", 0))
+		# A preflight capture that runs out of time must still settle the
+		# preflight state machine. _preflight_all_captures_finished() waits for
+		# capture_complete OR capture_failed per device, and both flags were
+		# only ever set at trigger time or on a delivered result -- so a capture
+		# that was accepted and then never completed left both false and the
+		# scene sat in stage "capture" forever. The 5s budget expired, the job
+		# was discarded, and nothing recorded that it had.
+		#
+		# Observed as exactly that: 870 platform-backed on WinRT logging
+		# "preflight start" and then nothing for four minutes, with no verdict.
+		if bool(job.get("is_preflight_capture", false)) and \
+				not bool(job.get("is_rig_member", false)):
+			_mark_preflight_capture_failure(str(job.get("device_key", "")))
 		_release_device_capture_inflight(str(job.get("device_key", "")))
 		_record_sample("device_capture", {
 			"status": "timeout",
@@ -2351,12 +2394,14 @@ func _poll_one_capture_job(job: Dictionary) -> bool:
 	var device = job.get("device", null)
 	if device == null:
 		return false
+	# Section 8: gated on the completion signal, not on a staleness comparison.
+	var capture_id := str(job.get("capture_id", ""))
+	if capture_id == "" or not _finished_captures.has(capture_id):
+		return false
 	var result = device.get_result()
 	if result == null:
 		return false
-	var capture_id := int(result.get_capture_id()) if result.has_method("get_capture_id") else 0
-	if capture_id != 0 and capture_id <= int(job.get("baseline_capture_id", 0)):
-		return false
+	_forget_finished_capture(capture_id)
 	_complete_capture_result(job, result, false)
 	return true
 
@@ -2364,7 +2409,7 @@ func _poll_one_capture_job(job: Dictionary) -> bool:
 func _complete_capture_result(job: Dictionary, capture_result, is_rig_member: bool) -> void:
 	var result_ready_us := _now_us()
 	var device_key := str(job.get("device_key", ""))
-	var capture_id := int(capture_result.get_capture_id()) if capture_result.has_method("get_capture_id") else 0
+	var capture_id := str(capture_result.get_capture_identity().get("device_capture_id", ""))
 	var get_count_start := _now_us()
 	var returned_count := int(capture_result.get_image_count()) if capture_result.has_method("get_image_count") else 1
 	var get_count_end := _now_us()
@@ -2404,10 +2449,6 @@ func _complete_capture_result(job: Dictionary, capture_result, is_rig_member: bo
 	else:
 		_record_sample("device_capture", sample)
 		_release_device_capture_inflight(device_key)
-	if device_key != "" and capture_id > 0 and _devices.has(device_key):
-		var info: Dictionary = _devices[device_key]
-		info["last_capture_id"] = maxi(int(info.get("last_capture_id", 0)), capture_id)
-		_devices[device_key] = info
 	_update_capture_visuals(device_key, capture_result, image, texture, sample, is_rig_member)
 	if bool(job.get("is_preflight_capture", false)) and not is_rig_member:
 		_note_preflight_capture_result(device_key, capture_result, returned_count)
@@ -2422,7 +2463,7 @@ func _note_preflight_capture_result(device_key: String, capture_result, returned
 	var entry: Dictionary = entry_v
 	entry["capture_complete"] = true
 	entry["capture_failed"] = false
-	entry["capture_id"] = int(capture_result.get_capture_id()) if capture_result.has_method("get_capture_id") else 0
+	entry["capture_id"] = str(capture_result.get_capture_identity().get("device_capture_id", ""))
 	entry["returned_member_count"] = returned_count
 	_preflight_devices[device_key] = entry
 
@@ -2434,7 +2475,7 @@ func _settlement_probe_note_capture_result(device_key: String, capture_result, r
 	var entry: Dictionary = entry_v
 	entry["capture_complete"] = true
 	entry["trigger_status"] = "complete"
-	entry["capture_id"] = int(capture_result.get_capture_id()) if capture_result.has_method("get_capture_id") else 0
+	entry["capture_id"] = str(capture_result.get_capture_identity().get("device_capture_id", ""))
 	entry["returned_member_count"] = returned_count
 	entry["materialized_member_indices"] = []
 	entry["materialization_failed_indices"] = []
@@ -2488,11 +2529,9 @@ func _request_rig_capture(request_us: int) -> void:
 	if int(pending.get("materialization", 0)) >= _max_pending_materializations:
 		_increment_admission("rig_capture", "blocked_by_materialization_backlog", 0)
 		return
-	var before_by_device := {}
-	for device_key in [DEV_A, DEV_B]:
-		before_by_device[device_key] = _device_last_capture_id(device_key)
 	var trigger_start := _now_us()
-	var err := int(_rig.trigger_capture())
+	var rig_capture: Dictionary = _rig.trigger_capture()
+	var err := int(rig_capture.get("error", FAILED))
 	var trigger_end := _now_us()
 	if err != OK:
 		_increment_admission("rig_capture", "rejected", err)
@@ -2512,7 +2551,8 @@ func _request_rig_capture(request_us: int) -> void:
 		"trigger_start_us": trigger_start,
 		"trigger_end_us": trigger_end,
 		"trigger_call_us": trigger_end - trigger_start,
-		"before_by_device": before_by_device,
+		"rig_capture_id": str(rig_capture.get("id", "")),
+		"members": rig_capture.get("members", {}),
 		"bundle_label": str(_current_bundle.get("label", "")),
 		"action_label": str(_active_phase.get("action_label", "")),
 		"scope": str(_active_phase.get("scope", "")),
@@ -2566,15 +2606,21 @@ func _poll_one_rig_job(job: Dictionary) -> bool:
 		var device_key := _device_key_for_id(device_id)
 		if device_key != "":
 			result_by_key[device_key] = result
+	# Section 8: the rig capture is done when its cohort closes, which the
+	# completion signal states. Comparing each member's capture id against a
+	# per-device baseline was the staleness guard this replaces.
+	var rig_capture_id := str(job.get("rig_capture_id", ""))
+	if rig_capture_id == "" or not _finished_captures.has(rig_capture_id):
+		return false
 	for device_key in [DEV_A, DEV_B]:
 		if not result_by_key.has(device_key):
 			return false
-		var result = result_by_key[device_key]
-		var capture_id := int(result.get_capture_id()) if result.has_method("get_capture_id") else 0
-		var before_by_device = job.get("before_by_device", {})
-		if capture_id != 0 and capture_id <= int(before_by_device.get(device_key, 0)):
-			return false
 	var ready_us := _now_us()
+	_forget_finished_capture(rig_capture_id)
+	# Members finished under their own Device Capture Ids and are tracked too;
+	# drop them with the rig so the map stays bounded across a long soak.
+	for member_id in job.get("members", {}).values():
+		_forget_finished_capture(str(member_id))
 	var sample := {
 		"status": "complete",
 		"request_us": int(job.get("request_us", 0)),
@@ -2600,9 +2646,11 @@ func _device_key_for_id(device_id: int) -> String:
 	return ""
 
 
-func _device_last_capture_id(device_key: String) -> int:
-	var info: Dictionary = _devices[device_key]
-	return int(info.get("last_capture_id", 0))
+func _forget_finished_capture(capture_id: String) -> void:
+	# Bounded: a soak triggers thousands of captures, and a map that only grows
+	# would be a slow leak inside the thing being measured.
+	if capture_id != "":
+		_finished_captures.erase(capture_id)
 
 
 func _release_device_capture_inflight(device_key: String) -> void:

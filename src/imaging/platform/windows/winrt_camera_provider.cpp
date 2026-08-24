@@ -2968,6 +2968,29 @@ AcquisitionCoexistence WinrtCameraProvider::acquisition_coexistence(
   }
   if (proposed.stream.width == proposed.still.width &&
       proposed.stream.height == proposed.still.height) {
+    // SUSPECTED WRONG, AND UNMEASURED. Everything below about a producing
+    // stream holding the source was measured; this branch was not. It rests on
+    // "same geometry shares happily", and the evidence now points the other
+    // way.
+    //
+    // Observed 2026-08-12, eMeet C970 + internal camera, scene 870
+    // platform-backed: a 1280x720 capture proposed against a producing
+    // 1280x720 stream is answered Coexist here, Core lets both run, and the
+    // capture is NEVER DELIVERED -- the scene's preflight capture times out at
+    // 5s and the stream's frame pool exhausts (drops 1,2,4,8). That is the
+    // same failure the MEASURED note below records for differing geometries;
+    // the only reason it was not caught there is that nobody forced this path.
+    //
+    // Run evidence: run-logs/error/20260812T161110670Z__scene870_t3_winrt__*
+    // and .../20260812T161710791Z__scene870_t2_baseline_winrt__* (identical
+    // stall with the then-current Core arbitration work stashed out, so this is
+    // not a Core-side effect). A 2026-08-05 maintainer run of the same scene
+    // completed its preflight in 0.21s, before this function existed.
+    //
+    // NOT CHANGED HERE because the fix is a policy change that needs its own
+    // hardware confirmation: making this stream_must_yield(restorable=true)
+    // like the differing-geometry case would very likely restore delivery, but
+    // asserting that without measuring it is exactly how this branch got here.
     return AcquisitionCoexistence::coexist();
   }
 
@@ -3002,7 +3025,20 @@ ProviderResult WinrtCameraProvider::validate_and_admit_submission_locked_(
   if (capture_admission_closed_) {
     return ProviderResult::failure(ProviderError::ERR_SHUTTING_DOWN);
   }
-  if (submission.capture_id == 0 || submission.device_requests.empty()) {
+  // A device submission is named by capture_id (a Device Capture Id); a rig
+  // submission by rig_capture_id, with capture_id deliberately 0. This check
+  // predated that split and rejected every rig submission on the spot --
+  // before reaching the coherence guard below, which REQUIRES
+  // submission.capture_id == 0 for a rig. The two contradicted each other.
+  //
+  // Measured on a Galaxy S20+ (2026-08-14, scene 870 platform-backed): all 27
+  // rig captures refused, orchestration failure=4 submission=3
+  // provider_error=2 (ERR_INVALID_ARGUMENT), from exactly here.
+  const bool rig_submission =
+      submission.origin == CaptureSubmissionOrigin::RIG_CAPTURE;
+  const bool submission_identified =
+      rig_submission ? submission.rig_capture_id != 0 : submission.capture_id != 0;
+  if (!submission_identified || submission.device_requests.empty()) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
   if (capture_queue_.size() + capture_active_jobs_ + submission.device_requests.size() >
@@ -3013,7 +3049,14 @@ ProviderResult WinrtCameraProvider::validate_and_admit_submission_locked_(
   out_jobs.clear();
   out_jobs.reserve(submission.device_requests.size());
   for (const CaptureRequest& req : submission.device_requests) {
-    if (req.capture_id != submission.capture_id || req.device_instance_id == 0) {
+    // A device submission shares its single member's Device Capture Id; a rig
+    // submission has none of its own and each member carries a distinct one.
+    // Both directions are still checked -- this is not a relaxation.
+    const bool coherent_capture_id =
+        submission.origin == CaptureSubmissionOrigin::RIG_CAPTURE
+            ? (req.capture_id != 0 && submission.capture_id == 0)
+            : (req.capture_id == submission.capture_id);
+    if (!coherent_capture_id || req.device_instance_id == 0) {
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
     if (req.width == 0 || req.height == 0) {

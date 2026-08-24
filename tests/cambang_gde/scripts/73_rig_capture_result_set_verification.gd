@@ -26,6 +26,24 @@ var _rig_a_id := 0
 var _rig_a_members: Array[int] = []
 var _excluded_device_ids: Array[int] = []
 var _rig_a_capture_ready := false
+# Completion signals (capture_identity_and_lifecycle.md 4.2). Recorded from the
+# signal handlers, which run on the Godot thread. Before this, the emit path had
+# never been received by anything: it compiled and queued correctly, but no
+# consumer had ever seen one fire.
+var _rig_a_capture_id := ""
+var _rig_a_trigger_members: Dictionary = {}
+var _rig_settled_capture_id := ""
+var _rig_settled_reason := -1
+var _rig_settled_count := 0
+var _server_settled_capture_id := ""
+var _server_settled_rig_id := 0
+var _server_rig_closed_reason := -1
+var _server_device_finished_count := 0
+# Per-device completion, one entry per member: capture_id -> disposition.
+# Section 3 requires a capture to report its terminal disposition to its own
+# subscriber; nothing had ever subscribed to prove that path carries.
+var _device_finished: Dictionary = {}
+var _result_set_verified := false
 # Negative phase: the first session deliberately starts WITHOUT ingesting the
 # camera-concurrency truth, so the multi-device rig admission gate must reject
 # the trigger with ERR_UNCONFIGURED (a permanent configuration gap), not a
@@ -236,7 +254,7 @@ func _run_negative_phase_and_restart() -> void:
 	_require(rig != null, "step %d FAIL: negative-phase get_rig() returned null" % _step)
 	if _done:
 		return
-	var capture_err := int(rig.trigger_capture())
+	var capture_err := int(rig.trigger_capture().get("error", FAILED))
 	_require(capture_err == ERR_UNCONFIGURED,
 		"step %d FAIL: rig.trigger_capture() without ingested camera-concurrency truth must return ERR_UNCONFIGURED (%d), got %d" % [
 			_step, ERR_UNCONFIGURED, capture_err])
@@ -273,7 +291,24 @@ func _trigger_rig_a_capture() -> void:
 		return
 	_step_ok("selected Rig A object verified")
 
-	var capture_err := int(rig.trigger_capture())
+	# Subscribe BEFORE triggering. A completion can settle inside the same tick
+	# the trigger is accepted, and a subscription made afterwards would miss it
+	# and look exactly like a signal that never fires.
+	if not rig.capture_finished.is_connected(_on_rig_capture_finished):
+		rig.capture_finished.connect(_on_rig_capture_finished)
+	# One server-wide signal covers both capture kinds; branch on capture_origin.
+	if not CamBANGServer.capture_finished.is_connected(_on_server_capture_finished):
+		CamBANGServer.capture_finished.connect(_on_server_capture_finished)
+
+	# Each member device individually. A rig member is an ordinary Device
+	# Capture, so it must report on its own device handle too.
+	for member_id in _rig_a_members:
+		var member_device = CamBANGServer.get_device(member_id)
+		if member_device != null and not member_device.capture_finished.is_connected(_on_device_capture_finished):
+			member_device.capture_finished.connect(_on_device_capture_finished)
+
+	var trigger: Dictionary = rig.trigger_capture()
+	var capture_err := int(trigger.get("error", FAILED))
 	if capture_err != OK:
 		var snapshot = CamBANGServer.get_state_snapshot()
 		var diag_lines: Array[String] = []
@@ -297,8 +332,82 @@ func _trigger_rig_a_capture() -> void:
 		return
 	_rig_a = rig
 	_rig_a_capture_requested = true
-	_step_ok("rig capture trigger accepted")
+	_rig_a_capture_id = str(trigger.get("id", ""))
+	_rig_a_trigger_members = trigger.get("members", {})
+
+	# An accepted trigger must name the capture it started (4.1).
+	_require(_rig_a_capture_id != "", "step %d FAIL: accepted rig trigger returned no id" % _step)
+	# And it must name it in the RIG id space. Two counters both starting at 1
+	# would hand back a Rig Capture Id numerically equal to a member's Device
+	# Capture Id -- different spaces, identical number (2.1).
+	_require(_rig_a_capture_id.begins_with("rc_"),
+		"step %d FAIL: rig capture id %s is not in the Rig Capture space" % [
+			_step, _rig_a_capture_id])
+	# One member entry per rig member, each carrying that member's own Device
+	# Capture Id, so an arriving result can be correlated immediately.
+	_require(_rig_a_trigger_members.size() == _rig_a_members.size(),
+		"step %d FAIL: rig trigger member map has %d entries, expected %d" % [
+			_step, _rig_a_trigger_members.size(), _rig_a_members.size()])
+	for hw in _rig_a_trigger_members.keys():
+		var member_capture_id := str(_rig_a_trigger_members[hw])
+		_require(member_capture_id != "",
+			"step %d FAIL: rig trigger member %s carries no Device Capture Id" % [_step, str(hw)])
+		_require(member_capture_id.begins_with("dc_"),
+			"step %d FAIL: member %s id %s is not in the Device Capture space" % [
+				_step, str(hw), member_capture_id])
+	if _done:
+		return
+	_step_ok("rig trigger named its capture: id=%s members=%s" % [
+		_rig_a_capture_id, str(_rig_a_trigger_members)])
+
+	# Outstanding work (4.5): immediately after an accepted trigger the rig and
+	# every member must be listed. Before this existed, a caller could only
+	# discover a device was busy by being refused.
+	var outstanding: Dictionary = CamBANGServer.get_unfinished_captures()
+	var rig_ids: Array = outstanding.get("rig_captures", [])
+	_require(rig_ids.has(_rig_a_capture_id),
+		"step %d FAIL: rig capture %s absent from get_unfinished_captures() right after trigger" % [
+			_step, _rig_a_capture_id])
+	var by_device: Dictionary = outstanding.get("by_device", {})
+	for member_id in _rig_a_members:
+		var device_ids: Array = by_device.get(member_id, [])
+		_require(not device_ids.is_empty(),
+			"step %d FAIL: member device %d has no unfinished capture after rig trigger" % [
+				_step, int(member_id)])
+	_require(int(outstanding.get("total", 0)) >= 1 + _rig_a_members.size(),
+		"step %d FAIL: unfinished total %d is less than the rig plus its %d members" % [
+			_step, int(outstanding.get("total", 0)), _rig_a_members.size()])
+	if _done:
+		return
+	_step_ok("outstanding set lists the rig and its members while in flight")
 	_result_set_poll_start_ms = Time.get_ticks_msec()
+
+
+func _on_rig_capture_finished(rig_capture_id: String, closed_reason: int) -> void:
+	_rig_settled_capture_id = rig_capture_id
+	_rig_settled_reason = int(closed_reason)
+	_rig_settled_count += 1
+
+
+func _on_device_capture_finished(capture_id: String, disposition: int, error_code: int) -> void:
+	_device_finished[str(capture_id)] = {
+		"disposition": int(disposition),
+		"error_code": int(error_code),
+	}
+
+
+func _on_server_capture_finished(capture_id: String, info: Dictionary) -> void:
+	for key in ["capture_origin", "device_instance_id", "rig_id",
+			"disposition", "closed_reason", "error_code"]:
+		if not info.has(key):
+			_fail("server capture_finished info is missing key %s" % key)
+			return
+	if int(info["capture_origin"]) == CamBANGCaptureResult.CAPTURE_ORIGIN_RIG:
+		_server_settled_capture_id = str(capture_id)
+		_server_settled_rig_id = int(info["rig_id"])
+		_server_rig_closed_reason = int(info["closed_reason"])
+	else:
+		_server_device_finished_count += 1
 
 
 func _try_verify_capture_result_set() -> void:
@@ -324,7 +433,178 @@ func _try_verify_capture_result_set() -> void:
 
 	for excluded_id in _excluded_device_ids:
 		_require(not actual_ids.has(int(excluded_id)), "step %d FAIL: excluded device id present in rig result set: %d" % [_step, int(excluded_id)])
-	_step_ok("result-set membership matches Rig A only; RigB/RigC/standalone excluded")
+	if not _result_set_verified:
+		_result_set_verified = true
+		_step_ok("result-set membership matches Rig A only; RigB/RigC/standalone excluded")
+
+	# A materialized result set is not the same event as a closed cohort. Keep
+	# polling until the completion signal arrives; the caller-facing promise of
+	# 4.2 is that it does, and the existing RESULT_SET_TIMEOUT_MS bounds it.
+	if _rig_settled_count == 0:
+		return
+
+	_require(_rig_settled_capture_id == _rig_a_capture_id,
+		"step %d FAIL: rig capture_finished reported id %s, trigger returned %s" % [
+			_step, _rig_settled_capture_id, _rig_a_capture_id])
+	# Every member delivered, so the cohort must close because they all reached
+	# a terminal disposition -- not because the simultaneity window ran out.
+	_require(_rig_settled_reason == CamBANGServer.COHORT_CLOSED_ALL_MEMBERS_TERMINAL,
+		"step %d FAIL: rig capture closed with reason %d, expected ALL_MEMBERS_TERMINAL (%d)" % [
+			_step, _rig_settled_reason, CamBANGServer.COHORT_CLOSED_ALL_MEMBERS_TERMINAL])
+	_require(_rig_settled_count == 1,
+		"step %d FAIL: rig capture_finished fired %d times for one capture" % [_step, _rig_settled_count])
+	# The server-wide fan-in must report the same settlement, attributed to this
+	# rig -- that is what a consumer holding no wrapper has to rely on.
+	_require(_server_settled_capture_id == _rig_a_capture_id,
+		"step %d FAIL: server capture_finished reported rig capture %s, expected %s" % [
+			_step, _server_settled_capture_id, _rig_a_capture_id])
+	_require(_server_settled_rig_id == _rig_a_id,
+		"step %d FAIL: server capture_finished reported rig %d, expected %d" % [
+			_step, _server_settled_rig_id, _rig_a_id])
+	if _done:
+		return
+	_require(_server_rig_closed_reason == CamBANGServer.COHORT_CLOSED_ALL_MEMBERS_TERMINAL,
+		"step %d FAIL: server capture_finished reported closed_reason %d for the rig" % [
+			_step, _server_rig_closed_reason])
+	# The single server signal must carry BOTH kinds: each member's device
+	# capture came through it too, not just the rig closure.
+	_require(_server_device_finished_count >= _rig_a_members.size(),
+		"step %d FAIL: server capture_finished carried %d device captures, expected at least %d" % [
+			_step, _server_device_finished_count, _rig_a_members.size()])
+	if _done:
+		return
+	_step_ok("completion signals received: rig, per-device and one server-wide signal carrying both kinds")
+
+	# ...and the outstanding set must have emptied for what finished. A set that
+	# only ever grows is worse than none: a caller would refuse to trigger
+	# forever.
+	var settled_outstanding: Dictionary = CamBANGServer.get_unfinished_captures()
+	var still_open: Array = settled_outstanding.get("rig_captures", [])
+	_require(not still_open.has(_rig_a_capture_id),
+		"step %d FAIL: rig capture %s still listed unfinished after its completion signal" % [
+			_step, _rig_a_capture_id])
+	var settled_by_device: Dictionary = settled_outstanding.get("by_device", {})
+	for member_id in _rig_a_members:
+		var remaining: Array = settled_by_device.get(member_id, [])
+		for hw in _rig_a_trigger_members.keys():
+			var member_capture_id := str(_rig_a_trigger_members[hw])
+			_require(not remaining.has(member_capture_id),
+				"step %d FAIL: member capture %s still listed unfinished for device %d" % [
+					_step, member_capture_id, int(member_id)])
+	if _done:
+		return
+	_step_ok("outstanding set cleared once the captures finished")
+
+	# Every member is accounted for, delivered or not (4.3). The result set can
+	# be short; this must not be. Without it, a two-camera rig that lost one
+	# camera is indistinguishable from a rig that only ever had one.
+	var outcomes: Array = _rig_a.get_member_outcomes()
+	_require(outcomes.size() == _rig_a_members.size(),
+		"step %d FAIL: %d member outcomes for a %d-member rig" % [
+			_step, outcomes.size(), _rig_a_members.size()])
+	var outcome_device_ids: Array[int] = []
+	for entry_v in outcomes:
+		var entry: Dictionary = entry_v
+		for key in ["hardware_id", "device_instance_id", "device_capture_id", "disposition", "error_code"]:
+			_require(entry.has(key),
+				"step %d FAIL: member outcome missing key %s" % [_step, key])
+		outcome_device_ids.append(int(entry["device_instance_id"]))
+		# This scene's members all deliver, so anything else means the outcome
+		# is being reported from something other than what actually happened.
+		_require(int(entry["disposition"]) == CamBANGServer.DISPOSITION_DELIVERED,
+			"step %d FAIL: member %s reported disposition %d, expected DELIVERED (%d)" % [
+				_step, str(entry["hardware_id"]), int(entry["disposition"]),
+				CamBANGServer.DISPOSITION_DELIVERED])
+		_require(int(entry["error_code"]) == 0,
+			"step %d FAIL: delivered member %s carries error_code %d" % [
+				_step, str(entry["hardware_id"]), int(entry["error_code"])])
+		# The outcome names the member's own Device Capture Id -- the same one
+		# the trigger handed back, so the two surfaces can be correlated.
+		var hw := str(entry["hardware_id"])
+		_require(_rig_a_trigger_members.has(hw),
+			"step %d FAIL: outcome names %s, which the trigger did not" % [_step, hw])
+		_require(str(entry["device_capture_id"]) == str(_rig_a_trigger_members[hw]),
+			"step %d FAIL: outcome for %s says capture %s, trigger said %s" % [
+				_step, hw, str(entry["device_capture_id"]), str(_rig_a_trigger_members[hw])])
+	outcome_device_ids.sort()
+	_require(outcome_device_ids == _rig_a_members,
+		"step %d FAIL: member outcomes cover %s, expected %s" % [
+			_step, str(outcome_device_ids), str(_rig_a_members)])
+	if _done:
+		return
+	_step_ok("every rig member is accounted for by disposition, correlated to its trigger id")
+
+	# Section 3: the device-level signal must actually reach a subscriber. Each
+	# member's own device handle reports its own capture, by its own id.
+	for hw in _rig_a_trigger_members.keys():
+		var member_capture_id := str(_rig_a_trigger_members[hw])
+		_require(_device_finished.has(member_capture_id),
+			"step %d FAIL: device capture_finished never fired for member %s (capture %s)" % [
+				_step, str(hw), member_capture_id])
+		var report: Dictionary = _device_finished[member_capture_id]
+		_require(int(report["disposition"]) == CamBANGServer.DISPOSITION_DELIVERED,
+			"step %d FAIL: device capture_finished for %s reported disposition %d" % [
+				_step, str(hw), int(report["disposition"])])
+	if _done:
+		return
+	_step_ok("device-level capture_finished reached a subscriber for every member")
+
+	# A result must describe itself (2.3). Before this, a result from a rig was
+	# indistinguishable from a device-triggered one, and correlating it back to
+	# its rig meant keeping the trigger's member map by hand.
+	var results_again: Array = _rig_a.get_result()
+	for result in results_again:
+		var ident: Dictionary = result.get_capture_identity()
+		for key in ["capture_origin", "device_capture_id", "rig_capture_id",
+				"rig_member_hardware_id", "rig_member_index", "device_instance_id"]:
+			_require(ident.has(key),
+				"step %d FAIL: capture identity missing key %s" % [_step, key])
+		_require(int(ident["capture_origin"]) == CamBANGCaptureResult.CAPTURE_ORIGIN_RIG,
+			"step %d FAIL: rig member result reports origin %d, expected RIG (%d)" % [
+				_step, int(ident["capture_origin"]), CamBANGCaptureResult.CAPTURE_ORIGIN_RIG])
+		_require(str(ident["rig_capture_id"]) == _rig_a_capture_id,
+			"step %d FAIL: result names rig capture %s, trigger returned %s" % [
+				_step, str(ident["rig_capture_id"]), _rig_a_capture_id])
+		var hw := str(ident["rig_member_hardware_id"])
+		_require(_rig_a_trigger_members.has(hw),
+			"step %d FAIL: result names member %s, which the trigger did not" % [_step, hw])
+		_require(str(ident["device_capture_id"]) == str(_rig_a_trigger_members[hw]),
+			"step %d FAIL: result for %s says capture %s, trigger said %s" % [
+				_step, hw, str(ident["device_capture_id"]), str(_rig_a_trigger_members[hw])])
+		_require(int(ident["rig_member_index"]) >= 0,
+			"step %d FAIL: rig member result has index %d" % [_step, int(ident["rig_member_index"])])
+	if _done:
+		return
+	_step_ok("every rig result describes its own origin, rig and membership")
+
+	# Section 8: a device-level accessor must not be blind to rig-originated
+	# captures. These member devices were never triggered directly, so before
+	# this the server had no latest-capture entry for them and get_result()
+	# returned null while the result plainly existed.
+	for member_id in _rig_a_members:
+		var member_device = CamBANGServer.get_device(member_id)
+		_require(member_device != null,
+			"step %d FAIL: get_device(%d) returned null" % [_step, int(member_id)])
+		var member_result = member_device.get_result()
+		_require(member_result != null,
+			"step %d FAIL: device %d get_result() is null after a rig capture" % [
+				_step, int(member_id)])
+		if _done:
+			return
+		# ...and it must be THIS rig capture's result, not an older one.
+		var member_ident: Dictionary = member_result.get_capture_identity()
+		_require(int(member_ident["capture_origin"]) == CamBANGCaptureResult.CAPTURE_ORIGIN_RIG,
+			"step %d FAIL: device %d get_result() returned a device-origin result" % [
+				_step, int(member_id)])
+		_require(str(member_ident["rig_capture_id"]) == _rig_a_capture_id,
+			"step %d FAIL: device %d get_result() returned rig capture %s, expected %s" % [
+				_step, int(member_id), str(member_ident["rig_capture_id"]), _rig_a_capture_id])
+		_require(int(member_ident["device_instance_id"]) == int(member_id),
+			"step %d FAIL: device %d get_result() returned another device's result" % [
+				_step, int(member_id)])
+	if _done:
+		return
+	_step_ok("each member device get_result() returns its own result from this rig capture")
 
 	_append_status("PASS: rig capture result set verification complete")
 	_cleanup_and_quit(0, "rig_capture_result_set_verified")

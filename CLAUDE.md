@@ -8,10 +8,13 @@ This repo has its own agent-instruction chain that takes precedence over generic
 
 1. `AGENTS.md` — workflow rules (minimal high-confidence changes, never weaken tests to get PASS, never commit unless explicitly asked, required validation is a hard completion gate).
 2. `docs/dev/agent_context.md` — durable project expectations (source authority, public-API lock, snapshot/lifecycle rules, camera-fact model boundaries).
-3. `docs/dev/current_tranche.md` — the *active* work order only: scope, acceptance criteria, validation expectations. Reset it to its stub once a tranche is accepted and committed. Do not create tranche-completion records, remediation-plan backlogs, or deferred-task files anywhere in the repo — git history is the record of completed work; put validation detail in the commit message. Future work is queued only when the maintainer activates it in this file.
-4. `docs/INDEX.md` — canonical-vs-supplement doc hierarchy. When docs and source disagree: source and tests win; report the mismatch rather than silently picking one.
+3. `docs/INDEX.md` — canonical-vs-supplement doc hierarchy. When docs and source disagree: source and tests win; report the mismatch rather than silently picking one.
 
-The Godot-facing public API (methods, signals, constants, dictionary shapes) is **locked** unless the active tranche explicitly authorizes a change.
+**The active work order lives in conversation, not in a file.** There was a `docs/dev/current_tranche.md`; it was deleted because of one repeated failure: an agent writes scope into it, then cites its own writing back as authority. That produced a breaking schema change made on the authority of a scope item the agent had authored, a hardware-validation requirement naming scenes that cannot exercise the provider in question, and a mandate reported as out of scope by quoting the one sentence of the spec that supported deferring it. Do not recreate it under another name. What is true belongs in the canonical doc's status section, cited to source; what is next is agreed in conversation.
+
+Likewise do not create tranche-completion records, remediation-plan backlogs, or deferred-task files anywhere in the repo — git history is the record of completed work, and validation detail belongs in the commit message, describing what was actually run rather than what was hoped for.
+
+The Godot-facing public API (methods, signals, constants, dictionary shapes) and `schema/` are **locked**. A change requires the maintainer's explicit agreement in conversation, named as a public-surface change at the time. A scope line in any document — including one you wrote — is not authorization; a document records what was agreed, it does not confer permission.
 
 ## Build
 

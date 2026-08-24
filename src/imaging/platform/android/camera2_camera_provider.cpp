@@ -5567,7 +5567,20 @@ ProviderResult Camera2CameraProvider::validate_and_admit_submission_locked_(
   if (capture_admission_closed_) {
     return ProviderResult::failure(ProviderError::ERR_SHUTTING_DOWN);
   }
-  if (submission.capture_id == 0 || submission.device_requests.empty()) {
+  // A device submission is named by capture_id (a Device Capture Id); a rig
+  // submission by rig_capture_id, with capture_id deliberately 0. This check
+  // predated that split and rejected every rig submission on the spot --
+  // before reaching the coherence guard below, which REQUIRES
+  // submission.capture_id == 0 for a rig. The two contradicted each other.
+  //
+  // Measured on a Galaxy S20+ (2026-08-14, scene 870 platform-backed): all 27
+  // rig captures refused, orchestration failure=4 submission=3
+  // provider_error=2 (ERR_INVALID_ARGUMENT), from exactly here.
+  const bool rig_submission =
+      submission.origin == CaptureSubmissionOrigin::RIG_CAPTURE;
+  const bool submission_identified =
+      rig_submission ? submission.rig_capture_id != 0 : submission.capture_id != 0;
+  if (!submission_identified || submission.device_requests.empty()) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
   if (capture_queue_.size() + capture_active_jobs_ + submission.device_requests.size() >
@@ -5578,7 +5591,14 @@ ProviderResult Camera2CameraProvider::validate_and_admit_submission_locked_(
   out_jobs.clear();
   out_jobs.reserve(submission.device_requests.size());
   for (const CaptureRequest& req : submission.device_requests) {
-    if (req.capture_id != submission.capture_id || req.device_instance_id == 0) {
+    // A device submission shares its single member's Device Capture Id; a rig
+    // submission has none of its own and each member carries a distinct one.
+    // Both directions are still checked -- this is not a relaxation.
+    const bool coherent_capture_id =
+        submission.origin == CaptureSubmissionOrigin::RIG_CAPTURE
+            ? (req.capture_id != 0 && submission.capture_id == 0)
+            : (req.capture_id == submission.capture_id);
+    if (!coherent_capture_id || req.device_instance_id == 0) {
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
     if (req.width == 0 || req.height == 0) {

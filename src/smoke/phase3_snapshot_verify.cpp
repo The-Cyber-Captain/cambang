@@ -427,10 +427,12 @@ static int test_capture_cohort_registry_basics() {
     return 1;
   }
   CoreCaptureCohortRegistry::CohortRecord rec{};
-  rec.capture_id = 77;
+  rec.rig_capture_id = 77;
   rec.rig_id = 7;
-  rec.expected_participants.push_back({1001, "hw:a"});
-  rec.expected_participants.push_back({1002, "hw:b"});
+  // Each member carries its own Device Capture Id, from a space disjoint from
+  // the cohort's 77; insert() rejects a participant without one.
+  rec.expected_participants.push_back({1001, "hw:a", 5001});
+  rec.expected_participants.push_back({1002, "hw:b", 5002});
   if (!cohorts.insert(rec)) {
     std::cerr << "FAIL: cohort insert rejected valid record\n";
     return 1;
@@ -467,16 +469,509 @@ static int test_capture_cohort_registry_basics() {
     return 1;
   }
   CoreCaptureCohortRegistry::CohortRecord dup{};
-  dup.capture_id = 77;
+  dup.rig_capture_id = 77;
   dup.rig_id = 99;
-  dup.expected_participants.push_back({9, "dup"});
+  dup.expected_participants.push_back({9, "dup", 5009});
   if (cohorts.insert(dup)) {
-    std::cerr << "FAIL: duplicate capture_id unexpectedly accepted\n";
+    std::cerr << "FAIL: duplicate rig_capture_id unexpectedly accepted\n";
+    return 1;
+  }
+  // Id-space separation, enforced rather than assumed. A member whose Device
+  // Capture Id equals its cohort's Rig Capture Id is the exact signature of a
+  // regression back to one shared counter; a cohort must refuse to hold it.
+  // This is the host-native gate for that regression: the counters themselves
+  // are minted at the Godot boundary, which no maintainer verifier can drive,
+  // so the guarantee is bound here at the registry that would have to accept
+  // the collision for it to do any damage.
+  CoreCaptureCohortRegistry::CohortRecord collapsed{};
+  collapsed.rig_capture_id = 88;
+  collapsed.rig_id = 8;
+  collapsed.expected_participants.push_back({1001, "hw:a", 88});
+  if (cohorts.insert(collapsed)) {
+    std::cerr << "FAIL: cohort accepted a member reusing the rig capture id\n";
+    return 1;
+  }
+  // Same collision one level down: two members sharing one Device Capture Id.
+  CoreCaptureCohortRegistry::CohortRecord shared_members{};
+  shared_members.rig_capture_id = 89;
+  shared_members.rig_id = 8;
+  shared_members.expected_participants.push_back({1001, "hw:a", 6001});
+  shared_members.expected_participants.push_back({1002, "hw:b", 6001});
+  if (cohorts.insert(shared_members)) {
+    std::cerr << "FAIL: cohort accepted two members sharing one device capture id\n";
+    return 1;
+  }
+  // A member id already owned by a live cohort must not be reused by another,
+  // or the reverse index would resolve one id to two cohorts.
+  CoreCaptureCohortRegistry::CohortRecord reused{};
+  reused.rig_capture_id = 90;
+  reused.rig_id = 8;
+  reused.expected_participants.push_back({1003, "hw:c", 5001});
+  if (cohorts.insert(reused)) {
+    std::cerr << "FAIL: cohort accepted a member id already owned by another cohort\n";
+    return 1;
+  }
+  // The reverse index resolves a member to its cohort, which is how provider
+  // facts (reported under member ids) are classified as rig-originated.
+  if (cohorts.rig_capture_id_for_device_capture(5001) != 77 ||
+      cohorts.rig_capture_id_for_device_capture(5002) != 77 ||
+      cohorts.rig_capture_id_for_device_capture(77) != 0 ||
+      cohorts.device_capture_id_for(77, 1001) != 5001 ||
+      cohorts.device_capture_id_for(77, 1002) != 5002) {
+    std::cerr << "FAIL: cohort member/rig id resolution incorrect\n";
     return 1;
   }
   cohorts.clear();
-  if (cohorts.contains(77) || cohorts.find(77).has_value()) {
+  if (cohorts.contains(77) || cohorts.find(77).has_value() ||
+      cohorts.rig_capture_id_for_device_capture(5001) != 0) {
     std::cerr << "FAIL: clear() did not remove cohort\n";
+    return 1;
+  }
+  return 0;
+}
+
+// Cohort closure (capture_identity_and_lifecycle.md 4.4). Registry-level: the
+// window arithmetic and the closed-outcome rules, independent of any provider.
+static int test_capture_cohort_closure() {
+  using Assembly = CoreCaptureAssemblyRegistry;
+  using Reason = CoreCaptureCohortRegistry::CohortClosedReason;
+  using State = CoreCaptureCohortRegistry::CohortState;
+
+  constexpr uint64_t kWindowNs = 2ull * 1000ull * 1000ull * 1000ull;
+  constexpr uint64_t kAdmittedNs = 10'000ull;
+
+  auto make_cohort = [&](uint64_t rig_capture_id) {
+    CoreCaptureCohortRegistry::CohortRecord rec{};
+    rec.rig_capture_id = rig_capture_id;
+    rec.rig_id = 9;
+    rec.created_ns = kAdmittedNs;
+    rec.admitted_ns = kAdmittedNs;
+    rec.expected_participants.push_back({1001, "hw:a", rig_capture_id + 101});
+    rec.expected_participants.push_back({1002, "hw:b", rig_capture_id + 102});
+    return rec;
+  };
+  auto outcome = [](uint64_t device_instance_id, uint64_t device_capture_id,
+                    Assembly::TerminalState disposition, bool has_error,
+                    uint32_t error) {
+    CoreCaptureCohortRegistry::MemberOutcome o{};
+    o.device_instance_id = device_instance_id;
+    o.device_capture_id = device_capture_id;
+    o.disposition = disposition;
+    o.has_error_code = has_error;
+    o.error_code = error;
+    return o;
+  };
+
+  CoreCaptureCohortRegistry cohorts;
+
+  // A cohort is OPEN and enumerable as such until it closes.
+  if (!cohorts.insert(make_cohort(1000))) {
+    std::cerr << "FAIL: closure fixture cohort rejected\n";
+    return 1;
+  }
+  if (cohorts.open_cohort_ids() != std::vector<uint64_t>{1000}) {
+    std::cerr << "FAIL: open cohort not enumerated as open\n";
+    return 1;
+  }
+
+  // All members terminal: closes ALL_MEMBERS_TERMINAL, and a FAILED member is
+  // PRESENT carrying its error. Section 4.3's whole point: a member that failed
+  // with a known provider error must not be reduced to an absent entry.
+  std::vector<CoreCaptureCohortRegistry::MemberOutcome> settled;
+  settled.push_back(outcome(1001, 1101, Assembly::TerminalState::DELIVERED, false, 0));
+  settled.push_back(outcome(1002, 1102, Assembly::TerminalState::FAILED, true, 42));
+  if (!cohorts.close(1000, Reason::ALL_MEMBERS_TERMINAL, 20'000, settled)) {
+    std::cerr << "FAIL: close() rejected a valid all-terminal cohort\n";
+    return 1;
+  }
+  const auto closed = cohorts.find(1000);
+  if (!closed || closed->state != State::CLOSED ||
+      closed->closed_reason != Reason::ALL_MEMBERS_TERMINAL ||
+      closed->closed_ns != 20'000 || closed->member_outcomes.size() != 2 ||
+      closed->member_outcomes[1].disposition != Assembly::TerminalState::FAILED ||
+      !closed->member_outcomes[1].has_error_code ||
+      closed->member_outcomes[1].error_code != 42) {
+    std::cerr << "FAIL: closed cohort did not record members and error codes\n";
+    return 1;
+  }
+  if (!cohorts.open_cohort_ids().empty()) {
+    std::cerr << "FAIL: closed cohort still enumerated as open\n";
+    return 1;
+  }
+
+  // Idempotent: a second close must not rewrite the outcome. A cohort that
+  // flipped reason after the fact would report a different capture than the
+  // one that happened.
+  if (cohorts.close(1000, Reason::WINDOW_EXPIRED, 30'000, settled)) {
+    std::cerr << "FAIL: close() overwrote an already-closed cohort\n";
+    return 1;
+  }
+  const auto still_closed = cohorts.find(1000);
+  if (!still_closed || still_closed->closed_reason != Reason::ALL_MEMBERS_TERMINAL ||
+      still_closed->closed_ns != 20'000) {
+    std::cerr << "FAIL: rejected re-close still mutated the cohort\n";
+    return 1;
+  }
+
+  // Window arithmetic is on the supplied clock, from admission. Inside the
+  // window there is nothing to close; at the boundary there is.
+  if (!cohorts.insert(make_cohort(2000))) {
+    std::cerr << "FAIL: window fixture cohort rejected\n";
+    return 1;
+  }
+  const auto delay_inside = cohorts.next_window_expiry_delay_ns(kAdmittedNs, kWindowNs);
+  if (!delay_inside.has_value() || *delay_inside != kWindowNs) {
+    std::cerr << "FAIL: window delay at admission should be the full window\n";
+    return 1;
+  }
+  const auto delay_at_expiry =
+      cohorts.next_window_expiry_delay_ns(kAdmittedNs + kWindowNs, kWindowNs);
+  if (!delay_at_expiry.has_value() || *delay_at_expiry != 0) {
+    std::cerr << "FAIL: window delay at expiry should be zero\n";
+    return 1;
+  }
+
+  // Window expiry with one member never heard from: NEVER_ARRIVED, not
+  // LATE_EXCLUDED -- nothing has arrived to be late.
+  std::vector<CoreCaptureCohortRegistry::MemberOutcome> expired;
+  expired.push_back(outcome(1001, 2101, Assembly::TerminalState::DELIVERED, false, 0));
+  expired.push_back(outcome(1002, 2102, Assembly::TerminalState::NEVER_ARRIVED, false, 0));
+  if (!cohorts.close(2000, Reason::WINDOW_EXPIRED, kAdmittedNs + kWindowNs, expired)) {
+    std::cerr << "FAIL: close() rejected a window-expired cohort\n";
+    return 1;
+  }
+  const auto never_arrived = cohorts.closed_members_never_arrived();
+  if (never_arrived.size() != 1 || never_arrived[0].first != 2000 ||
+      never_arrived[0].second != 1002) {
+    std::cerr << "FAIL: never-arrived member not enumerated for late upgrade\n";
+    return 1;
+  }
+  if (cohorts.next_window_expiry_delay_ns(kAdmittedNs, kWindowNs).has_value()) {
+    std::cerr << "FAIL: closed cohort still scheduling a window deadline\n";
+    return 1;
+  }
+
+  // The late upgrade is deliberately narrow. NEVER_ARRIVED becomes
+  // LATE_EXCLUDED; a member that closed DELIVERED told the truth and must not
+  // be relabelled; and the cohort's closed_reason never changes.
+  if (!cohorts.mark_member_late_excluded(2000, 1002)) {
+    std::cerr << "FAIL: never-arrived member could not be upgraded to late\n";
+    return 1;
+  }
+  if (cohorts.mark_member_late_excluded(2000, 1001)) {
+    std::cerr << "FAIL: a DELIVERED member was relabelled late\n";
+    return 1;
+  }
+  if (cohorts.mark_member_late_excluded(2000, 1002)) {
+    std::cerr << "FAIL: late upgrade was not idempotent\n";
+    return 1;
+  }
+  const auto upgraded = cohorts.find(2000);
+  if (!upgraded || upgraded->closed_reason != Reason::WINDOW_EXPIRED ||
+      upgraded->member_outcomes[1].disposition != Assembly::TerminalState::LATE_EXCLUDED ||
+      upgraded->member_outcomes[0].disposition != Assembly::TerminalState::DELIVERED) {
+    std::cerr << "FAIL: late upgrade altered the wrong member or the reason\n";
+    return 1;
+  }
+  if (!cohorts.closed_members_never_arrived().empty()) {
+    std::cerr << "FAIL: upgraded member still listed as never-arrived\n";
+    return 1;
+  }
+
+  // A FAILED cohort is not OPEN and must not be closed over: submission
+  // failure is a different outcome from a capture that ran and settled.
+  if (!cohorts.insert(make_cohort(3000))) {
+    std::cerr << "FAIL: failed-path fixture cohort rejected\n";
+    return 1;
+  }
+  if (!cohorts.mark_failed(3000, 1001, 7,
+                           CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION)) {
+    std::cerr << "FAIL: mark_failed rejected\n";
+    return 1;
+  }
+  if (cohorts.close(3000, Reason::ALL_MEMBERS_TERMINAL, 40'000, settled)) {
+    std::cerr << "FAIL: a FAILED cohort was closed over\n";
+    return 1;
+  }
+  if (!cohorts.open_cohort_ids().empty()) {
+    std::cerr << "FAIL: a FAILED cohort was enumerated as open\n";
+    return 1;
+  }
+  return 0;
+}
+
+// The per-device single-capture rule's predicate (capture_identity_and_lifecycle.md
+// 3). Registry-level and provider-free: this is the question Core's admission
+// asks, and it must be answered from ADMISSION, not from provider-reported
+// capture_started facts.
+static int test_per_device_admitted_capture_predicate() {
+  using Assembly = CoreCaptureAssemblyRegistry;
+  constexpr uint64_t kDeviceA = 1001;
+  constexpr uint64_t kDeviceB = 1002;
+  constexpr uint64_t kCaptureA = 5001;
+  constexpr uint64_t kCaptureB = 5002;
+
+  CoreCaptureAssemblyRegistry assemblies;
+  CaptureStillImageBundle bundle = make_default_metered_still_image_bundle();
+  CaptureAdmissionContext context{};
+
+  if (assemblies.has_admitted_non_terminal_capture_for_device(kDeviceA)) {
+    std::cerr << "FAIL: an empty registry reported a device busy\n";
+    return 1;
+  }
+
+  // Admitted and not yet terminal: busy from the moment Core admits, with no
+  // provider fact required. A guard waiting for capture_started would be blind
+  // in exactly this window.
+  assemblies.record_admission_context(kCaptureA, kDeviceA, context, bundle, 1000);
+  if (!assemblies.has_admitted_non_terminal_capture_for_device(kDeviceA)) {
+    std::cerr << "FAIL: device not reported busy immediately on admission\n";
+    return 1;
+  }
+  // Scoped to the device. Devices are independent, and a predicate that
+  // answered globally would refuse captures the hardware could serve.
+  if (assemblies.has_admitted_non_terminal_capture_for_device(kDeviceB)) {
+    std::cerr << "FAIL: an unrelated device was reported busy\n";
+    return 1;
+  }
+
+  // Both dispositions an assembly can actually hold release the device.
+  //
+  // Only DELIVERED and FAILED are reachable here: LATE_EXCLUDED and
+  // NEVER_ARRIVED are recorded on the cohort's member outcomes, never on the
+  // assembly. So a mutation narrowing the predicate from "terminal" to "these
+  // two values" is behaviour-equivalent today and survives this check -- that
+  // is expected, not a gap. The predicate is written against terminality
+  // anyway so that a disposition gaining a producing path later releases the
+  // device automatically, instead of holding it busy forever.
+  assemblies.mark_capture_completed(kCaptureA, kDeviceA);
+  if (assemblies.has_admitted_non_terminal_capture_for_device(kDeviceA)) {
+    std::cerr << "FAIL: a DELIVERED capture still held its device busy\n";
+    return 1;
+  }
+  assemblies.record_admission_context(kCaptureB, kDeviceB, context, bundle, 2000);
+  assemblies.mark_capture_failed(kCaptureB, kDeviceB, 42);
+  if (assemblies.has_admitted_non_terminal_capture_for_device(kDeviceB)) {
+    std::cerr << "FAIL: a FAILED capture still held its device busy\n";
+    return 1;
+  }
+  return 0;
+}
+
+// Rig membership versioning (capture_identity_and_lifecycle.md 5.2).
+// Registry-level: membership is declarative configuration, versioned forward,
+// and the version is what makes the transition observable.
+static int test_rig_membership_versioning() {
+  CoreRigRegistry rigs;
+  constexpr uint64_t kRig = 4101;
+
+  // Never set is 0, and distinguishable from "set once".
+  if (rigs.find(kRig) != nullptr) {
+    std::cerr << "FAIL: unknown rig present before retention\n";
+    return 1;
+  }
+  if (!rigs.retain_member_hardware_ids(kRig, {"hw:a", "hw:b"})) {
+    std::cerr << "FAIL: first membership retention rejected\n";
+    return 1;
+  }
+  const auto* rec = rigs.find(kRig);
+  if (!rec || rec->rig_membership_version != 1) {
+    std::cerr << "FAIL: first membership retention did not set version 1\n";
+    return 1;
+  }
+
+  // THE RULE MOST LIKELY TO ROT: re-retaining identical membership is a no-op,
+  // not a version event. A caller re-asserting its configuration every frame
+  // would otherwise manufacture a history of changes that never happened, and
+  // a cohort's recorded version would stop meaning anything.
+  if (!rigs.retain_member_hardware_ids(kRig, {"hw:a", "hw:b"})) {
+    std::cerr << "FAIL: idempotent membership retention rejected\n";
+    return 1;
+  }
+  rec = rigs.find(kRig);
+  if (!rec || rec->rig_membership_version != 1) {
+    std::cerr << "FAIL: re-retaining identical membership bumped the version\n";
+    return 1;
+  }
+
+  // A real change bumps once.
+  if (!rigs.retain_member_hardware_ids(kRig, {"hw:a", "hw:b", "hw:c"})) {
+    std::cerr << "FAIL: membership change rejected\n";
+    return 1;
+  }
+  rec = rigs.find(kRig);
+  if (!rec || rec->rig_membership_version != 2 ||
+      rec->member_hardware_ids.size() != 3) {
+    std::cerr << "FAIL: membership change did not bump the version once\n";
+    return 1;
+  }
+
+  // Order is part of membership identity: the same set in a different order is
+  // a different membership, because member index is positional.
+  if (!rigs.retain_member_hardware_ids(kRig, {"hw:c", "hw:b", "hw:a"})) {
+    std::cerr << "FAIL: reordered membership rejected\n";
+    return 1;
+  }
+  rec = rigs.find(kRig);
+  if (!rec || rec->rig_membership_version != 3) {
+    std::cerr << "FAIL: reordered membership did not bump the version\n";
+    return 1;
+  }
+
+  // Removal is a change like any other.
+  if (!rigs.retain_member_hardware_ids(kRig, {"hw:c"})) {
+    std::cerr << "FAIL: membership removal rejected\n";
+    return 1;
+  }
+  rec = rigs.find(kRig);
+  if (!rec || rec->rig_membership_version != 4 ||
+      rec->member_hardware_ids.size() != 1) {
+    std::cerr << "FAIL: membership removal did not bump the version\n";
+    return 1;
+  }
+
+  // Independent rigs version independently.
+  constexpr uint64_t kOther = 4102;
+  if (!rigs.retain_member_hardware_ids(kOther, {"hw:x"})) {
+    std::cerr << "FAIL: second rig retention rejected\n";
+    return 1;
+  }
+  const auto* other = rigs.find(kOther);
+  rec = rigs.find(kRig);
+  if (!other || other->rig_membership_version != 1 ||
+      !rec || rec->rig_membership_version != 4) {
+    std::cerr << "FAIL: rigs do not version independently\n";
+    return 1;
+  }
+  return 0;
+}
+
+// Rig membership mutation (capture_identity_and_lifecycle.md 5.1). Registry
+// level: the rules, independent of how the boundary spells them.
+static int test_rig_membership_mutation() {
+  using Change = CoreRigRegistry::MembershipChange;
+  CoreRigRegistry rigs;
+  constexpr uint64_t kRig = 4201;
+
+  if (rigs.add_member(kRig, "hw:a") != Change::RigNotFound) {
+    std::cerr << "FAIL: add to an unknown rig was not rejected\n";
+    return 1;
+  }
+  if (!rigs.retain_member_hardware_ids(kRig, {"hw:a", "hw:b"})) {
+    std::cerr << "FAIL: initial membership rejected\n";
+    return 1;
+  }
+  const uint64_t base_version = rigs.find(kRig)->rig_membership_version;
+
+  // Adding a new member changes membership and versions it.
+  if (rigs.add_member(kRig, "hw:c") != Change::Changed) {
+    std::cerr << "FAIL: adding a new member did not report a change\n";
+    return 1;
+  }
+  if (rigs.find(kRig)->rig_membership_version != base_version + 1 ||
+      rigs.find(kRig)->member_hardware_ids.size() != 3) {
+    std::cerr << "FAIL: add did not apply or did not version\n";
+    return 1;
+  }
+
+  // Idempotent: adding an existing member is not a change and must not bump.
+  // Membership is a set the caller declares, not operations to replay.
+  if (rigs.add_member(kRig, "hw:c") != Change::NoChange ||
+      rigs.find(kRig)->rig_membership_version != base_version + 1 ||
+      rigs.find(kRig)->member_hardware_ids.size() != 3) {
+    std::cerr << "FAIL: re-adding an existing member was not idempotent\n";
+    return 1;
+  }
+
+  // Removing a non-member is idempotent for the same reason.
+  if (rigs.remove_member(kRig, "hw:zzz") != Change::NoChange ||
+      rigs.find(kRig)->rig_membership_version != base_version + 1) {
+    std::cerr << "FAIL: removing a non-member was not idempotent\n";
+    return 1;
+  }
+
+  // Removal applies and versions.
+  if (rigs.remove_member(kRig, "hw:b") != Change::Changed ||
+      rigs.find(kRig)->rig_membership_version != base_version + 2 ||
+      rigs.find(kRig)->member_hardware_ids.size() != 2) {
+    std::cerr << "FAIL: remove did not apply or did not version\n";
+    return 1;
+  }
+
+  // A rig cannot be emptied by removal: an empty rig fails preflight with
+  // EmptyMembership and can never be triggered, so it would exist and be
+  // permanently useless.
+  if (rigs.remove_member(kRig, "hw:a") != Change::Changed) {
+    std::cerr << "FAIL: removing down to one member was refused too early\n";
+    return 1;
+  }
+  const uint64_t before_refusal = rigs.find(kRig)->rig_membership_version;
+  if (rigs.remove_member(kRig, "hw:c") != Change::WouldEmptyRig) {
+    std::cerr << "FAIL: removing the last member was allowed\n";
+    return 1;
+  }
+  if (rigs.find(kRig)->member_hardware_ids.size() != 1 ||
+      rigs.find(kRig)->rig_membership_version != before_refusal) {
+    std::cerr << "FAIL: a refused removal still mutated the rig\n";
+    return 1;
+  }
+  return 0;
+}
+
+// One rig per device (capture_identity_and_lifecycle.md 5.5). Load-bearing for
+// tranche 3: the second-rig denial is scoped per rig precisely because cohorts
+// cannot share participants.
+static int test_one_rig_per_device() {
+  using Change = CoreRigRegistry::MembershipChange;
+  CoreRigRegistry rigs;
+  constexpr uint64_t kRigA = 4301;
+  constexpr uint64_t kRigB = 4302;
+
+  if (!rigs.retain_member_hardware_ids(kRigA, {"hw:a", "hw:b"}) ||
+      !rigs.retain_member_hardware_ids(kRigB, {"hw:c", "hw:d"})) {
+    std::cerr << "FAIL: rig setup rejected\n";
+    return 1;
+  }
+
+  // The refusing direction: a device already in rig A cannot join rig B.
+  if (rigs.add_member(kRigB, "hw:a") != Change::AlreadyInAnotherRig) {
+    std::cerr << "FAIL: a device in another rig was allowed to join a second\n";
+    return 1;
+  }
+  if (rigs.find(kRigB)->member_hardware_ids.size() != 2) {
+    std::cerr << "FAIL: a refused cross-rig add still mutated the rig\n";
+    return 1;
+  }
+
+  // THE FALSE-POSITIVE DIRECTION, which matters at least as much: a device in
+  // NO rig joins freely, and re-adding a device to the rig it already belongs
+  // to stays idempotent rather than tripping the cross-rig rule against
+  // itself.
+  if (rigs.add_member(kRigB, "hw:e") != Change::Changed) {
+    std::cerr << "FAIL: an unowned device was refused\n";
+    return 1;
+  }
+  if (rigs.add_member(kRigA, "hw:a") != Change::NoChange) {
+    std::cerr << "FAIL: re-adding a device to its own rig tripped the cross-rig rule\n";
+    return 1;
+  }
+
+  // Once released from rig A, the device may join rig B -- the rule is about
+  // present membership, not history.
+  if (rigs.remove_member(kRigA, "hw:a") != Change::Changed) {
+    std::cerr << "FAIL: removal from the owning rig refused\n";
+    return 1;
+  }
+  if (rigs.add_member(kRigB, "hw:a") != Change::Changed) {
+    std::cerr << "FAIL: a released device could not join another rig\n";
+    return 1;
+  }
+
+  // rig_owning_member reports the owner, and ignores the excluded rig.
+  if (rigs.rig_owning_member("hw:a", 0) != kRigB ||
+      rigs.rig_owning_member("hw:a", kRigB) != 0 ||
+      rigs.rig_owning_member("hw:nobody", 0) != 0) {
+    std::cerr << "FAIL: rig_owning_member reported the wrong owner\n";
     return 1;
   }
   return 0;
@@ -1407,6 +1902,11 @@ static int test_scoped_resource_telemetry_runtime_framebuffer_lease_integration(
 
 int main() {
   if (int r = test_capture_cohort_registry_basics()) return r;
+  if (int r = test_capture_cohort_closure()) return r;
+  if (int r = test_per_device_admitted_capture_predicate()) return r;
+  if (int r = test_rig_membership_versioning()) return r;
+  if (int r = test_rig_membership_mutation()) return r;
+  if (int r = test_one_rig_per_device()) return r;
   if (int r = test_scoped_resource_telemetry_default_and_projection()) return r;
   if (int r = test_scoped_resource_telemetry_runtime_framebuffer_lease_integration()) return r;
   if (int r = test_topology_detached_and_retirement()) return r;

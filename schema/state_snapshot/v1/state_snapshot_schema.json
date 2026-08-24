@@ -214,7 +214,6 @@
         "captures_triggered",
         "captures_completed",
         "captures_failed",
-        "last_capture_id",
         "last_capture_latency_ns",
         "last_sync_skew_ns",
         "error_code"
@@ -251,9 +250,6 @@
           "$ref": "#/$defs/uint64"
         },
         "captures_failed": {
-          "$ref": "#/$defs/uint64"
-        },
-        "last_capture_id": {
           "$ref": "#/$defs/uint64"
         },
         "last_capture_latency_ns": {
@@ -350,7 +346,6 @@
         "captures_triggered",
         "captures_completed",
         "captures_failed",
-        "last_capture_id",
         "last_capture_latency_ns",
         "error_code",
         "capture_profile",
@@ -373,9 +368,6 @@
           "$ref": "#/$defs/uint64"
         },
         "captures_failed": {
-          "$ref": "#/$defs/uint64"
-        },
-        "last_capture_id": {
           "$ref": "#/$defs/uint64"
         },
         "last_capture_latency_ns": {

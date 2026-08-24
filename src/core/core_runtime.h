@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -399,6 +400,13 @@ enum class TryCloseDeviceStatus : uint8_t {
     bool ok = false;
     RigPreflightFailure failure = RigPreflightFailure::None;
     uint64_t rig_id = 0;
+    // The rig's membership version at the instant this preflight read its
+    // members (capture_identity_and_lifecycle.md 5.2). Carried on the
+    // preflight rather than re-read at admission ON PURPOSE: the version and
+    // the participant list must come from the SAME read, or a membership
+    // change landing between the two would stamp a cohort with a version that
+    // does not describe the members it actually ran.
+    uint64_t rig_membership_version = 0;
     size_t failure_member_index = 0;
     std::string failure_hardware_id;
     uint64_t failure_device_instance_id = 0;
@@ -413,6 +421,10 @@ enum class TryCloseDeviceStatus : uint8_t {
     ImagingSpecUnavailable = 4,
     ImagingSpecRejected = 5,
     DuplicateCaptureId = 6,
+    // This rig already has a capture in flight. Scoped to the rig, not global
+    // (see CoreCaptureCohortRegistry::has_open_cohort_for_rig). Maps to
+    // ERR_BUSY at the boundary like every non-configuration failure.
+    RigCaptureInFlight = 7,
   };
 
   struct RigAdmittedParticipantRequest {
@@ -420,10 +432,21 @@ enum class TryCloseDeviceStatus : uint8_t {
     CaptureRequest request{};
   };
 
+  // Draws one Device Capture Id. Supplied by the Godot boundary, which owns
+  // both id counters (see arbitration_policy.md 9 and
+  // capture_identity_and_lifecycle.md 2.1). Core cannot mint these itself: it
+  // must not become a second allocator for a space the boundary already owns.
+  // Called once per rig participant, on the core thread, during admission --
+  // the only point that knows how many members there are, because the
+  // participant list does not exist until preflight has run.
+  using DeviceCaptureIdMinter = std::function<uint64_t()>;
+
   struct RigAdmittedRequestBundle {
     bool ok = false;
     RigCohortAdmissionFailure failure = RigCohortAdmissionFailure::None;
-    uint64_t capture_id = 0;
+    // Rig Capture Id. Each participant's own Device Capture Id is on its
+    // request, never this value.
+    uint64_t rig_capture_id = 0;
     uint64_t rig_id = 0;
     std::vector<RigAdmittedParticipantRequest> participants;
   };
@@ -438,7 +461,7 @@ enum class TryCloseDeviceStatus : uint8_t {
   struct RigSubmissionResult {
     bool ok = false;
     RigSubmissionFailure failure = RigSubmissionFailure::None;
-    uint64_t capture_id = 0;
+    uint64_t rig_capture_id = 0;
     uint64_t rig_id = 0;
     size_t submitted_count = 0;
     size_t failed_index = 0;
@@ -454,11 +477,27 @@ enum class TryCloseDeviceStatus : uint8_t {
     SubmissionFailed = 4,
   };
 
+  // One admitted member: its hardware id and its own Device Capture Id.
+  // Carried out to the boundary so a rig trigger can return the member map
+  // (capture_identity_and_lifecycle.md 4.1) without a second lookup against
+  // the cohort registry -- the data is already in hand at admission.
+  struct RigTriggeredMember {
+    std::string hardware_id;
+    uint64_t device_capture_id = 0;
+    // Carried so the boundary can group unfinished member captures by
+    // device (4.5) without re-resolving the hardware id, which only
+    // resolves for endpoint-engaged devices.
+    uint64_t device_instance_id = 0;
+  };
+
   struct RigTriggerOrchestrationResult {
     bool ok = false;
     RigOrchestrationFailure failure = RigOrchestrationFailure::None;
     uint64_t rig_id = 0;
-    uint64_t capture_id = 0;
+    uint64_t rig_capture_id = 0;
+    // Populated only on success. Empty on any refusal: a refused trigger mints
+    // nothing a caller could correlate against.
+    std::vector<RigTriggeredMember> members;
     RigPreflightFailure preflight_failure = RigPreflightFailure::None;
     RigCohortAdmissionFailure admission_failure = RigCohortAdmissionFailure::None;
     RigSubmissionFailure submission_failure = RigSubmissionFailure::None;
@@ -480,22 +519,57 @@ enum class TryCloseDeviceStatus : uint8_t {
   bool smoke_set_capture_datetime_utc_nanoseconds(int64_t unix_epoch_nanoseconds);
   uint64_t smoke_capture_admission_clock_sample_count() const noexcept;
   void smoke_reset_capture_admission_clock_sample_count() noexcept;
+  // Record a capture admission directly, so a check can put a capture in
+  // flight without depending on a provider's completion timing. StubProvider
+  // completes synchronously, which makes an ordinary trigger useless for
+  // testing anything that must happen WHILE a capture is outstanding.
+  void smoke_record_capture_admission(uint64_t capture_id,
+                                      uint64_t device_instance_id) {
+    capture_assembly_registry_.record_admission_context(
+        capture_id, device_instance_id, CaptureAdmissionContext{},
+        make_default_metered_still_image_bundle(), ns_since_epoch_());
+  }
+
+  // A capture's terminal disposition as Core holds it. Read directly: the
+  // assembly registry is self-locking.
+  CoreCaptureAssemblyRegistry::MemberDisposition smoke_capture_disposition(
+      uint64_t capture_id, uint64_t device_instance_id) const {
+    return capture_assembly_registry_.disposition_for(capture_id, device_instance_id);
+  }
   std::optional<CaptureAdmissionContext> smoke_capture_admission_context(
       uint64_t capture_id, uint64_t device_instance_id) const;
   RigPreflightResult preflight_rig_participants_materialize(uint64_t rig_id) const;
   bool smoke_set_rig_member_hardware_ids(uint64_t rig_id, std::vector<std::string> member_hardware_ids);
+  // Maintainer verifiers exercise admission and submission, not id allocation,
+  // so these default to a process-monotonic minter rather than making every
+  // call site hand-roll an allocator. The production path
+  // (orchestrate_rig_capture_with_capture_id_for_server) deliberately has no
+  // default: the boundary owns the counters and must say so.
+  static const DeviceCaptureIdMinter& smoke_default_device_capture_id_minter();
+  // Cohort record as the closure sweep leaves it. Read directly: the registry
+  // is self-locking, so this needs no core-thread round trip.
+  std::optional<CoreCaptureCohortRegistry::CohortRecord> smoke_capture_cohort(
+      uint64_t rig_capture_id) const {
+    return capture_cohort_registry_.find(rig_capture_id);
+  }
   RigAdmittedRequestBundle smoke_admit_rig_cohort_from_preflight(
       uint64_t rig_id,
-      uint64_t capture_id,
-      const RigPreflightResult& preflight);
+      uint64_t rig_capture_id,
+      const RigPreflightResult& preflight,
+      const DeviceCaptureIdMinter& mint_device_capture_id =
+          smoke_default_device_capture_id_minter());
   RigTriggerOrchestrationResult smoke_orchestrate_rig_capture_from_preflight(
       uint64_t rig_id,
-      uint64_t capture_id,
-      const RigPreflightResult& preflight);
+      uint64_t rig_capture_id,
+      const RigPreflightResult& preflight,
+      const DeviceCaptureIdMinter& mint_device_capture_id =
+          smoke_default_device_capture_id_minter());
   RigSubmissionResult smoke_submit_admitted_rig_bundle(const RigAdmittedRequestBundle& bundle);
   RigTriggerOrchestrationResult smoke_orchestrate_rig_capture_with_capture_id(
       uint64_t rig_id,
-      uint64_t capture_id);
+      uint64_t rig_capture_id,
+      const DeviceCaptureIdMinter& mint_device_capture_id =
+          smoke_default_device_capture_id_minter());
 
   struct ImagingSpecRetainedStateForSmoke {
     uint64_t imaging_spec_version = 0;
@@ -517,6 +591,76 @@ enum class TryCloseDeviceStatus : uint8_t {
       uint32_t image_member_index) const;
 
 #endif
+
+  // Settlement drains for the boundary's completion signals (section 4.2).
+  // Both registries are self-locking, so these need no core-thread round trip
+  // and are safe to call from the Godot tick.
+  std::vector<CoreCaptureAssemblyRegistry::FinishedCapture>
+  drain_finished_captures_for_server() {
+    return capture_assembly_registry_.drain_finished_captures();
+  }
+  // Where a Device Capture sits in a rig, if it does
+  // (capture_identity_and_lifecycle.md 2.3). Read from the self-locking
+  // cohort registry, so safe from the Godot thread without a core round trip.
+  //
+  // A Device Capture that was never a rig member simply has no cohort, which
+  // is how a result knows its origin is DEVICE rather than RIG -- the absence
+  // is the answer, not a lookup failure.
+  struct RigParticipationForServer {
+    uint64_t rig_capture_id = 0;
+    uint64_t rig_id = 0;
+    std::string hardware_id;
+    int32_t member_index = -1;
+  };
+  std::optional<RigParticipationForServer>
+  rig_participation_for_device_capture(uint64_t device_capture_id) const {
+    if (device_capture_id == 0) {
+      return std::nullopt;
+    }
+    const auto cohort = capture_cohort_registry_.find_by_device_capture_id(device_capture_id);
+    if (!cohort) {
+      return std::nullopt;
+    }
+    RigParticipationForServer out;
+    out.rig_capture_id = cohort->rig_capture_id;
+    out.rig_id = cohort->rig_id;
+    // Membership order, which is the order expected_participants was built in.
+    for (size_t i = 0; i < cohort->expected_participants.size(); ++i) {
+      if (cohort->expected_participants[i].device_capture_id == device_capture_id) {
+        out.hardware_id = cohort->expected_participants[i].hardware_id;
+        out.member_index = static_cast<int32_t>(i);
+        break;
+      }
+    }
+    return out;
+  }
+  // Per-member outcomes of a closed cohort (capture_identity_and_lifecycle.md
+  // 4.3). Read straight from the self-locking registry like the completion
+  // drains, so no core-thread round trip. Empty while the cohort is still
+  // open: outcomes are decided at closure, which is the moment the boundary
+  // emits rig_capture_finished.
+  std::vector<CoreCaptureCohortRegistry::MemberOutcome>
+  capture_member_outcomes_for_server(uint64_t rig_capture_id) const {
+    const auto cohort = capture_cohort_registry_.find(rig_capture_id);
+    if (!cohort ||
+        cohort->state != CoreCaptureCohortRegistry::CohortState::CLOSED) {
+      return {};
+    }
+    return cohort->member_outcomes;
+  }
+  std::vector<CoreCaptureCohortRegistry::ClosedCohort>
+  drain_closed_cohorts_for_server() {
+    return capture_cohort_registry_.drain_closed_cohorts();
+  }
+
+  // Rig membership mutation, run ON THE CORE THREAD so the read-modify-write
+  // of the member list is atomic. Doing it at the boundary -- read members,
+  // compute a new list, retain it -- would race a concurrent change and could
+  // silently drop one.
+  CoreRigRegistry::MembershipChange try_add_rig_member_for_server(
+      uint64_t rig_id, const std::string& hardware_id) noexcept;
+  CoreRigRegistry::MembershipChange try_remove_rig_member_for_server(
+      uint64_t rig_id, const std::string& hardware_id) noexcept;
 
   bool retain_rig_member_hardware_ids(
       uint64_t rig_id,
@@ -566,10 +710,12 @@ enum class TryCloseDeviceStatus : uint8_t {
   ReplaceExternalCameraDescriptionResult replace_external_camera_description_json_for_internal(
       const std::string& json_text);
 
-  // Server-internal adapter: caller supplies capture_id (no allocation here).
+  // Server-internal adapter: the caller supplies the Rig Capture Id and the
+  // minter for its members' Device Capture Ids. Core allocates neither.
   RigTriggerOrchestrationResult orchestrate_rig_capture_with_capture_id_for_server(
       uint64_t rig_id,
-      uint64_t capture_id) noexcept;
+      uint64_t rig_capture_id,
+      const DeviceCaptureIdMinter& mint_device_capture_id) noexcept;
 
 #if defined(CAMBANG_INTERNAL_SMOKE)
   CoreThread::PostResult try_post_core_thread_unchecked(CoreThread::Task task) {
@@ -678,6 +824,8 @@ enum class TryCloseDeviceStatus : uint8_t {
     return result_store_.get_latest_stream_result(stream_id);
   }
 
+  // Boundary-facing: a Device Capture Id is sufficient on its own (2.1).
+  SharedCaptureResultData get_capture_result(uint64_t capture_id) const;
   SharedCaptureResultData get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
   std::vector<SharedCaptureResultData> get_capture_result_set(uint64_t capture_id) const;
   void mark_stream_display_demand(uint64_t stream_id) {
@@ -929,18 +1077,28 @@ private:
   RigPreflightResult preflight_rig_participants_materialize_(uint64_t rig_id) const;
   RigAdmittedRequestBundle admit_rig_cohort_from_preflight_(
       uint64_t rig_id,
-      uint64_t capture_id,
-      const RigPreflightResult& preflight);
+      uint64_t rig_capture_id,
+      const RigPreflightResult& preflight,
+      const DeviceCaptureIdMinter& mint_device_capture_id);
   RigTriggerOrchestrationResult orchestrate_rig_capture_from_preflight_(
       uint64_t rig_id,
-      uint64_t capture_id,
-      const RigPreflightResult& preflight);
+      uint64_t rig_capture_id,
+      const RigPreflightResult& preflight,
+      const DeviceCaptureIdMinter& mint_device_capture_id);
   RigCohortAdmissionFailure grouped_rig_imaging_spec_admission_failure_(
       const RigPreflightResult& preflight) const noexcept;
   RigSubmissionResult submit_admitted_rig_bundle_(const RigAdmittedRequestBundle& bundle);
   RigTriggerOrchestrationResult orchestrate_rig_capture_with_capture_id_(
       uint64_t rig_id,
-      uint64_t capture_id);
+      uint64_t rig_capture_id,
+      const DeviceCaptureIdMinter& mint_device_capture_id);
+  // Cohort closure, run once per core-thread sweep. Closes any OPEN cohort
+  // whose members are all terminal (ALL_MEMBERS_TERMINAL) or whose
+  // simultaneity window has expired (WINDOW_EXPIRED), and upgrades a member
+  // recorded NEVER_ARRIVED to LATE_EXCLUDED if its terminal fact turns up
+  // after its cohort closed. Core-thread only.
+  void sweep_capture_cohort_closure_(uint64_t now_ns);
+
   CaptureAdmissionContext make_capture_admission_context_() const;
   CoreResolvedCaptureImageFacts resolve_capture_image_facts_(
       uint64_t capture_id, uint64_t device_instance_id,
@@ -1452,6 +1610,27 @@ private:
   // participant could still legitimately be resolving.
   static constexpr uint64_t kCaptureCohortRetentionWindowNs =
       300ull * 1000ull * 1000ull * 1000ull; // 5 minutes
+
+  // Rig capture simultaneity window (capture_identity_and_lifecycle.md 4.4).
+  // NOT the retention window above, and not an impatience threshold: a member
+  // settling outside it is not part of the same moment, and excluding it is
+  // the correct outcome rather than a failure to wait.
+  //
+  // Measured on Core's own clock from cohort admission, so it is bounded below
+  // by payload DELIVERY latency, not by any tolerance about "the same
+  // instant". The two failure directions are asymmetric and neither is
+  // cost-free: too tight turns a slow-but-working camera into a member that
+  // never arrived, and a camera going quiet (no pilot frames, ae_state=255,
+  // payloads seconds late) is a real observed condition on this hardware,
+  // producing a short rig that looks exactly like a rig defect. Too loose
+  // lets a genuinely staggered set pass as simultaneous, which is the
+  // invariant this window exists to protect.
+  //
+  // 2s is a starting value chosen against that asymmetry and NOT yet
+  // calibrated against a slow device -- see the tranche's note that
+  // LATE_EXCLUDED's real-world behaviour is only observable on hardware.
+  static constexpr uint64_t kRigCaptureSimultaneityWindowNs =
+      2ull * 1000ull * 1000ull * 1000ull; // 2 seconds
 
   // Retention window for capture_assembly_registry_/result_store_ terminal
   // capture entries (ledger #52). Time-based, not supersession-based: see

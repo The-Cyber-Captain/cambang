@@ -73,7 +73,7 @@ var _stream_geom := Vector2i.ZERO
 # No is_started() on CamBANGStream, and stop() on an already-stopped stream is
 # refused with ERR_BAD_STATE, so the scene tracks it rather than double-stopping.
 var _stream_started := false
-var _last_capture_id := 0
+var _last_capture_id := ""
 var _steps: Array = []
 var _failed := false
 var _done := false
@@ -175,7 +175,7 @@ func _open_state(kind: String, geom: Vector2i, texture: Texture2D) -> void:
 # Not a recorded step. It is setup for the comparison, not an assertion; if it
 # fails to deliver the panel is empty and the log says so.
 func _take_before(geom: Vector2i) -> void:
-	if int(_device.trigger_capture()) != OK:
+	if int(_device.trigger_capture().get("error", FAILED)) != OK:
 		_log("before-capture at %dx%d was not triggered" % [geom.x, geom.y])
 		return
 	if not await _await_capture(CAPTURE_SETTLE_MS):
@@ -330,8 +330,9 @@ func _await_capture(timeout_ms: int) -> bool:
 	var deadline := Time.get_ticks_msec() + timeout_ms
 	while Time.get_ticks_msec() < deadline:
 		var res: CamBANGCaptureResult = _device.get_result()
-		if res != null and int(res.get_capture_id()) != _last_capture_id:
-			_last_capture_id = int(res.get_capture_id())
+		var res_id := str(res.get_capture_identity().get("device_capture_id", "")) if res != null else ""
+		if res != null and res_id != _last_capture_id:
+			_last_capture_id = res_id
 			return true
 		await get_tree().process_frame
 	return false
@@ -453,7 +454,7 @@ func _run_states() -> void:
 		_record("1 no seam: set profile A", Expect.OK, err, "cannot proceed")
 		return
 	_record("1 no seam: set profile A", Expect.OK, err, "")
-	err = int(_device.trigger_capture())
+	err = int(_device.trigger_capture().get("error", FAILED))
 	_record("1 no seam: trigger capture", Expect.OK, err, "")
 	await _record_delivery("1 no seam", err, GEOM_A)
 	await _gate("PROCEED  -  next state")
@@ -471,7 +472,7 @@ func _run_states() -> void:
 	await _take_before(GEOM_A)
 	err = int(_device.set_still_capture_profile(_still_profile(GEOM_B)))
 	_record("2 parent-held: set profile B", Expect.OK, err, "")
-	err = int(_device.trigger_capture())
+	err = int(_device.trigger_capture().get("error", FAILED))
 	_record("2 parent-held: trigger capture", Expect.OK, err, "")
 	await _record_delivery("2 parent-held", err, GEOM_B)
 	await _gate("PROCEED  -  next state")
@@ -501,7 +502,7 @@ func _run_states() -> void:
 	await _gate("PROCEED  -  run this state")
 	err = int(_device.set_still_capture_profile(_still_profile(GEOM_A)))
 	_record("3 stream-held: set profile A", Expect.OK, err, "")
-	err = int(_device.trigger_capture())
+	err = int(_device.trigger_capture().get("error", FAILED))
 	_record("3 stream-held: trigger capture", Expect.OK, err, "")
 	# Read after a publish tick: snapshots are tick-bounded and an immediate
 	# read still shows the pre-capture state.
@@ -529,7 +530,7 @@ func _run_states() -> void:
 	await _take_before(GEOM_A)
 	err = int(_device.set_still_capture_profile(_still_profile(GEOM_B)))
 	_record("4 stopped-stream: set profile B", Expect.OK, err, "")
-	err = int(_device.trigger_capture())
+	err = int(_device.trigger_capture().get("error", FAILED))
 	_record("4 stopped-stream: trigger capture", Expect.OK, err, "")
 	await _record_delivery("4 stopped-stream", err, GEOM_B)
 	await _gate("PROCEED  -  next state")
@@ -553,7 +554,7 @@ func _run_states() -> void:
 	_drop_stream()
 	await get_tree().create_timer(SETTLE_PAUSE_SEC).timeout
 	await _gate("PROCEED  -  run this state")
-	err = int(_device.trigger_capture())
+	err = int(_device.trigger_capture().get("error", FAILED))
 	_record("5 capture-held: SETUP trigger capture", Expect.OK, err, "")
 	# The request goes in WITHOUT awaiting the capture above -- that is the
 	# whole state.
@@ -561,7 +562,7 @@ func _run_states() -> void:
 	_record("5 capture-held: set profile A mid-flight", Expect.OBSERVE, set_err, "")
 	if err == OK and await _await_capture(CAPTURE_SETTLE_MS):
 		_show("before", "Capture", GEOM_B, _capture_artifact())
-	err = int(_device.trigger_capture())
+	err = int(_device.trigger_capture().get("error", FAILED))
 	_record("5 capture-held: trigger capture", Expect.OK, err, "")
 	await _record_delivery("5 capture-held", err, Vector2i.ZERO)
 	await _gate("PROCEED  -  next state")

@@ -2,15 +2,92 @@
 
 ## 0. Status
 
-**Design intent. Not yet implemented.**
+**Implemented. §9 is the ledger, and it cites source for every claim.**
+
+Per-section state, read from the code rather than from the tranche that claimed
+it. §9.2b says how each contested mandate is met; §9.8 lists what remains thin.
+
+| Section | State | Where |
+|---|---|---|
+| §2.1 separate id spaces | complete | `82fe1e7` |
+| §2.2 durable `dc_`/`rc_` public ids | complete | `c2854fd` |
+| §2.3 what a result carries | complete | `d950502` + `c2854fd` |
+| §3 within-class arbitration | complete | `9084bfe` + `d950502` + `2598470` |
+| §3.1 simultaneity admission-checked | complete | pre-existing + `c44e787` |
+| §4.1 triggers return identity | complete | `d950502` |
+| §4.2 signals | complete | `d950502` + `c2854fd` |
+| §4.2 canonical wrappers | complete | `d950502` |
+| §4.3 dispositions | complete | `c44e787` + `d950502` |
+| §4.4 cohort closure and the simultaneity window | complete | `c44e787` |
+| §4.5 outstanding-set query | complete | `d950502` |
+| §5.1, §5.3 membership lifecycle and `DEVICE_LOST` | complete | `42c540a` |
+| §5.2 membership versioning | complete — recorded in the cohort; §5.2 amended so that exposing it is not required | `42c540a` |
+| §5.4 removal settles provider state | complete | `d950502` |
+| §5.5 one rig per device | complete | `42c540a` + `d950502` |
+| §6 accept, refuse, or version | complete | pre-existing + `54b7f11` |
+| §7 attribution by accounting | complete — every abandonment path aborts | `d950502` |
+| §8 consequences | complete | `c2854fd` |
+
+Every row now cites a commit. Where two are named, the first introduced the
+mechanism and the second changed its shape -- most often `c2854fd` replacing a
+`uint64` id with the durable string form.
 
 This document defines the target model for capture identity, capture
-arbitration, capture completion reporting, and rig-membership lifecycle. Until
-the implementation lands, **source and tests remain the authority for current
-behaviour**; §9 records what is true today and how it differs.
+arbitration, capture completion reporting, and rig-membership lifecycle. Where
+it and the source disagree, **source and tests remain the authority**; §9
+records what is true today and how it still differs.
 
-This document supersedes `arbitration_policy.md` §9's shared-counter rule on
-implementation. It depends on, and must not contradict, `camera_fact_model.md`
+**§0 and §9 are updated by whatever change lands a part of this model, in the
+same commit as the code.** Not by a work order that happens to remember to say
+so — that instruction has died with two tranche files already, and in between
+a comment asserting dead code survived the tranche that made it live. A status
+section that drifts is worse than none, because it is read as current.
+
+**§8 is met, which is the section that decides whether the rest was worth
+doing.** Harnesses have deleted their hand-rolled completion detection rather
+than rewritten it: scene 569 and the soak benchmark now gate on
+`capture_finished`, and the per-device baselines, the `_device_last_capture_id`
+helper and the `capture_id > baseline` comparisons are gone.
+
+**Ids are durable.** §2.2 landed: `dc_<ulid>` / `rc_<ulid>`, monotonic within a
+millisecond so a rig's members sort in the order they were minted. The internal
+`uint64` is unchanged and still keys Core.
+
+§5.2 was amended rather than built to. Its membership version is recorded on
+the cohort and not exposed, because a session-scoped counter cannot describe a
+membership to a result reloaded later; §2.3 and `get_member_outcomes()` already
+enumerate the membership by durable hardware id, which is what the section
+wanted. §9.2b states it with source.
+
+A note on how this document has been audited. An earlier version claimed every
+mandate was met on the strength of a search for the word "must" — which missed
+§2.3, §5.2 and §8, all of which state their requirement in a purpose clause
+("so that…", "should be able to…") rather than an imperative. A requirement
+here is not only a sentence containing "must", and a status section built that
+way will keep reporting done.
+
+**What was agreed, and what was not.** The completion verb (`finished`), the
+single server-wide signal, the bound constants, and `create_rig` taking device
+handles were decided by the maintainer in conversation. The per-object signal
+payloads are implementation choices: §4.2 names no signal and defines no
+payload. §9.1 lists what is actually bound.
+
+**Hardware validation is thin, and should not be assumed from the commits.**
+The arbitration rules (§3) are proven host-native and mutation-proved, but have
+no hardware coverage: scene 870 stalls on the S20+ for reasons unrelated to
+this work, and the one platform-backed run that completed cleanly (WinRT, after
+the provider fix in `60d1533`) exercises capture and rig capture rather than
+contention. §5.3's `DEVICE_LOST` has no hardware coverage at all — no existing
+scene closes a device mid-capture.
+
+§4.1 and §4.2 now have one hardware exercise: `1001_basic_quest_snap.tscn` on a
+Quest 3 over Camera2, triggering a two-device rig capture and taking its results
+through the completion signal. It is a manual scene and emits no verdict, so the
+evidence is the maintainer watching it, not a launcher classification. It is
+what found the preemption defect in §9.8.
+
+This document supersedes `arbitration_policy.md` §9's shared-counter rule,
+which is done. It depends on, and must not contradict, `camera_fact_model.md`
 §12 (acquisition timing and capture date-time).
 
 ---
@@ -107,10 +184,23 @@ A rig result set asserts that its images are of one moment. A provider that
 cannot execute all members concurrently would deliver a *staggered* set that
 looks simultaneous.
 
-Providers therefore declare their concurrent device-capture capacity, and Core
-**refuses a Rig Capture it cannot execute simultaneously** rather than
-delivering a staggered set. Simultaneity is a checked invariant, not an
-aspiration.
+Core therefore **refuses a Rig Capture it cannot execute simultaneously**
+rather than delivering a staggered set. Simultaneity is a checked invariant,
+not an aspiration.
+
+**The capacity is ingested, not declared by the provider.** An earlier draft of
+this section said providers declare their concurrent device-capture capacity.
+They do not, and on the platforms this project targets they cannot: Camera2
+NDK surfaces no runtime concurrency information. The authority is the
+camera-concurrency truth ingested through
+`CamBANGServer.ingest_camera_description(...)` before `start()`, held as
+`allowed_camera_id_combinations`.
+
+That gate exists and fails closed: a rig whose exact member combination has no
+accepted truth is refused at creation and again at trigger, with
+`ERR_UNCONFIGURED` — a permanent, caller-fixable configuration gap rather than
+busy-ness. No `ICameraProvider` capacity method exists, and none should be
+added; the sentence this replaces invited exactly that.
 
 ---
 
@@ -137,7 +227,7 @@ Completion is reported at two levels:
 - **Per object** — a `CamBANGDevice` emits for the Device Captures it
   initiated; a `CamBANGRig` emits for its own Rig Captures. This is the
   ergonomic default: a component subscribes only to the rig it owns.
-- **Server-wide** — `CamBANGServer` emits for every settled capture, carrying
+- **Server-wide** — `CamBANGServer` emits for every finished capture, carrying
   the id. This is the fan-in for cross-cutting consumers (status panels,
   logging, scene-wide orchestration).
 
@@ -180,16 +270,16 @@ membership, lateness, ordering, or identity.
 ### 4.5 Outstanding work
 
 A caller that records the id a trigger returns (§4.1) and clears it on the
-matching settlement (§4.2) knows what it is still waiting for, without polling
+matching completion signal (§4.2) knows what it is still waiting for, without polling
 anything. That is the ordinary usage this model is designed around, and it is
 deliberately sufficient on its own.
 
 `CamBANGServer` must also expose that set directly — the ids it has minted and
-not yet seen settle, per device and in total — for callers that would otherwise
+not yet seen finish, per device and in total — for callers that would otherwise
 maintain it themselves.
 
 This adds no lifecycle concept and no new bookkeeping. Capture ids are minted
-at the Godot boundary, and §4.2's settlement signals arrive there; the boundary
+at the Godot boundary, and §4.2's completion signals arrive there; the boundary
 therefore sees both ends already. Today it sees only one, because the minted id
 is discarded rather than returned (§9), which is exactly what §4.1 fixes.
 
@@ -227,11 +317,34 @@ in-flight result set.
 ### 5.2 Membership is versioned
 
 Rig membership carries a `rig_membership_version`, bumped on change. Each Rig
-Capture records the version it was admitted under, so a stored result set is
-self-describing about the membership that produced it.
+Capture records the version it was admitted under, taken from the preflight
+that resolved its participants.
 
-This mirrors the existing device capture-profile pattern, which is accepted
-while live and versioned forward.
+The version is internal admission bookkeeping and is deliberately **not**
+exposed at the boundary. It cannot make a stored result set self-describing,
+which is what an earlier draft of this section asked of it: the counter is
+session-scoped and starts at 1 per rig record, so a result reloaded in a later
+session meets no rig, no registry and no record of what version 3 consisted of.
+The number describes that membership changed, not what it changed to.
+
+What makes a result set self-describing is §2.3 and §4.3. Every result carries
+`rig_capture_id`, `rig_member_hardware_id` and `rig_member_index`, and
+`get_member_outcomes()` enumerates every member with its disposition whether or
+not it produced an image. That is the membership itself, named by durable
+hardware id, and it survives a reload. A version integer would not, and adding
+one to the public surface would answer nothing a caller could act on.
+
+This mirrors §6 as amended: a version is warranted where something records
+which version it ran under and can be observed doing so — not as an end in
+itself. The device capture-profile pattern qualifies; rig membership, already
+enumerated per result, does not.
+
+Today nothing reads the recorded value, not even admission — which takes it
+from the preflight precisely so it is never re-read
+(`core_capture_cohort_registry.h`). If it is to earn its keep it would be by
+checking that membership did not change between preflight and submission, a
+property §5.1 currently holds by construction. That is a separate question from
+surfacing it, and is not proposed here.
 
 ### 5.3 Device loss is not membership
 
@@ -264,8 +377,21 @@ on*.
 | Kind | Examples | Rule |
 |---|---|---|
 | Imperative action | trigger a device or rig capture | Fail fast with a reason (`ERR_BUSY`). Never queue for later execution |
-| Declarative configuration | still-capture profile, warm policy, rig membership | Accept while live, version it, apply forward. The version makes the transition observable |
+| Declarative configuration | still-capture profile, warm policy, rig membership | Accept while live, apply forward, and make the transition observable. Version it where something is stamped with the version |
 | Foundational truth | camera description / concurrency truth | Refuse while the runtime is LIVE |
+
+**A version is not the point; observability is.** A version earns its place
+when something else records which version it ran under, so a stored artifact can
+say what configuration produced it. `capture_profile_version` is stamped onto
+each capture at admission; `rig_membership_version` is recorded on each cohort.
+Both answer a question about an artifact that outlives the setting.
+
+Warm policy has no such consumer. It governs how long an idle device stays
+warm; no capture depends on it and nothing is stamped with it. Its applied
+value is published as `warm_hold_ms` in `DeviceState`, so a caller can already
+see it and see it change -- which is the observability the rule asks for. A
+version there would distinguish only "set to the same value again" from "no
+change", for no reader. It was left unversioned deliberately, not overlooked.
 
 A short queue with delayed application is the worst option for all three: it
 looks accepted, behaves unpredictably, and cannot be reasoned about from
@@ -303,31 +429,369 @@ not wait on it.
 
 ## 9. Implementation-status guardrails (current)
 
-True at the time of writing, and contradicting the model above:
+Every entry below names the source it was read from. Where an entry and the
+source disagree, the source wins and the entry is wrong.
 
-- `capture_id` is a single monotonic `uint64` shared by device- and
-  rig-triggered captures (`arbitration_policy.md` §9). Rig and member ids are
-  the same value.
-- `CamBANGDevice.trigger_capture()` and `CamBANGRig.trigger_capture()` return
-  `Error` only; the minted id is discarded at the boundary.
-- There is no completion signal for either capture kind. `CamBANGRig` exposes
-  `get_id`, `trigger_capture`, `get_result` and nothing else.
-- `get_result()` returns a partial set that is indistinguishable from a final
-  one, with no expected-member count and no per-member disposition.
-- Cohort state is `OPEN` or `FAILED` only — there is no completion state, no
-  cut-off, and no per-member disposition.
-- There is no in-flight capture guard in Core; per-device serialisation happens
-  incidentally, inside a platform provider, by blocking.
-- Rig membership is fixed at rig creation; there is no add/remove API.
-- `get_rig(...)` and `get_device_for_hardware_id(...)` instantiate a new wrapper
-  on every call.
-- Per-device capture completion is misattributed for rig captures.
-  `CoreAcquisitionSessionRegistry::on_capture_completed` resolves the session
-  correctly for the device, then overwrites it from `captures_in_flight_`,
-  which is keyed by `capture_id` alone. Both rig members share one
-  `capture_id`, so they collide on one entry and the second member to complete
-  is credited to the first member's acquisition session. Totals are conserved;
-  the per-device split is wrong and varies run to run. Observed on Quest as
-  `triggered N / completed <N` on each of two sessions summing to 2N. A direct
-  consequence of the shared id space this document replaces; fixable now by
-  keying on `(capture_id, device_instance_id)`, or eliminated by section 2.
+### 9.1 The bound Godot surface, as it stands
+
+Read from `src/godot/*.h` and the `_bind_methods()` bodies.
+
+```
+CamBANGDevice.trigger_capture()   -> Dictionary { id: "dc_…", error }
+CamBANGRig.trigger_capture()      -> Dictionary { id: "rc_…",
+                                                 members: { hw: "dc_…" }, error }
+CamBANGRig.add_member(device)     -> Error
+CamBANGRig.remove_member(device)  -> Error
+CamBANGServer.create_rig(devices) -> CamBANGRig      // Array[CamBANGDevice]
+
+CamBANGDevice.capture_finished(capture_id: String, disposition, error_code)
+CamBANGRig.capture_finished(rig_capture_id: String, closed_reason)
+CamBANGServer.capture_finished(capture_id: String, info)
+    info = { capture_origin, device_instance_id, rig_id,
+             disposition, closed_reason, error_code }
+
+CamBANGServer.get_unfinished_captures() -> Dictionary
+    { by_device:    { device_instance_id: [device_capture_id, ...] },
+      rig_captures: [rig_capture_id, ...],
+      total:        int }
+
+CamBANGRig.get_member_outcomes()                          -> Array[Dictionary]
+CamBANGServer.get_capture_member_outcomes_by_id(rig_id)   -> Array[Dictionary]
+    { hardware_id, device_instance_id, device_capture_id,
+      disposition, error_code }
+```
+
+The signal verb and the query share one word deliberately: the signal announces
+a capture reaching a state, the query asks which have not reached it. Split
+across two vocabularies, a caller can guess neither. The verb was chosen by the
+maintainer.
+
+Three signals: one per object, plus one server-wide covering both kinds. The
+server-wide signal is deliberately not split per kind — an object cannot carry
+two signals of one name, and letting that C++ constraint shape the caller's API
+is backwards. §4.2 names no signal and specifies no payload.
+
+**`CamBANGServer`'s signals, and its Device/Stream/Rig control surfaces, are
+advanced tools.** Ordinary use goes through the handle a caller already holds;
+device creation is the exception. Additions do not belong on this surface
+unless they genuinely have no per-object home — Godot's own API is cluttered
+enough without help.
+
+This governs what may be **added**. It is not a mandate to remove what is
+already there: taking an existing method away costs a migration and breaks
+callers, so each removal needs its own justification on its own merits. Clutter
+alone is not one.
+
+The completion verb, collapsing the server signal to one, `create_rig` taking
+device handles, and the constants in §9.3 were all decided by the maintainer in
+conversation.
+
+Canonical wrappers: `get_device_for_hardware_id`, `get_rig` and `create_rig`
+return one cached instance per id. `get_device(instance_id)` is canonical for
+its own key and deliberately not unified with the endpoint form — the reason is
+recorded at `CamBANGServer::get_device` in `cambang_server.cpp`.
+
+### 9.2 Mandates not met
+
+None. The heading is kept because earlier drafts listed §5.2 here and a reader
+arriving from one should see what happened to it, not an absence: see §9.2b.
+
+### 9.2b How the contested mandates are met
+
+- **§5.2 — "so a stored result set is self-describing about the membership
+  that produced it".** Amended, not built to. `rig_membership_version` is
+  bumped in `core_rig_registry.cpp`, carried on the preflight and recorded on
+  the cohort (`core_runtime.cpp`, `core_capture_cohort_registry.h`), and read
+  by nothing else -- not the snapshot, not `src/godot/`, not any `.gd`, and not
+  by Core itself, which never compares it. Exposing it was considered and
+  rejected: the counter is session-scoped, so it tells a reloaded result that
+  membership changed but not what it changed to. §2.3's per-result
+  `rig_member_hardware_id` / `rig_member_index` and `get_member_outcomes()`'s
+  per-member entries already name the membership durably, which is the property
+  the section was after. Verified by `test_rig_cohort_records_membership_version_smoke`
+  and `phase3_snapshot_verify.cpp:764`, both of which test the recording that
+  remains.
+
+- **§6 — declarative configuration is observable.** Warm policy carries no
+  version and deliberately so: nothing is stamped with it, and its applied
+  value is already published as `warm_hold_ms` in `DeviceState`. §6 was amended
+  to say that a version is warranted where something records which version it
+  ran under -- true of the capture profile and rig membership, not of warm
+  policy. The rule previously read as though the version were the goal rather
+  than the observability it exists to provide.
+
+- **§8, second consequence — harnesses delete their hand-rolled completion
+  detection.** Scene 569 awaits `capture_finished` instead of polling
+  `get_result()` and comparing capture ids.
+  `870_to_image_soak_benchmark.gd` subscribes once to the server-wide signal
+  and gates both its device and rig polls on it; `baseline_capture_id`,
+  `_device_last_capture_id` and the per-device `last_capture_id` bookkeeping
+  are all removed. Verified against the matching synthetic baseline
+  (`20260812T204338394Z`, `config.provider = synthetic`): 54 rig captures, 324
+  rig member samples and 384 device captures in both, with phase cadence
+  matching to 0.1s.
+
+- **§8, first consequence — a device-level accessor is no longer blind to
+  rig-originated captures.** The rig trigger path now records each member's
+  Device Capture Id against its device, exactly as a direct trigger does, so a
+  device that has only ever been a rig member resolves through
+  `CamBANGDevice::get_result()`'s fallback instead of returning null. Scene 73
+  step 22 asserts each member device returns its own result from this rig
+  capture; removing the recording reproduces the null exactly.
+
+  `get_result()` still prefers a capture triggered through that handle over the
+  device's latest. Inverting that order was tried and reverted: "latest on the
+  device" lets a rig member's result satisfy a caller waiting on its own device
+  capture, and `870_to_image_soak_benchmark.gd` polls precisely that way, so the
+  inversion would have let a rig member's timing be recorded as a device
+  capture's. §8 asks that the accessor not be blind, not that it always return
+  the newest regardless of origin.
+
+- **§4.3 — a member's error code must reach the caller.**
+  `get_capture_result_set_by_id` still returns only results that exist, and a
+  failed member still contributes none. `get_member_outcomes()` answers the
+  question instead: one entry per member whether or not it produced an image,
+  carrying its disposition and provider error code. Scene 73 asserts the
+  entry count equals the member count and that each outcome names the same
+  Device Capture Id the trigger returned.
+- **§5.4 — removal must settle outstanding provider state.** Held by
+  construction rather than by code on the removal path. §5.4 concerns a device
+  leaving "with abandoned or lost captures"; every path that terminalises a
+  capture without a provider terminal fact now issues `abort_capture` at the
+  moment of abandonment — rig preemption (`core_runtime.cpp`, pre-existing),
+  the admission watchdog, and `DEVICE_LOST`. A device therefore cannot carry an
+  unsettled capture out of a rig, because none is left unsettled. Removal
+  itself continues not to disturb an in-flight capture (§5.1).
+- **§3 — preemption must never be silent.** The disposition is produced,
+  queued, fanned out to the device wrapper, and nameable (§9.3). Scene 73 now
+  subscribes to each member device's `capture_finished` and asserts it arrives
+  carrying that member's own Device Capture Id, so the reporting path is proven
+  to carry. The `PREEMPTED_BY_RIG` value specifically is mutation-proved in
+  Core (tranche 3) rather than exercised through a scene.
+
+### 9.3 Interpreting what the signals carry
+
+`CamBANGServer` binds `DISPOSITION_DELIVERED`, `DISPOSITION_FAILED`,
+`DISPOSITION_LATE_EXCLUDED`, `DISPOSITION_PREEMPTED_BY_RIG`,
+`DISPOSITION_DEVICE_LOST`, `DISPOSITION_NEVER_ARRIVED`,
+`COHORT_CLOSED_ALL_MEMBERS_TERMINAL`, `COHORT_CLOSED_WINDOW_EXPIRED` and
+`RIG_CAPTURE_ID_BASE`. So `disposition` compares against `DISPOSITION_*`,
+`closed_reason` against `COHORT_CLOSED_*`, and an id can be tested against
+`RIG_CAPTURE_ID_BASE` to tell which space it belongs to.
+
+`73_rig_capture_result_set_verification.gd` uses the bound constants and holds
+no literals.
+
+### 9.4 The disposition argument is narrower than its enum
+
+`TerminalState` has seven values. Only four can reach `capture_finished`:
+`DELIVERED`, `FAILED`, `PREEMPTED_BY_RIG`, `DEVICE_LOST` — the four sites that
+assign `terminal_state` in `core_capture_assembly_registry.cpp`.
+`LATE_EXCLUDED` and `NEVER_ARRIVED` are assigned only as cohort member outcomes
+(`core_capture_cohort_registry.cpp:208`, `core_runtime.cpp:4133`), never as an
+assembly terminal state. A caller matching on either would wait indefinitely.
+All six are nonetheless bound (§9.3): they are the model's vocabulary, and the
+two unreachable ones become caller-visible when §4.3's per-member reporting
+lands.
+
+### 9.5 The device signal fires more broadly than §4.2 describes
+
+§4.2 says a `CamBANGDevice` emits for the Device Captures **it initiated**.
+`CamBANGServer::_emit_capture_completion_signals_` matches on
+`device_instance_id` alone, with no origin filter, so a rig-member capture also
+fires the member device's signal.
+
+### 9.6 What a result carries (§2.3)
+
+`CamBANGCaptureResult::get_capture_identity()` returns `capture_origin`,
+`device_capture_id`, `rig_capture_id`, `rig_member_hardware_id`,
+`rig_member_index` and `device_instance_id`, every key present in every case.
+Origin is resolved by asking whether any cohort claims this Device Capture
+(`CoreRuntime::rig_participation_for_device_capture`); no cohort means the
+capture was device-triggered, so the absence is the answer rather than a
+failed lookup.
+
+Both branches are covered: scene 73 asserts a rig member's result names its
+rig capture id, hardware id and member index and correlates them to the
+trigger's member map; scene 569 asserts a device-triggered result reports
+origin DEVICE with rig_capture_id 0, empty hardware id and index -1.
+
+Ids are the durable `dc_`/`rc_` form (§2.2), so a stored result can be
+identified in a later session. `get_capture_id()` is retired: §1 says the
+unqualified term should not appear in code, and the internal `uint64` it
+returned was never a caller's identity. Its dominant use was a staleness guard,
+which §8 removes rather than rewrites.
+
+### 9.7 Ids
+
+Public capture ids are `dc_<ulid>` / `rc_<ulid>`, minted at the boundary by
+`CapturePublicIdMinter` (`src/core/capture_public_id.{h,cpp}`) and mapped to the
+internal `uint64` that still keys Core. The minter is monotonic within a
+millisecond -- a rig's members are minted in one instant, and fresh entropy per
+member would order them at random. Ordering across a backwards clock step is not
+guaranteed; the high bits are wall clock, which is what makes ids from different
+sessions comparable at all.
+
+The prefix is enforced, not decorative: `device_capture_internal_id()` refuses an
+`rc_` id rather than failing to find it, so a caller learns it passed the wrong
+kind of id instead of "no such capture".
+
+The maps are session-scoped and cleared on `stop()`. A durable id identifies a
+STORED artifact; it does not resurrect one after the session that made it.
+
+`get_capture_result_by_id(capture_id)` takes the id alone. It required a
+`device_instance_id` alongside until the id spaces were split (§2.1) — after
+that the argument disambiguated nothing, because a Device Capture Id belongs to
+exactly one device, and the store's per-device nesting survives only for
+internal callers that already hold the device. It was removed as a defect: a
+parameter that outlives its reason teaches callers a constraint that is not
+real. `CoreResultStore::get_capture_result(capture_id)` returns null rather
+than guessing if that id ever names more than one device, so a failure of the
+id split would surface instead of hiding.
+
+### 9.8 Other open items
+
+- **A rig capture used to silence a viewfinder permanently.** Fixed.
+  `begin_capture_stream_preemption_for_bundle_` registered the stream-preemption
+  record under the **Rig** Capture Id, while
+  `release_result_safe_capture_stream_preemptions_` asks the assembly registry,
+  which is keyed by **Device** Capture Id. Once §2.1 made the id spaces
+  numerically disjoint a Rig Capture Id could never be a key there, so the
+  release lookup missed forever: the preemption stayed outstanding and
+  `suppress_repeating_stream_frame_for_capture_` dropped every later stream
+  frame on that device. The provider kept delivering frames nobody received --
+  a viewfinder dead for the rest of the session after the first rig capture,
+  with nothing reported.
+
+  Now keyed by the member's own `request.capture_id`, which is what a rig member
+  is (§1). Covered by `test_rig_capture_releases_stream_preemption_smoke`,
+  mutation-proved: restoring the rig-id key fails it and nothing else.
+
+  Introduced by §2.1's id split -- correct in itself, with this call site never
+  following. Nothing caught it because no host-native test exercised stream
+  suppression across a rig capture, and no scene watched a viewfinder survive
+  one. The first version of that test passed WITH the defect present, because it
+  admitted the cohort without submitting it and the preemption is registered on
+  the submission path; the mutation caught that, not review.
+
+- **`last_capture_id` was removed from the published snapshot.** It lived on
+  `RigState` and `AcquisitionSessionState` and was not state at all -- it was
+  the residue of a past event, published so a consumer could diff it against
+  the previous tick. That is the staleness-guard pattern §8 removes, and it was
+  its only real consumer: retained-result calibration also read it, and now
+  reads the boundary's own records instead
+  (`latest_capture_id_by_device_instance_id_`,
+  `latest_rig_capture_id_by_rig_id_`). Removed from the struct, the builder,
+  the export, the v1 schema, the status panel, 20 fixtures and the scenes.
+  Core's internal `last_capture_id` on the rig and acquisition-session records
+  is untouched.
+
+  The schema was edited in place rather than up-versioned, at the maintainer's
+  direction: pre-Release, and there is no consumer to keep compatible.
+- The word "settle" survives in `src/` only in unrelated senses: backing-plan
+  settle delays, "the answer is settled" meaning decided, and §5.4's
+  accounting sense of settling what is owed. Every identifier and comment
+  naming *this* concept says "finished".
+
+- **§5.5 is enforced on all three paths.** `create_rig` and `add_member`
+  consult `rig_owning_member`; the scenario loader rejects a document placing
+  one device in two rigs (`scenario_loader_validate.cpp`, "overlapping rig
+  membership is not supported"); and `CoreRuntime::retain_rig_member_hardware_ids`
+  now checks too. The loader's check is per-document and cannot see a rig the
+  caller created earlier in the session, which is the gap the third one closes.
+  `CoreRigRegistry::retain_member_hardware_ids` remains an unchecked primitive
+  by design -- the rule lives in Core's command layer, not the registry.
+- **The abandonment aborts are covered.** All three paths that terminalise a
+  capture without a provider terminal fact -- rig preemption, the admission
+  watchdog and `DEVICE_LOST` -- call `abort_capture` at the moment of
+  abandonment, and all three are now proved host-native.
+  `src/smoke/silent_capture_provider.h` supplies what was missing: a provider
+  that accepts a capture and never speaks about it again. It wraps
+  `StubProvider` rather than subclassing it (`StubProvider` is `final`, and
+  completes captures synchronously so its captures are never abandoned),
+  forwarding every call except `trigger_capture`, which reports success without
+  telling the inner provider, and `abort_capture`, which records the id. The
+  watchdog timeout is settable because the contract default is 30s.
+  `test_watchdog_abandonment_aborts_capture_smoke` and
+  `test_device_lost_abandonment_aborts_capture_smoke` cover the two new paths;
+  both are mutation-proved, each failing only when its own `abort_capture` call
+  is removed from `core_runtime.cpp`.
+
+  Both tests wait on the abort rather than on the disposition. The two are
+  adjacent but not atomic -- the sweep marks the capture FAILED and calls
+  `abort_capture` a few instructions later, on the core thread -- and waiting on
+  the disposition then reading the abort log fails intermittently. The abort is
+  strictly the later of the two, so waiting on it settles both.
+
+### 9.9 Scene status
+
+Verdicts from `tests/cambang_gde/run-logs/`, 2026-08-24, Windows.
+
+- Pass: 60, 61, 62, 63, 65, 66, 73, 74, 568, 569, 768. Scene 70 passes headless.
+- Re-run after the §9.8 preemption fix: `godot_test_suite.ps1` passed 51/51
+  (31 status-panel fixtures, 2 headless scripts, 11 render fixtures, scenes 60,
+  61, 62, 63, 65, 66, 70), and scene 73 passed all 23 steps in 20.5s. Note that
+  the suite runs none of the rig-capture scenes, so it does not on its own
+  demonstrate anything about capture arbitration -- 73 is the scene that does.
+  The suite's one `ReviewLog` entry is scene 65, which provokes boundary
+  rejections deliberately and so always emits Godot `ERROR:` lines.
+- **Scene 70 is interactive in windowed mode**, and does not self-verdict
+  there: on success it enters inspection mode and waits for Esc, emitting its
+  verdict only on quit. Run unattended with `-Windowed` it passes every step
+  and then hits the runner timeout. Only headless self-quits.
+- **`64_status_panel_runtime_smoke` and `67_status_panel_scenario_runtime` are
+  manual scenes.** Neither driver script contains a `HarnessVerdict` or a
+  `quit()`; they exist to be looked at and closed. A `missing_harness_verdict`
+  from either is the launcher correctly describing a scene that never emits
+  one, not a fault. Do not read them as regressions, and do not run them
+  expecting a verdict.
+- Scene 73 carries the completion coverage: the trigger names its capture in
+  the rig id space with a member map; the outstanding set lists the rig and its
+  members in flight and clears once they finish; the rig, server-wide and
+  per-device `capture_finished` signals all arrive and correlate to the ids the
+  trigger returned; and every member is accounted for by disposition. Scene 74
+  asserts wrapper canonicity.
+- `68_inner_evidence_reset_verify` fails at step 4, and
+  `71_capture_session_matrix_v3` reaches the runner timeout with no verdict.
+  Both fail identically against a build of `HEAD` without tranche 5, so neither
+  is caused by that work. `run-logs/` holds no earlier entry for either, which
+  is a gap in the record rather than evidence about their history.
+- `911_acquisition_session_states` selects the platform-backed provider on this
+  host, enumerates the real USB cameras, then requests the synthetic hardware
+  id `"0"`.
+- `1001_basic_quest_snap.tscn` is migrated, by the maintainer rather than by
+  this work: `create_rig([device_00, device_01])`, `await rig.capture_finished`,
+  `get_member_outcomes()` for why a member is missing, and
+  `get_capture_identity()` for the durable ids. It is the §4.1/§4.2 hardware
+  exercise on the Quest 3 (§0), and it is the scene that exposed the preemption
+  defect in §9.8. It emits no verdict and is not run by any launcher; it carries
+  uncommitted maintainer edits and must not be edited or committed here.
+- The `PREEMPTED_BY_RIG` disposition has no scene coverage: it is
+  mutation-proved in Core, but no scene contends a device capture against a
+  rig trigger.
+- **The status panel's display change is unverified.** Removing the
+  `last_capture_id` row from `cambang_status_panel.gd` is display-only, and the
+  field was already `"required": false` so the panel tolerated its absence by
+  construction -- but that is reasoning, not evidence, and the only scenes that
+  would exercise it are the manual ones above.
+
+### 9.10 Resolved, kept so a reader coming from an older draft is not misled
+
+- ~~One `capture_id` shared by device- and rig-triggered captures~~ — separate
+  id spaces, numerically disjoint (`82fe1e7`).
+- ~~Cohort state is `OPEN` or `FAILED` only~~ — cohorts close with a reason and
+  per-member dispositions (`c44e787`).
+- ~~No in-flight capture guard in Core~~ — Core denies a second capture on a
+  device it has already admitted one for (`9084bfe`).
+- ~~Per-device capture completion is misattributed for rig captures~~ — fixed
+  before this work began; `captures_in_flight_` is keyed by
+  `(capture_id, device_instance_id)`.
+- ~~Rig membership is fixed at rig creation~~ — membership is versioned and
+  mutable, applied from the next trigger (`42c540a`).
+- ~~`DEVICE_LOST` has no producing path~~ — a device closed with a capture in
+  flight terminalises it `DEVICE_LOST` (`42c540a`).
+- ~~`trigger_capture()` returns `Error` only~~ — both return a Dictionary; the
+  rig's carries the member map (§9.1).
+- ~~`get_rig(...)` and `get_device_for_hardware_id(...)` instantiate a new
+  wrapper per call~~ — canonical per id (§9.1).
+- ~~`create_rig` takes hardware-id strings~~ — it takes device handles (§9.1).

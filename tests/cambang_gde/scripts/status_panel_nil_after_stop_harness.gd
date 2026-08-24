@@ -226,7 +226,6 @@ func _authoritative_snapshot(gen: int, provider_native_id: int, version: int, to
 				"captures_triggered": 0,
 				"captures_completed": 0,
 				"captures_failed": 0,
-				"last_capture_id": 0,
 				"last_capture_latency_ns": 0,
 				"error_code": 0
 			}

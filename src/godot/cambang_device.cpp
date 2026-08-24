@@ -157,22 +157,36 @@ godot::Ref<CamBANGStream> CamBANGDevice::create_stream(const godot::Variant& def
   return server_->create_stream_for_endpoint_hardware_id(hardware_id_, definition);
 }
 
-godot::Error CamBANGDevice::trigger_capture() {
+godot::Dictionary CamBANGDevice::trigger_capture() {
+  // Keys are ALWAYS present, whatever the outcome (section 4.1). A caller
+  // branches on `error`, never on whether a key exists -- an absent key is the
+  // shape of a bug, not a signal.
+  //
+  // A refused trigger mints no id: `id` is 0. If a rejection returned an id,
+  // the caller's outstanding-work set would accumulate captures that never
+  // existed, which is precisely the bookkeeping this return shape exists to
+  // make possible.
+  godot::Dictionary out;
+  out["id"] = godot::String();
+
   const uint64_t device_instance_id = get_instance_id();
-  if (!server_ || device_instance_id == 0) {
-    return godot::ERR_UNAVAILABLE;
-  }
-  if (!server_->is_running()) {
-    return godot::ERR_UNAVAILABLE;
+  if (!server_ || device_instance_id == 0 || !server_->is_running()) {
+    out["error"] = godot::ERR_UNAVAILABLE;
+    return out;
   }
   uint64_t capture_id = 0;
   const godot::Error trigger_error =
       server_->trigger_device_capture(device_instance_id, capture_id);
   if (trigger_error != godot::OK) {
-    return trigger_error;
+    out["error"] = trigger_error;
+    return out;
   }
   current_capture_id_ = capture_id;
-  return godot::OK;
+  // The PUBLIC id (2.2). current_capture_id_ keeps the internal uint64, which
+  // is what Core is keyed by; the caller never sees that form.
+  out["id"] = server_->device_capture_public_id(capture_id);
+  out["error"] = godot::OK;
+  return out;
 }
 
 
@@ -181,6 +195,18 @@ godot::Ref<CamBANGCaptureResult> CamBANGDevice::get_result() const {
   if (!server_ || device_instance_id == 0 || !server_->is_running()) {
     return godot::Ref<CamBANGCaptureResult>();
   }
+  // A capture triggered through THIS handle wins, and only then the device's
+  // latest from any path. That order is deliberate and was briefly inverted:
+  // "latest on the device" makes a rig member's result satisfy a caller that
+  // is waiting on the device capture it triggered itself, which silently
+  // mis-attributes one to the other. The soak benchmark polls exactly that way.
+  //
+  // The fallback is what keeps section 8 honest: a device that has only ever
+  // been a rig member has no current_capture_id_ here, and the server's map --
+  // now written by the rig path too -- supplies its result rather than null.
+  //
+  // A caller wanting one specific capture should hold the id trigger_capture()
+  // returned and use CamBANGServer::get_capture_result_by_id().
   uint64_t capture_id = current_capture_id_;
   if (capture_id == 0) {
     capture_id = server_->get_latest_capture_id_for_device(device_instance_id);
@@ -188,7 +214,7 @@ godot::Ref<CamBANGCaptureResult> CamBANGDevice::get_result() const {
   if (capture_id == 0) {
     return godot::Ref<CamBANGCaptureResult>();
   }
-  return server_->get_capture_result_by_id(capture_id, device_instance_id);
+  return server_->get_capture_result_by_id(server_->device_capture_public_id(capture_id));
 }
 
 godot::Error CamBANGDevice::set_warm_policy(const godot::Dictionary& policy) {
@@ -311,6 +337,19 @@ void CamBANGDevice::_bind_methods() {
   ADD_SIGNAL(godot::MethodInfo(
       "live_changed",
       godot::PropertyInfo(godot::Variant::BOOL, "live")));
+  // Emitted for every capture on this device, when each finishes
+  // (capture_identity_and_lifecycle.md 4.2). capture_id matches the id
+  // trigger_capture() returned, so a caller clears its outstanding entry here.
+  //
+  // Fires for rig-member captures too, which 4.2's wording ("the Device
+  // Captures it initiated") does not describe -- a member is an ordinary
+  // Device Capture on this device, and section 8 requires device-level
+  // surfaces not to be blind to rig-originated ones. Recorded in 9.5.
+  ADD_SIGNAL(godot::MethodInfo(
+      "capture_finished",
+      godot::PropertyInfo(godot::Variant::STRING, "capture_id"),
+      godot::PropertyInfo(godot::Variant::INT, "disposition"),
+      godot::PropertyInfo(godot::Variant::INT, "error_code")));
 }
 
 } // namespace cambang

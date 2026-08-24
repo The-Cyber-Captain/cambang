@@ -19,7 +19,7 @@ int main() {
   auto a = reg.find_for_smoke(100, 10);
   assert(a);
   assert(a->has_default_image_retained);
-  assert(a->terminal_state == CoreCaptureAssemblyRegistry::TerminalState::COMPLETED);
+  assert(a->terminal_state == CoreCaptureAssemblyRegistry::TerminalState::DELIVERED);
   assert(!a->has_failure_error_code);
   assert(reg.is_assembly_successful(100, 10));
 
@@ -28,12 +28,12 @@ int main() {
   auto b0 = reg.find_for_smoke(101, 11);
   assert(b0);
   assert(!b0->has_default_image_retained);
-  assert(b0->terminal_state == CoreCaptureAssemblyRegistry::TerminalState::COMPLETED);
+  assert(b0->terminal_state == CoreCaptureAssemblyRegistry::TerminalState::DELIVERED);
   reg.mark_default_image_retained(101, 11);
   auto b1 = reg.find_for_smoke(101, 11);
   assert(b1);
   assert(b1->has_default_image_retained);
-  assert(b1->terminal_state == CoreCaptureAssemblyRegistry::TerminalState::COMPLETED);
+  assert(b1->terminal_state == CoreCaptureAssemblyRegistry::TerminalState::DELIVERED);
   assert(!reg.is_assembly_successful(101, 999));
   assert(reg.is_assembly_successful(101, 11));
 
@@ -63,7 +63,7 @@ int main() {
   auto e = reg.find_for_smoke(104, 14);
   assert(e);
   assert(!e->has_default_image_retained);
-  assert(e->terminal_state == CoreCaptureAssemblyRegistry::TerminalState::COMPLETED);
+  assert(e->terminal_state == CoreCaptureAssemblyRegistry::TerminalState::DELIVERED);
   assert(!reg.is_assembly_successful(104, 14));
 
   // frame without completed/failed => not yet terminal eligible.

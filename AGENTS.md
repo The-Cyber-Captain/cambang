@@ -7,7 +7,6 @@ Treat the repository source as authoritative.
 For non-trivial design, architecture, provider-boundary, snapshot, result-truth, or tranche work, read:
 
 * `docs/dev/agent_context.md`
-* `docs/dev/current_tranche.md` when it exists and is relevant to the active workstream
 
 Before changing code:
 
@@ -44,8 +43,13 @@ After changes:
 Manual local validation remains authoritative.
 
 Required validation is a hard completion gate, not best-effort follow-up. Run
-every validation command required by the active tranche or repository
-instructions. Do not stop while a required command remains unrun. If a command
+the repository's standing gates and whatever else was agreed for this change in
+conversation with the maintainer. Do not stop while a required command remains
+unrun.
+
+Validation is never specified in advance in a repository file — see CLAUDE.md
+for why. Agree it per change, run it, then record in the commit
+message what was actually run and what it did or did not prove. If a command
 fails or stalls, investigate it, preserve the exact command and relevant
 output, and continue with any independent later checks. Fix the cause where it
 is within scope; otherwise report the concrete unresolved blocker. Do not claim

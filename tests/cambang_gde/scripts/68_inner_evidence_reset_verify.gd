@@ -1292,7 +1292,7 @@ func _trigger_and_wait_capture(device, ids: Dictionary, label: String):
 	var baseline_failed := int(baseline_progress.get("captures_failed", 0))
 	var baseline_completed := int(baseline_progress.get("captures_completed", 0))
 
-	var trigger_err := int(device.trigger_capture())
+	var trigger_err := int(device.trigger_capture().get("error", FAILED))
 	if trigger_err == ERR_UNAVAILABLE:
 		_fail("%s: device.trigger_capture() explicitly unavailable before result publication" % label)
 		return null
@@ -1571,7 +1571,7 @@ func _get_acquisition_session_snapshot_record(device_instance_id: int) -> Dictio
 func _capture_progress_from_record(record: Dictionary, source: String) -> Dictionary:
 	if record.is_empty():
 		return {"available": false, "source": source}
-	if not record.has("captures_completed") and not record.has("captures_failed") and not record.has("last_capture_id"):
+	if not record.has("captures_completed") and not record.has("captures_failed"):
 		return {"available": false, "source": source}
 	return {
 		"available": true,
@@ -1579,7 +1579,6 @@ func _capture_progress_from_record(record: Dictionary, source: String) -> Dictio
 		"captures_triggered": int(record.get("captures_triggered", 0)),
 		"captures_completed": int(record.get("captures_completed", 0)),
 		"captures_failed": int(record.get("captures_failed", 0)),
-		"last_capture_id": int(record.get("last_capture_id", 0)),
 		"active_capture_id": int(record.get("active_capture_id", 0)),
 	}
 

@@ -32,6 +32,7 @@ Non-Goals
 #include <functional>
 #include <future>
 #include <iostream>
+#include <set>
 #include <memory>
 #include <limits>
 #include <mutex>
@@ -49,6 +50,7 @@ Non-Goals
 #if !defined(CAMBANG_INTERNAL_SMOKE)
   #error "core_spine_smoke: build through the repo SCons maintainer_tools alias so CAMBANG_INTERNAL_SMOKE=1 is defined."
 #endif
+#include "core/capture_public_id.h"
 #include "core/camera_concurrency_adc.h"
 #include "core/adc_camera_description.h"
 #include "core/core_runtime.h"
@@ -58,6 +60,7 @@ Non-Goals
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
 #include "imaging/stub/provider.h"
+#include "smoke/silent_capture_provider.h"
 #endif
 
 using namespace cambang;
@@ -3360,6 +3363,21 @@ static int test_capture_admission_context_smoke() {
     rt.stop();
     return 1;
   }
+  // Let the first capture settle before triggering the second. The per-device
+  // guard refuses a second trigger while one is still in flight, and although
+  // StubProvider completes synchronously on its strand, Core's terminalisation
+  // of that capture is asynchronous -- so without this the second trigger loses
+  // a race it was never meant to be in, roughly twice in ten runs. The subject
+  // here is that each admission samples its own capture date-time, not
+  // admission timing.
+  if (!wait_until([&]() {
+        return rt.smoke_capture_disposition(99001, kDeviceInstanceId).state !=
+               CoreCaptureAssemblyRegistry::TerminalState::NONE;
+      }, 400, 5)) {
+    std::cerr << "FAIL: the first standalone capture never reached a terminal state\n";
+    rt.stop();
+    return 1;
+  }
   rt.smoke_set_capture_datetime_utc_nanoseconds(200);
   if (rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceInstanceId, 99002) !=
           TryTriggerDeviceCaptureStatus::OK) {
@@ -3391,8 +3409,19 @@ static int test_capture_admission_context_smoke() {
   }
   const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(
       991, 99003, make_manual_rig_preflight(991, {"a", "b"}));
-  const auto first_rig = rt.smoke_capture_admission_context(99003, 1);
-  const auto second_rig = rt.smoke_capture_admission_context(99003, 2);
+  // Admission contexts are keyed by each member's own Device Capture Id, not
+  // by the cohort's 99003. The assertion is unchanged -- both members must
+  // still share one context -- only the key it is fetched under.
+  const auto first_rig = admitted.participants.size() > 0
+      ? rt.smoke_capture_admission_context(
+            admitted.participants[0].request.capture_id,
+            admitted.participants[0].request.device_instance_id)
+      : std::nullopt;
+  const auto second_rig = admitted.participants.size() > 1
+      ? rt.smoke_capture_admission_context(
+            admitted.participants[1].request.capture_id,
+            admitted.participants[1].request.device_instance_id)
+      : std::nullopt;
   if (!admitted.ok || !first_rig || !second_rig ||
       first_rig->capture_date_time.unix_epoch_nanoseconds() != 200 ||
       second_rig->capture_date_time.unix_epoch_nanoseconds() != 200 ||
@@ -3413,12 +3442,21 @@ static int test_capture_admission_context_smoke() {
     rt.stop();
     return 1;
   }
+  // Re-triggering this rig is now refused as RigCaptureInFlight rather than
+  // DuplicateCaptureId: the cohort admitted above is still OPEN, and the
+  // per-rig in-flight rule is checked before any id is minted. That is the
+  // more accurate reason -- the rig is busy, and the id being reused is
+  // incidental. DuplicateCaptureId stays reachable once the cohort closes and
+  // an id is genuinely reused.
+  //
+  // The content of this check is unchanged and is the clock sample count: a
+  // refused admission must not sample a new capture context.
   const auto duplicate = rt.smoke_admit_rig_cohort_from_preflight(
       991, 99003, make_manual_rig_preflight(991, {"a", "b"}));
   if (duplicate.ok ||
-      duplicate.failure != CoreRuntime::RigCohortAdmissionFailure::DuplicateCaptureId ||
+      duplicate.failure != CoreRuntime::RigCohortAdmissionFailure::RigCaptureInFlight ||
       rt.smoke_capture_admission_clock_sample_count() != 3) {
-    std::cerr << "FAIL: duplicate rig capture ID sampled a capture context\n";
+    std::cerr << "FAIL: refused rig re-trigger sampled a capture context\n";
     rt.stop();
     return 1;
   }
@@ -3432,7 +3470,12 @@ static int test_capture_admission_context_smoke() {
   }
   const auto cleared = rt.smoke_admit_rig_cohort_from_preflight(
       991, 99004, make_manual_rig_preflight(991, {"a", "b"}));
-  const auto cleared_context = rt.smoke_capture_admission_context(99004, 1);
+  // Keyed by the member's own Device Capture Id, not the cohort's 99004.
+  const auto cleared_context = cleared.participants.empty()
+      ? std::nullopt
+      : rt.smoke_capture_admission_context(
+            cleared.participants[0].request.capture_id,
+            cleared.participants[0].request.device_instance_id);
   if (!cleared.ok || !cleared_context || cleared_context->geolocation ||
       cleared_context->capture_date_time.unix_epoch_nanoseconds() != 300) {
     std::cerr << "FAIL: cleared capture geolocation did not remain absent at admission\n";
@@ -3903,14 +3946,19 @@ static int test_rig_cohort_admission_from_preflight_smoke() {
 
   const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(8001, 9001, preflight_ok);
   if (!admitted.ok || admitted.failure != CoreRuntime::RigCohortAdmissionFailure::None ||
-      admitted.capture_id != 9001 || admitted.rig_id != 8001 || admitted.participants.size() != 1) {
+      admitted.rig_capture_id != 9001 || admitted.rig_id != 8001 || admitted.participants.size() != 1) {
     std::cerr << "Expected successful cohort admission from preflight\n";
     rt.stop();
     return 1;
   }
   const auto& p = admitted.participants[0];
+  // A member is stamped with its OWN Device Capture Id, never the cohort's
+  // 9001. Asserting inequality is the point: equality is the collision the
+  // split id spaces exist to remove, and this check is what catches a
+  // regression back to one counter.
   if (p.hardware_id != live_hw ||
-      p.request.capture_id != 9001 ||
+      p.request.capture_id == 0 ||
+      p.request.capture_id == admitted.rig_capture_id ||
       p.request.rig_id != 8001 ||
       p.request.device_instance_id != kDeviceInstanceId) {
     std::cerr << "Admitted request bundle stamping/traceability mismatch\n";
@@ -3925,9 +3973,18 @@ static int test_rig_cohort_admission_from_preflight_smoke() {
     return 1;
   }
 
+  // Refused as RigCaptureInFlight, not DuplicateCaptureId: rig 8001's cohort
+  // from the admission above is still OPEN, and the per-rig in-flight rule is
+  // checked before an id is minted.
+  //
+  // Worth recording that this SHADOWS DuplicateCaptureId rather than removing
+  // it. That failure is now only reachable for a cohort that has already
+  // closed or failed and whose Rig Capture Id is then reused -- which the
+  // boundary's monotonic minting never does. It survives as a defensive check
+  // on the registry's uniqueness invariant, not as a live path.
   const auto dup_capture = rt.smoke_admit_rig_cohort_from_preflight(8001, 9001, preflight_ok);
-  if (dup_capture.ok || dup_capture.failure != CoreRuntime::RigCohortAdmissionFailure::DuplicateCaptureId) {
-    std::cerr << "Expected DuplicateCaptureId on second insert\n";
+  if (dup_capture.ok || dup_capture.failure != CoreRuntime::RigCohortAdmissionFailure::RigCaptureInFlight) {
+    std::cerr << "Expected RigCaptureInFlight when re-triggering a rig with an open cohort\n";
     rt.stop();
     return 1;
   }
@@ -4225,9 +4282,27 @@ static int test_rig_bundle_submission_smoke() {
     return 1;
   }
 
+  // The success-path cohort above is still OPEN, and a rig with a capture in
+  // flight refuses another (capture_identity_and_lifecycle.md 3). Let it
+  // settle before the next scenario rather than working around the rule --
+  // waiting here also exercises the release: a rig that never freed would be
+  // indistinguishable from one that refuses correctly, until the second
+  // capture anyone attempts.
+  //
+  // The later scenarios need no such wait: each fails submission, which marks
+  // its cohort FAILED, so the rig frees immediately.
+  if (!wait_until([&]() {
+        const auto c = rt.smoke_capture_cohort(9101);
+        return c && c->state != CoreCaptureCohortRegistry::CohortState::OPEN;
+      }, 8000, 10)) {
+    std::cerr << "Rig never freed after its successful capture settled\n";
+    rt.stop();
+    return 1;
+  }
+
   // Multi-image request rejected when provider lacks multi-image capability.
   auto multi_member_invalid = admitted_ok;
-  multi_member_invalid.capture_id = 9104;
+  multi_member_invalid.rig_capture_id = 9104;
   multi_member_invalid.participants[0].request.capture_id = 9104;
   multi_member_invalid.participants[0].request.still_image_bundle.members.push_back(
       CaptureStillImageMember{1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET});
@@ -4247,7 +4322,7 @@ static int test_rig_bundle_submission_smoke() {
 
   // First participant synchronous failure: invalid device id in first entry.
   auto bad_first = admitted_ok;
-  bad_first.capture_id = 9102;
+  bad_first.rig_capture_id = 9102;
   bad_first.participants[0].request.capture_id = 9102;
   bad_first.participants[0].request.device_instance_id = 999999;
   if (!rt.smoke_admit_rig_cohort_from_preflight(8101, 9102, preflight_ok).ok) {
@@ -4263,11 +4338,29 @@ static int test_rig_bundle_submission_smoke() {
     return 1;
   }
 
+  // The first-fail cohort above is still OPEN, and deliberately so: a
+  // submission that fails inside trigger_capture_submission does NOT mark the
+  // cohort failed, because a non-atomic provider may already have admitted a
+  // prefix of the bundle (see submit_admitted_rig_bundle_). It therefore
+  // stays open until its simultaneity window expires, which is the only thing
+  // that can settle it here.
+  //
+  // So this waits for the window rather than for a failure that will not come.
+  // Budget past the 2s window.
+  if (!wait_until([&]() {
+        const auto c = rt.smoke_capture_cohort(9102);
+        return c && c->state != CoreCaptureCohortRegistry::CohortState::OPEN;
+      }, 8000, 25)) {
+    std::cerr << "Rig never freed after a submission-failed cohort hit its window\n";
+    rt.stop();
+    return 1;
+  }
+
   // Grouped provider submission failure: an invalid participant in the bundle
   // causes the provider submission to fail; grouped submission does not expose
   // per-participant partial progress.
   auto two_part = admitted_ok;
-  two_part.capture_id = 9103;
+  two_part.rig_capture_id = 9103;
   two_part.participants[0].request.capture_id = 9103;
   CoreRuntime::RigAdmittedParticipantRequest second = two_part.participants[0];
   second.request.capture_id = 9103;
@@ -4283,6 +4376,982 @@ static int test_rig_bundle_submission_smoke() {
       later_fail.submitted_count != 0 || later_fail.failed_index != 0 ||
       later_fail.provider_error_code != static_cast<uint32_t>(ProviderError::ERR_BAD_STATE)) {
     std::cerr << "Expected grouped submission failure for invalid participant bundle\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+// Cohort closure through CoreRuntime's sweep, not the registry in isolation.
+// This is the check that proves the mechanism actually runs: the registry
+// tests in phase3_snapshot_verify prove the rules, and would keep passing even
+// if sweep_capture_cohort_closure_() were never called.
+// A cohort records the rig membership version it was admitted under
+// (capture_identity_and_lifecycle.md 5.2), so a rig capture is self-describing
+// about the membership that produced it.
+static int test_rig_cohort_records_membership_version_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+  rt.attach_provider(&prov);
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
+  const std::string hw = eps[0].hardware_id;
+
+  // First membership -> version 1, and a cohort admitted under it says so.
+  if (!rt.smoke_set_rig_member_hardware_ids(8901, {hw})) { rt.stop(); return 1; }
+  auto preflight = wait_for_rig_preflight_ok(rt, 8901);
+  if (!preflight.ok) {
+    print_rig_preflight_result("Preflight failed before membership version smoke", preflight);
+    rt.stop();
+    return 1;
+  }
+  if (preflight.rig_membership_version != 1) {
+    std::cerr << "Membership version: preflight did not carry version 1\n";
+    rt.stop();
+    return 1;
+  }
+  const auto first = rt.smoke_admit_rig_cohort_from_preflight(8901, 9901, preflight);
+  const auto first_cohort = rt.smoke_capture_cohort(9901);
+  if (!first.ok || !first_cohort || first_cohort->rig_membership_version != 1) {
+    std::cerr << "Membership version: cohort did not record version 1\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Change membership. The IN-FLIGHT cohort must keep the version it was
+  // admitted under -- a cohort that silently adopted the new version would
+  // misdescribe the members it actually ran (section 5.1).
+  if (!rt.smoke_set_rig_member_hardware_ids(8901, {hw, hw})) { rt.stop(); return 1; }
+  const auto unchanged = rt.smoke_capture_cohort(9901);
+  if (!unchanged || unchanged->rig_membership_version != 1) {
+    std::cerr << "Membership version: an in-flight cohort adopted a later version\n";
+    rt.stop();
+    return 1;
+  }
+
+  // The first cohort is still OPEN, and a rig with a capture in flight refuses
+  // another (tranche 3). Nothing was ever reported for its member, so only the
+  // simultaneity window can settle it -- wait for that rather than working
+  // around the rule.
+  if (!wait_until([&]() {
+        const auto c = rt.smoke_capture_cohort(9901);
+        return c && c->state != CoreCaptureCohortRegistry::CohortState::OPEN;
+      }, 8000, 25)) {
+    std::cerr << "Membership version: first cohort never closed on its window\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Return to a single member. That is another real change, so the version
+  // advances again -- and unlike the two-member set above it resolves
+  // cleanly, because StubProvider exposes exactly one endpoint and two
+  // members sharing one hardware id makes preflight ambiguous by design.
+  if (!rt.smoke_set_rig_member_hardware_ids(8901, {hw})) { rt.stop(); return 1; }
+  auto preflight2 = wait_for_rig_preflight_ok(rt, 8901);
+  if (!preflight2.ok || preflight2.rig_membership_version != 3) {
+    std::cerr << "Membership version: preflight did not advance to version 3\n";
+    rt.stop();
+    return 1;
+  }
+  const auto second = rt.smoke_admit_rig_cohort_from_preflight(8901, 9902, preflight2);
+  const auto second_cohort = rt.smoke_capture_cohort(9902);
+  if (!second.ok || !second_cohort || second_cohort->rig_membership_version != 3) {
+    std::cerr << "Membership version: later cohort did not record version 3\n";
+    rt.stop();
+    return 1;
+  }
+  // And the earlier cohort is still stamped with the version it ran under.
+  const auto first_again = rt.smoke_capture_cohort(9901);
+  if (!first_again || first_again->rig_membership_version != 1) {
+    std::cerr << "Membership version: earlier cohort's version changed retroactively\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+// Device loss terminalises an in-flight capture DEVICE_LOST
+// (capture_identity_and_lifecycle.md 5.3), promptly and distinguishably.
+//
+// The distinction is the point. Before this, such a capture sat non-terminal
+// until the capture-admission watchdog fired ~30s later and reported
+// FAILED(ERR_TIMEOUT) -- so a check that only asserted "terminal eventually"
+// would pass on the watchdog alone and prove nothing. This asserts the
+// disposition, the absence of an error code, and that it happens immediately.
+static int test_device_close_terminalises_capture_device_lost_smoke() {
+  using Assembly = CoreCaptureAssemblyRegistry;
+  constexpr uint64_t kCapture = 9501;
+
+  constexpr uint64_t kLostDeviceId = 2;
+  constexpr uint64_t kLostRootId = 2;
+
+  CoreRuntime rt;
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+  rt.attach_provider(&prov);
+
+  // A second device with NO stream. The one setup_one_stream opens has a
+  // stream on it, and closing a device out from under a live stream is a
+  // different scenario with its own rejection -- not what section 5.3 is about.
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
+  if (rt.retain_device_identity(kLostDeviceId, eps[0].hardware_id) !=
+      CoreThread::PostResult::Enqueued) {
+    std::cerr << "Device loss: could not retain second device identity\n";
+    rt.stop();
+    return 1;
+  }
+  if (rt.try_open_device(eps[0].hardware_id, kLostDeviceId, kLostRootId) !=
+      TryOpenDeviceStatus::OK) {
+    std::cerr << "Device loss: could not open the second device\n";
+    rt.stop();
+    return 1;
+  }
+  if (!converge_stub_provider_core(rt, prov)) {
+    std::cerr << "Device loss: second device open did not converge\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Put a capture in flight by recording an admission directly: StubProvider
+  // completes captures synchronously, so a triggered capture is terminal
+  // before it could ever be lost. What is under test is Core's close path,
+  // not the provider's timing.
+  rt.smoke_record_capture_admission(kCapture, kLostDeviceId);
+  if (Assembly::disposition_is_terminal(
+          rt.smoke_capture_disposition(kCapture, kLostDeviceId).state)) {
+    std::cerr << "Device loss: capture was terminal before the device closed\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (rt.try_close_device(kLostDeviceId) != TryCloseDeviceStatus::OK) {
+    std::cerr << "Device loss: close_device failed\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Immediately after close -- no waiting. A watchdog-driven result would need
+  // ~30s, so an immediate read that already shows terminal cannot be the
+  // watchdog.
+  const auto lost = rt.smoke_capture_disposition(kCapture, kLostDeviceId);
+  if (lost.state != Assembly::TerminalState::DEVICE_LOST) {
+    std::cerr << "Device loss: capture did not terminalise DEVICE_LOST\n";
+    rt.stop();
+    return 1;
+  }
+  if (lost.has_error_code) {
+    std::cerr << "Device loss: DEVICE_LOST carried an error code; it is a "
+                 "resource event, not a failure\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+// Cohort membership is snapshotted at trigger (capture_identity_and_lifecycle.md
+// 5.1). Rig membership is forward-looking configuration: changing it while a
+// capture is in flight does not alter that capture's cohort, and does not
+// require ERR_BUSY.
+//
+// This was already true incidentally -- a cohort copies its participants from
+// preflight at admission -- but nothing asserted it, so nothing would have
+// noticed if a later change made membership late-bound.
+static int test_cohort_membership_snapshotted_at_trigger_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+  rt.attach_provider(&prov);
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
+  const std::string hw = eps[0].hardware_id;
+
+  if (!rt.smoke_set_rig_member_hardware_ids(9601, {hw})) { rt.stop(); return 1; }
+  const auto preflight = wait_for_rig_preflight_ok(rt, 9601);
+  if (!preflight.ok) {
+    print_rig_preflight_result("Preflight failed before snapshot-at-trigger smoke", preflight);
+    rt.stop();
+    return 1;
+  }
+  const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(9601, 9701, preflight);
+  if (!admitted.ok || admitted.participants.size() != 1) {
+    std::cerr << "Snapshot at trigger: admission failed\n";
+    rt.stop();
+    return 1;
+  }
+  const auto before = rt.smoke_capture_cohort(9701);
+  if (!before || before->expected_participants.size() != 1) {
+    std::cerr << "Snapshot at trigger: cohort did not record its participant\n";
+    rt.stop();
+    return 1;
+  }
+  const uint64_t admitted_device = before->expected_participants[0].device_instance_id;
+
+  // Change membership while the cohort is in flight. Accepted -- membership is
+  // declarative and applies from the next trigger -- and the mutation itself
+  // must not be refused as busy.
+  if (rt.try_add_rig_member_for_server(9601, "hw:added-mid-flight") !=
+      CoreRigRegistry::MembershipChange::Changed) {
+    std::cerr << "Snapshot at trigger: a membership change during an in-flight "
+                 "capture was refused\n";
+    rt.stop();
+    return 1;
+  }
+
+  // The in-flight cohort is untouched: same participant count, same device.
+  // A cohort that grew a member here would cross-contaminate its result set
+  // with a device that was never part of that moment.
+  const auto after = rt.smoke_capture_cohort(9701);
+  if (!after || after->expected_participants.size() != 1 ||
+      after->expected_participants[0].device_instance_id != admitted_device) {
+    std::cerr << "Snapshot at trigger: an in-flight cohort's membership changed\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+static int test_capture_cohort_closure_sweep_smoke() {
+  using Assembly = CoreCaptureAssemblyRegistry;
+  using Reason = CoreCaptureCohortRegistry::CohortClosedReason;
+  using State = CoreCaptureCohortRegistry::CohortState;
+
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+  rt.attach_provider(&prov);
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
+  if (!rt.smoke_set_rig_member_hardware_ids(8601, {eps[0].hardware_id})) { rt.stop(); return 1; }
+  const auto preflight = wait_for_rig_preflight_ok(rt, 8601);
+  if (!preflight.ok) {
+    print_rig_preflight_result("Preflight failed before cohort closure sweep smoke", preflight);
+    rt.stop();
+    return 1;
+  }
+
+  const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(8601, 9601, preflight);
+  if (!admitted.ok || admitted.participants.empty()) {
+    std::cerr << "Cohort closure sweep: admission failed\n";
+    rt.stop();
+    return 1;
+  }
+  const uint64_t member_capture_id = admitted.participants[0].request.capture_id;
+  const uint64_t member_device_id = admitted.participants[0].request.device_instance_id;
+
+  // An admitted cohort with nothing reported must stay OPEN. Closing here
+  // would mean the sweep decides completion off something other than its
+  // members' dispositions.
+  for (int i = 0; i < 5; ++i) {
+    (void)rt.smoke_capture_cohort(9601);
+  }
+  const auto still_open = rt.smoke_capture_cohort(9601);
+  if (!still_open || still_open->state != State::OPEN) {
+    std::cerr << "Cohort closure sweep: cohort closed before any member settled\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Report the member terminal. The sweep must then close the cohort
+  // ALL_MEMBERS_TERMINAL, well inside the simultaneity window.
+  static std::vector<uint8_t> bytes(2 * 2 * 4, 7);
+  FrameView frame{};
+  frame.capture_id = member_capture_id;
+  frame.device_instance_id = member_device_id;
+  frame.stream_id = 0;
+  frame.width = 2;
+  frame.height = 2;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.data = bytes.data();
+  frame.size_bytes = bytes.size();
+  frame.stride_bytes = 0;
+  frame.release = [](void*, const FrameView*) {};
+  frame.release_user = nullptr;
+  rt.provider_callbacks()->on_capture_started(member_capture_id, member_device_id);
+  rt.provider_callbacks()->on_frame(frame);
+  rt.provider_callbacks()->on_capture_completed(member_capture_id, member_device_id);
+
+  if (!wait_until([&]() {
+        const auto c = rt.smoke_capture_cohort(9601);
+        return c && c->state == State::CLOSED;
+      }, 4000, 5)) {
+    std::cerr << "Cohort closure sweep: cohort never closed after its member settled\n";
+    rt.stop();
+    return 1;
+  }
+  const auto closed = rt.smoke_capture_cohort(9601);
+  if (!closed || closed->closed_reason != Reason::ALL_MEMBERS_TERMINAL ||
+      closed->member_outcomes.size() != 1 ||
+      closed->member_outcomes[0].device_instance_id != member_device_id ||
+      closed->member_outcomes[0].device_capture_id != member_capture_id ||
+      closed->member_outcomes[0].disposition != Assembly::TerminalState::DELIVERED) {
+    std::cerr << "Cohort closure sweep: closed cohort did not record a DELIVERED member\n";
+    rt.stop();
+    return 1;
+  }
+  // Two dispositions have no producing path until later tranches. Nothing in
+  // a completed rig capture may invent them.
+  for (const auto& o : closed->member_outcomes) {
+    if (o.disposition == Assembly::TerminalState::PREEMPTED_BY_RIG ||
+        o.disposition == Assembly::TerminalState::DEVICE_LOST) {
+      std::cerr << "Cohort closure sweep: a disposition with no producing path was produced\n";
+      rt.stop();
+      return 1;
+    }
+  }
+
+  // Rig-level accounting must agree with the cohort's own record. Before this
+  // tranche these counters were declared, projected into the snapshot, and
+  // never written -- a rig reported 0 captures after a successful one.
+  if (!wait_for_snapshot_pred(buf, [](const CamBANGStateSnapshot& snap) {
+        for (const auto& rig : snap.rigs) {
+          if (rig.rig_id == 8601) {
+            return rig.captures_triggered == 1 && rig.captures_completed == 1 &&
+                   rig.captures_failed == 0 && rig.active_capture_id == 0;
+          }
+        }
+        return false;
+      })) {
+    std::cerr << "Cohort closure sweep: rig capture counters did not reflect the closed cohort\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+// The boundary's completion signals (section 4.2) are emitted on the Godot
+// thread, which this host-native tool has none of. What it CAN bind is the
+// thing the signal is made of: Core queueing exactly one settlement per
+// capture, and exactly one per cohort closure, drained once and only once.
+// Without that, a settled signal is either missed or emitted repeatedly, and
+// both look identical to a caller counting outstanding work.
+static int test_capture_completion_queue_drain_smoke() {
+  using Assembly = CoreCaptureAssemblyRegistry;
+  using Reason = CoreCaptureCohortRegistry::CohortClosedReason;
+  using State = CoreCaptureCohortRegistry::CohortState;
+
+  CoreRuntime rt;
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+  rt.attach_provider(&prov);
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
+  if (!rt.smoke_set_rig_member_hardware_ids(8801, {eps[0].hardware_id})) { rt.stop(); return 1; }
+  const auto preflight = wait_for_rig_preflight_ok(rt, 8801);
+  if (!preflight.ok) {
+    print_rig_preflight_result("Preflight failed before settlement queue smoke", preflight);
+    rt.stop();
+    return 1;
+  }
+
+  // Anything queued by getting this far is setup noise, not the subject.
+  (void)rt.drain_finished_captures_for_server();
+  (void)rt.drain_closed_cohorts_for_server();
+
+  const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(8801, 9801, preflight);
+  if (!admitted.ok || admitted.participants.empty()) {
+    std::cerr << "Settlement queue: admission failed\n";
+    rt.stop();
+    return 1;
+  }
+  const uint64_t member_capture_id = admitted.participants[0].request.capture_id;
+  const uint64_t member_device_id = admitted.participants[0].request.device_instance_id;
+
+  // Admission alone settles nothing. A queue that reports work here would have
+  // the boundary announce a completion for a capture still in flight.
+  if (!rt.drain_finished_captures_for_server().empty() ||
+      !rt.drain_closed_cohorts_for_server().empty()) {
+    std::cerr << "Settlement queue: admission queued a settlement\n";
+    rt.stop();
+    return 1;
+  }
+
+  static std::vector<uint8_t> bytes(2 * 2 * 4, 3);
+  FrameView frame{};
+  frame.capture_id = member_capture_id;
+  frame.device_instance_id = member_device_id;
+  frame.stream_id = 0;
+  frame.width = 2;
+  frame.height = 2;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.data = bytes.data();
+  frame.size_bytes = bytes.size();
+  frame.stride_bytes = 0;
+  frame.release = [](void*, const FrameView*) {};
+  frame.release_user = nullptr;
+  rt.provider_callbacks()->on_capture_started(member_capture_id, member_device_id);
+  rt.provider_callbacks()->on_frame(frame);
+  rt.provider_callbacks()->on_capture_completed(member_capture_id, member_device_id);
+
+  if (!wait_until([&]() {
+        const auto c = rt.smoke_capture_cohort(9801);
+        return c && c->state == State::CLOSED;
+      }, 4000, 5)) {
+    std::cerr << "Settlement queue: cohort never closed\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto settled = rt.drain_finished_captures_for_server();
+  if (settled.size() != 1 ||
+      settled[0].capture_id != member_capture_id ||
+      settled[0].device_instance_id != member_device_id ||
+      settled[0].disposition != Assembly::TerminalState::DELIVERED ||
+      settled[0].has_error_code) {
+    std::cerr << "Settlement queue: delivered capture did not queue exactly one DELIVERED settlement\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto closed = rt.drain_closed_cohorts_for_server();
+  if (closed.size() != 1 || closed[0].rig_capture_id != 9801 ||
+      closed[0].rig_id != 8801 || closed[0].reason != Reason::ALL_MEMBERS_TERMINAL) {
+    std::cerr << "Settlement queue: closure did not queue exactly one cohort settlement\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Drained means consumed. A queue that re-reports would have the boundary
+  // emit capture_finished for the same capture on every subsequent tick.
+  if (!rt.drain_finished_captures_for_server().empty() ||
+      !rt.drain_closed_cohorts_for_server().empty()) {
+    std::cerr << "Settlement queue: a drained settlement was reported twice\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+// Every path that terminalises a capture without a provider terminal fact
+// must settle what that capture still owes the platform
+// (capture_identity_and_lifecycle.md 5.4 and 7): Core has just declared the
+// capture over while the provider may still be holding its buffers, and a
+// payload released later can be delivered into a subsequent capture on the
+// same device and attributed to it.
+//
+// Rig preemption was already covered. These two were not, because no
+// provider existed that would accept a capture and then stay silent --
+// StubProvider completes synchronously and is final. SilentCaptureProvider
+// wraps it to model exactly that silence.
+
+// Path 1: the capture-admission watchdog.
+static int test_watchdog_abandonment_aborts_capture_smoke() {
+  using TerminalState = CoreCaptureAssemblyRegistry::TerminalState;
+  constexpr uint64_t kSilentCaptureId = 77001;
+
+  CoreRuntime rt;
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+
+  // Swap the silent provider in AFTER setup: the device, stream and capture
+  // request are all real, and only the capture goes unanswered.
+  SilentCaptureProvider silent(prov);
+  silent.set_capture_admission_watchdog_timeout_ns(150ull * 1000ull * 1000ull);
+  rt.attach_provider(&silent);
+
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(
+          kDeviceInstanceId, kSilentCaptureId) != TryTriggerDeviceCaptureStatus::OK) {
+    std::cerr << "Watchdog abandonment: the silent capture was not admitted\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Wait on the ABORT, not on the disposition. The sweep marks the capture
+  // FAILED and calls abort_capture() a few instructions later, both on the
+  // core thread; waiting on the disposition and then reading the abort log
+  // races that gap and fails intermittently. The abort is strictly the later
+  // of the two, so waiting on it settles both. Core arms its own wake for the
+  // watchdog, so no traffic needs manufacturing.
+  const bool aborted = wait_until([&]() { return silent.was_aborted(kSilentCaptureId); },
+                                  600, 10);
+  const auto disp = rt.smoke_capture_disposition(kSilentCaptureId, kDeviceInstanceId);
+  if (disp.state != TerminalState::FAILED) {
+    std::cerr << "Watchdog abandonment: the capture never timed out; state="
+              << static_cast<int>(disp.state) << "\n";
+    rt.stop();
+    return 1;
+  }
+  if (!disp.has_error_code ||
+      disp.error_code != static_cast<uint32_t>(ProviderError::ERR_TIMEOUT)) {
+    std::cerr << "Watchdog abandonment: expected ERR_TIMEOUT to travel with the "
+                 "disposition; has_error_code=" << disp.has_error_code
+              << " code=" << disp.error_code << "\n";
+    rt.stop();
+    return 1;
+  }
+
+  // THE POINT. Declaring it over is not enough; the provider must be told,
+  // or the buffers it still holds are owed to nobody.
+  if (!aborted) {
+    std::cerr << "Watchdog abandonment: the capture was terminalised without "
+                 "abort_capture() -- its outstanding payload is unaccounted for\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+// Path 2: device loss (5.3). Same requirement, different trigger.
+static int test_device_lost_abandonment_aborts_capture_smoke() {
+  using TerminalState = CoreCaptureAssemblyRegistry::TerminalState;
+  constexpr uint64_t kSilentCaptureId = 77002;
+
+  CoreRuntime rt;
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+
+  SilentCaptureProvider silent(prov);
+  // Deliberately far longer than this test can run. If the capture reaches a
+  // terminal state here it is because the device was closed, never because
+  // the watchdog fired -- otherwise this would silently retest path 1.
+  silent.set_capture_admission_watchdog_timeout_ns(600ull * 1000ull * 1000ull * 1000ull);
+  rt.attach_provider(&silent);
+
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(
+          kDeviceInstanceId, kSilentCaptureId) != TryTriggerDeviceCaptureStatus::OK) {
+    std::cerr << "Device-loss abandonment: the silent capture was not admitted\n";
+    rt.stop();
+    return 1;
+  }
+
+  // StubProvider refuses to close a device that still has a stream, as a real
+  // provider would. Tear the stream down first: the capture is independent of
+  // it and stays in flight across this.
+  if (rt.try_destroy_stream(kStreamId) != TryDestroyStreamStatus::OK) {
+    std::cerr << "Device-loss abandonment: could not destroy the stream before close\n";
+    rt.stop();
+    return 1;
+  }
+  if (!wait_for_core_barrier(rt)) { rt.stop(); return 1; }
+  prov.flush_callbacks_for_smoke();
+  (void)wait_for_core_barrier(rt);
+
+  const TryCloseDeviceStatus closed = rt.try_close_device(kDeviceInstanceId);
+  if (closed != TryCloseDeviceStatus::OK) {
+    std::cerr << "Device-loss abandonment: try_close_device failed; status="
+              << static_cast<int>(closed) << "\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Wait on the abort for the same reason as the watchdog test above:
+  // mark_capture_device_lost() and abort_capture() are adjacent, not atomic.
+  const bool aborted = wait_until([&]() { return silent.was_aborted(kSilentCaptureId); },
+                                  400, 5);
+  const auto d = rt.smoke_capture_disposition(kSilentCaptureId, kDeviceInstanceId);
+  if (d.state != TerminalState::DEVICE_LOST) {
+    std::cerr << "Device-loss abandonment: expected DEVICE_LOST, saw state="
+              << static_cast<int>(d.state) << "\n";
+    rt.stop();
+    return 1;
+  }
+
+  // THE POINT, as above.
+  if (!aborted) {
+    std::cerr << "Device-loss abandonment: the capture was terminalised without "
+                 "abort_capture() -- its outstanding payload is unaccounted for\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+// A rig capture must not silence a viewfinder for the rest of the session.
+//
+// Core suppresses repeating stream frames on a device while a capture is
+// outstanding there (arbitration_policy.md 6.1) and releases that suppression
+// once the capture is result-safe. The release asks the assembly registry,
+// which is keyed by Device Capture Id -- so registering the preemption under
+// the RIG Capture Id made the lookup miss forever once 2.1 split the id
+// spaces. The stream then went dark permanently while the provider carried on
+// delivering frames nobody received: a dead viewfinder after the first rig
+// capture, with nothing reported.
+static int test_rig_capture_releases_stream_preemption_smoke() {
+  using State = CoreCaptureCohortRegistry::CohortState;
+
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_runtime_created_stream(rt, prov)) { rt.stop(); return 1; }
+  rt.attach_provider(&prov);
+  if (rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    std::cerr << "Stream preemption: failed to start the stream\n";
+    rt.stop();
+    return 1;
+  }
+  prov.flush_callbacks_for_smoke();
+  (void)wait_for_core_barrier(rt);
+
+  std::atomic<uint64_t> releases{0};
+  uint64_t mark = 1000;
+  auto push_stream_frame = [&](uint8_t tag) {
+    rt.provider_callbacks()->on_frame(
+        make_runtime_queue_smoke_frame(7701, ++mark, tag, releases));
+    prov.flush_callbacks_for_smoke();
+    (void)wait_for_core_barrier(rt);
+  };
+  // retained_frame_id changes with each integrated frame, so it is the
+  // observable for "did this frame actually land".
+  auto stream_frame_id = [&]() -> uint64_t {
+    const SharedStreamResultData r = rt.get_latest_stream_result(kStreamId);
+    return r ? r->retained_frame_id : 0;
+  };
+
+  // Baseline: frames reach the stream result before any capture exists.
+  // Pushed in a loop rather than once -- a single frame plus a barrier does
+  // not always leave a result behind, and a flaky baseline would report
+  // itself as a preemption failure.
+  uint64_t before_capture = 0;
+  for (int i = 0; i < 40 && before_capture == 0; ++i) {
+    push_stream_frame(static_cast<uint8_t>(1 + (i % 200)));
+    before_capture = stream_frame_id();
+  }
+  if (before_capture == 0) {
+    std::cerr << "Stream preemption: no stream result before the rig capture\n";
+    rt.stop();
+    return 1;
+  }
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
+  if (!rt.smoke_set_rig_member_hardware_ids(8901, {eps[0].hardware_id})) { rt.stop(); return 1; }
+  const auto preflight = wait_for_rig_preflight_ok(rt, 8901);
+  if (!preflight.ok) {
+    print_rig_preflight_result("Preflight failed before stream preemption smoke", preflight);
+    rt.stop();
+    return 1;
+  }
+  const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(8901, 9901, preflight);
+  if (!admitted.ok || admitted.participants.empty()) {
+    std::cerr << "Stream preemption: rig admission failed\n";
+    rt.stop();
+    return 1;
+  }
+  // SUBMIT, not just admit. begin_capture_stream_preemption_for_bundle_ runs
+  // on the submission path, so an admitted-but-unsubmitted bundle registers no
+  // preemption at all -- and this test would then pass with the defect present.
+  const auto submitted = rt.smoke_submit_admitted_rig_bundle(admitted);
+  if (!submitted.ok) {
+    std::cerr << "Stream preemption: rig submission failed\n";
+    rt.stop();
+    return 1;
+  }
+  const uint64_t member_capture_id = admitted.participants[0].request.capture_id;
+  const uint64_t member_device_id = admitted.participants[0].request.device_instance_id;
+
+  // Settle the member so the cohort closes and the capture becomes
+  // result-safe -- the condition the release is waiting on.
+  static std::vector<uint8_t> bytes(2 * 2 * 4, 9);
+  FrameView capture_frame{};
+  capture_frame.capture_id = member_capture_id;
+  capture_frame.device_instance_id = member_device_id;
+  capture_frame.stream_id = 0;
+  capture_frame.width = 2;
+  capture_frame.height = 2;
+  capture_frame.format_fourcc = FOURCC_RGBA;
+  capture_frame.data = bytes.data();
+  capture_frame.size_bytes = bytes.size();
+  capture_frame.stride_bytes = 0;
+  capture_frame.release = [](void*, const FrameView*) {};
+  capture_frame.release_user = nullptr;
+  rt.provider_callbacks()->on_capture_started(member_capture_id, member_device_id);
+  rt.provider_callbacks()->on_frame(capture_frame);
+  rt.provider_callbacks()->on_capture_completed(member_capture_id, member_device_id);
+
+  if (!wait_until([&]() {
+        const auto c = rt.smoke_capture_cohort(9901);
+        return c && c->state == State::CLOSED;
+      }, 4000, 5)) {
+    std::cerr << "Stream preemption: cohort never closed\n";
+    rt.stop();
+    return 1;
+  }
+
+  // THE POINT. With the capture finished, stream frames must reach the
+  // stream result again. A revision that never advances means the
+  // suppression outlived the capture that justified it.
+  const uint64_t after_close = stream_frame_id();
+  bool resumed = false;
+  for (int i = 0; i < 40 && !resumed; ++i) {
+    push_stream_frame(static_cast<uint8_t>(2 + (i % 200)));
+    resumed = stream_frame_id() != after_close && stream_frame_id() != 0;
+  }
+  if (!resumed) {
+    std::cerr << "Stream preemption: stream frames still suppressed after the rig "
+                 "capture finished -- the viewfinder would stay dark\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+// Durable public capture ids (capture_identity_and_lifecycle.md 2.2). The
+// property being bought is that string order is mint order, so stored results
+// sort correctly in a later session; and that the type prefix REFUSES a
+// wrong-space id rather than turning it into a lookup miss.
+static int test_capture_public_id_smoke() {
+  using Space = CapturePublicIdSpace;
+
+  CapturePublicIdMinter minter(20260820ull);
+  const std::string dc = minter.mint_at(Space::DeviceCapture, 1000);
+  const std::string rc = minter.mint_at(Space::RigCapture, 1000);
+  if (dc.size() != 29 || rc.size() != 29 ||
+      dc.compare(0, 3, "dc_") != 0 || rc.compare(0, 3, "rc_") != 0) {
+    std::cerr << "Public id: wrong shape" << std::endl;
+    return 1;
+  }
+
+  // The prefix is load-bearing (2.2): a caller must be able to refuse a Rig
+  // Capture Id where a Device Capture Id belongs, rather than silently miss.
+  const auto dc_space = capture_public_id_space(dc);
+  const auto rc_space = capture_public_id_space(rc);
+  if (!dc_space || *dc_space != Space::DeviceCapture ||
+      !rc_space || *rc_space != Space::RigCapture) {
+    std::cerr << "Public id: space not recoverable" << std::endl;
+    return 1;
+  }
+
+  // Malformed is malformed, not "some other space". A truncated id that still
+  // begins dc_ must be rejected, or a caller gets a lookup miss where it
+  // should get a bad-input answer.
+  std::string bad_alphabet = dc;
+  bad_alphabet[5] = 'U';  // Crockford excludes I, L, O, U
+  if (capture_public_id_space("dc_TOOSHORT").has_value() ||
+      capture_public_id_space("xx_0000000000000000000000000").has_value() ||
+      capture_public_id_space(dc.substr(0, 28)).has_value() ||
+      capture_public_id_space(bad_alphabet).has_value()) {
+    std::cerr << "Public id: malformed text accepted" << std::endl;
+    return 1;
+  }
+
+  // MONOTONIC within one millisecond. A rig's members are minted in a single
+  // instant; fresh entropy per member would order them at random, and 2.2 asks
+  // for sortability precisely so a stored set can be ordered.
+  CapturePublicIdMinter same_ms(7ull);
+  std::string previous = same_ms.mint_at(Space::DeviceCapture, 5000);
+  for (int i = 0; i < 64; ++i) {
+    const std::string next = same_ms.mint_at(Space::DeviceCapture, 5000);
+    if (!(next > previous)) {
+      std::cerr << "Public id: same-millisecond ids do not increase" << std::endl;
+      return 1;
+    }
+    previous = next;
+  }
+
+  // And across milliseconds, where the timestamp carries the order.
+  CapturePublicIdMinter across(11ull);
+  std::string earlier = across.mint_at(Space::DeviceCapture, 1000);
+  for (std::uint64_t ms = 1001; ms < 1064; ++ms) {
+    const std::string later = across.mint_at(Space::DeviceCapture, ms);
+    if (!(later > earlier)) {
+      std::cerr << "Public id: later millisecond did not sort later" << std::endl;
+      return 1;
+    }
+    earlier = later;
+  }
+
+  // 2.2 exists because a session-local counter collides on reload, so minting
+  // must not repeat itself.
+  CapturePublicIdMinter unique_minter(99ull);
+  std::set<std::string> seen;
+  for (int i = 0; i < 512; ++i) {
+    if (!seen.insert(unique_minter.mint_at(Space::DeviceCapture, 2000 + (i % 3))).second) {
+      std::cerr << "Public id: minted a duplicate" << std::endl;
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
+// One rig per device (capture_identity_and_lifecycle.md 5.5) on the SCENARIO
+// STAGING path, not just the caller path. The scenario loader rejects a
+// document that puts one device in two rigs, but that check is per-document:
+// it cannot see a rig that already exists in the session. Without this, staging
+// a scenario over a caller-created rig leaves one device in two rigs, and two
+// cohorts can then contend for it with the denial naming the wrong rig.
+static int test_staged_rig_topology_rejects_shared_device_smoke() {
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
+  if (!rt.start()) return 1;
+  // Same setup as the neighbouring cohort tests: the synchronous command path
+  // this exercises needs a converged runtime, not merely a started one.
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+  rt.attach_provider(&prov);
+
+  // An existing rig owning hw:a.
+  if (!rt.retain_rig_member_hardware_ids(9001, {"hw:a", "hw:b"})) {
+    std::cerr << "Staged rig 5.5: first rig was refused\n";
+    rt.stop();
+    return 1;
+  }
+  // Re-retaining the SAME rig's membership is the ordinary idempotent case and
+  // must not be read as the rig conflicting with itself.
+  if (!rt.retain_rig_member_hardware_ids(9001, {"hw:a", "hw:b"})) {
+    std::cerr << "Staged rig 5.5: re-retaining a rig's own membership was refused\n";
+    rt.stop();
+    return 1;
+  }
+  // A different rig claiming a device the first already owns must be refused.
+  if (rt.retain_rig_member_hardware_ids(9002, {"hw:a", "hw:c"})) {
+    std::cerr << "Staged rig 5.5: a second rig was allowed to claim hw:a\n";
+    rt.stop();
+    return 1;
+  }
+  // A rig claiming only free devices is unaffected -- and this doubles as the
+  // proof that the refusal above was TOTAL rather than partial. hw:c did not
+  // conflict, so a half-applied refusal would have staged it into rig 9002,
+  // and this retention would then be refused in turn.
+  if (!rt.retain_rig_member_hardware_ids(9003, {"hw:c", "hw:d"})) {
+    std::cerr << "Staged rig 5.5: hw:c was claimed by the refused rig, or a "
+                 "non-conflicting rig was refused\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+// Criterion 1: a cohort whose member never reports must close WINDOW_EXPIRED
+// through CoreRuntime's own sweep and timer, not merely in registry isolation.
+// Then the member's late arrival must become LATE_EXCLUDED.
+static int test_capture_cohort_window_expiry_sweep_smoke() {
+  using Assembly = CoreCaptureAssemblyRegistry;
+  using Reason = CoreCaptureCohortRegistry::CohortClosedReason;
+  using State = CoreCaptureCohortRegistry::CohortState;
+
+  CoreRuntime rt;
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+  rt.attach_provider(&prov);
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
+  if (!rt.smoke_set_rig_member_hardware_ids(8701, {eps[0].hardware_id})) { rt.stop(); return 1; }
+  const auto preflight = wait_for_rig_preflight_ok(rt, 8701);
+  if (!preflight.ok) {
+    print_rig_preflight_result("Preflight failed before window expiry smoke", preflight);
+    rt.stop();
+    return 1;
+  }
+  const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(8701, 9701, preflight);
+  if (!admitted.ok || admitted.participants.empty()) {
+    std::cerr << "Window expiry: admission failed\n";
+    rt.stop();
+    return 1;
+  }
+  const uint64_t member_capture_id = admitted.participants[0].request.capture_id;
+  const uint64_t member_device_id = admitted.participants[0].request.device_instance_id;
+
+  // Nothing is reported. The core thread must wake on the window deadline on
+  // its own -- there is no other traffic to carry it there. Budget generously
+  // past the 2s window but far short of the 30s admission watchdog, so a pass
+  // here cannot be the watchdog doing the work instead.
+  //
+  // This is ALSO the binding check for clock provenance (criterion 4): the
+  // capture date-time here is a real unix-epoch value, so swapping the window
+  // origin from admitted_ns to the acquisition mark makes the threshold
+  // astronomically large and this cohort never closes. Mutation-proved.
+  //
+  // A dedicated "near-epoch mark" check was tried and deleted: it could not
+  // discriminate. ns_since_epoch_() counts from RUNTIME START on steady_clock,
+  // so at admission now_ns is a few hundred million ns while the window is
+  // 2e9 -- a tiny mark yields a threshold indistinguishable from the correct
+  // one for the first two seconds, which is precisely when such a check would
+  // look. It passed under the mutation, so it was proving nothing.
+  if (!wait_until([&]() {
+        const auto c = rt.smoke_capture_cohort(9701);
+        return c && c->state == State::CLOSED;
+      }, 8000, 25)) {
+    std::cerr << "Window expiry: cohort never closed on its simultaneity window\n";
+    rt.stop();
+    return 1;
+  }
+  const auto expired = rt.smoke_capture_cohort(9701);
+  if (!expired || expired->closed_reason != Reason::WINDOW_EXPIRED ||
+      expired->member_outcomes.size() != 1 ||
+      expired->member_outcomes[0].disposition != Assembly::TerminalState::NEVER_ARRIVED) {
+    std::cerr << "Window expiry: expected WINDOW_EXPIRED with a NEVER_ARRIVED member\n";
+    rt.stop();
+    return 1;
+  }
+  // NEVER_ARRIVED, not FAILED: the window closed this, not the admission
+  // watchdog. If the watchdog had won, the member would carry ERR_TIMEOUT.
+  if (expired->member_outcomes[0].has_error_code) {
+    std::cerr << "Window expiry: member carries an error, so the watchdog closed it, not the window\n";
+    rt.stop();
+    return 1;
+  }
+
+  // The member now settles, well after its cohort closed. It becomes
+  // LATE_EXCLUDED, and the cohort's reason must not be rewritten.
+  static std::vector<uint8_t> bytes(2 * 2 * 4, 3);
+  FrameView frame{};
+  frame.capture_id = member_capture_id;
+  frame.device_instance_id = member_device_id;
+  frame.stream_id = 0;
+  frame.width = 2;
+  frame.height = 2;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.data = bytes.data();
+  frame.size_bytes = bytes.size();
+  frame.stride_bytes = 0;
+  frame.release = [](void*, const FrameView*) {};
+  frame.release_user = nullptr;
+  rt.provider_callbacks()->on_capture_started(member_capture_id, member_device_id);
+  rt.provider_callbacks()->on_frame(frame);
+  rt.provider_callbacks()->on_capture_completed(member_capture_id, member_device_id);
+
+  if (!wait_until([&]() {
+        const auto c = rt.smoke_capture_cohort(9701);
+        return c && !c->member_outcomes.empty() &&
+               c->member_outcomes[0].disposition == Assembly::TerminalState::LATE_EXCLUDED;
+      }, 4000, 5)) {
+    std::cerr << "Window expiry: a member settling after closure was not marked LATE_EXCLUDED\n";
+    rt.stop();
+    return 1;
+  }
+  const auto after_late = rt.smoke_capture_cohort(9701);
+  if (!after_late || after_late->closed_reason != Reason::WINDOW_EXPIRED) {
+    std::cerr << "Window expiry: late arrival rewrote the cohort's closed reason\n";
     rt.stop();
     return 1;
   }
@@ -4391,8 +5460,14 @@ static int test_cohort_aware_capture_result_set_smoke() {
   }
 
   // Emit expected participant + extra successful non-expected participant.
-  emit_capture(9202, admitted.participants[0].request.device_instance_id, 3);
-  emit_capture(9202, 4242, 4);
+  // Provider facts carry the MEMBER's Device Capture Id, not the cohort's
+  // 9202: 9202 keys no assembly and no result, so emitting under it would
+  // leave the cohort permanently empty.
+  const uint64_t member_capture_id = admitted.participants[0].request.capture_id;
+  emit_capture(member_capture_id, admitted.participants[0].request.device_instance_id, 3);
+  // Non-expected participant: a device that is not in the cohort, under its
+  // own unrelated Device Capture Id. It must still be excluded from the set.
+  emit_capture(member_capture_id + 500000, 4242, 4);
   if (!wait_until([&]() { return rt.get_capture_result_set(9202).size() == 1; }, 400, 5)) {
     std::cerr << "Cohort result-set smoke: admitted one-member cohort never converged to size 1\n";
     rt.stop();
@@ -4454,12 +5529,12 @@ static int test_server_facing_rig_orchestration_adapter_smoke() {
   }
 
   const uint64_t ok_capture_id = allocate_capture_id();
-  const auto success = rt.orchestrate_rig_capture_with_capture_id_for_server(8401, ok_capture_id);
-  if (!success.ok || success.capture_id != ok_capture_id || success.rig_id != 8401 || success.submitted_count != 1) {
+  const auto success = rt.orchestrate_rig_capture_with_capture_id_for_server(8401, ok_capture_id, CoreRuntime::smoke_default_device_capture_id_minter());
+  if (!success.ok || success.rig_capture_id != ok_capture_id || success.rig_id != 8401 || success.submitted_count != 1) {
     std::cerr << "Expected server-facing rig orchestration success. capture_id=" << ok_capture_id
               << " rig_id=8401"
               << " result_ok=" << (success.ok ? "true" : "false")
-              << " result_capture_id=" << success.capture_id
+              << " result_rig_capture_id=" << success.rig_capture_id
               << " result_rig_id=" << success.rig_id
               << " failure=" << static_cast<int>(success.failure)
               << " preflight_failure=" << static_cast<int>(success.preflight_failure)
@@ -4481,7 +5556,7 @@ static int test_server_facing_rig_orchestration_adapter_smoke() {
 
   // Failure path: missing rig should fail and should not expose cohort result set.
   const uint64_t bad_capture_id = allocate_capture_id();
-  const auto fail = rt.orchestrate_rig_capture_with_capture_id_for_server(999991, bad_capture_id);
+  const auto fail = rt.orchestrate_rig_capture_with_capture_id_for_server(999991, bad_capture_id, CoreRuntime::smoke_default_device_capture_id_minter());
   if (fail.ok || fail.failure != CoreRuntime::RigOrchestrationFailure::PreflightFailed) {
     rt.stop();
     return 1;
@@ -4611,16 +5686,21 @@ static int test_rig_orchestration_helper_smoke() {
 
   // Success.
   const auto success = rt.smoke_orchestrate_rig_capture_with_capture_id(8301, 9302);
-  if (!success.ok || success.capture_id != 9302 || success.submitted_count != 1) {
+  if (!success.ok || success.rig_capture_id != 9302 || success.submitted_count != 1) {
     rt.stop();
     return 1;
   }
+  // Re-orchestrating rig 8301 while its cohort from the successful capture
+  // above is still OPEN is refused as RigCaptureInFlight, which shadows the
+  // DuplicateCaptureId this previously asserted. The rig being busy is the
+  // accurate reason; the id being reused is incidental.
   const auto admission_fail = rt.smoke_orchestrate_rig_capture_with_capture_id(8301, 9302);
   if (admission_fail.ok ||
       admission_fail.failure != CoreRuntime::RigOrchestrationFailure::AdmissionFailed ||
       admission_fail.preflight_failure != CoreRuntime::RigPreflightFailure::None ||
-      admission_fail.admission_failure != CoreRuntime::RigCohortAdmissionFailure::DuplicateCaptureId ||
+      admission_fail.admission_failure != CoreRuntime::RigCohortAdmissionFailure::RigCaptureInFlight ||
       admission_fail.submission_failure != CoreRuntime::RigSubmissionFailure::None) {
+    std::cerr << "Expected RigCaptureInFlight re-orchestrating a rig with an open cohort\n";
     rt.stop();
     return 1;
   }
@@ -5024,6 +6104,75 @@ int main(int argc, char** argv) {
                              [] { return test_cohort_aware_capture_result_set_smoke(); })) {
       if (reporter.verbose()) reporter.print_summary();
       reporter.print_fail_line("core_spine_smoke", "test_cohort_aware_capture_result_set_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_rig_cohort_records_membership_version_smoke",
+                             [] { return test_rig_cohort_records_membership_version_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_rig_cohort_records_membership_version_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_device_close_terminalises_capture_device_lost_smoke",
+                             [] { return test_device_close_terminalises_capture_device_lost_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_device_close_terminalises_capture_device_lost_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_cohort_membership_snapshotted_at_trigger_smoke",
+                             [] { return test_cohort_membership_snapshotted_at_trigger_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_cohort_membership_snapshotted_at_trigger_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_capture_cohort_closure_sweep_smoke",
+                             [] { return test_capture_cohort_closure_sweep_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_capture_cohort_closure_sweep_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_capture_cohort_window_expiry_sweep_smoke",
+                             [] { return test_capture_cohort_window_expiry_sweep_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_capture_cohort_window_expiry_sweep_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_watchdog_abandonment_aborts_capture_smoke",
+                             [] { return test_watchdog_abandonment_aborts_capture_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_watchdog_abandonment_aborts_capture_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_device_lost_abandonment_aborts_capture_smoke",
+                             [] { return test_device_lost_abandonment_aborts_capture_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_device_lost_abandonment_aborts_capture_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_rig_capture_releases_stream_preemption_smoke",
+                             [] { return test_rig_capture_releases_stream_preemption_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_rig_capture_releases_stream_preemption_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_capture_public_id_smoke",
+                             [] { return test_capture_public_id_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_capture_public_id_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_staged_rig_topology_rejects_shared_device_smoke",
+                             [] { return test_staged_rig_topology_rejects_shared_device_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_staged_rig_topology_rejects_shared_device_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_capture_completion_queue_drain_smoke",
+                             [] { return test_capture_completion_queue_drain_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_capture_completion_queue_drain_smoke", r);
       return r;
     }
     if (int r = reporter.run("test_result_store_identity_survives_runtime_restart_smoke",

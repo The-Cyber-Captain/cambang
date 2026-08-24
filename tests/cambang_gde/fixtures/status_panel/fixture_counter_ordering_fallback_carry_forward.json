@@ -23,7 +23,6 @@
         "captures_triggered": 1,
         "captures_completed": 1,
         "captures_failed": 0,
-        "last_capture_id": 1,
         "last_capture_latency_ns": 10,
         "last_sync_skew_ns": 0,
         "error_code": 0,
@@ -390,7 +389,6 @@
         "captures_triggered": 0,
         "captures_completed": 0,
         "captures_failed": 0,
-        "last_capture_id": 0,
         "last_capture_latency_ns": 0,
         "error_code": 0,
         "capture_profile": {
@@ -752,7 +750,6 @@
         "captures_triggered": 2,
         "captures_completed": 2,
         "captures_failed": 0,
-        "last_capture_id": 2,
         "last_capture_latency_ns": 11,
         "last_sync_skew_ns": 1,
         "error_code": 0,
@@ -1135,7 +1132,6 @@
         "captures_triggered": 0,
         "captures_completed": 0,
         "captures_failed": 0,
-        "last_capture_id": 0,
         "last_capture_latency_ns": 0,
         "error_code": 0,
         "capture_profile": {

@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(scons *)",
+      "PowerShell(scons *)",
+      "Bash(out/*.exe)",
+      "Bash(./out/*.exe)",
+      "PowerShell(.\\out\\*.exe)",
+      "PowerShell(& .\\out\\*.exe)",
+      "PowerShell(.\\run_godot.ps1 *)",
+      "PowerShell(& .\\run_godot.ps1 *)"
+    ]
+  }
+}

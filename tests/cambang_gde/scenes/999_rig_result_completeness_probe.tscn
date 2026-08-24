@@ -329,13 +329,13 @@ func _ready():
 		while not dev.live:
 			await dev.live_changed
 
-	var rig_ids := PackedStringArray()
+	var rig_devices: Array[CamBANGDevice] = []
 	for id in RIG_MEMBER_IDS:
-		rig_ids.append(str(id))
+		rig_devices.append(_devices_by_id[str(id)])
 	# A one-member configuration drives the device path directly, so no rig is
 	# created for it: a rig of one is not what is under test.
 	if RIG_MEMBER_IDS.size() > 1:
-		rig_00 = CamBANGServer.create_rig(rig_ids)
+		rig_00 = CamBANGServer.create_rig(rig_devices)
 	var identity := []
 	for id in ALL_DEVICE_IDS:
 		var d: CamBANGDevice = _devices_by_id[str(id)]
@@ -585,10 +585,15 @@ func _do_capture():
 	if RIG_MEMBER_IDS.size() == 1:
 		single_device = _devices_by_id[str(RIG_MEMBER_IDS[0])]
 
-	var capture_err = (single_device.trigger_capture() if single_device != null
+	var capture: Dictionary = (single_device.trigger_capture() if single_device != null
 		else rig_00.trigger_capture())
-	print(\"[999Probe] click=%d trigger_capture(%s) -> %s\" % [
-		click, (\"device\" if single_device != null else \"rig\"), error_string(capture_err)])
+	var capture_err := int(capture.get(\"error\", FAILED))
+	# The trigger now names the capture it started, so the probe can say which
+	# capture each arriving result belongs to instead of inferring it.
+	print(\"[999Probe] click=%d trigger_capture(%s) -> id=%d members=%s err=%s\" % [
+		click, (\"device\" if single_device != null else \"rig\"),
+		int(capture.get(\"id\", 0)), str(capture.get(\"members\", {})),
+		error_string(capture_err)])
 	if capture_err != OK:
 		%SceneInfoText.text = \"click %d: trigger_capture failed: %s\" % [click, error_string(capture_err)]
 		return
@@ -668,7 +673,7 @@ func _tally_reading() -> String:
 # assembly-successful is SKIPPED, so an absent member means \"not successful\",
 # not necessarily \"no data\".
 #
-# CamBANGServer.get_capture_result_by_id(capture_id, device) goes straight to the
+# CamBANGServer.get_capture_result_by_id(capture_id) goes straight to the
 # result store with no such filtering. Asking both about the SAME (capture_id,
 # device) therefore separates the two candidates:
 #
@@ -689,24 +694,24 @@ func _tally_reading() -> String:
 # so it returns NULL for a device whose result demonstrably exists. Printed to
 # keep that visible rather than folklore.
 func _forensics(click: int, rig_results: Array) -> void:
-	var expected_capture_id := 0
+	var expected_capture_id := \"\"
 	var seen_devices := {}
 	for r in rig_results:
 		if r == null:
 			continue
 		var rr := r as CamBANGCaptureResult
-		expected_capture_id = int(rr.get_capture_id())
+		expected_capture_id = str(rr.get_capture_identity().get(\"device_capture_id\", \"\"))
 		seen_devices[int(rr.get_device_instance_id())] = true
-	if expected_capture_id == 0:
+	if expected_capture_id == \"\":
 		print(\"[999Probe] click=%d forensics: no member arrived, so the rig capture_id is unknown -- nothing to query\" % click)
 		return
-	print(\"[999Probe] click=%d forensics: rig capture_id=%d\" % [click, expected_capture_id])
+	print(\"[999Probe] click=%d forensics: member capture_id=%s\" % [click, expected_capture_id])
 	for dev in _devices:
 		if dev == null:
 			continue
 		var dev_id := int(dev.get_instance_id())
 		var in_set: bool = seen_devices.has(dev_id)
-		var stored = CamBANGServer.get_capture_result_by_id(expected_capture_id, dev_id)
+		var stored = CamBANGServer.get_capture_result_by_id(expected_capture_id)
 		var in_store: bool = stored != null
 		var conclusion := \"consistent\"
 		if in_store and not in_set:
@@ -726,7 +731,7 @@ func _show_slot(index: int, results: Array, texture_rect: TextureRect, info_labe
 		texture_rect.texture = ImageTexture.create_from_image(res.to_image())
 	else:
 		texture_rect.texture = null
-	info_label.text = \"device_instance_id: %d\\ncapture_id: %d\\n%dx%d\" % [res.get_device_instance_id(), res.get_capture_id(), res.get_width(), res.get_height()]
+	info_label.text = \"device_instance_id: %d\\ncapture_id: %s\\n%dx%d\" % [res.get_device_instance_id(), res.get_capture_identity().get(\"device_capture_id\", \"\"), res.get_width(), res.get_height()]
 
 
 func _do_teardown():
