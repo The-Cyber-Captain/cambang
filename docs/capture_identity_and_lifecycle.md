@@ -2,11 +2,10 @@
 
 ## 0. Status
 
-**Implemented, bar one pre-existing gap in §5.2. §9 is the ledger, and it cites
-source for every claim.**
+**Implemented. §9 is the ledger, and it cites source for every claim.**
 
 Per-section state, read from the code rather than from the tranche that claimed
-it. §9.2 says how each mandate is met; §9.8 lists what remains thin.
+it. §9.2b says how each contested mandate is met; §9.8 lists what remains thin.
 
 | Section | State | Where |
 |---|---|---|
@@ -22,7 +21,7 @@ it. §9.2 says how each mandate is met; §9.8 lists what remains thin.
 | §4.4 cohort closure and the simultaneity window | complete | `c44e787` |
 | §4.5 outstanding-set query | complete | `d950502` |
 | §5.1, §5.3 membership lifecycle and `DEVICE_LOST` | complete | `42c540a` |
-| §5.2 membership versioning | partial — recorded in the cohort, not reachable by a caller | `42c540a` |
+| §5.2 membership versioning | complete — recorded in the cohort; §5.2 amended so that exposing it is not required | `42c540a` |
 | §5.4 removal settles provider state | complete | `d950502` |
 | §5.5 one rig per device | complete | `42c540a` + `d950502` |
 | §6 accept, refuse, or version | complete | pre-existing + `54b7f11` |
@@ -54,10 +53,11 @@ helper and the `capture_id > baseline` comparisons are gone.
 millisecond so a rig's members sort in the order they were minted. The internal
 `uint64` is unchanged and still keys Core.
 
-One thing remains partial, pre-existing and not introduced by this work:
-§5.2's membership version is recorded on the cohort but not reachable by a
-caller, so a stored result set cannot say which membership produced it. §9.2
-states it with source.
+§5.2 was amended rather than built to. Its membership version is recorded on
+the cohort and not exposed, because a session-scoped counter cannot describe a
+membership to a result reloaded later; §2.3 and `get_member_outcomes()` already
+enumerate the membership by durable hardware id, which is what the section
+wanted. §9.2b states it with source.
 
 A note on how this document has been audited. An earlier version claimed every
 mandate was met on the strength of a search for the word "must" — which missed
@@ -317,11 +317,34 @@ in-flight result set.
 ### 5.2 Membership is versioned
 
 Rig membership carries a `rig_membership_version`, bumped on change. Each Rig
-Capture records the version it was admitted under, so a stored result set is
-self-describing about the membership that produced it.
+Capture records the version it was admitted under, taken from the preflight
+that resolved its participants.
 
-This mirrors the existing device capture-profile pattern, which is accepted
-while live and versioned forward.
+The version is internal admission bookkeeping and is deliberately **not**
+exposed at the boundary. It cannot make a stored result set self-describing,
+which is what an earlier draft of this section asked of it: the counter is
+session-scoped and starts at 1 per rig record, so a result reloaded in a later
+session meets no rig, no registry and no record of what version 3 consisted of.
+The number describes that membership changed, not what it changed to.
+
+What makes a result set self-describing is §2.3 and §4.3. Every result carries
+`rig_capture_id`, `rig_member_hardware_id` and `rig_member_index`, and
+`get_member_outcomes()` enumerates every member with its disposition whether or
+not it produced an image. That is the membership itself, named by durable
+hardware id, and it survives a reload. A version integer would not, and adding
+one to the public surface would answer nothing a caller could act on.
+
+This mirrors §6 as amended: a version is warranted where something records
+which version it ran under and can be observed doing so — not as an end in
+itself. The device capture-profile pattern qualifies; rig membership, already
+enumerated per result, does not.
+
+Today nothing reads the recorded value, not even admission — which takes it
+from the preflight precisely so it is never re-read
+(`core_capture_cohort_registry.h`). If it is to earn its keep it would be by
+checking that membership did not change between preflight and submission, a
+property §5.1 currently holds by construction. That is a separate question from
+surfacing it, and is not proposed here.
 
 ### 5.3 Device loss is not membership
 
@@ -470,13 +493,24 @@ recorded at `CamBANGServer::get_device` in `cambang_server.cpp`.
 
 ### 9.2 Mandates not met
 
-- **§5.2 — "so a stored result set is self-describing about the membership
-  that produced it".** The cohort records `rig_membership_version` correctly,
-  but nothing at the boundary exposes it: not the snapshot, not
-  `get_capture_identity()`, not `get_member_outcomes()`. The recording half is
-  met; the self-describing half is not.
+None. The heading is kept because earlier drafts listed §5.2 here and a reader
+arriving from one should see what happened to it, not an absence: see §9.2b.
 
 ### 9.2b How the contested mandates are met
+
+- **§5.2 — "so a stored result set is self-describing about the membership
+  that produced it".** Amended, not built to. `rig_membership_version` is
+  bumped in `core_rig_registry.cpp`, carried on the preflight and recorded on
+  the cohort (`core_runtime.cpp`, `core_capture_cohort_registry.h`), and read
+  by nothing else -- not the snapshot, not `src/godot/`, not any `.gd`, and not
+  by Core itself, which never compares it. Exposing it was considered and
+  rejected: the counter is session-scoped, so it tells a reloaded result that
+  membership changed but not what it changed to. §2.3's per-result
+  `rig_member_hardware_id` / `rig_member_index` and `get_member_outcomes()`'s
+  per-member entries already name the membership durably, which is the property
+  the section was after. Verified by `test_rig_cohort_records_membership_version_smoke`
+  and `phase3_snapshot_verify.cpp:764`, both of which test the recording that
+  remains.
 
 - **§6 — declarative configuration is observable.** Warm policy carries no
   version and deliberately so: nothing is stamped with it, and its applied
