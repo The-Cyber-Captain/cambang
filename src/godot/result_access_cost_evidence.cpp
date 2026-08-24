@@ -72,12 +72,13 @@ uint64_t infer_last_bytes(const SharedStreamResultData& data) noexcept {
   if (!data->payload.empty()) {
     return static_cast<uint64_t>(data->payload.size_bytes());
   }
-  if (data->retained_gpu_backing_descriptor.valid && data->retained_gpu_backing_descriptor.stride_bytes != 0) {
-    return static_cast<uint64_t>(data->retained_gpu_backing_descriptor.stride_bytes) *
-           static_cast<uint64_t>(data->retained_gpu_backing_descriptor.height);
+  if (const uint64_t gpu_bytes =
+          retained_gpu_backing_footprint_bytes(data->retained_gpu_backing_descriptor)) {
+    return gpu_bytes;
   }
   if (data->image_width != 0 && data->image_height != 0) {
-    return static_cast<uint64_t>(data->image_width) * static_cast<uint64_t>(data->image_height) * 4ull;
+    return static_cast<uint64_t>(data->image_width) * static_cast<uint64_t>(data->image_height) *
+           kUndeclaredGpuBackingBytesPerPixel;
   }
   return 0;
 }
@@ -103,15 +104,7 @@ bool mark_stream_fresh_locked(const char* route, const SharedStreamResultData& d
 uint64_t infer_capture_last_bytes(const CoreCaptureResultData::ImageMemberData* member) noexcept {
   if (!member) return 0;
   if (!member->payload.empty()) return static_cast<uint64_t>(member->payload.size_bytes());
-  if (member->retained_gpu_backing_descriptor.valid && member->retained_gpu_backing_descriptor.stride_bytes != 0) {
-    return static_cast<uint64_t>(member->retained_gpu_backing_descriptor.stride_bytes) *
-           static_cast<uint64_t>(member->retained_gpu_backing_descriptor.height);
-  }
-  if (member->retained_gpu_backing_descriptor.width != 0 && member->retained_gpu_backing_descriptor.height != 0) {
-    return static_cast<uint64_t>(member->retained_gpu_backing_descriptor.width) *
-           static_cast<uint64_t>(member->retained_gpu_backing_descriptor.height) * 4ull;
-  }
-  return 0;
+  return retained_gpu_backing_footprint_bytes(member->retained_gpu_backing_descriptor);
 }
 
 bool mark_capture_fresh_locked(
