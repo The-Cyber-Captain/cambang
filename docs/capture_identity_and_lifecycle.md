@@ -11,26 +11,27 @@ it. §9.2 says how each mandate is met; §9.8 lists what remains thin.
 | Section | State | Where |
 |---|---|---|
 | §2.1 separate id spaces | complete | `82fe1e7` |
-| §2.2 durable `dc_`/`rc_` public ids | complete | uncommitted |
-| §2.3 what a result carries | complete | uncommitted |
-| §3 within-class arbitration | complete | `9084bfe` + uncommitted |
+| §2.2 durable `dc_`/`rc_` public ids | complete | `c2854fd` |
+| §2.3 what a result carries | complete | `d950502` + `c2854fd` |
+| §3 within-class arbitration | complete | `9084bfe` + `d950502` + `2598470` |
 | §3.1 simultaneity admission-checked | complete | pre-existing + `c44e787` |
-| §4.1 triggers return identity | complete | uncommitted |
-| §4.2 signals | complete | uncommitted |
-| §4.2 canonical wrappers | complete | uncommitted |
-| §4.3 dispositions | complete | `c44e787` + uncommitted |
+| §4.1 triggers return identity | complete | `d950502` |
+| §4.2 signals | complete | `d950502` + `c2854fd` |
+| §4.2 canonical wrappers | complete | `d950502` |
+| §4.3 dispositions | complete | `c44e787` + `d950502` |
 | §4.4 cohort closure and the simultaneity window | complete | `c44e787` |
-| §4.5 outstanding-set query | complete | uncommitted |
+| §4.5 outstanding-set query | complete | `d950502` |
 | §5.1, §5.3 membership lifecycle and `DEVICE_LOST` | complete | `42c540a` |
 | §5.2 membership versioning | partial — recorded in the cohort, not reachable by a caller | `42c540a` |
-| §5.4 removal settles provider state | complete | uncommitted |
-| §5.5 one rig per device | complete | `42c540a` + uncommitted |
-| §6 accept, refuse, or version | complete | pre-existing + uncommitted |
-| §7 attribution by accounting | complete — every abandonment path aborts | uncommitted |
-| §8 consequences | complete | uncommitted |
+| §5.4 removal settles provider state | complete | `d950502` |
+| §5.5 one rig per device | complete | `42c540a` + `d950502` |
+| §6 accept, refuse, or version | complete | pre-existing + `54b7f11` |
+| §7 attribution by accounting | complete — every abandonment path aborts | `d950502` |
+| §8 consequences | complete | `c2854fd` |
 
-Rows marked "uncommitted" are in the working tree only and have no commit to
-cite.
+Every row now cites a commit. Where two are named, the first introduced the
+mechanism and the second changed its shape -- most often `c2854fd` replacing a
+`uint64` id with the durable string form.
 
 This document defines the target model for capture identity, capture
 arbitration, capture completion reporting, and rig-membership lifecycle. Where
@@ -679,7 +680,14 @@ id split would surface instead of hiding.
 
 Verdicts from `tests/cambang_gde/run-logs/`, 2026-08-24, Windows.
 
-- Pass: 62, 63, 65, 66, 73, 74, 568, 569, 768. Scene 70 passes headless.
+- Pass: 60, 61, 62, 63, 65, 66, 73, 74, 568, 569, 768. Scene 70 passes headless.
+- Re-run after the §9.8 preemption fix: `godot_test_suite.ps1` passed 51/51
+  (31 status-panel fixtures, 2 headless scripts, 11 render fixtures, scenes 60,
+  61, 62, 63, 65, 66, 70), and scene 73 passed all 23 steps in 20.5s. Note that
+  the suite runs none of the rig-capture scenes, so it does not on its own
+  demonstrate anything about capture arbitration -- 73 is the scene that does.
+  The suite's one `ReviewLog` entry is scene 65, which provokes boundary
+  rejections deliberately and so always emits Godot `ERROR:` lines.
 - **Scene 70 is interactive in windowed mode**, and does not self-verdict
   there: on success it enters inspection mode and waits for Esc, emitting its
   verdict only on quit. Run unattended with `-Windowed` it passes every step
@@ -704,10 +712,13 @@ Verdicts from `tests/cambang_gde/run-logs/`, 2026-08-24, Windows.
 - `911_acquisition_session_states` selects the platform-backed provider on this
   host, enumerates the real USB cameras, then requests the synthetic hardware
   id `"0"`.
-- `1001_basic_quest_snap.tscn` is not migrated: it calls
-  `create_rig(PackedStringArray(...))` and treats `trigger_capture()` as
-  returning an `Error`. It carries uncommitted maintainer edits and was left
-  untouched.
+- `1001_basic_quest_snap.tscn` is migrated, by the maintainer rather than by
+  this work: `create_rig([device_00, device_01])`, `await rig.capture_finished`,
+  `get_member_outcomes()` for why a member is missing, and
+  `get_capture_identity()` for the durable ids. It is the §4.1/§4.2 hardware
+  exercise on the Quest 3 (§0), and it is the scene that exposed the preemption
+  defect in §9.8. It emits no verdict and is not run by any launcher; it carries
+  uncommitted maintainer edits and must not be edited or committed here.
 - The `PREEMPTED_BY_RIG` disposition has no scene coverage: it is
   mutation-proved in Core, but no scene contends a device capture against a
   rig trigger.
