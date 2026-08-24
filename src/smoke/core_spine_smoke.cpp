@@ -4830,6 +4830,133 @@ static int test_capture_completion_queue_drain_smoke() {
   return 0;
 }
 
+// A rig capture must not silence a viewfinder for the rest of the session.
+//
+// Core suppresses repeating stream frames on a device while a capture is
+// outstanding there (arbitration_policy.md 6.1) and releases that suppression
+// once the capture is result-safe. The release asks the assembly registry,
+// which is keyed by Device Capture Id -- so registering the preemption under
+// the RIG Capture Id made the lookup miss forever once 2.1 split the id
+// spaces. The stream then went dark permanently while the provider carried on
+// delivering frames nobody received: a dead viewfinder after the first rig
+// capture, with nothing reported.
+static int test_rig_capture_releases_stream_preemption_smoke() {
+  using State = CoreCaptureCohortRegistry::CohortState;
+
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_runtime_created_stream(rt, prov)) { rt.stop(); return 1; }
+  rt.attach_provider(&prov);
+  if (rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    std::cerr << "Stream preemption: failed to start the stream\n";
+    rt.stop();
+    return 1;
+  }
+  prov.flush_callbacks_for_smoke();
+  (void)wait_for_core_barrier(rt);
+
+  std::atomic<uint64_t> releases{0};
+  uint64_t mark = 1000;
+  auto push_stream_frame = [&](uint8_t tag) {
+    rt.provider_callbacks()->on_frame(
+        make_runtime_queue_smoke_frame(7701, ++mark, tag, releases));
+    prov.flush_callbacks_for_smoke();
+    (void)wait_for_core_barrier(rt);
+  };
+  // retained_frame_id changes with each integrated frame, so it is the
+  // observable for "did this frame actually land".
+  auto stream_frame_id = [&]() -> uint64_t {
+    const SharedStreamResultData r = rt.get_latest_stream_result(kStreamId);
+    return r ? r->retained_frame_id : 0;
+  };
+
+  // Baseline: frames reach the stream result before any capture exists.
+  push_stream_frame(1);
+  const uint64_t before_capture = stream_frame_id();
+  if (before_capture == 0) {
+    std::cerr << "Stream preemption: no stream result before the rig capture\n";
+    rt.stop();
+    return 1;
+  }
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
+  if (!rt.smoke_set_rig_member_hardware_ids(8901, {eps[0].hardware_id})) { rt.stop(); return 1; }
+  const auto preflight = wait_for_rig_preflight_ok(rt, 8901);
+  if (!preflight.ok) {
+    print_rig_preflight_result("Preflight failed before stream preemption smoke", preflight);
+    rt.stop();
+    return 1;
+  }
+  const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(8901, 9901, preflight);
+  if (!admitted.ok || admitted.participants.empty()) {
+    std::cerr << "Stream preemption: rig admission failed\n";
+    rt.stop();
+    return 1;
+  }
+  // SUBMIT, not just admit. begin_capture_stream_preemption_for_bundle_ runs
+  // on the submission path, so an admitted-but-unsubmitted bundle registers no
+  // preemption at all -- and this test would then pass with the defect present.
+  const auto submitted = rt.smoke_submit_admitted_rig_bundle(admitted);
+  if (!submitted.ok) {
+    std::cerr << "Stream preemption: rig submission failed\n";
+    rt.stop();
+    return 1;
+  }
+  const uint64_t member_capture_id = admitted.participants[0].request.capture_id;
+  const uint64_t member_device_id = admitted.participants[0].request.device_instance_id;
+
+  // Settle the member so the cohort closes and the capture becomes
+  // result-safe -- the condition the release is waiting on.
+  static std::vector<uint8_t> bytes(2 * 2 * 4, 9);
+  FrameView capture_frame{};
+  capture_frame.capture_id = member_capture_id;
+  capture_frame.device_instance_id = member_device_id;
+  capture_frame.stream_id = 0;
+  capture_frame.width = 2;
+  capture_frame.height = 2;
+  capture_frame.format_fourcc = FOURCC_RGBA;
+  capture_frame.data = bytes.data();
+  capture_frame.size_bytes = bytes.size();
+  capture_frame.stride_bytes = 0;
+  capture_frame.release = [](void*, const FrameView*) {};
+  capture_frame.release_user = nullptr;
+  rt.provider_callbacks()->on_capture_started(member_capture_id, member_device_id);
+  rt.provider_callbacks()->on_frame(capture_frame);
+  rt.provider_callbacks()->on_capture_completed(member_capture_id, member_device_id);
+
+  if (!wait_until([&]() {
+        const auto c = rt.smoke_capture_cohort(9901);
+        return c && c->state == State::CLOSED;
+      }, 4000, 5)) {
+    std::cerr << "Stream preemption: cohort never closed\n";
+    rt.stop();
+    return 1;
+  }
+
+  // THE POINT. With the capture finished, stream frames must reach the
+  // stream result again. A revision that never advances means the
+  // suppression outlived the capture that justified it.
+  const uint64_t after_close = stream_frame_id();
+  bool resumed = false;
+  for (int i = 0; i < 40 && !resumed; ++i) {
+    push_stream_frame(static_cast<uint8_t>(2 + (i % 200)));
+    resumed = stream_frame_id() != after_close && stream_frame_id() != 0;
+  }
+  if (!resumed) {
+    std::cerr << "Stream preemption: stream frames still suppressed after the rig "
+                 "capture finished -- the viewfinder would stay dark\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
 // Durable public capture ids (capture_identity_and_lifecycle.md 2.2). The
 // property being bought is that string order is mint order, so stored results
 // sort correctly in a later session; and that the type prefix REFUSES a
@@ -5845,6 +5972,13 @@ int main(int argc, char** argv) {
                              [] { return test_capture_cohort_window_expiry_sweep_smoke(); })) {
       if (reporter.verbose()) reporter.print_summary();
       reporter.print_fail_line("core_spine_smoke", "test_capture_cohort_window_expiry_sweep_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_rig_capture_releases_stream_preemption_smoke",
+                             [] { return test_rig_capture_releases_stream_preemption_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_rig_capture_releases_stream_preemption_smoke", r);
       return r;
     }
     if (int r = reporter.run("test_capture_public_id_smoke",

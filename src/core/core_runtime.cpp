@@ -4273,7 +4273,21 @@ void CoreRuntime::begin_capture_stream_preemption_for_bundle_(const RigAdmittedR
     return;
   }
   for (const RigAdmittedParticipantRequest& participant : bundle.participants) {
-    begin_capture_stream_preemption_(bundle.rig_capture_id, participant.request.device_instance_id);
+    // Keyed by the MEMBER's Device Capture Id, not the Rig Capture Id.
+    //
+    // release_result_safe_capture_stream_preemptions_ asks the assembly
+    // registry whether this key is result-safe, and that registry is keyed by
+    // Device Capture Id. Since the id spaces were split (2.1) a Rig Capture Id
+    // can never be a key there, so passing one made the lookup miss forever:
+    // the preemption was never released, suppress_repeating_stream_frame_for_
+    // capture_ dropped every later stream frame on that device, and a
+    // viewfinder went dark for the rest of the session while the provider
+    // carried on delivering frames nobody received.
+    //
+    // A rig member is an ordinary Device Capture (section 1), so its own id is
+    // the one every other part of this model uses for it.
+    begin_capture_stream_preemption_(participant.request.capture_id,
+                                     participant.request.device_instance_id);
   }
 }
 

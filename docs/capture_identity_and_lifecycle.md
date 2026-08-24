@@ -77,7 +77,13 @@ no hardware coverage: scene 870 stalls on the S20+ for reasons unrelated to
 this work, and the one platform-backed run that completed cleanly (WinRT, after
 the provider fix in `60d1533`) exercises capture and rig capture rather than
 contention. §5.3's `DEVICE_LOST` has no hardware coverage at all — no existing
-scene closes a device mid-capture. Nothing in §4.1 or §4.2 has run on hardware.
+scene closes a device mid-capture.
+
+§4.1 and §4.2 now have one hardware exercise: `1001_basic_quest_snap.tscn` on a
+Quest 3 over Camera2, triggering a two-device rig capture and taking its results
+through the completion signal. It is a manual scene and emits no verdict, so the
+evidence is the maintainer watching it, not a launcher classification. It is
+what found the preemption defect in §9.8.
 
 This document supersedes `arbitration_policy.md` §9's shared-counter rule,
 which is done. It depends on, and must not contradict, `camera_fact_model.md`
@@ -608,6 +614,29 @@ than guessing if that id ever names more than one device, so a failure of the
 id split would surface instead of hiding.
 
 ### 9.8 Other open items
+
+- **A rig capture used to silence a viewfinder permanently.** Fixed.
+  `begin_capture_stream_preemption_for_bundle_` registered the stream-preemption
+  record under the **Rig** Capture Id, while
+  `release_result_safe_capture_stream_preemptions_` asks the assembly registry,
+  which is keyed by **Device** Capture Id. Once §2.1 made the id spaces
+  numerically disjoint a Rig Capture Id could never be a key there, so the
+  release lookup missed forever: the preemption stayed outstanding and
+  `suppress_repeating_stream_frame_for_capture_` dropped every later stream
+  frame on that device. The provider kept delivering frames nobody received --
+  a viewfinder dead for the rest of the session after the first rig capture,
+  with nothing reported.
+
+  Now keyed by the member's own `request.capture_id`, which is what a rig member
+  is (§1). Covered by `test_rig_capture_releases_stream_preemption_smoke`,
+  mutation-proved: restoring the rig-id key fails it and nothing else.
+
+  Introduced by §2.1's id split -- correct in itself, with this call site never
+  following. Nothing caught it because no host-native test exercised stream
+  suppression across a rig capture, and no scene watched a viewfinder survive
+  one. The first version of that test passed WITH the defect present, because it
+  admitted the cohort without submitting it and the preemption is registered on
+  the submission path; the mutation caught that, not review.
 
 - **`last_capture_id` was removed from the published snapshot.** It lived on
   `RigState` and `AcquisitionSessionState` and was not state at all -- it was
