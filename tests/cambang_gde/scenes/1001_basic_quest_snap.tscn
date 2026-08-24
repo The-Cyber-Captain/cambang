@@ -141,7 +141,9 @@ func _ready():
 		await device_01.live_changed
 	#var stream_00 : CamBANGStream = device_00.create_stream()
 
-	rig_00 = CamBANGServer.create_rig(PackedStringArray([\"50\", \"51\"]))
+	#rig_00 = CamBANGServer.create_rig(PackedStringArray([\"50\", \"51\"]))
+	rig_00 = CamBANGServer.create_rig([device_00, device_01])
+
 	#rig_00 = CamBANGServer.create_rig(PackedStringArray([\"0\", \"1\"]))
 
 	print(\"Made a rig? %s\" % [rig_00])
@@ -199,20 +201,33 @@ func _process(delta: float) -> void:
 
 
 func _do_capture():
-	var capture_err = rig_00.trigger_capture()#device_00.trigger_capture()
-	print(\"capture_err %s\" % capture_err)
+	#var capture_id = rig_00.trigger_capture()#device_00.trigger_capture()
+	#print(\"capture_err %s\" % capture_err)
+	
+	var capture := rig_00.trigger_capture()   # { id, members, error 
+	if capture.error != OK:
+		return                                # refused: nothing was minted, nothing will fire
+	var rig_capture_id : String = capture.id
+	
+	var finished = await rig_00.capture_finished    # [rig_capture_id, closed_reason]
+	if int(finished[1]) == CamBANGServer.COHORT_CLOSED_WINDOW_EXPIRED:
+		push_warning(\"rig capture closed short — a member never arrived\")
+		
+	var rig_results := rig_00.get_result()
+	var outcomes := rig_00.get_member_outcomes()    # why any member is missing
+	var capture_result = rig_results[0]
 	#while rig_00.get_result() == []:#null:
 		##print(\"waiting\")
 		#await get_tree().process_frame
 	
-	await get_tree().create_timer(0.5).timeout # arbitrary and horible. Only temporary
+	#await get_tree().create_timer(0.5).timeout # arbitrary and horible. Only temporary
 	
-	var rig_results : Array[CamBANGCaptureResult] = rig_00.get_result()
-	print(\"stopped waiting. Results are: %s\" % [rig_results])
-	var capture_result : CamBANGCaptureResult = null
-	if not rig_results == []:
-		capture_result = rig_results[0]
-	print(\"capture_result: %s\" % [capture_result])
+	#var rig_results : Array[CamBANGCaptureResult] = rig_00.get_result()
+	#print(\"stopped waiting. Results are: %s\" % [rig_results])
+	#var capture_result : CamBANGCaptureResult = null
+	#if not rig_results == []:
+		#capture_result = rig_results[0]
+	#print(\"capture_result: %s\" % [capture_result])
 	
 	
 	#var stream_result : CamBANGStreamResult = stream_00.get_result()
@@ -321,8 +336,11 @@ func _build_info_string(ResultPacket : CamBANGCaptureResult, member: int = 0) ->
 			var timing: Dictionary = timing_v
 			if timing.has(\"acquisition_mark\"):
 				acq_mark = int(timing.get(\"acquisition_mark\", 0))
+				
+	var capture_identity = ResultPacket.get_capture_identity()
+	var photo_id_string : String = capture_identity.rig_capture_id + \":\" + capture_identity.device_capture_id 
 		
-	return str(\"Pose: %s\\nAcquisition mark (ms): %s\\nExposureTime (ms): %s\" % [p, acq_mark  / 1000000, exposure_nanoseconds / 1000000])
+	return str(\"Pose: %s\\nAcquisition mark (ms): %s\\nExposureTime (ms): %s\\nPhoto identity: %s\" % [p, acq_mark  / 1000000, exposure_nanoseconds / 1000000, photo_id_string])
 	
 "
 
