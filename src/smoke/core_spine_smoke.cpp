@@ -3363,6 +3363,21 @@ static int test_capture_admission_context_smoke() {
     rt.stop();
     return 1;
   }
+  // Let the first capture settle before triggering the second. The per-device
+  // guard refuses a second trigger while one is still in flight, and although
+  // StubProvider completes synchronously on its strand, Core's terminalisation
+  // of that capture is asynchronous -- so without this the second trigger loses
+  // a race it was never meant to be in, roughly twice in ten runs. The subject
+  // here is that each admission samples its own capture date-time, not
+  // admission timing.
+  if (!wait_until([&]() {
+        return rt.smoke_capture_disposition(99001, kDeviceInstanceId).state !=
+               CoreCaptureAssemblyRegistry::TerminalState::NONE;
+      }, 400, 5)) {
+    std::cerr << "FAIL: the first standalone capture never reached a terminal state\n";
+    rt.stop();
+    return 1;
+  }
   rt.smoke_set_capture_datetime_utc_nanoseconds(200);
   if (rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceInstanceId, 99002) !=
           TryTriggerDeviceCaptureStatus::OK) {
