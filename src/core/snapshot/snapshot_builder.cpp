@@ -154,7 +154,6 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             r.captures_triggered = rec.captures_triggered;
             r.captures_completed = rec.captures_completed;
             r.captures_failed = rec.captures_failed;
-            r.last_capture_id = rec.last_capture_id;
             r.last_capture_latency_ns = rec.last_capture_latency_ns;
             r.last_sync_skew_ns = rec.last_sync_skew_ns;
             r.error_code = rec.error_code;
@@ -235,7 +234,6 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             s.captures_triggered = rec.captures_triggered;
             s.captures_completed = rec.captures_completed;
             s.captures_failed = rec.captures_failed;
-            s.last_capture_id = rec.last_capture_id;
             s.last_capture_latency_ns = rec.last_capture_latency_ns;
             s.error_code = rec.error_code;
             snap.acquisition_sessions.push_back(std::move(s));

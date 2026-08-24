@@ -2,8 +2,8 @@
 
 ## 0. Status
 
-**Partially implemented. §9 is the ledger, and it cites source for every
-claim.**
+**Implemented, bar two pre-existing gaps in §5.2 and §6. §9 is the ledger, and
+it cites source for every claim.**
 
 Per-section state, read from the code rather than from the tranche that claimed
 it. §9.2 says how each mandate is met; §9.8 lists what remains thin.
@@ -11,11 +11,11 @@ it. §9.2 says how each mandate is met; §9.8 lists what remains thin.
 | Section | State | Where |
 |---|---|---|
 | §2.1 separate id spaces | complete | `82fe1e7` |
-| §2.2 durable `dc_`/`rc_` public ids | not implemented — deferred by the maintainer | — |
-| §2.3 what a result carries | complete, with integer ids in place of `dc_`/`rc_` | uncommitted |
+| §2.2 durable `dc_`/`rc_` public ids | complete | uncommitted |
+| §2.3 what a result carries | complete | uncommitted |
 | §3 within-class arbitration | complete | `9084bfe` + uncommitted |
 | §3.1 simultaneity admission-checked | complete | pre-existing + `c44e787` |
-| §4.1 triggers return identity | complete, with integer ids in place of `dc_`/`rc_` | uncommitted |
+| §4.1 triggers return identity | complete | uncommitted |
 | §4.2 signals | complete | uncommitted |
 | §4.2 canonical wrappers | complete | uncommitted |
 | §4.3 dispositions | complete | `c44e787` + uncommitted |
@@ -26,7 +26,8 @@ it. §9.2 says how each mandate is met; §9.8 lists what remains thin.
 | §5.4 removal settles provider state | complete | uncommitted |
 | §5.5 one rig per device | complete | `42c540a` + uncommitted |
 | §6 accept, refuse, or version | partial — warm policy carries no version | pre-existing |
-| §8 consequences | partial — first met; harnesses have deleted nothing | uncommitted |
+| §7 attribution by accounting | complete — every abandonment path aborts | uncommitted |
+| §8 consequences | complete | uncommitted |
 
 Rows marked "uncommitted" are in the working tree only and have no commit to
 cite.
@@ -42,11 +43,19 @@ so — that instruction has died with two tranche files already, and in between
 a comment asserting dead code survived the tranche that made it live. A status
 section that drifts is worse than none, because it is read as current.
 
-**§8's second consequence is not met, and it is the one that decides whether
-the rest was worth doing.** No harness has deleted its hand-rolled completion
-detection. §5.2 and §6 are partial; §9.2 carries all three with source. §2.2 is
-deferred by the maintainer: ids stay session-scoped integers, so none survives
-the session.
+**§8 is met, which is the section that decides whether the rest was worth
+doing.** Harnesses have deleted their hand-rolled completion detection rather
+than rewritten it: scene 569 and the soak benchmark now gate on
+`capture_finished`, and the per-device baselines, the `_device_last_capture_id`
+helper and the `capture_id > baseline` comparisons are gone.
+
+**Ids are durable.** §2.2 landed: `dc_<ulid>` / `rc_<ulid>`, monotonic within a
+millisecond so a rig's members sort in the order they were minted. The internal
+`uint64` is unchanged and still keys Core.
+
+Two things remain partial, both pre-existing and neither introduced by this
+work: §5.2's membership version is recorded but not reachable by a caller, and
+§6's warm policy carries no version. §9.2 states both with source.
 
 A note on how this document has been audited. An earlier version claimed every
 mandate was met on the strength of a search for the word "must" — which missed
@@ -383,15 +392,16 @@ source disagree, the source wins and the entry is wrong.
 Read from `src/godot/*.h` and the `_bind_methods()` bodies.
 
 ```
-CamBANGDevice.trigger_capture()   -> Dictionary { id, error }
-CamBANGRig.trigger_capture()      -> Dictionary { id, members, error }
+CamBANGDevice.trigger_capture()   -> Dictionary { id: "dc_…", error }
+CamBANGRig.trigger_capture()      -> Dictionary { id: "rc_…",
+                                                 members: { hw: "dc_…" }, error }
 CamBANGRig.add_member(device)     -> Error
 CamBANGRig.remove_member(device)  -> Error
 CamBANGServer.create_rig(devices) -> CamBANGRig      // Array[CamBANGDevice]
 
-CamBANGDevice.capture_finished(capture_id, disposition, error_code)
-CamBANGRig.capture_finished(rig_capture_id, closed_reason)
-CamBANGServer.capture_finished(capture_id, info)
+CamBANGDevice.capture_finished(capture_id: String, disposition, error_code)
+CamBANGRig.capture_finished(rig_capture_id: String, closed_reason)
+CamBANGServer.capture_finished(capture_id: String, info)
     info = { capture_origin, device_instance_id, rig_id,
              disposition, closed_reason, error_code }
 
@@ -438,12 +448,6 @@ recorded at `CamBANGServer::get_device` in `cambang_server.cpp`.
 
 ### 9.2 Mandates not met
 
-- **§8, second consequence — harnesses should be able to delete their
-  hand-rolled completion detection.** Nothing has been deleted.
-  `870_to_image_soak_benchmark.gd` still carries 15 references to its own
-  `inflight_captures` counter and uses none of `capture_finished`,
-  `get_unfinished_captures` or `get_member_outcomes`. §8 states what that
-  means: the design has not taken the burden back and is incomplete.
 - **§5.2 — "so a stored result set is self-describing about the membership
   that produced it".** The cohort records `rig_membership_version` correctly,
   but nothing at the boundary exposes it: not the snapshot, not
@@ -456,6 +460,17 @@ recorded at `CamBANGServer::get_device` in `cambang_server.cpp`.
   (`CoreDeviceRegistry::set_warm_hold_ms`). Pre-existing, not introduced here.
 
 ### 9.2b How the contested mandates are met
+
+- **§8, second consequence — harnesses delete their hand-rolled completion
+  detection.** Scene 569 awaits `capture_finished` instead of polling
+  `get_result()` and comparing capture ids.
+  `870_to_image_soak_benchmark.gd` subscribes once to the server-wide signal
+  and gates both its device and rig polls on it; `baseline_capture_id`,
+  `_device_last_capture_id` and the per-device `last_capture_id` bookkeeping
+  are all removed. Verified against the matching synthetic baseline
+  (`20260812T204338394Z`, `config.provider = synthetic`): 54 rig captures, 324
+  rig member samples and 384 device captures in both, with phase cadence
+  matching to 0.1s.
 
 - **§8, first consequence — a device-level accessor is no longer blind to
   rig-originated captures.** The rig trigger path now records each member's
@@ -542,15 +557,28 @@ rig capture id, hardware id and member index and correlates them to the
 trigger's member map; scene 569 asserts a device-triggered result reports
 origin DEVICE with rig_capture_id 0, empty hardware id and index -1.
 
-Ids are session-scoped integers (§2.2 deferred), so nothing here survives the
-session. `get_capture_id()` predates this work and returns the same value as
-the `device_capture_id` key; §1 says the unqualified term should not appear in
-code, which that accessor's name does.
+Ids are the durable `dc_`/`rc_` form (§2.2), so a stored result can be
+identified in a later session. `get_capture_id()` is retired: §1 says the
+unqualified term should not appear in code, and the internal `uint64` it
+returned was never a caller's identity. Its dominant use was a staleness guard,
+which §8 removes rather than rewrites.
 
 ### 9.7 Ids
 
-Capture ids are session-scoped `uint64`; the durable `dc_`/`rc_` form of §2.2
-is not implemented.
+Public capture ids are `dc_<ulid>` / `rc_<ulid>`, minted at the boundary by
+`CapturePublicIdMinter` (`src/core/capture_public_id.{h,cpp}`) and mapped to the
+internal `uint64` that still keys Core. The minter is monotonic within a
+millisecond -- a rig's members are minted in one instant, and fresh entropy per
+member would order them at random. Ordering across a backwards clock step is not
+guaranteed; the high bits are wall clock, which is what makes ids from different
+sessions comparable at all.
+
+The prefix is enforced, not decorative: `device_capture_internal_id()` refuses an
+`rc_` id rather than failing to find it, so a caller learns it passed the wrong
+kind of id instead of "no such capture".
+
+The maps are session-scoped and cleared on `stop()`. A durable id identifies a
+STORED artifact; it does not resurrect one after the session that made it.
 
 `get_capture_result_by_id(capture_id)` takes the id alone. It required a
 `device_instance_id` alongside until the id spaces were split (§2.1) — after
@@ -564,6 +592,20 @@ id split would surface instead of hiding.
 
 ### 9.8 Other open items
 
+- **`last_capture_id` was removed from the published snapshot.** It lived on
+  `RigState` and `AcquisitionSessionState` and was not state at all -- it was
+  the residue of a past event, published so a consumer could diff it against
+  the previous tick. That is the staleness-guard pattern §8 removes, and it was
+  its only real consumer: retained-result calibration also read it, and now
+  reads the boundary's own records instead
+  (`latest_capture_id_by_device_instance_id_`,
+  `latest_rig_capture_id_by_rig_id_`). Removed from the struct, the builder,
+  the export, the v1 schema, the status panel, 20 fixtures and the scenes.
+  Core's internal `last_capture_id` on the rig and acquisition-session records
+  is untouched.
+
+  The schema was edited in place rather than up-versioned, at the maintainer's
+  direction: pre-Release, and there is no consumer to keep compatible.
 - The word "settle" survives in `src/` only in unrelated senses: backing-plan
   settle delays, "the answer is settled" meaning decided, and §5.4's
   accounting sense of settling what is owed. Every identifier and comment
@@ -588,13 +630,19 @@ id split would surface instead of hiding.
 
 ### 9.9 Scene status
 
-Verdicts from `tests/cambang_gde/run-logs/`, 2026-08-18, Windows, windowed.
+Verdicts from `tests/cambang_gde/run-logs/`, 2026-08-24, Windows.
 
-- Pass: 65, 70, 73, 74, 568, 569, 768.
+- Pass: 62, 63, 65, 66, 73, 74, 568, 569, 768. Scene 70 passes headless.
 - **Scene 70 is interactive in windowed mode**, and does not self-verdict
   there: on success it enters inspection mode and waits for Esc, emitting its
   verdict only on quit. Run unattended with `-Windowed` it passes every step
   and then hits the runner timeout. Only headless self-quits.
+- **`64_status_panel_runtime_smoke` and `67_status_panel_scenario_runtime` are
+  manual scenes.** Neither driver script contains a `HarnessVerdict` or a
+  `quit()`; they exist to be looked at and closed. A `missing_harness_verdict`
+  from either is the launcher correctly describing a scene that never emits
+  one, not a fault. Do not read them as regressions, and do not run them
+  expecting a verdict.
 - Scene 73 carries the completion coverage: the trigger names its capture in
   the rig id space with a member map; the outstanding set lists the rig and its
   members in flight and clears once they finish; the rig, server-wide and
@@ -616,6 +664,11 @@ Verdicts from `tests/cambang_gde/run-logs/`, 2026-08-18, Windows, windowed.
 - The `PREEMPTED_BY_RIG` disposition has no scene coverage: it is
   mutation-proved in Core, but no scene contends a device capture against a
   rig trigger.
+- **The status panel's display change is unverified.** Removing the
+  `last_capture_id` row from `cambang_status_panel.gd` is display-only, and the
+  field was already `"required": false` so the panel tolerated its absence by
+  construction -- but that is reasoning, not evidence, and the only scenes that
+  would exercise it are the manual ones above.
 
 ### 9.10 Resolved, kept so a reader coming from an older draft is not misled
 

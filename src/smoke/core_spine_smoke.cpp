@@ -32,6 +32,7 @@ Non-Goals
 #include <functional>
 #include <future>
 #include <iostream>
+#include <set>
 #include <memory>
 #include <limits>
 #include <mutex>
@@ -49,6 +50,7 @@ Non-Goals
 #if !defined(CAMBANG_INTERNAL_SMOKE)
   #error "core_spine_smoke: build through the repo SCons maintainer_tools alias so CAMBANG_INTERNAL_SMOKE=1 is defined."
 #endif
+#include "core/capture_public_id.h"
 #include "core/camera_concurrency_adc.h"
 #include "core/adc_camera_description.h"
 #include "core/core_runtime.h"
@@ -4707,8 +4709,7 @@ static int test_capture_cohort_closure_sweep_smoke() {
         for (const auto& rig : snap.rigs) {
           if (rig.rig_id == 8601) {
             return rig.captures_triggered == 1 && rig.captures_completed == 1 &&
-                   rig.captures_failed == 0 && rig.last_capture_id == 9601 &&
-                   rig.active_capture_id == 0;
+                   rig.captures_failed == 0 && rig.active_capture_id == 0;
           }
         }
         return false;
@@ -4826,6 +4827,85 @@ static int test_capture_completion_queue_drain_smoke() {
   }
 
   rt.stop();
+  return 0;
+}
+
+// Durable public capture ids (capture_identity_and_lifecycle.md 2.2). The
+// property being bought is that string order is mint order, so stored results
+// sort correctly in a later session; and that the type prefix REFUSES a
+// wrong-space id rather than turning it into a lookup miss.
+static int test_capture_public_id_smoke() {
+  using Space = CapturePublicIdSpace;
+
+  CapturePublicIdMinter minter(20260820ull);
+  const std::string dc = minter.mint_at(Space::DeviceCapture, 1000);
+  const std::string rc = minter.mint_at(Space::RigCapture, 1000);
+  if (dc.size() != 29 || rc.size() != 29 ||
+      dc.compare(0, 3, "dc_") != 0 || rc.compare(0, 3, "rc_") != 0) {
+    std::cerr << "Public id: wrong shape" << std::endl;
+    return 1;
+  }
+
+  // The prefix is load-bearing (2.2): a caller must be able to refuse a Rig
+  // Capture Id where a Device Capture Id belongs, rather than silently miss.
+  const auto dc_space = capture_public_id_space(dc);
+  const auto rc_space = capture_public_id_space(rc);
+  if (!dc_space || *dc_space != Space::DeviceCapture ||
+      !rc_space || *rc_space != Space::RigCapture) {
+    std::cerr << "Public id: space not recoverable" << std::endl;
+    return 1;
+  }
+
+  // Malformed is malformed, not "some other space". A truncated id that still
+  // begins dc_ must be rejected, or a caller gets a lookup miss where it
+  // should get a bad-input answer.
+  std::string bad_alphabet = dc;
+  bad_alphabet[5] = 'U';  // Crockford excludes I, L, O, U
+  if (capture_public_id_space("dc_TOOSHORT").has_value() ||
+      capture_public_id_space("xx_0000000000000000000000000").has_value() ||
+      capture_public_id_space(dc.substr(0, 28)).has_value() ||
+      capture_public_id_space(bad_alphabet).has_value()) {
+    std::cerr << "Public id: malformed text accepted" << std::endl;
+    return 1;
+  }
+
+  // MONOTONIC within one millisecond. A rig's members are minted in a single
+  // instant; fresh entropy per member would order them at random, and 2.2 asks
+  // for sortability precisely so a stored set can be ordered.
+  CapturePublicIdMinter same_ms(7ull);
+  std::string previous = same_ms.mint_at(Space::DeviceCapture, 5000);
+  for (int i = 0; i < 64; ++i) {
+    const std::string next = same_ms.mint_at(Space::DeviceCapture, 5000);
+    if (!(next > previous)) {
+      std::cerr << "Public id: same-millisecond ids do not increase" << std::endl;
+      return 1;
+    }
+    previous = next;
+  }
+
+  // And across milliseconds, where the timestamp carries the order.
+  CapturePublicIdMinter across(11ull);
+  std::string earlier = across.mint_at(Space::DeviceCapture, 1000);
+  for (std::uint64_t ms = 1001; ms < 1064; ++ms) {
+    const std::string later = across.mint_at(Space::DeviceCapture, ms);
+    if (!(later > earlier)) {
+      std::cerr << "Public id: later millisecond did not sort later" << std::endl;
+      return 1;
+    }
+    earlier = later;
+  }
+
+  // 2.2 exists because a session-local counter collides on reload, so minting
+  // must not repeat itself.
+  CapturePublicIdMinter unique_minter(99ull);
+  std::set<std::string> seen;
+  for (int i = 0; i < 512; ++i) {
+    if (!seen.insert(unique_minter.mint_at(Space::DeviceCapture, 2000 + (i % 3))).second) {
+      std::cerr << "Public id: minted a duplicate" << std::endl;
+      return 1;
+    }
+  }
+
   return 0;
 }
 
@@ -5765,6 +5845,12 @@ int main(int argc, char** argv) {
                              [] { return test_capture_cohort_window_expiry_sweep_smoke(); })) {
       if (reporter.verbose()) reporter.print_summary();
       reporter.print_fail_line("core_spine_smoke", "test_capture_cohort_window_expiry_sweep_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_capture_public_id_smoke",
+                             [] { return test_capture_public_id_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_capture_public_id_smoke", r);
       return r;
     }
     if (int r = reporter.run("test_staged_rig_topology_rejects_shared_device_smoke",

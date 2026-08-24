@@ -1822,6 +1822,14 @@ void CamBANGServer::stop() {
   // would never fire again -- worse than no handle, because it looks live.
   unfinished_device_capture_device_by_id_.clear();
   unfinished_rig_capture_ids_.clear();
+  latest_rig_capture_id_by_rig_id_.clear();
+  // The captures these name are gone. A public id outliving its session would
+  // resolve to nothing anyway -- 2.2's durability is for identifying a STORED
+  // artifact, not for resurrecting one.
+  device_capture_public_by_internal_.clear();
+  device_capture_internal_by_public_.clear();
+  rig_capture_public_by_internal_.clear();
+  rig_capture_internal_by_public_.clear();
   canonical_device_by_hardware_id_.clear();
   canonical_device_by_instance_id_.clear();
   canonical_rig_by_id_.clear();
@@ -2438,7 +2446,7 @@ void CamBANGServer::_emit_capture_completion_signals_() {
     info["closed_reason"] = -1;
     info["error_code"] = error_code;
     emit_signal("capture_finished",
-                static_cast<uint64_t>(settled.capture_id),
+                device_capture_public_id(settled.capture_id),
                 info);
 
     // Then the wrapper naming that device. Wrappers are canonical per id, so
@@ -2455,7 +2463,7 @@ void CamBANGServer::_emit_capture_completion_signals_() {
       }
       if (device->get_instance_id() == settled.device_instance_id) {
         device->emit_signal("capture_finished",
-                            static_cast<uint64_t>(settled.capture_id),
+                            device_capture_public_id(settled.capture_id),
                             disposition,
                             error_code);
       }
@@ -2474,7 +2482,7 @@ void CamBANGServer::_emit_capture_completion_signals_() {
     info["closed_reason"] = reason;
     info["error_code"] = 0;
     emit_signal("capture_finished",
-                static_cast<uint64_t>(closed.rig_capture_id),
+                rig_capture_public_id(closed.rig_capture_id),
                 info);
     for (auto it = tracked_rig_wrapper_object_ids_.begin();
          it != tracked_rig_wrapper_object_ids_.end();) {
@@ -2486,7 +2494,7 @@ void CamBANGServer::_emit_capture_completion_signals_() {
       }
       if (rig->get_id() == closed.rig_id) {
         rig->emit_signal("capture_finished",
-                         static_cast<uint64_t>(closed.rig_capture_id),
+                         rig_capture_public_id(closed.rig_capture_id),
                          reason);
       }
       ++it;
@@ -2594,6 +2602,66 @@ godot::Ref<CamBANGRig> CamBANGServer::_canonical_rig_for_id_(uint64_t rig_id) co
   return slot;
 }
 
+godot::String CamBANGServer::mint_device_capture_public_id_(uint64_t internal_id) {
+  if (internal_id == 0) {
+    return godot::String();
+  }
+  const std::string public_id =
+      capture_public_id_minter_.mint(CapturePublicIdSpace::DeviceCapture);
+  device_capture_public_by_internal_[internal_id] = public_id;
+  device_capture_internal_by_public_[public_id] = internal_id;
+  return godot::String(public_id.c_str());
+}
+
+godot::String CamBANGServer::mint_rig_capture_public_id_(uint64_t internal_id) {
+  if (internal_id == 0) {
+    return godot::String();
+  }
+  const std::string public_id =
+      capture_public_id_minter_.mint(CapturePublicIdSpace::RigCapture);
+  rig_capture_public_by_internal_[internal_id] = public_id;
+  rig_capture_internal_by_public_[public_id] = internal_id;
+  return godot::String(public_id.c_str());
+}
+
+godot::String CamBANGServer::device_capture_public_id(uint64_t internal_id) const {
+  const auto it = device_capture_public_by_internal_.find(internal_id);
+  return it == device_capture_public_by_internal_.end()
+             ? godot::String()
+             : godot::String(it->second.c_str());
+}
+
+godot::String CamBANGServer::rig_capture_public_id(uint64_t internal_id) const {
+  const auto it = rig_capture_public_by_internal_.find(internal_id);
+  return it == rig_capture_public_by_internal_.end()
+             ? godot::String()
+             : godot::String(it->second.c_str());
+}
+
+uint64_t CamBANGServer::device_capture_internal_id(const godot::String& public_id) const {
+  const std::string text(public_id.utf8().get_data());
+  // Space first, THEN the map. An rc_ id must be refused here rather than
+  // merely missing: 2.2 requires that a Rig Capture Id is never silently
+  // accepted where a Device Capture Id is expected, and a plain map miss would
+  // report "no such capture" for what is really the wrong kind of id.
+  const auto space = capture_public_id_space(text);
+  if (!space || *space != CapturePublicIdSpace::DeviceCapture) {
+    return 0;
+  }
+  const auto it = device_capture_internal_by_public_.find(text);
+  return it == device_capture_internal_by_public_.end() ? 0 : it->second;
+}
+
+uint64_t CamBANGServer::rig_capture_internal_id(const godot::String& public_id) const {
+  const std::string text(public_id.utf8().get_data());
+  const auto space = capture_public_id_space(text);
+  if (!space || *space != CapturePublicIdSpace::RigCapture) {
+    return 0;
+  }
+  const auto it = rig_capture_internal_by_public_.find(text);
+  return it == rig_capture_internal_by_public_.end() ? 0 : it->second;
+}
+
 std::optional<CoreRuntime::RigParticipationForServer>
 CamBANGServer::rig_participation_for_device_capture(uint64_t device_capture_id) const {
   if (!is_public_boundary_ready_()) {
@@ -2602,16 +2670,21 @@ CamBANGServer::rig_participation_for_device_capture(uint64_t device_capture_id) 
   return runtime_.rig_participation_for_device_capture(device_capture_id);
 }
 
-godot::Array CamBANGServer::get_capture_member_outcomes_by_id(uint64_t rig_capture_id) const {
+godot::Array CamBANGServer::get_capture_member_outcomes_by_id(
+    const godot::String& rig_capture_id) const {
   godot::Array out;
-  if (rig_capture_id == 0 || !is_public_boundary_ready_()) {
+  if (!is_public_boundary_ready_()) {
     return out;
   }
-  for (const auto& outcome : runtime_.capture_member_outcomes_for_server(rig_capture_id)) {
+  const uint64_t internal_id = rig_capture_internal_id(rig_capture_id);
+  if (internal_id == 0) {
+    return out;
+  }
+  for (const auto& outcome : runtime_.capture_member_outcomes_for_server(internal_id)) {
     godot::Dictionary d;
     d["hardware_id"] = godot::String(outcome.hardware_id.c_str());
     d["device_instance_id"] = static_cast<uint64_t>(outcome.device_instance_id);
-    d["device_capture_id"] = static_cast<uint64_t>(outcome.device_capture_id);
+    d["device_capture_id"] = device_capture_public_id(outcome.device_capture_id);
     d["disposition"] = static_cast<int>(outcome.disposition);
     // Always present, so a caller reads one shape. 0 means no provider error
     // was reported -- not that the member succeeded; disposition says that.
@@ -2627,7 +2700,7 @@ godot::Dictionary CamBANGServer::get_unfinished_captures() const {
   for (const auto& [capture_id, device_instance_id] : unfinished_device_capture_device_by_id_) {
     const int64_t device_key = static_cast<int64_t>(device_instance_id);
     godot::Array ids = by_device.get(device_key, godot::Array());
-    ids.push_back(static_cast<uint64_t>(capture_id));
+    ids.push_back(device_capture_public_id(capture_id));
     by_device[device_key] = ids;
   }
   // Sorted per device: an unordered_map iterates arbitrarily, and a caller
@@ -2641,7 +2714,7 @@ godot::Dictionary CamBANGServer::get_unfinished_captures() const {
 
   godot::Array rig_captures;
   for (const uint64_t rig_capture_id : unfinished_rig_capture_ids_) {
-    rig_captures.push_back(static_cast<uint64_t>(rig_capture_id));
+    rig_captures.push_back(rig_capture_public_id(rig_capture_id));
   }
   rig_captures.sort();
 
@@ -2724,11 +2797,18 @@ godot::Ref<CamBANGStreamResult> CamBANGServer::get_stream_result_by_stream_id(ui
   return out;
 }
 
-godot::Ref<CamBANGCaptureResult> CamBANGServer::get_capture_result_by_id(uint64_t capture_id) const {
+godot::Ref<CamBANGCaptureResult> CamBANGServer::get_capture_result_by_id(
+    const godot::String& capture_id) const {
   if (!is_public_boundary_ready_()) {
     return godot::Ref<CamBANGCaptureResult>();
   }
-  SharedCaptureResultData data = runtime_.get_capture_result(capture_id);
+  // Device Capture space only. A rc_ id here is refused rather than missed
+  // (2.2), so a caller learns it passed the wrong kind of id.
+  const uint64_t internal_id = device_capture_internal_id(capture_id);
+  if (internal_id == 0) {
+    return godot::Ref<CamBANGCaptureResult>();
+  }
+  SharedCaptureResultData data = runtime_.get_capture_result(internal_id);
   if (!data) {
     return godot::Ref<CamBANGCaptureResult>();
   }
@@ -2739,12 +2819,23 @@ godot::Ref<CamBANGCaptureResult> CamBANGServer::get_capture_result_by_id(uint64_
   return out;
 }
 
-godot::TypedArray<CamBANGCaptureResult> CamBANGServer::get_capture_result_set_by_id(uint64_t capture_id) const {
+godot::TypedArray<CamBANGCaptureResult> CamBANGServer::get_capture_result_set_by_id(
+    const godot::String& capture_id) const {
   godot::TypedArray<CamBANGCaptureResult> out;
   if (!is_public_boundary_ready_()) {
     return out;
   }
-  std::vector<SharedCaptureResultData> results = runtime_.get_capture_result_set(capture_id);
+  // Accepts EITHER space: a Rig Capture Id yields the member set, a Device
+  // Capture Id yields that one capture. The id itself says which, so there is
+  // nothing for the caller to disambiguate.
+  uint64_t internal_id = rig_capture_internal_id(capture_id);
+  if (internal_id == 0) {
+    internal_id = device_capture_internal_id(capture_id);
+  }
+  if (internal_id == 0) {
+    return out;
+  }
+  std::vector<SharedCaptureResultData> results = runtime_.get_capture_result_set(internal_id);
   // Sorted by device_instance_id for deterministic ordering (matches the
   // former CamBANGCaptureResultSet, which kept results in a std::map keyed
   // the same way).
@@ -2827,6 +2918,10 @@ godot::Error CamBANGServer::trigger_device_capture(
   }
   latest_capture_id_by_device_instance_id_[device_instance_id] = capture_id;
   unfinished_device_capture_device_by_id_[capture_id] = device_instance_id;
+  // 2.2: the boundary mints the public id at trigger time. Only on acceptance --
+  // a refused trigger returns no id, and minting one would put an id into the
+  // maps for a capture that never existed.
+  (void)mint_device_capture_public_id_(capture_id);
   out_capture_id = capture_id;
   return godot::OK;
 }
@@ -3132,6 +3227,8 @@ CamBANGServer::RigTriggerInternalResult CamBANGServer::trigger_rig_capture_inter
   // individually -- a cohort can close on window expiry with a member still in
   // flight, and that member's device is genuinely still busy.
   unfinished_rig_capture_ids_.insert(rig_capture_id);
+  latest_rig_capture_id_by_rig_id_[rig_id] = rig_capture_id;
+  (void)mint_rig_capture_public_id_(rig_capture_id);
   for (const auto& member : orchestration.members) {
     if (member.device_capture_id != 0 && member.device_instance_id != 0) {
       unfinished_device_capture_device_by_id_[member.device_capture_id] =
@@ -3143,6 +3240,8 @@ CamBANGServer::RigTriggerInternalResult CamBANGServer::trigger_rig_capture_inter
       // capture on that device, reporting a stale image as the current one.
       latest_capture_id_by_device_instance_id_[member.device_instance_id] =
           member.device_capture_id;
+      // Members draw from the Device Capture space and get device public ids.
+      (void)mint_device_capture_public_id_(member.device_capture_id);
     }
   }
   return out;
@@ -3525,12 +3624,23 @@ void CamBANGServer::_arm_live_retained_result_access_calibration_from_snapshot_(
                    build_capture_member_identity_signature(data);
       };
   for (const AcquisitionSessionState& session : latest_->acquisition_sessions) {
-    if (session.last_capture_id == 0 || session.device_instance_id == 0) {
+    if (session.device_instance_id == 0) {
+      continue;
+    }
+    // The boundary's own record of the latest capture on this device, not the
+    // snapshot's. The snapshot publishes state for observation; which capture
+    // was most recent is bookkeeping this object already keeps, and reading it
+    // from published state made calibration depend on a field whose only other
+    // consumers were staleness guards.
+    const auto latest_it =
+        latest_capture_id_by_device_instance_id_.find(session.device_instance_id);
+    if (latest_it == latest_capture_id_by_device_instance_id_.end() ||
+        latest_it->second == 0) {
       continue;
     }
     live_capture_device_ids.insert(session.device_instance_id);
     SharedCaptureResultData result =
-        runtime_.get_capture_result(session.last_capture_id, session.device_instance_id);
+        runtime_.get_capture_result(latest_it->second, session.device_instance_id);
     if (!result) {
       pending_live_capture_retained_result_calibrations_.erase(
           session.device_instance_id);
@@ -3605,13 +3715,15 @@ void CamBANGServer::_arm_live_retained_result_access_calibration_from_snapshot_(
     // asserting dead code is worse than none: it invites the next reader to
     // skip the very path that runs.
     //
-    // rig.last_capture_id is a Rig Capture Id and get_capture_result_set()
-    // takes exactly that, so the resolution below is correct as written.
-    if (rig.last_capture_id == 0) {
+    // The id comes from the boundary's own record rather than the snapshot,
+    // for the same reason as the session loop above. It is a Rig Capture Id and
+    // get_capture_result_set() takes exactly that.
+    const auto rig_it = latest_rig_capture_id_by_rig_id_.find(rig.rig_id);
+    if (rig_it == latest_rig_capture_id_by_rig_id_.end() || rig_it->second == 0) {
       continue;
     }
     std::vector<SharedCaptureResultData> results =
-        runtime_.get_capture_result_set(rig.last_capture_id);
+        runtime_.get_capture_result_set(rig_it->second);
     for (const SharedCaptureResultData& result : results) {
       if (!result || result->device_instance_id == 0) {
         continue;
@@ -4755,7 +4867,7 @@ void CamBANGServer::_bind_methods() {
   // device_instance_id 0, disposition -1 and error_code 0.
   ADD_SIGNAL(godot::MethodInfo(
       "capture_finished",
-      godot::PropertyInfo(godot::Variant::INT, "capture_id"),
+      godot::PropertyInfo(godot::Variant::STRING, "capture_id"),
       godot::PropertyInfo(godot::Variant::DICTIONARY, "info")));
   ADD_SIGNAL(godot::MethodInfo(
       "state_published",

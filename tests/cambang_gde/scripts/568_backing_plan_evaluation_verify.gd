@@ -832,17 +832,14 @@ func _trigger_capture_access_only(
 	if _done:
 		return {}
 	var capture_result_observed := capture_result != null
-	var capture_id := 0
+	var capture_id := ""
 	var acquisition_session_id := 0
 	if capture_result_observed:
 		_probe_capture_result_access_only(capture_result, label)
 		if _done:
 			return {}
-		capture_id = int(capture_result.get_capture_id())
-		acquisition_session_id = _find_acquisition_session_id_for_capture(
-			device_instance_id,
-			capture_id
-		)
+		capture_id = str(capture_result.get_capture_identity().get("device_capture_id", ""))
+		acquisition_session_id = _find_acquisition_session_id_for_capture(device_instance_id)
 	elif not require_completed_result:
 		_info(
 			"%s: capture result did not complete inside probe wait budget; continuing with report-driven follow-up" % [
@@ -2376,12 +2373,18 @@ func _get_acquisition_session_snapshot_record(device_instance_id: int) -> Dictio
 	return {}
 
 
-func _find_acquisition_session_id_for_capture(
-	device_instance_id: int,
-	capture_id: int
-) -> int:
-	if capture_id == 0:
-		return 0
+func _find_acquisition_session_id_for_capture(device_instance_id: int) -> int:
+	# Keyed on the device alone, deliberately.
+	#
+	# This used to also match the snapshot's last_capture_id against the capture
+	# id held here. That correlation no longer exists and should not: the snapshot
+	# publishes tick-bounded STATE, while a capture's identity is the public id the
+	# trigger returned. Matching a result against snapshot telemetry was the same
+	# hand-rolled pattern section 8 removes.
+	#
+	# Nothing is lost. Section 3 forbids two device captures in flight on one
+	# device, so the device already identifies its acquisition session uniquely;
+	# the capture-id clause only ever disambiguated a case that cannot occur.
 	var snapshot = CamBANGServer.get_state_snapshot()
 	if snapshot == null or typeof(snapshot) != TYPE_DICTIONARY:
 		return 0
@@ -2392,8 +2395,6 @@ func _find_acquisition_session_id_for_capture(
 		var session_record: Dictionary = sv
 		if int(session_record.get("device_instance_id", 0)) != device_instance_id:
 			continue
-		if int(session_record.get("last_capture_id", 0)) != capture_id:
-			continue
 		return int(session_record.get("acquisition_session_id", 0))
 	return 0
 
@@ -2401,7 +2402,7 @@ func _find_acquisition_session_id_for_capture(
 func _capture_progress_from_record(record: Dictionary, source: String) -> Dictionary:
 	if record.is_empty():
 		return {"available": false, "source": source}
-	if not record.has("captures_completed") and not record.has("captures_failed") and not record.has("last_capture_id"):
+	if not record.has("captures_completed") and not record.has("captures_failed"):
 		return {"available": false, "source": source}
 	return {
 		"available": true,
@@ -2409,7 +2410,6 @@ func _capture_progress_from_record(record: Dictionary, source: String) -> Dictio
 		"captures_triggered": int(record.get("captures_triggered", 0)),
 		"captures_completed": int(record.get("captures_completed", 0)),
 		"captures_failed": int(record.get("captures_failed", 0)),
-		"last_capture_id": int(record.get("last_capture_id", 0)),
 		"active_capture_id": int(record.get("active_capture_id", 0)),
 	}
 

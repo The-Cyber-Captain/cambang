@@ -694,18 +694,18 @@ func _tally_reading() -> String:
 # so it returns NULL for a device whose result demonstrably exists. Printed to
 # keep that visible rather than folklore.
 func _forensics(click: int, rig_results: Array) -> void:
-	var expected_capture_id := 0
+	var expected_capture_id := \"\"
 	var seen_devices := {}
 	for r in rig_results:
 		if r == null:
 			continue
 		var rr := r as CamBANGCaptureResult
-		expected_capture_id = int(rr.get_capture_id())
+		expected_capture_id = str(rr.get_capture_identity().get(\"device_capture_id\", \"\"))
 		seen_devices[int(rr.get_device_instance_id())] = true
-	if expected_capture_id == 0:
+	if expected_capture_id == \"\":
 		print(\"[999Probe] click=%d forensics: no member arrived, so the rig capture_id is unknown -- nothing to query\" % click)
 		return
-	print(\"[999Probe] click=%d forensics: rig capture_id=%d\" % [click, expected_capture_id])
+	print(\"[999Probe] click=%d forensics: member capture_id=%s\" % [click, expected_capture_id])
 	for dev in _devices:
 		if dev == null:
 			continue
@@ -731,7 +731,7 @@ func _show_slot(index: int, results: Array, texture_rect: TextureRect, info_labe
 		texture_rect.texture = ImageTexture.create_from_image(res.to_image())
 	else:
 		texture_rect.texture = null
-	info_label.text = \"device_instance_id: %d\\ncapture_id: %d\\n%dx%d\" % [res.get_device_instance_id(), res.get_capture_id(), res.get_width(), res.get_height()]
+	info_label.text = \"device_instance_id: %d\\ncapture_id: %s\\n%dx%d\" % [res.get_device_instance_id(), res.get_capture_identity().get(\"device_capture_id\", \"\"), res.get_width(), res.get_height()]
 
 
 func _do_teardown():

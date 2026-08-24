@@ -333,7 +333,6 @@ static godot::Dictionary export_rig(const RigState& r) {
   d["captures_completed"] = static_cast<uint64_t>(r.captures_completed);
   d["captures_failed"] = static_cast<uint64_t>(r.captures_failed);
 
-  d["last_capture_id"] = static_cast<uint64_t>(r.last_capture_id);
   d["last_capture_latency_ns"] = static_cast<uint64_t>(r.last_capture_latency_ns);
   d["last_sync_skew_ns"] = static_cast<uint64_t>(r.last_sync_skew_ns);
 
@@ -398,7 +397,6 @@ static godot::Dictionary export_acquisition_session(const AcquisitionSessionStat
   d["captures_triggered"] = static_cast<uint64_t>(s.captures_triggered);
   d["captures_completed"] = static_cast<uint64_t>(s.captures_completed);
   d["captures_failed"] = static_cast<uint64_t>(s.captures_failed);
-  d["last_capture_id"] = static_cast<uint64_t>(s.last_capture_id);
   d["last_capture_latency_ns"] = static_cast<uint64_t>(s.last_capture_latency_ns);
   d["error_code"] = static_cast<int>(s.error_code);
   return d;

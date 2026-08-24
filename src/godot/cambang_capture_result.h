@@ -62,7 +62,14 @@ public:
   int get_payload_kind() const;
   int64_t get_capture_datetime_unix_nanoseconds() const;
   uint64_t get_device_instance_id() const;
-  uint64_t get_capture_id() const;
+  // get_capture_id() was retired with 2.2. Section 1 says the unqualified term
+  // should not appear in code, and the value it returned -- the internal
+  // uint64 -- was never the caller's identity. Use get_capture_identity()'s
+  // device_capture_id, which carries the durable dc_ form.
+  //
+  // Its dominant use was a staleness guard (`id > previous`), which section 8
+  // says harnesses should delete in favour of the capture_finished signal
+  // rather than reimplement against strings.
   bool has_geolocation() const;
   godot::Dictionary get_geolocation() const;
 

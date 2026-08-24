@@ -167,7 +167,7 @@ godot::Dictionary CamBANGDevice::trigger_capture() {
   // existed, which is precisely the bookkeeping this return shape exists to
   // make possible.
   godot::Dictionary out;
-  out["id"] = static_cast<uint64_t>(0);
+  out["id"] = godot::String();
 
   const uint64_t device_instance_id = get_instance_id();
   if (!server_ || device_instance_id == 0 || !server_->is_running()) {
@@ -182,7 +182,9 @@ godot::Dictionary CamBANGDevice::trigger_capture() {
     return out;
   }
   current_capture_id_ = capture_id;
-  out["id"] = static_cast<uint64_t>(capture_id);
+  // The PUBLIC id (2.2). current_capture_id_ keeps the internal uint64, which
+  // is what Core is keyed by; the caller never sees that form.
+  out["id"] = server_->device_capture_public_id(capture_id);
   out["error"] = godot::OK;
   return out;
 }
@@ -212,7 +214,7 @@ godot::Ref<CamBANGCaptureResult> CamBANGDevice::get_result() const {
   if (capture_id == 0) {
     return godot::Ref<CamBANGCaptureResult>();
   }
-  return server_->get_capture_result_by_id(capture_id);
+  return server_->get_capture_result_by_id(server_->device_capture_public_id(capture_id));
 }
 
 godot::Error CamBANGDevice::set_warm_policy(const godot::Dictionary& policy) {
@@ -345,7 +347,7 @@ void CamBANGDevice::_bind_methods() {
   // surfaces not to be blind to rig-originated ones. Recorded in 9.5.
   ADD_SIGNAL(godot::MethodInfo(
       "capture_finished",
-      godot::PropertyInfo(godot::Variant::INT, "capture_id"),
+      godot::PropertyInfo(godot::Variant::STRING, "capture_id"),
       godot::PropertyInfo(godot::Variant::INT, "disposition"),
       godot::PropertyInfo(godot::Variant::INT, "error_code")));
 }

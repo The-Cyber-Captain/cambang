@@ -441,7 +441,6 @@ RigState {
   captures_completed: uint64
   captures_failed: uint64
 
-  last_capture_id: uint64                // 0 if none
   last_capture_latency_ns: uint64        // 0 if unknown
   last_sync_skew_ns: uint64              // 0 if unknown
 
@@ -628,7 +627,6 @@ AcquisitionSessionState {
   captures_completed: uint64
   captures_failed: uint64
 
-  last_capture_id: uint64
   last_capture_latency_ns: uint64
 
   error_code: int32

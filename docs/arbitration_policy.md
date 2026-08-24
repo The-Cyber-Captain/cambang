@@ -228,8 +228,16 @@ This section defines minimum counter semantics required for consistency.
 -   `captures_completed` increments on successful completion.
 -   `captures_failed` increments on completion with error.
 
-`last_capture_id`, `last_capture_latency_ns`, `last_sync_skew_ns` are
-updated on completion (success or failure where meaningful).
+`last_capture_latency_ns` and `last_sync_skew_ns` are updated on completion
+(success or failure where meaningful).
+
+A `last_capture_id` was published alongside them until
+`capture_identity_and_lifecycle.md` 2.2 gave captures durable public ids.
+It was removed: the snapshot publishes tick-bounded state, and a capture id
+there is internal telemetry that no longer shares a form with the public id
+a caller holds. Its only consumers were staleness guards -- poll the field,
+watch it change, infer that a capture finished -- which the completion
+signals replace.
 
 ### 8.2 Device counters
 

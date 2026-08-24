@@ -18,6 +18,7 @@
 #include <godot_cpp/variant/typed_array.hpp>
 #include <godot_cpp/variant/variant.hpp>
 
+#include "core/capture_public_id.h"
 #include "core/core_runtime.h"
 #include "core/state_snapshot_buffer.h"
 #include "core/snapshot/state_snapshot.h"
@@ -209,7 +210,7 @@ public:
   // That argument disambiguated nothing afterwards -- a Device Capture Id
   // belongs to exactly one device -- and a parameter that outlives its reason
   // teaches callers a constraint that is not real.
-  godot::Ref<CamBANGCaptureResult> get_capture_result_by_id(uint64_t capture_id) const;
+  godot::Ref<CamBANGCaptureResult> get_capture_result_by_id(const godot::String& capture_id) const;
   uint64_t get_latest_capture_id_for_device(uint64_t device_instance_id) const;
 
   // Captures this boundary has minted and not yet seen finish
@@ -252,13 +253,27 @@ public:
   //
   // Empty until the rig capture finishes, which is what rig_capture_finished
   // announces: outcomes are decided at cohort closure.
-  godot::Array get_capture_member_outcomes_by_id(uint64_t rig_capture_id) const;
+  godot::Array get_capture_member_outcomes_by_id(const godot::String& rig_capture_id) const;
 
   // Rig participation of a Device Capture, for CamBANGCaptureResult's identity
   // (2.3). Not bound: a caller reads it through the result it already holds.
   std::optional<CoreRuntime::RigParticipationForServer>
   rig_participation_for_device_capture(uint64_t device_capture_id) const;
-  godot::TypedArray<CamBANGCaptureResult> get_capture_result_set_by_id(uint64_t capture_id) const;
+
+  // Internal <-> public capture id (capture_identity_and_lifecycle.md 2.2).
+  // Not bound to Godot: these translate for the wrappers, which is why they sit
+  // here rather than on the scripting surface.
+  //
+  // Lookup returns an empty String for an internal id this session never
+  // minted, and 0 for a public id that is unknown OR belongs to the other
+  // space. Refusing a wrong-space id is 2.2's requirement, not a nicety: a Rig
+  // Capture Id accepted where a Device Capture Id belongs would resolve to
+  // nothing and read as "no such capture" instead of "wrong kind of id".
+  godot::String device_capture_public_id(uint64_t internal_id) const;
+  godot::String rig_capture_public_id(uint64_t internal_id) const;
+  uint64_t device_capture_internal_id(const godot::String& public_id) const;
+  uint64_t rig_capture_internal_id(const godot::String& public_id) const;
+  godot::TypedArray<CamBANGCaptureResult> get_capture_result_set_by_id(const godot::String& capture_id) const;
   void report_capture_result_member_observation(
       const SharedCaptureResultData& data,
       uint32_t image_member_index) const;
@@ -546,6 +561,34 @@ private:
   std::unordered_set<uint64_t> tracked_device_wrapper_object_ids_;
   std::unordered_set<uint64_t> tracked_stream_wrapper_object_ids_;
   std::unordered_set<uint64_t> tracked_rig_wrapper_object_ids_;
+
+  // Public capture ids (2.2). Minted at the boundary at trigger time; Core
+  // keeps using the uint64 throughout, so nothing here is on a hot path.
+  //
+  // Godot-thread only, like the rest of the boundary state. Both directions are
+  // kept because both are needed: reporting translates internal -> public,
+  // and an id-keyed lookup translates public -> internal.
+  //
+  // These grow for the life of a session, one pair of entries per capture, and
+  // are cleared on stop(). A long soak accumulates them; pruning in step with
+  // the result store's retention would bound it, at the cost of coupling the
+  // boundary to Core's retirement schedule.
+  // Latest Rig Capture Id per rig, the counterpart of
+  // latest_capture_id_by_device_instance_id_ for devices.
+  //
+  // Exists so retained-result calibration can find "the most recent capture on
+  // this rig" without reading it out of the published snapshot. The snapshot
+  // publishes tick-bounded STATE; using it as a lookup index is the same
+  // category error that put staleness guards in the harnesses.
+  std::unordered_map<uint64_t, uint64_t> latest_rig_capture_id_by_rig_id_;
+
+  CapturePublicIdMinter capture_public_id_minter_;
+  std::unordered_map<uint64_t, std::string> device_capture_public_by_internal_;
+  std::unordered_map<std::string, uint64_t> device_capture_internal_by_public_;
+  std::unordered_map<uint64_t, std::string> rig_capture_public_by_internal_;
+  std::unordered_map<std::string, uint64_t> rig_capture_internal_by_public_;
+  godot::String mint_device_capture_public_id_(uint64_t internal_id);
+  godot::String mint_rig_capture_public_id_(uint64_t internal_id);
 
   // Outstanding work (4.5). Godot-thread only: written by the trigger
   // wrappers and erased by the per-tick completion drain, both of which run

@@ -93,7 +93,6 @@ struct RigState {
     uint64_t captures_completed = 0;
     uint64_t captures_failed = 0;
 
-    uint64_t last_capture_id = 0;
     uint64_t last_capture_latency_ns = 0;
     uint64_t last_sync_skew_ns = 0;
 
@@ -246,7 +245,6 @@ struct AcquisitionSessionState {
     // CoreAcquisitionSessionRegistry on capture start/completion. For a rig
     // member this is that MEMBER's own id, not the cohort's Rig Capture Id,
     // which is what makes a per-device result lookup off this field correct.
-    uint64_t last_capture_id = 0;
     uint64_t last_capture_latency_ns = 0;
 
     int32_t error_code = 0;

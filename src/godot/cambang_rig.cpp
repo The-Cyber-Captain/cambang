@@ -56,7 +56,7 @@ godot::Dictionary CamBANGRig::trigger_capture() {
   // All three keys always present, whatever the outcome (section 4.1). Branch
   // on `error`, never on a key's absence.
   godot::Dictionary out;
-  out["id"] = static_cast<uint64_t>(0);
+  out["id"] = godot::String();
   out["members"] = godot::Dictionary();
 
   if (!server_ || rig_id_ == 0 || !server_->is_running()) {
@@ -75,10 +75,12 @@ godot::Dictionary CamBANGRig::trigger_capture() {
 
   godot::Dictionary members;
   for (const auto& member : result.members) {
+    // Each member's own PUBLIC Device Capture Id (2.2), so the map a caller
+    // correlates against is in the same form as everything else it will see.
     members[godot::String(member.hardware_id.c_str())] =
-        static_cast<uint64_t>(member.device_capture_id);
+        server_->device_capture_public_id(member.device_capture_id);
   }
-  out["id"] = static_cast<uint64_t>(result.rig_capture_id);
+  out["id"] = server_->rig_capture_public_id(result.rig_capture_id);
   out["members"] = members;
   out["error"] = godot::OK;
   return out;
@@ -90,7 +92,8 @@ godot::TypedArray<CamBANGCaptureResult> CamBANGRig::get_result() const {
     return godot::TypedArray<CamBANGCaptureResult>();
   }
   godot::TypedArray<CamBANGCaptureResult> results =
-      server_->get_capture_result_set_by_id(current_rig_capture_id_);
+      server_->get_capture_result_set_by_id(
+          server_->rig_capture_public_id(current_rig_capture_id_));
   if (results.is_empty()) {
     return godot::TypedArray<CamBANGCaptureResult>();
   }
@@ -101,7 +104,8 @@ godot::Array CamBANGRig::get_member_outcomes() const {
   if (!server_ || rig_id_ == 0 || current_rig_capture_id_ == 0 || !server_->is_running()) {
     return godot::Array();
   }
-  return server_->get_capture_member_outcomes_by_id(current_rig_capture_id_);
+  return server_->get_capture_member_outcomes_by_id(
+      server_->rig_capture_public_id(current_rig_capture_id_));
 }
 
 void CamBANGRig::_bind_methods() {
@@ -116,7 +120,7 @@ void CamBANGRig::_bind_methods() {
   // ALL_MEMBERS_TERMINAL or WINDOW_EXPIRED.
   ADD_SIGNAL(godot::MethodInfo(
       "capture_finished",
-      godot::PropertyInfo(godot::Variant::INT, "rig_capture_id"),
+      godot::PropertyInfo(godot::Variant::STRING, "rig_capture_id"),
       godot::PropertyInfo(godot::Variant::INT, "closed_reason")));
 }
 

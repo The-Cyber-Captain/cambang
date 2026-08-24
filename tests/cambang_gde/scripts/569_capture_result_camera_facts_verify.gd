@@ -182,39 +182,64 @@ func _wait_for_three_member_profile() -> void:
 
 
 func _capture(device, label: String):
-	var prior_capture_id := int(device.get_result().get_capture_id()) if device.get_result() != null else 0
-	var capture_err := int(device.trigger_capture().get("error", FAILED))
+	# Section 8: this used to poll get_result() and compare capture ids to spot a
+	# newer one -- a hand-rolled staleness guard. The completion signal says
+	# exactly when THIS capture ended, so the guard is gone rather than rewritten
+	# against strings.
+	#
+	# Nothing may yield between the trigger and the await: the emit happens on a
+	# later tick drain, so it cannot overtake code in this same stretch, but an
+	# intervening `await` would let it fire unobserved.
+	var capture: Dictionary = device.trigger_capture()
+	var capture_err := int(capture.get("error", FAILED))
 	_require(capture_err == OK, "%s: trigger_capture failed (%d)" % [label, capture_err])
 	if _done:
 		return null
-	var started_ms := Time.get_ticks_msec()
-	while not _timed_out():
-		await get_tree().process_frame
-		var result = device.get_result()
-		if result != null and int(result.get_capture_id()) > prior_capture_id and int(result.get_image_count()) == 3:
-			# A device-triggered result must say so (2.3). capture_origin is only
-			# useful if both branches are real, and this is the DEVICE one: the
-			# rig fields carry their no-rig values rather than being absent.
-			var ident: Dictionary = result.get_capture_identity()
-			_require(int(ident.get("capture_origin", -1)) == CamBANGCaptureResult.CAPTURE_ORIGIN_DEVICE,
-				"%s: device-triggered result reports origin %d, expected DEVICE (%d)" % [
-					label, int(ident.get("capture_origin", -1)),
-					CamBANGCaptureResult.CAPTURE_ORIGIN_DEVICE])
-			_require(int(ident.get("rig_capture_id", -1)) == 0,
-				"%s: device-triggered result names rig capture %d" % [
-					label, int(ident.get("rig_capture_id", -1))])
-			_require(str(ident.get("rig_member_hardware_id", "x")) == "",
-				"%s: device-triggered result names a rig member" % label)
-			_require(int(ident.get("rig_member_index", 0)) == -1,
-				"%s: device-triggered result has member index %d, expected -1" % [
-					label, int(ident.get("rig_member_index", 0))])
-			_require(int(ident.get("device_capture_id", 0)) == int(result.get_capture_id()),
-				"%s: identity device_capture_id disagrees with get_capture_id()" % label)
-			return result
-		if Time.get_ticks_msec() - started_ms >= CAPTURE_TIMEOUT_MS:
-			break
-	_fail("%s: timed out waiting for completed three-member capture result" % label)
-	return null
+	var capture_id := str(capture.get("id", ""))
+	_require(capture_id.begins_with("dc_"),
+		"%s: device trigger returned %s, not a Device Capture Id" % [label, capture_id])
+	if _done:
+		return null
+
+	var finished = await device.capture_finished
+	_require(str(finished[0]) == capture_id,
+		"%s: capture_finished reported %s, expected %s" % [label, str(finished[0]), capture_id])
+	_require(int(finished[1]) == CamBANGServer.DISPOSITION_DELIVERED,
+		"%s: capture finished with disposition %d, expected DELIVERED" % [label, int(finished[1])])
+	if _done:
+		return null
+
+	var result = device.get_result()
+	_require(result != null, "%s: no result after capture_finished reported DELIVERED" % label)
+	if _done:
+		return null
+	_require(int(result.get_image_count()) == 3,
+		"%s: expected a three-member capture, got %d" % [label, int(result.get_image_count())])
+	if _done:
+		return null
+
+	# A device-triggered result must say so (2.3). capture_origin is only useful
+	# if both branches are real, and this is the DEVICE one: the rig fields carry
+	# their no-rig values rather than being absent.
+	var ident: Dictionary = result.get_capture_identity()
+	_require(int(ident.get("capture_origin", -1)) == CamBANGCaptureResult.CAPTURE_ORIGIN_DEVICE,
+		"%s: device-triggered result reports origin %d, expected DEVICE (%d)" % [
+			label, int(ident.get("capture_origin", -1)),
+			CamBANGCaptureResult.CAPTURE_ORIGIN_DEVICE])
+	_require(str(ident.get("rig_capture_id", "x")) == "",
+		"%s: device-triggered result names rig capture %s" % [
+			label, str(ident.get("rig_capture_id", "x"))])
+	_require(str(ident.get("rig_member_hardware_id", "x")) == "",
+		"%s: device-triggered result names a rig member" % label)
+	_require(int(ident.get("rig_member_index", 0)) == -1,
+		"%s: device-triggered result has member index %d, expected -1" % [
+			label, int(ident.get("rig_member_index", 0))])
+	_require(str(ident.get("device_capture_id", "")) == capture_id,
+		"%s: result names capture %s, trigger returned %s" % [
+			label, str(ident.get("device_capture_id", "")), capture_id])
+	if _done:
+		return null
+	return result
 
 
 func _assert_present_result(result, expected: Dictionary, expect_altitude: bool, label: String) -> void:

@@ -73,7 +73,7 @@ var _stream_geom := Vector2i.ZERO
 # No is_started() on CamBANGStream, and stop() on an already-stopped stream is
 # refused with ERR_BAD_STATE, so the scene tracks it rather than double-stopping.
 var _stream_started := false
-var _last_capture_id := 0
+var _last_capture_id := ""
 var _steps: Array = []
 var _failed := false
 var _done := false
@@ -330,8 +330,9 @@ func _await_capture(timeout_ms: int) -> bool:
 	var deadline := Time.get_ticks_msec() + timeout_ms
 	while Time.get_ticks_msec() < deadline:
 		var res: CamBANGCaptureResult = _device.get_result()
-		if res != null and int(res.get_capture_id()) != _last_capture_id:
-			_last_capture_id = int(res.get_capture_id())
+		var res_id := str(res.get_capture_identity().get("device_capture_id", "")) if res != null else ""
+		if res != null and res_id != _last_capture_id:
+			_last_capture_id = res_id
 			return true
 		await get_tree().process_frame
 	return false

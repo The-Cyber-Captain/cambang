@@ -30,12 +30,12 @@ var _rig_a_capture_ready := false
 # signal handlers, which run on the Godot thread. Before this, the emit path had
 # never been received by anything: it compiled and queued correctly, but no
 # consumer had ever seen one fire.
-var _rig_a_capture_id := 0
+var _rig_a_capture_id := ""
 var _rig_a_trigger_members: Dictionary = {}
-var _rig_settled_capture_id := 0
+var _rig_settled_capture_id := ""
 var _rig_settled_reason := -1
 var _rig_settled_count := 0
-var _server_settled_capture_id := 0
+var _server_settled_capture_id := ""
 var _server_settled_rig_id := 0
 var _server_rig_closed_reason := -1
 var _server_device_finished_count := 0
@@ -332,32 +332,32 @@ func _trigger_rig_a_capture() -> void:
 		return
 	_rig_a = rig
 	_rig_a_capture_requested = true
-	_rig_a_capture_id = int(trigger.get("id", 0))
+	_rig_a_capture_id = str(trigger.get("id", ""))
 	_rig_a_trigger_members = trigger.get("members", {})
 
 	# An accepted trigger must name the capture it started (4.1).
-	_require(_rig_a_capture_id != 0, "step %d FAIL: accepted rig trigger returned id 0" % _step)
+	_require(_rig_a_capture_id != "", "step %d FAIL: accepted rig trigger returned no id" % _step)
 	# And it must name it in the RIG id space. Two counters both starting at 1
 	# would hand back a Rig Capture Id numerically equal to a member's Device
 	# Capture Id -- different spaces, identical number (2.1).
-	_require(_rig_a_capture_id >= CamBANGServer.RIG_CAPTURE_ID_BASE,
-		"step %d FAIL: rig capture id %d is outside the rig id space (base %d)" % [
-			_step, _rig_a_capture_id, CamBANGServer.RIG_CAPTURE_ID_BASE])
+	_require(_rig_a_capture_id.begins_with("rc_"),
+		"step %d FAIL: rig capture id %s is not in the Rig Capture space" % [
+			_step, _rig_a_capture_id])
 	# One member entry per rig member, each carrying that member's own Device
 	# Capture Id, so an arriving result can be correlated immediately.
 	_require(_rig_a_trigger_members.size() == _rig_a_members.size(),
 		"step %d FAIL: rig trigger member map has %d entries, expected %d" % [
 			_step, _rig_a_trigger_members.size(), _rig_a_members.size()])
 	for hw in _rig_a_trigger_members.keys():
-		var member_capture_id := int(_rig_a_trigger_members[hw])
-		_require(member_capture_id != 0,
+		var member_capture_id := str(_rig_a_trigger_members[hw])
+		_require(member_capture_id != "",
 			"step %d FAIL: rig trigger member %s carries no Device Capture Id" % [_step, str(hw)])
-		_require(member_capture_id < CamBANGServer.RIG_CAPTURE_ID_BASE,
-			"step %d FAIL: member %s Device Capture Id %d collides with the rig id space" % [
+		_require(member_capture_id.begins_with("dc_"),
+			"step %d FAIL: member %s id %s is not in the Device Capture space" % [
 				_step, str(hw), member_capture_id])
 	if _done:
 		return
-	_step_ok("rig trigger named its capture: id=%d members=%s" % [
+	_step_ok("rig trigger named its capture: id=%s members=%s" % [
 		_rig_a_capture_id, str(_rig_a_trigger_members)])
 
 	# Outstanding work (4.5): immediately after an accepted trigger the rig and
@@ -366,7 +366,7 @@ func _trigger_rig_a_capture() -> void:
 	var outstanding: Dictionary = CamBANGServer.get_unfinished_captures()
 	var rig_ids: Array = outstanding.get("rig_captures", [])
 	_require(rig_ids.has(_rig_a_capture_id),
-		"step %d FAIL: rig capture %d absent from get_unfinished_captures() right after trigger" % [
+		"step %d FAIL: rig capture %s absent from get_unfinished_captures() right after trigger" % [
 			_step, _rig_a_capture_id])
 	var by_device: Dictionary = outstanding.get("by_device", {})
 	for member_id in _rig_a_members:
@@ -383,27 +383,27 @@ func _trigger_rig_a_capture() -> void:
 	_result_set_poll_start_ms = Time.get_ticks_msec()
 
 
-func _on_rig_capture_finished(rig_capture_id: int, closed_reason: int) -> void:
-	_rig_settled_capture_id = int(rig_capture_id)
+func _on_rig_capture_finished(rig_capture_id: String, closed_reason: int) -> void:
+	_rig_settled_capture_id = rig_capture_id
 	_rig_settled_reason = int(closed_reason)
 	_rig_settled_count += 1
 
 
-func _on_device_capture_finished(capture_id: int, disposition: int, error_code: int) -> void:
-	_device_finished[int(capture_id)] = {
+func _on_device_capture_finished(capture_id: String, disposition: int, error_code: int) -> void:
+	_device_finished[str(capture_id)] = {
 		"disposition": int(disposition),
 		"error_code": int(error_code),
 	}
 
 
-func _on_server_capture_finished(capture_id: int, info: Dictionary) -> void:
+func _on_server_capture_finished(capture_id: String, info: Dictionary) -> void:
 	for key in ["capture_origin", "device_instance_id", "rig_id",
 			"disposition", "closed_reason", "error_code"]:
 		if not info.has(key):
 			_fail("server capture_finished info is missing key %s" % key)
 			return
 	if int(info["capture_origin"]) == CamBANGCaptureResult.CAPTURE_ORIGIN_RIG:
-		_server_settled_capture_id = int(capture_id)
+		_server_settled_capture_id = str(capture_id)
 		_server_settled_rig_id = int(info["rig_id"])
 		_server_rig_closed_reason = int(info["closed_reason"])
 	else:
@@ -444,7 +444,7 @@ func _try_verify_capture_result_set() -> void:
 		return
 
 	_require(_rig_settled_capture_id == _rig_a_capture_id,
-		"step %d FAIL: rig capture_finished reported id %d, trigger returned %d" % [
+		"step %d FAIL: rig capture_finished reported id %s, trigger returned %s" % [
 			_step, _rig_settled_capture_id, _rig_a_capture_id])
 	# Every member delivered, so the cohort must close because they all reached
 	# a terminal disposition -- not because the simultaneity window ran out.
@@ -456,7 +456,7 @@ func _try_verify_capture_result_set() -> void:
 	# The server-wide fan-in must report the same settlement, attributed to this
 	# rig -- that is what a consumer holding no wrapper has to rely on.
 	_require(_server_settled_capture_id == _rig_a_capture_id,
-		"step %d FAIL: server capture_finished reported rig capture %d, expected %d" % [
+		"step %d FAIL: server capture_finished reported rig capture %s, expected %s" % [
 			_step, _server_settled_capture_id, _rig_a_capture_id])
 	_require(_server_settled_rig_id == _rig_a_id,
 		"step %d FAIL: server capture_finished reported rig %d, expected %d" % [
@@ -481,15 +481,15 @@ func _try_verify_capture_result_set() -> void:
 	var settled_outstanding: Dictionary = CamBANGServer.get_unfinished_captures()
 	var still_open: Array = settled_outstanding.get("rig_captures", [])
 	_require(not still_open.has(_rig_a_capture_id),
-		"step %d FAIL: rig capture %d still listed unfinished after its completion signal" % [
+		"step %d FAIL: rig capture %s still listed unfinished after its completion signal" % [
 			_step, _rig_a_capture_id])
 	var settled_by_device: Dictionary = settled_outstanding.get("by_device", {})
 	for member_id in _rig_a_members:
 		var remaining: Array = settled_by_device.get(member_id, [])
 		for hw in _rig_a_trigger_members.keys():
-			var member_capture_id := int(_rig_a_trigger_members[hw])
+			var member_capture_id := str(_rig_a_trigger_members[hw])
 			_require(not remaining.has(member_capture_id),
-				"step %d FAIL: member capture %d still listed unfinished for device %d" % [
+				"step %d FAIL: member capture %s still listed unfinished for device %d" % [
 					_step, member_capture_id, int(member_id)])
 	if _done:
 		return
@@ -523,9 +523,9 @@ func _try_verify_capture_result_set() -> void:
 		var hw := str(entry["hardware_id"])
 		_require(_rig_a_trigger_members.has(hw),
 			"step %d FAIL: outcome names %s, which the trigger did not" % [_step, hw])
-		_require(int(entry["device_capture_id"]) == int(_rig_a_trigger_members[hw]),
-			"step %d FAIL: outcome for %s says capture %d, trigger said %d" % [
-				_step, hw, int(entry["device_capture_id"]), int(_rig_a_trigger_members[hw])])
+		_require(str(entry["device_capture_id"]) == str(_rig_a_trigger_members[hw]),
+			"step %d FAIL: outcome for %s says capture %s, trigger said %s" % [
+				_step, hw, str(entry["device_capture_id"]), str(_rig_a_trigger_members[hw])])
 	outcome_device_ids.sort()
 	_require(outcome_device_ids == _rig_a_members,
 		"step %d FAIL: member outcomes cover %s, expected %s" % [
@@ -537,9 +537,9 @@ func _try_verify_capture_result_set() -> void:
 	# Section 3: the device-level signal must actually reach a subscriber. Each
 	# member's own device handle reports its own capture, by its own id.
 	for hw in _rig_a_trigger_members.keys():
-		var member_capture_id := int(_rig_a_trigger_members[hw])
+		var member_capture_id := str(_rig_a_trigger_members[hw])
 		_require(_device_finished.has(member_capture_id),
-			"step %d FAIL: device capture_finished never fired for member %s (capture %d)" % [
+			"step %d FAIL: device capture_finished never fired for member %s (capture %s)" % [
 				_step, str(hw), member_capture_id])
 		var report: Dictionary = _device_finished[member_capture_id]
 		_require(int(report["disposition"]) == CamBANGServer.DISPOSITION_DELIVERED,
@@ -562,15 +562,15 @@ func _try_verify_capture_result_set() -> void:
 		_require(int(ident["capture_origin"]) == CamBANGCaptureResult.CAPTURE_ORIGIN_RIG,
 			"step %d FAIL: rig member result reports origin %d, expected RIG (%d)" % [
 				_step, int(ident["capture_origin"]), CamBANGCaptureResult.CAPTURE_ORIGIN_RIG])
-		_require(int(ident["rig_capture_id"]) == _rig_a_capture_id,
-			"step %d FAIL: result names rig capture %d, trigger returned %d" % [
-				_step, int(ident["rig_capture_id"]), _rig_a_capture_id])
+		_require(str(ident["rig_capture_id"]) == _rig_a_capture_id,
+			"step %d FAIL: result names rig capture %s, trigger returned %s" % [
+				_step, str(ident["rig_capture_id"]), _rig_a_capture_id])
 		var hw := str(ident["rig_member_hardware_id"])
 		_require(_rig_a_trigger_members.has(hw),
 			"step %d FAIL: result names member %s, which the trigger did not" % [_step, hw])
-		_require(int(ident["device_capture_id"]) == int(_rig_a_trigger_members[hw]),
-			"step %d FAIL: result for %s says capture %d, trigger said %d" % [
-				_step, hw, int(ident["device_capture_id"]), int(_rig_a_trigger_members[hw])])
+		_require(str(ident["device_capture_id"]) == str(_rig_a_trigger_members[hw]),
+			"step %d FAIL: result for %s says capture %s, trigger said %s" % [
+				_step, hw, str(ident["device_capture_id"]), str(_rig_a_trigger_members[hw])])
 		_require(int(ident["rig_member_index"]) >= 0,
 			"step %d FAIL: rig member result has index %d" % [_step, int(ident["rig_member_index"])])
 	if _done:
@@ -596,9 +596,9 @@ func _try_verify_capture_result_set() -> void:
 		_require(int(member_ident["capture_origin"]) == CamBANGCaptureResult.CAPTURE_ORIGIN_RIG,
 			"step %d FAIL: device %d get_result() returned a device-origin result" % [
 				_step, int(member_id)])
-		_require(int(member_ident["rig_capture_id"]) == _rig_a_capture_id,
-			"step %d FAIL: device %d get_result() returned rig capture %d, expected %d" % [
-				_step, int(member_id), int(member_ident["rig_capture_id"]), _rig_a_capture_id])
+		_require(str(member_ident["rig_capture_id"]) == _rig_a_capture_id,
+			"step %d FAIL: device %d get_result() returned rig capture %s, expected %s" % [
+				_step, int(member_id), str(member_ident["rig_capture_id"]), _rig_a_capture_id])
 		_require(int(member_ident["device_instance_id"]) == int(member_id),
 			"step %d FAIL: device %d get_result() returned another device's result" % [
 				_step, int(member_id)])
