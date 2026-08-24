@@ -402,7 +402,8 @@ not wait on it.
   this design has not taken the burden back and is incomplete.
 
 ---
-## 9. Implementation-status guardrails (current)
+
+## 9. Implementation-status guardrails (current)
 
 Every entry below names the source it was read from. Where an entry and the
 source disagree, the source wins and the entry is wrong.
