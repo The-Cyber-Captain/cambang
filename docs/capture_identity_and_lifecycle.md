@@ -701,14 +701,27 @@ id split would surface instead of hiding.
   caller created earlier in the session, which is the gap the third one closes.
   `CoreRigRegistry::retain_member_hardware_ids` remains an unchecked primitive
   by design -- the rule lives in Core's command layer, not the registry.
-- **The abandonment aborts are implemented but not covered by a test.** The
-  watchdog and `DEVICE_LOST` paths now call `abort_capture` alongside rig
-  preemption. Proving it host-native needs a provider that accepts a capture
-  and then goes silent, with a short watchdog timeout; `StubProvider` is
-  `final` and completes captures synchronously, so it cannot be subclassed for
-  the purpose. Written against the pattern rig preemption already proves, and
-  the comment at `sweep_admission_timeouts` records that returning a timed-out
-  assembly without aborting it re-opens §7.
+- **The abandonment aborts are covered.** All three paths that terminalise a
+  capture without a provider terminal fact -- rig preemption, the admission
+  watchdog and `DEVICE_LOST` -- call `abort_capture` at the moment of
+  abandonment, and all three are now proved host-native.
+  `src/smoke/silent_capture_provider.h` supplies what was missing: a provider
+  that accepts a capture and never speaks about it again. It wraps
+  `StubProvider` rather than subclassing it (`StubProvider` is `final`, and
+  completes captures synchronously so its captures are never abandoned),
+  forwarding every call except `trigger_capture`, which reports success without
+  telling the inner provider, and `abort_capture`, which records the id. The
+  watchdog timeout is settable because the contract default is 30s.
+  `test_watchdog_abandonment_aborts_capture_smoke` and
+  `test_device_lost_abandonment_aborts_capture_smoke` cover the two new paths;
+  both are mutation-proved, each failing only when its own `abort_capture` call
+  is removed from `core_runtime.cpp`.
+
+  Both tests wait on the abort rather than on the disposition. The two are
+  adjacent but not atomic -- the sweep marks the capture FAILED and calls
+  `abort_capture` a few instructions later, on the core thread -- and waiting on
+  the disposition then reading the abort log fails intermittently. The abort is
+  strictly the later of the two, so waiting on it settles both.
 
 ### 9.9 Scene status
 

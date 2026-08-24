@@ -60,6 +60,7 @@ Non-Goals
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
 #include "imaging/stub/provider.h"
+#include "smoke/silent_capture_provider.h"
 #endif
 
 using namespace cambang;
@@ -4830,6 +4831,146 @@ static int test_capture_completion_queue_drain_smoke() {
   return 0;
 }
 
+// Every path that terminalises a capture without a provider terminal fact
+// must settle what that capture still owes the platform
+// (capture_identity_and_lifecycle.md 5.4 and 7): Core has just declared the
+// capture over while the provider may still be holding its buffers, and a
+// payload released later can be delivered into a subsequent capture on the
+// same device and attributed to it.
+//
+// Rig preemption was already covered. These two were not, because no
+// provider existed that would accept a capture and then stay silent --
+// StubProvider completes synchronously and is final. SilentCaptureProvider
+// wraps it to model exactly that silence.
+
+// Path 1: the capture-admission watchdog.
+static int test_watchdog_abandonment_aborts_capture_smoke() {
+  using TerminalState = CoreCaptureAssemblyRegistry::TerminalState;
+  constexpr uint64_t kSilentCaptureId = 77001;
+
+  CoreRuntime rt;
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+
+  // Swap the silent provider in AFTER setup: the device, stream and capture
+  // request are all real, and only the capture goes unanswered.
+  SilentCaptureProvider silent(prov);
+  silent.set_capture_admission_watchdog_timeout_ns(150ull * 1000ull * 1000ull);
+  rt.attach_provider(&silent);
+
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(
+          kDeviceInstanceId, kSilentCaptureId) != TryTriggerDeviceCaptureStatus::OK) {
+    std::cerr << "Watchdog abandonment: the silent capture was not admitted\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Wait on the ABORT, not on the disposition. The sweep marks the capture
+  // FAILED and calls abort_capture() a few instructions later, both on the
+  // core thread; waiting on the disposition and then reading the abort log
+  // races that gap and fails intermittently. The abort is strictly the later
+  // of the two, so waiting on it settles both. Core arms its own wake for the
+  // watchdog, so no traffic needs manufacturing.
+  const bool aborted = wait_until([&]() { return silent.was_aborted(kSilentCaptureId); },
+                                  600, 10);
+  const auto disp = rt.smoke_capture_disposition(kSilentCaptureId, kDeviceInstanceId);
+  if (disp.state != TerminalState::FAILED) {
+    std::cerr << "Watchdog abandonment: the capture never timed out; state="
+              << static_cast<int>(disp.state) << "\n";
+    rt.stop();
+    return 1;
+  }
+  if (!disp.has_error_code ||
+      disp.error_code != static_cast<uint32_t>(ProviderError::ERR_TIMEOUT)) {
+    std::cerr << "Watchdog abandonment: expected ERR_TIMEOUT to travel with the "
+                 "disposition; has_error_code=" << disp.has_error_code
+              << " code=" << disp.error_code << "\n";
+    rt.stop();
+    return 1;
+  }
+
+  // THE POINT. Declaring it over is not enough; the provider must be told,
+  // or the buffers it still holds are owed to nobody.
+  if (!aborted) {
+    std::cerr << "Watchdog abandonment: the capture was terminalised without "
+                 "abort_capture() -- its outstanding payload is unaccounted for\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+// Path 2: device loss (5.3). Same requirement, different trigger.
+static int test_device_lost_abandonment_aborts_capture_smoke() {
+  using TerminalState = CoreCaptureAssemblyRegistry::TerminalState;
+  constexpr uint64_t kSilentCaptureId = 77002;
+
+  CoreRuntime rt;
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+
+  SilentCaptureProvider silent(prov);
+  // Deliberately far longer than this test can run. If the capture reaches a
+  // terminal state here it is because the device was closed, never because
+  // the watchdog fired -- otherwise this would silently retest path 1.
+  silent.set_capture_admission_watchdog_timeout_ns(600ull * 1000ull * 1000ull * 1000ull);
+  rt.attach_provider(&silent);
+
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(
+          kDeviceInstanceId, kSilentCaptureId) != TryTriggerDeviceCaptureStatus::OK) {
+    std::cerr << "Device-loss abandonment: the silent capture was not admitted\n";
+    rt.stop();
+    return 1;
+  }
+
+  // StubProvider refuses to close a device that still has a stream, as a real
+  // provider would. Tear the stream down first: the capture is independent of
+  // it and stays in flight across this.
+  if (rt.try_destroy_stream(kStreamId) != TryDestroyStreamStatus::OK) {
+    std::cerr << "Device-loss abandonment: could not destroy the stream before close\n";
+    rt.stop();
+    return 1;
+  }
+  if (!wait_for_core_barrier(rt)) { rt.stop(); return 1; }
+  prov.flush_callbacks_for_smoke();
+  (void)wait_for_core_barrier(rt);
+
+  const TryCloseDeviceStatus closed = rt.try_close_device(kDeviceInstanceId);
+  if (closed != TryCloseDeviceStatus::OK) {
+    std::cerr << "Device-loss abandonment: try_close_device failed; status="
+              << static_cast<int>(closed) << "\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Wait on the abort for the same reason as the watchdog test above:
+  // mark_capture_device_lost() and abort_capture() are adjacent, not atomic.
+  const bool aborted = wait_until([&]() { return silent.was_aborted(kSilentCaptureId); },
+                                  400, 5);
+  const auto d = rt.smoke_capture_disposition(kSilentCaptureId, kDeviceInstanceId);
+  if (d.state != TerminalState::DEVICE_LOST) {
+    std::cerr << "Device-loss abandonment: expected DEVICE_LOST, saw state="
+              << static_cast<int>(d.state) << "\n";
+    rt.stop();
+    return 1;
+  }
+
+  // THE POINT, as above.
+  if (!aborted) {
+    std::cerr << "Device-loss abandonment: the capture was terminalised without "
+                 "abort_capture() -- its outstanding payload is unaccounted for\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
 // A rig capture must not silence a viewfinder for the rest of the session.
 //
 // Core suppresses repeating stream frames on a device while a capture is
@@ -4874,8 +5015,14 @@ static int test_rig_capture_releases_stream_preemption_smoke() {
   };
 
   // Baseline: frames reach the stream result before any capture exists.
-  push_stream_frame(1);
-  const uint64_t before_capture = stream_frame_id();
+  // Pushed in a loop rather than once -- a single frame plus a barrier does
+  // not always leave a result behind, and a flaky baseline would report
+  // itself as a preemption failure.
+  uint64_t before_capture = 0;
+  for (int i = 0; i < 40 && before_capture == 0; ++i) {
+    push_stream_frame(static_cast<uint8_t>(1 + (i % 200)));
+    before_capture = stream_frame_id();
+  }
   if (before_capture == 0) {
     std::cerr << "Stream preemption: no stream result before the rig capture\n";
     rt.stop();
@@ -5972,6 +6119,20 @@ int main(int argc, char** argv) {
                              [] { return test_capture_cohort_window_expiry_sweep_smoke(); })) {
       if (reporter.verbose()) reporter.print_summary();
       reporter.print_fail_line("core_spine_smoke", "test_capture_cohort_window_expiry_sweep_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_watchdog_abandonment_aborts_capture_smoke",
+                             [] { return test_watchdog_abandonment_aborts_capture_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_watchdog_abandonment_aborts_capture_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_device_lost_abandonment_aborts_capture_smoke",
+                             [] { return test_device_lost_abandonment_aborts_capture_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_device_lost_abandonment_aborts_capture_smoke", r);
       return r;
     }
     if (int r = reporter.run("test_rig_capture_releases_stream_preemption_smoke",
