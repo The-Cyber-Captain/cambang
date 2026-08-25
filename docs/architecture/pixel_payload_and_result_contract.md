@@ -1367,10 +1367,20 @@ an absent entry means "not implemented yet", never "excluded by design".
   content matching the CPU reference exactly (117539567 both sides). Headless
   under Compatibility the same scene verdicts `expected_unsupported` with
   support UNSUPPORTED and nothing produced.
-- The READY row is implemented (an already-GPU-resident member is wrapped
-  rather than uploaded) but is unexercised: no in-tree producer yields a
-  GPU-primary capture in a configuration the scene reaches, so only the
-  EXPENSIVE row has been run.
+- The READY row is implemented and exercised, but only from Synthetic. Scene 74
+  run with `--cambang-synth-producer-output-form=gpu_only` under the mobile
+  renderer reports support READY, returns the GPU wrapper class rather than an
+  `ImageTexture`, and records **zero** uploads -- the already-GPU-resident
+  backing is wrapped and no pixels move. That is the zero-copy premise
+  demonstrated, on Synthetic only; both platform providers still declare
+  CPU-only capture backing, so no real device can reach this row.
+- What the content cross-check proves differs by row, and the scene does not
+  distinguish the two. On the EXPENSIVE row the compute texture and the
+  `to_image()` reference derive from the same retained CPU payload, so a match
+  proves the upload was faithful. On the READY row the compute texture is the
+  retained GPU backing while `to_image()` is satisfied from whatever CPU route
+  is available for that member, so a match proves those two agree. Which CPU
+  route served it there has not been checked.
 - Core already retains a per-member GPU backing handle and a neutral descriptor
   for it (`CoreCaptureResultData::ImageMemberData::retained_gpu_backing` and
   `retained_gpu_backing_descriptor`, `src/core/core_result_store.h`), and
