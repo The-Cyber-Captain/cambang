@@ -58,19 +58,27 @@ const TIMEOUT_MS := 20000
 const LOCAL_GROUP := 8
 # make_fourcc('N','V','1','2') -- see src/pixels/format/pixel_format_descriptor.h.
 const FOURCC_NV12 := 842094158
-# Optional: --cambang-probe-still-format=nv12 requests a planar still so the
-# planar -> RGBA conversion inside to_image() is included in the timing. Without
-# it the capture is packed RGBA and to_image() is close to a straight copy,
-# which understates what a real Camera2 still costs.
-const ARG_STILL_FORMAT := "--cambang-probe-still-format="
+
+# Two phases in one run, with no command-line knob, so both payload kinds are
+# covered wherever the scene runs -- including Android, whose ExtraArgs
+# translator whitelists a fixed set and would reject a scene-specific flag.
+const PHASE_LATCH := 0
+const PHASE_CAPTURE_PACKED := 1
+const PHASE_VERIFY_PACKED := 2
+const PHASE_REQUEST_PLANAR := 3
+const PHASE_AWAIT_PLANAR := 4
+const PHASE_CAPTURE_PLANAR := 5
+const PHASE_VERIFY_PLANAR := 6
 
 var _step := 0
 var _done := false
 var _verdict_emitted := false
 var _quit_requested := false
 var _device_instance_id := 0
-var _capture_triggered := false
-var _still_profile_requested := false
+var _phase := 0
+var _packed_capture_id := ""
+var _planar_capture_id := ""
+var _planar_wait_ms := 0
 var _elapsed_ms := 0
 
 
@@ -105,13 +113,27 @@ func _process(delta: float) -> void:
 		_fail("timed out before a capture result was observed")
 		return
 
-	if _device_instance_id == 0:
-		_latch_device()
-		return
-	if not _capture_triggered:
-		_trigger_capture()
-		return
-	_try_verify()
+	match _phase:
+		PHASE_LATCH:
+			_latch_device()
+		PHASE_CAPTURE_PACKED:
+			_packed_capture_id = _trigger()
+			if _packed_capture_id != "":
+				_step_ok("packed capture triggered (id=%s)" % _packed_capture_id)
+				_phase = PHASE_VERIFY_PACKED
+		PHASE_VERIFY_PACKED:
+			_verify_phase(_packed_capture_id, 1, "packed")
+		PHASE_REQUEST_PLANAR:
+			_request_planar_profile()
+		PHASE_AWAIT_PLANAR:
+			_await_planar_profile()
+		PHASE_CAPTURE_PLANAR:
+			_planar_capture_id = _trigger()
+			if _planar_capture_id != "":
+				_step_ok("planar capture triggered (id=%s)" % _planar_capture_id)
+				_phase = PHASE_VERIFY_PLANAR
+		PHASE_VERIFY_PLANAR:
+			_verify_phase(_planar_capture_id, 2, "planar")
 
 
 func _latch_device() -> void:
@@ -127,63 +149,78 @@ func _latch_device() -> void:
 		return
 	_device_instance_id = id
 	_step_ok("device latched (instance_id=%d)" % _device_instance_id)
+	_phase = PHASE_CAPTURE_PACKED
 
 
-func _requested_still_fourcc() -> int:
-	# run_godot.ps1 passes -ExtraArgs as engine args (before Godot's "--"), while
-	# its own harness args go after it, so both lists have to be searched.
-	var all_args: PackedStringArray = OS.get_cmdline_args()
-	all_args.append_array(OS.get_cmdline_user_args())
-	for arg in all_args:
-		if arg.begins_with(ARG_STILL_FORMAT):
-			var name := arg.substr(ARG_STILL_FORMAT.length()).to_lower()
-			if name == "nv12":
-				return FOURCC_NV12
-	return 0
+func _device():
+	return CamBANGServer.get_device(_device_instance_id)
 
 
-func _trigger_capture() -> void:
-	var device = CamBANGServer.get_device(_device_instance_id)
+# Returns the capture id once admitted, "" while not yet admissible. An early
+# refusal during bring-up is normal and is retried rather than failed.
+func _trigger() -> String:
+	var device = _device()
 	if device == null:
-		return
-
-	var wanted_fourcc := _requested_still_fourcc()
-	if wanted_fourcc != 0 and not _still_profile_requested:
-		var err_profile := int(device.set_still_capture_profile({"format_fourcc": wanted_fourcc}))
-		if err_profile != OK:
-			_fail("set_still_capture_profile(format_fourcc=%d) failed err=%d" % [wanted_fourcc, err_profile])
-			return
-		_still_profile_requested = true
-		_step_ok("planar still profile requested (format_fourcc=%d)" % wanted_fourcc)
-		return
-	if wanted_fourcc != 0:
-		# Wait for the requested format to actually be the device's still profile
-		# before triggering, so the capture is the one being measured.
-		var current: Dictionary = device.get_still_capture_profile()
-		if int(current.get("format_fourcc", 0)) != wanted_fourcc:
-			return
-	# trigger_capture() returns { id, error }; the id is the caller's handle for
-	# this capture, and the error is the admission outcome.
+		return ""
 	var capture: Dictionary = device.trigger_capture()
-	var err := int(capture.get("error", FAILED))
-	if err != OK:
-		# Not yet admissible is normal early in bring-up; keep waiting rather
-		# than failing on the first refusal.
-		return
-	_capture_triggered = true
-	_step_ok("capture triggered (id=%s)" % str(capture.get("id", "")))
+	if int(capture.get("error", FAILED)) != OK:
+		return ""
+	return str(capture.get("id", ""))
 
 
-func _try_verify() -> void:
-	var device = CamBANGServer.get_device(_device_instance_id)
+func _request_planar_profile() -> void:
+	var device = _device()
 	if device == null:
 		return
-	var result = device.get_result()
+	var err := int(device.set_still_capture_profile({"format_fourcc": FOURCC_NV12}))
+	if err != OK:
+		_fail("set_still_capture_profile(NV12) failed err=%d" % err)
+		return
+	_step_ok("planar still profile requested (format_fourcc=%d)" % FOURCC_NV12)
+	_phase = PHASE_AWAIT_PLANAR
+
+
+# Bounded, because the request being accepted does not mean it will apply.
+# Synthetic's GPU backing is RGBA8-only, so under a GPU-only producer output
+# form a planar still has no realization -- set_still_capture_profile() returns
+# OK and the profile then never becomes NV12. That is the provider declining a
+# posture it cannot satisfy, not this feature failing, so the planar phase is
+# skipped with the reason stated rather than timing the run out.
+const PLANAR_PROFILE_WAIT_BUDGET_MS := 6000
+
+func _await_planar_profile() -> void:
+	var device = _device()
+	if device == null:
+		return
+	var current: Dictionary = device.get_still_capture_profile()
+	if int(current.get("format_fourcc", 0)) == FOURCC_NV12:
+		_step_ok("planar still profile is now the device profile")
+		_phase = PHASE_CAPTURE_PLANAR
+		return
+	_planar_wait_ms += 16
+	if _planar_wait_ms >= PLANAR_PROFILE_WAIT_BUDGET_MS:
+		_step_ok("planar phase SKIPPED: profile request was accepted but never applied "
+			+ "after %d ms (current format_fourcc=%d) -- no planar still realization in "
+			% [_planar_wait_ms, int(current.get("format_fourcc", 0))]
+			+ "this producer configuration")
+		_finish_ok()
+
+
+# Waits for the named capture's result, then verifies its compute planes.
+# expected_planes is 1 for a packed member and 2 for NV12 -- asserted rather
+# than reported, because a member whose plane exposure disagrees with its
+# format is a defect.
+func _verify_phase(capture_id: String, expected_planes: int, label: String) -> void:
+	if capture_id == "":
+		return
+	# Fetched by id, not device.get_result(), so each phase verifies the capture
+	# it actually triggered rather than whatever is latest on the device.
+	var result = CamBANGServer.get_capture_result_by_id(capture_id)
 	if result == null:
 		return
 
 	var support: int = int(result.can_get_compute_texture_member(0))
-	_step_ok("can_get_compute_texture_member(0) = %d" % support)
+	_step_ok("%s: can_get_compute_texture_member(0) = %d" % [label, support])
 
 	var rd := RenderingServer.get_rendering_device()
 	if rd == null:
@@ -292,15 +329,22 @@ func _try_verify() -> void:
 	_step_ok("repeat access served without re-upload (uploads=%d hits=%d)"
 		% [int(after.get("uploads", -1)), int(after.get("hits", -1))])
 
-	_run_compute(rd, rd_texture, result, plane_count, texture)
-
-
-func _run_compute(rd: RenderingDevice, rd_texture: RID, result, plane_count: int, texture) -> void:
-	var width: int = int(result.get_width())
-	var height: int = int(result.get_height())
-	if width <= 0 or height <= 0:
-		_fail("capture reports non-positive dimensions %dx%d" % [width, height])
+	if not _run_compute(rd, rd_texture, result, plane_count, texture, label):
 		return
+	if label == "packed":
+		_phase = PHASE_REQUEST_PLANAR
+	else:
+		_finish_ok()
+
+
+func _run_compute(rd: RenderingDevice, rd_texture: RID, result, plane_count: int, texture, label: String) -> bool:
+	# Plane 0's own dimensions -- luma's for a planar member, the image's for a
+	# packed one -- so the dispatch stays correct for either.
+	var width: int = int(texture.get_width())
+	var height: int = int(texture.get_height())
+	if width <= 0 or height <= 0:
+		_fail("%s: plane 0 reports non-positive dimensions %dx%d" % [label, width, height])
+		return false
 
 	var shader_source := RDShaderSource.new()
 	shader_source.language = RenderingDevice.SHADER_LANGUAGE_GLSL
@@ -308,20 +352,20 @@ func _run_compute(rd: RenderingDevice, rd_texture: RID, result, plane_count: int
 	var spirv: RDShaderSPIRV = rd.shader_compile_spirv_from_source(shader_source, false)
 	if spirv == null:
 		_fail("shader produced no SPIR-V")
-		return
+		return false
 	var compile_error: String = spirv.compile_error_compute
 	if not compile_error.is_empty():
 		_fail("compute shader compile error: %s" % compile_error)
-		return
+		return false
 	var shader: RID = rd.shader_create_from_spirv(spirv)
 	if not shader.is_valid():
 		_fail("shader_create_from_spirv() failed")
-		return
+		return false
 	var pipeline: RID = rd.compute_pipeline_create(shader)
 	if not pipeline.is_valid():
 		rd.free_rid(shader)
 		_fail("compute_pipeline_create() failed")
-		return
+		return false
 
 	# Two uint counters, zeroed.
 	var zero := PackedByteArray()
@@ -347,7 +391,7 @@ func _run_compute(rd: RenderingDevice, rd_texture: RID, result, plane_count: int
 	if not uniform_set.is_valid():
 		_free_all(rd, [pipeline, shader, accum_buffer, sampler])
 		_fail("uniform_set_create() failed -- compute texture not bindable")
-		return
+		return false
 
 	var push := PackedInt32Array([width, height, 0, 0]).to_byte_array()
 	var groups_x := int((width + LOCAL_GROUP - 1) / LOCAL_GROUP)
@@ -365,7 +409,7 @@ func _run_compute(rd: RenderingDevice, rd_texture: RID, result, plane_count: int
 	if read.size() < 8:
 		_free_all(rd, [pipeline, shader, accum_buffer, sampler])
 		_fail("buffer_get_data() returned %d bytes" % read.size())
-		return
+		return false
 	var pixel_count := read.decode_u32(0)
 	var red_sum := read.decode_u32(4)
 	_free_all(rd, [pipeline, shader, accum_buffer, sampler])
@@ -373,7 +417,7 @@ func _run_compute(rd: RenderingDevice, rd_texture: RID, result, plane_count: int
 	var expected_pixels := width * height
 	if pixel_count != expected_pixels:
 		_fail("compute saw %d pixels, expected %d" % [pixel_count, expected_pixels])
-		return
+		return false
 	_step_ok("compute covered every pixel (%d)" % pixel_count)
 
 	# Content proof.
@@ -390,7 +434,7 @@ func _run_compute(rd: RenderingDevice, rd_texture: RID, result, plane_count: int
 		var plane_img: Image = (texture as Texture2D).get_image()
 		if plane_img == null:
 			_fail("could not read back plane 0 for the CPU reference")
-			return
+			return false
 		var pdata: PackedByteArray = plane_img.get_data()
 		for i in range(pdata.size()):
 			reference_sum += pdata[i]
@@ -399,7 +443,7 @@ func _run_compute(rd: RenderingDevice, rd_texture: RID, result, plane_count: int
 		var image: Image = result.to_image()
 		if image == null:
 			_fail("to_image() returned null; cannot cross-check compute content")
-			return
+			return false
 		var data: PackedByteArray = image.get_data()
 		var i2 := 0
 		while i2 < data.size():
@@ -411,18 +455,18 @@ func _run_compute(rd: RenderingDevice, rd_texture: RID, result, plane_count: int
 		   (float(red_sum) / float(reference_sum)) if reference_sum > 0 else 0.0])
 	if reference_sum <= 0:
 		_fail("CPU reference sum is zero; capture image appears empty")
-		return
+		return false
 	if red_sum == 0:
 		_fail("compute read all-zero pixels from a non-empty capture")
-		return
+		return false
 	var ratio := float(red_sum) / float(reference_sum)
 	if ratio < 0.98 or ratio > 1.02:
 		_fail("compute content does not match CPU reference (compute=%d cpu=%d ratio=%.4f)"
 			% [red_sum, reference_sum, ratio])
-		return
+		return false
 	_step_ok("compute content matches CPU reference (%s ratio=%.4f)" % [reference_label, ratio])
 
-	_finish_ok()
+	return true
 
 
 # Diagnostic counters live inside the existing result-access evidence

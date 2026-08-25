@@ -1384,6 +1384,12 @@ an absent entry means "not implemented yet", never "excluded by design".
   because a planar member has no single texture to return, so such an accessor
   must either fail or silently pick a plane, and its existence encoded the
   false premise that a member has exactly one compute texture.
+- Under a GPU-only producer output form, Synthetic's GPU backing is RGBA8-only,
+  so a planar still has no realization. `set_still_capture_profile()` returns OK
+  for an NV12 request and the profile then never becomes NV12. Scene 74 bounds
+  that wait and skips its planar phase with the reason stated rather than
+  hanging. Worth noting as provider behaviour: a request is accepted that can
+  never be applied, and nothing tells the caller so.
 - **Known gap:** the retained payload carries `PayloadColorimetry`, and nothing
   exposes it. A caller converting Y'CbCr to RGB in its own shader therefore has
   to assume a colour matrix and range. The member's format tells it the plane
@@ -1436,6 +1442,21 @@ an absent entry means "not implemented yet", never "excluded by design".
   runs on every call, since no converted image is cached. So for a planar
   capture the upload is about **3%** of producing a compute texture and the CPU
   conversion is about **97%**.
+
+  Scene 74 runs both payload kinds in one pass with no command-line knob --
+  phase 1 on the default profile (packed), then phase 2 after switching the
+  device still profile to NV12 (planar) -- so both are covered wherever the
+  scene runs, including Android, whose ExtraArgs translator whitelists a fixed
+  set and rejects scene-specific flags.
+
+  Native-plane figures, plane 0 of a 1280x720 member:
+
+  | Target | payload | cold `to_image()` | plane 0 produced | planes |
+  | --- | --- | --- | --- | --- |
+  | Windows | packed | 846 us | 1317 us | 1 |
+  | Windows | NV12 | 19733 us | **467 us** | 2 |
+  | Android | packed | 2341 us | 3129 us | 1 |
+  | Android | NV12 | 5007 us | **350 us** | 2 |
 
   Those figures are what an RGBA-converting implementation cost, and are kept
   because they show where the cost actually sat: a GPU-resident camera buffer
