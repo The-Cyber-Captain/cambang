@@ -1360,13 +1360,29 @@ an absent entry means "not implemented yet", never "excluded by design".
   capture byte budget.
 - Verified in scene 74 (`74_capture_compute_texture_verify`), which dispatches a
   real compute shader over the texture and cross-checks the result against a
-  CPU sum of the same member. Under the mobile renderer: support EXPENSIVE,
-  `ImageTexture` produced, resolved through
-  `RenderingServer.texture_get_rd_texture()`, repeat access served from cache
-  without a second upload, 921600 of 1280x720 pixels covered, and compute
-  content matching the CPU reference exactly (117539567 both sides). Headless
-  under Compatibility the same scene verdicts `expected_unsupported` with
-  support UNSUPPORTED and nothing produced.
+  CPU sum of the same member. Both rows are exercised on both Windows and
+  Android (Quest 3, Vulkan, mobile renderer), and the Compatibility row on
+  both:
+
+  | Target | Config | Support | Class returned | Uploads | Content |
+  | --- | --- | --- | --- | --- | --- |
+  | Windows | mobile | EXPENSIVE | `ImageTexture` | 1 | exact |
+  | Windows | mobile, `gpu_only` | READY | `DeferredDisplayTexture2DRD` | 0 | exact |
+  | Windows | headless, Compatibility | UNSUPPORTED | none produced | 0 | n/a |
+  | Android | mobile | EXPENSIVE | `ImageTexture` | 1 | exact |
+  | Android | mobile, `gpu_only` | READY | `DeferredDisplayTexture2DRD` | 0 | exact |
+
+  Every run covered 921600 of 1280x720 pixels and matched its CPU reference
+  exactly. The Android default export launches `gl_compatibility`, so reaching
+  the GPU rows there requires `--rendering-method=mobile`; without it the
+  scene correctly verdicts `expected_unsupported` on device too.
+
+  The scene embeds its compute source as a string rather than loading a
+  `res://` `.glsl`. A `.glsl` has a Godot importer, so it is only present in an
+  exported APK once the editor import step has run and its `.import` file is
+  committed, and `include_filter` does not pick up a raw copy either. Embedding
+  removes that dependency and makes the scene behave identically on both
+  targets.
 - The READY row is implemented and exercised, but only from Synthetic. Scene 74
   run with `--cambang-synth-producer-output-form=gpu_only` under the mobile
   renderer reports support READY, returns the GPU wrapper class rather than an

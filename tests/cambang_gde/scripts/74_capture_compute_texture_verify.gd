@@ -13,7 +13,47 @@ extends Node
 # --rendering-method=mobile (or forward_plus) to exercise the real path.
 
 const SCENE_LABEL := "74_capture_compute_texture_verify"
-const SHADER_PATH := "res://shaders/capture_compute_probe.glsl"
+# Embedded rather than kept as a res:// file on purpose. A .glsl has a Godot
+# importer, so it is only exported into an APK once the editor import step has
+# run and its .import file is committed; a raw copy is not picked up by
+# include_filter either. Embedding removes that dependency entirely, so the
+# scene behaves identically on Windows and on device.
+#
+# Two counters, because they prove different things:
+#   pixel_count -- exact and content-independent. Must equal width*height, which
+#                  proves the texture was bound, has the expected dimensions,
+#                  and every in-bounds invocation could read it.
+#   red_sum     -- content-dependent. Compared against a CPU sum of the same
+#                  member, which proves the texture holds the captured image
+#                  rather than an empty or unrelated allocation.
+const COMPUTE_SOURCE := """#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D src_image;
+
+layout(set = 0, binding = 1, std430) restrict buffer Accum {
+    uint pixel_count;
+    uint red_sum;
+} accum;
+
+layout(push_constant, std430) uniform Params {
+    uint width;
+    uint height;
+    uint pad0;
+    uint pad1;
+} params;
+
+void main() {
+    uvec2 gid = gl_GlobalInvocationID.xy;
+    if (gid.x >= params.width || gid.y >= params.height) {
+        return;
+    }
+    vec4 texel = texelFetch(src_image, ivec2(gid), 0);
+    atomicAdd(accum.pixel_count, 1u);
+    atomicAdd(accum.red_sum, uint(round(texel.r * 255.0)));
+}
+"""
 const TIMEOUT_MS := 20000
 const LOCAL_GROUP := 8
 
@@ -182,28 +222,9 @@ func _run_compute(rd: RenderingDevice, rd_texture: RID, result) -> void:
 		_fail("capture reports non-positive dimensions %dx%d" % [width, height])
 		return
 
-	# Compiled from source rather than load()ed as an RDShaderFile: that resource
-	# type only exists after Godot's editor import step has run, which a
-	# --scene harness launch does not perform. Reading the text and compiling it
-	# here makes the scene independent of the import pipeline.
-	if not FileAccess.file_exists(SHADER_PATH):
-		_fail("shader source missing at %s" % SHADER_PATH)
-		return
-	var source_text := FileAccess.get_file_as_string(SHADER_PATH)
-	if source_text.is_empty():
-		_fail("shader source at %s is empty" % SHADER_PATH)
-		return
-	# Strip the RDShaderFile stage marker; RDShaderSource takes the bare stage.
-	var stripped_lines := PackedStringArray()
-	for line in source_text.split("
-"):
-		if line.begins_with("#["):
-			continue
-		stripped_lines.append(line)
 	var shader_source := RDShaderSource.new()
 	shader_source.language = RenderingDevice.SHADER_LANGUAGE_GLSL
-	shader_source.source_compute = "
-".join(stripped_lines)
+	shader_source.source_compute = COMPUTE_SOURCE
 	var spirv: RDShaderSPIRV = rd.shader_compile_spirv_from_source(shader_source, false)
 	if spirv == null:
 		_fail("shader produced no SPIR-V")
