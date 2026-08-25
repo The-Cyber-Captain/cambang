@@ -149,15 +149,16 @@ func _try_verify() -> void:
 		return
 	_step_ok("resolved RD texture (rs_rid=%d rd_rid=%d)" % [rs_rid.get_id(), rd_texture.get_id()])
 
-	# Repeat access must not upload again.
+	# Repeat access must be served from the texture already produced.
 	#
-	# This pins an implementation property, not a contract requirement.
-	# pixel_payload_and_result_contract.md 11.6.1 forbids producing *eagerly*
-	# ("produced on first request and not before") and separately establishes
-	# that caching is *safe* ("safe to produce once and retain alongside the
-	# member", because a retained member is immutable). It does not prohibit
-	# re-uploading on a repeat request -- that would merely be wasteful.
-	# CamBANG caches, and this asserts it keeps doing so.
+	# pixel_payload_and_result_contract.md 11.6.1, "Identity, immutability, and
+	# caching": a repeat request for the same retained member must be served
+	# from the texture already produced, not materialized again, because the
+	# source pixels are frozen and a second production is necessarily identical.
+	# A bounded cache may release a texture and produce again later; what is
+	# forbidden is producing afresh on every request while the previous result
+	# was still held. These two calls are back to back, so the first result is
+	# certainly still held.
 	var before: Dictionary = _compute_texture_metrics()
 	var again = result.get_compute_texture()
 	var after: Dictionary = _compute_texture_metrics()

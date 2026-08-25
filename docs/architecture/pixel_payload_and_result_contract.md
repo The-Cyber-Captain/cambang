@@ -1245,6 +1245,17 @@ A retained capture image member is immutable. Its Capture Compute Texture is
 therefore safe to produce once and retain alongside the member: the pixels
 cannot change underneath it, so a retained texture can never be stale.
 
+A repeat request for the same retained member must be served from the texture
+already produced, not materialized again. The source pixels are frozen, so a
+second production is necessarily identical to the first and is therefore pure
+waste -- and a caller polling for its result must be able to ask for the
+compute texture each time without paying a full-frame upload each time.
+
+CamBANG may bound how many produced textures it holds, and a request whose
+texture has already been released under that bound legitimately produces again.
+What this forbids is producing afresh on every request while the previous
+result was still held.
+
 This is the reverse of the stream case, where retained display state is updated
 in place while the stream flows and caching a materialized artifact would be
 wrong. The conclusion here is drawn from capture immutability, not imported
