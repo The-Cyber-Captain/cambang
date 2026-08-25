@@ -1196,9 +1196,14 @@ and access-cost evidence must describe the route actually selected.
 
 ### 11.6.1 Capture Compute Texture
 
-A **Capture Compute Texture** is a GPU-resident, frozen texture of one
-completed capture image member, obtainable for as long as that `CaptureResult`
-is retained, so that a caller can run GPU compute over the captured image.
+A **Capture Compute Texture** is a GPU-resident, frozen texture of one plane of
+one completed capture image member, obtainable for as long as that
+`CaptureResult` is retained, so that a caller can run GPU compute over the
+captured image.
+
+Planes are exposed in the member's **native** format and are never converted. A
+packed member has one plane; NV12/NV21 have two, luma then interleaved chroma;
+I420/YV12 have three. The member's own format names what each plane holds.
 
 It is a capture-native concept. It is defined here, under the capture-result
 guardrail, because the guardrail above is the rule it must satisfy: this is not
@@ -1215,8 +1220,14 @@ the stream display-view model extended to captures, and nothing in §11.4 or
   remains the path for saving, encoding, and pixel inspection. A Capture
   Compute Texture is additive; asking for one never removes or degrades CPU
   access to the same member.
-- **Not a per-frame or per-tick object.** One capture image member has one
-  Capture Compute Texture for the life of the retained result.
+- **Not a per-frame or per-tick object.** A capture image member has one
+  Capture Compute Texture per plane for the life of the retained result.
+- **Not an RGB image.** Converting a planar member to RGBA to hand over a single
+  texture would cost far more than the upload it accompanies -- measured at
+  ~20 ms against ~475 us for a 1280x720 NV12 member -- and would discard the
+  representation the caller asked for. Many analyses want luma alone, which is
+  already a plane. A caller that wants RGB converts in its own shader, where it
+  also controls the colour handling.
 
 The distinction from stream display state is not a naming convention. A stream
 display view is deliberately buffer-like and explicitly disclaims frozen
@@ -1323,19 +1334,25 @@ actually compute over it:
   Compute Texture that disagrees with `get_image_member()` about size, or with
   the retained payload about colour interpretation, is a defect, not a variant.
 
-A **multi-planar** standard format is as unusable here as a vendor external one,
-for a different reason. Vulkan requires that an image in a format such as
-`G8_B8R8_2PLANE_420_UNORM` be sampled through a `VkSamplerYcbcrConversion` bound
-as an immutable sampler, and Godot's RenderingDevice API exposes no Y'CbCr
-conversion at all -- `RDSamplerState` has no such property and `RenderingDevice`
-has no such method (checked against godot-cpp 4.5-stable). So a YUV
-`AHardwareBuffer` cannot be imported and sampled through the GDExtension
-RenderingDevice API even when `texture_create_from_extension()` can name its
-format. This matters because Camera2 still formats are YUV, JPEG, PRIVATE and
-RAW -- there is no RGBA still to fall back on. A native zero-copy path on
-Android therefore requires CamBANG to perform its own raw-Vulkan conversion into
-a single-plane image before Godot sees anything, which is a far larger
-undertaking than importing a buffer.
+A **multi-planar** format is fine here, and must not be confused with the
+external-format case above. Each plane is exposed as its own single-plane
+texture in an ordinary format, which any sampler can read. What is unusable is a
+*single image* in a multi-planar format: Vulkan requires such an image be
+sampled through a `VkSamplerYcbcrConversion` bound as an immutable sampler, and
+Godot's RenderingDevice API exposes no Y'CbCr conversion at all --
+`RDSamplerState` has no such property and `RenderingDevice` has no such method
+(checked against godot-cpp 4.5-stable).
+
+That distinction decides what a native GPU-backed path on Android would take.
+Importing a YUV `AHardwareBuffer` yields one multi-planar `VkImage`, which
+cannot be sampled through the RD API. In raw Vulkan the fix is cheap -- create
+per-plane image views with `VK_IMAGE_ASPECT_PLANE_i_BIT`, each of which has an
+ordinary single-plane format -- but `texture_create_from_extension()` takes a
+`VkImage` and builds its own view, so a plane-aspect view cannot be supplied.
+Aliasing separate single-plane images over the imported memory does not work
+either: `AHardwareBuffer` imports require dedicated allocation, which binds that
+memory to exactly one image. So the obstacle is the shape of Godot's API, not
+conversion cost, and the CPU-plane path above is unaffected by it.
 
 #### Lifetime and release
 
@@ -1357,12 +1374,20 @@ Recorded so a declared-but-unimplemented capability stays distinguishable from
 a working one. This section describes what is built, not what CamBANG intends;
 an absent entry means "not implemented yet", never "excluded by design".
 
-- **The CPU-upload path is implemented; the native GPU-resident path is not
+- **The CPU-plane path is implemented; the native GPU-resident path is not
   reachable on real hardware.** `CamBANGCaptureResult` exposes
-  `can_get_compute_texture()`, `can_get_compute_texture_member(i)`,
-  `get_compute_texture()` and `get_compute_texture_member(i)`. Production is
-  lazy and cached per retained member in the Godot layer
-  (`src/godot/capture_compute_texture.cpp`).
+  `can_get_compute_texture_member(i)`, `get_compute_texture_plane_count(i)` and
+  `get_compute_texture_plane(i, plane)`. Production is lazy and cached per
+  retained plane in the Godot layer (`src/godot/capture_compute_texture.cpp`).
+- There is deliberately **no** no-argument convenience accessor. An earlier
+  revision had `get_compute_texture()` returning member 0; it was removed
+  because a planar member has no single texture to return, so such an accessor
+  must either fail or silently pick a plane, and its existence encoded the
+  false premise that a member has exactly one compute texture.
+- **Known gap:** the retained payload carries `PayloadColorimetry`, and nothing
+  exposes it. A caller converting Y'CbCr to RGB in its own shader therefore has
+  to assume a colour matrix and range. The member's format tells it the plane
+  layout but not the colour interpretation.
 - The cache is bounded by entry count and deliberately has **no** coupling to
   Core's capture eviction. It cannot be: the texture is a Godot-layer object,
   and Core must not own Godot display adapters. Dropping an entry is safe
@@ -1412,12 +1437,14 @@ an absent entry means "not implemented yet", never "excluded by design".
   capture the upload is about **3%** of producing a compute texture and the CPU
   conversion is about **97%**.
 
-  This matters for where optimisation effort belongs. A GPU-resident camera
-  buffer would remove the 620 us and leave the 20 ms untouched. Uploading the Y
-  and CbCr planes as two single-plane textures and converting in a shader would
-  remove the 20 ms instead, needs no Y'CbCr sampler (each plane is an ordinary
-  single-plane format), no `AHardwareBuffer`, and no platform-specific code --
-  and it moves 1.5 bytes/pixel instead of 4.
+  Those figures are what an RGBA-converting implementation cost, and are kept
+  because they show where the cost actually sat: a GPU-resident camera buffer
+  would have removed the 620 us and left the 20 ms untouched. Exposing native
+  planes removes the 20 ms instead. Measured after that change, same capture and
+  renderer, plane 0 of a 1280x720 NV12 member is produced in **475 us** against
+  20646 us -- about 43x -- and the member reports 2 planes. A packed member is
+  unchanged at ~1334 us for its single plane, and a GPU-resident member wraps in
+  ~54 us with no upload at all.
 
   A first attempt measured 102 ms for the planar `get_compute_texture()` call
   when it was the first access to that member. Calling `to_image()` first makes

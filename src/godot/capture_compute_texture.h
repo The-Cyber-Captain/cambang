@@ -1,9 +1,7 @@
 #pragma once
 
 #include <cstdint>
-#include <functional>
 
-#include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 
@@ -14,50 +12,53 @@ namespace cambang {
 
 // Capture Compute Texture -- pixel_payload_and_result_contract.md 11.6.1.
 //
-// A GPU-resident, frozen texture of one capture image member, for running
-// compute over the captured image. This is NOT a display view: it has no
-// freshness policy, no demand semantics, and no live-view contract. The stream
-// display machinery is a different concept and none of its reasoning applies
-// here.
+// GPU-resident, frozen textures of one capture image member, for running
+// compute over the captured image. This is NOT a display view: no freshness
+// policy, no demand semantics, no live-view contract. The stream display
+// machinery is a different concept and none of its reasoning applies.
 //
-// The texture is read-oriented. A compute shader samples it; anything the
-// caller wants to write goes to storage the caller owns.
+// Planes are exposed in the member's **native** format and are never converted.
+// A packed member has one plane; NV12/NV21 have two (luma, interleaved chroma);
+// I420/YV12 have three. Converting to RGBA would cost far more than the upload
+// it accompanies -- measured at roughly 20 ms against 620 us for a 1280x720
+// NV12 member -- and would discard the representation the caller asked for. A
+// caller that wants RGB does the conversion in its own shader, where it also
+// controls the colour handling.
 //
 // Everything here runs on the Godot main thread: it touches RenderingServer,
 // and the cache is not designed for concurrent access from provider or core
 // threads.
 
 // Operation Support for this member, per 11.6.1's table. Never claims CHEAP:
-// producing from CPU bytes is a full-frame upload, and no path may be declared
+// producing a plane is still a full-frame copy, and no path may be declared
 // CHEAP without measured evidence.
 ResultCapability capture_compute_texture_support(
     const SharedCaptureResultData& data,
     uint32_t image_member_index);
 
-// Produces on first request and caches; a repeat request for the same retained
-// member does not upload again. Returns null when support is UNSUPPORTED or
-// production fails.
+// Number of planes this member's compute textures are exposed as. Zero when the
+// member is unsupported or absent.
+uint32_t capture_compute_texture_plane_count(
+    const SharedCaptureResultData& data,
+    uint32_t image_member_index);
+
+// One plane, produced on first request and cached; a repeat request for the
+// same retained plane does not upload again (11.6.1, "Identity, immutability,
+// and caching"). Null when unsupported, out of range, or production fails.
 //
-// The returned Ref keeps the texture alive on its own, so a cache eviction
-// never invalidates a texture a caller is still holding -- it only means the
-// next request pays again.
-// `cpu_image_supplier` is invoked only on a cache miss that cannot be served
-// from an already-GPU-resident backing -- i.e. only when a full-frame upload is
-// actually going to happen. It is a callback so the caller supplies the image
-// through the ordinary application materialization path, and so a cache hit
-// never materializes anything.
-godot::Ref<godot::Texture2D> capture_compute_texture_for_member(
+// The returned Ref keeps the texture alive on its own, so a cache eviction never
+// invalidates a texture a caller is still holding -- it only means the next
+// request pays again.
+godot::Ref<godot::Texture2D> capture_compute_texture_plane(
     const SharedCaptureResultData& data,
     uint32_t image_member_index,
-    const std::function<godot::Ref<godot::Image>()>& cpu_image_supplier);
+    uint32_t plane_index);
 
 // Dropped on stop/restart, like the stream display caches, so no texture
 // outlives the runtime that produced its pixels.
 void clear_capture_compute_texture_cache();
 
-// Diagnostic: { uploads, gpu_wraps, hits, entries }. `uploads` counts
-// full-frame CPU uploads actually performed, which is what a caller checking
-// that repeat access is free should assert on.
+// Diagnostic: { uploads, gpu_wraps, hits, entries, uploaded_bytes }.
 godot::Dictionary capture_compute_texture_metrics();
 
 } // namespace cambang

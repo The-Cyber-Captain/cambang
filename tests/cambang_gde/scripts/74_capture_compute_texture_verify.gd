@@ -1,6 +1,6 @@
 extends Node
 
-# Verifies CamBANGCaptureResult.get_compute_texture() end to end: a completed
+# Verifies CamBANGCaptureResult compute-texture planes end to end: a completed
 # capture's pixels are reachable from a real compute dispatch.
 #
 # This is the Capture Compute Texture of pixel_payload_and_result_contract.md
@@ -182,30 +182,30 @@ func _try_verify() -> void:
 	if result == null:
 		return
 
-	var support: int = int(result.can_get_compute_texture())
-	_step_ok("can_get_compute_texture() = %d" % support)
+	var support: int = int(result.can_get_compute_texture_member(0))
+	_step_ok("can_get_compute_texture_member(0) = %d" % support)
 
 	var rd := RenderingServer.get_rendering_device()
 	if rd == null:
 		# 11.6.1: no GPU device, so there is nowhere to put a texture. The
 		# capability must say so rather than hand back a degraded object.
 		if support != result.CAPABILITY_UNSUPPORTED:
-			_fail("no RenderingDevice but can_get_compute_texture()=%d (expected UNSUPPORTED=%d)"
+			_fail("no RenderingDevice but can_get_compute_texture_member(0)=%d (expected UNSUPPORTED=%d)"
 				% [support, result.CAPABILITY_UNSUPPORTED])
 			return
-		if result.get_compute_texture() != null:
-			_fail("no RenderingDevice but get_compute_texture() returned an object")
+		if result.get_compute_texture_plane(0, 0) != null:
+			_fail("no RenderingDevice but get_compute_texture_plane(0,0) returned an object")
 			return
 		_step_ok("no RenderingDevice: UNSUPPORTED reported and nothing produced")
 		_finish_unsupported("no RenderingDevice under this renderer")
 		return
 
 	if support == result.CAPABILITY_UNSUPPORTED:
-		_fail("RenderingDevice present but can_get_compute_texture() = UNSUPPORTED")
+		_fail("RenderingDevice present but can_get_compute_texture_member(0) = UNSUPPORTED")
 		return
 	if support == result.CAPABILITY_CHEAP:
 		# 11.6.1: no path may be declared CHEAP without measured evidence.
-		_fail("can_get_compute_texture() declared CHEAP; only READY/EXPENSIVE are derivable")
+		_fail("can_get_compute_texture_member(0) declared CHEAP; only READY/EXPENSIVE are derivable")
 		return
 
 	# Timed because it is the number that decides whether a zero-copy native path
@@ -224,15 +224,15 @@ func _try_verify() -> void:
 		_fail("cold to_image() returned null")
 		return
 	var t0 := Time.get_ticks_usec()
-	var texture = result.get_compute_texture()
+	var texture = result.get_compute_texture_plane(0, 0)
 	var produce_us := Time.get_ticks_usec() - t0
 	if texture == null or not (texture is Texture2D):
-		_fail("get_compute_texture() returned no Texture2D despite support=%d" % support)
+		_fail("get_compute_texture_plane(0,0) returned no Texture2D despite support=%d" % support)
 		return
 	var t1 := Time.get_ticks_usec()
 	var timing_image: Image = result.to_image()
 	var to_image_us := Time.get_ticks_usec() - t1
-	print("TIMING cold_to_image_us=%d get_compute_texture_first_call_us=%d warm_to_image_us=%d size=%dx%d format=%d payload_kind=%d support=%d class=%s"
+	print("TIMING cold_to_image_us=%d compute_plane0_first_call_us=%d warm_to_image_us=%d size=%dx%d format=%d payload_kind=%d support=%d class=%s"
 		% [cold_to_image_us, produce_us, to_image_us,
 		   int(result.get_width()), int(result.get_height()),
 		   int(result.get_format()), int(result.get_payload_kind()), support,
@@ -240,8 +240,22 @@ func _try_verify() -> void:
 	if timing_image == null:
 		_fail("to_image() returned null during timing")
 		return
-	_step_ok("compute texture obtained (class=%s support=%d produce_us=%d)"
-		% [texture.get_class(), support, produce_us])
+	var plane_count := int(result.get_compute_texture_plane_count(0))
+	if plane_count <= 0:
+		_fail("get_compute_texture_plane_count(0) returned %d" % plane_count)
+		return
+	# Planes are native: a packed member is one plane, NV12/NV21 two, I420/YV12
+	# three. Anything else means the member's format and its plane exposure
+	# disagree.
+	for p in range(plane_count):
+		if result.get_compute_texture_plane(0, p) == null:
+			_fail("plane %d of %d was not produced" % [p, plane_count])
+			return
+	if result.get_compute_texture_plane(0, plane_count) != null:
+		_fail("plane index %d is out of range but produced a texture" % plane_count)
+		return
+	_step_ok("compute texture planes obtained (planes=%d class=%s support=%d produce_us=%d)"
+		% [plane_count, texture.get_class(), support, produce_us])
 
 	# The one documented route to the RenderingDevice texture, identical for
 	# every CamBANG-provided texture regardless of which path produced it.
@@ -266,22 +280,22 @@ func _try_verify() -> void:
 	# was still held. These two calls are back to back, so the first result is
 	# certainly still held.
 	var before: Dictionary = _compute_texture_metrics()
-	var again = result.get_compute_texture()
+	var again = result.get_compute_texture_plane(0, 0)
 	var after: Dictionary = _compute_texture_metrics()
 	if again == null:
-		_fail("second get_compute_texture() returned null")
+		_fail("second get_compute_texture_plane(0,0) returned null")
 		return
 	if int(after.get("uploads", -1)) != int(before.get("uploads", -2)):
-		_fail("second get_compute_texture() uploaded again (uploads %d -> %d)"
+		_fail("second get_compute_texture_plane(0,0) uploaded again (uploads %d -> %d)"
 			% [int(before.get("uploads", -1)), int(after.get("uploads", -1))])
 		return
 	_step_ok("repeat access served without re-upload (uploads=%d hits=%d)"
 		% [int(after.get("uploads", -1)), int(after.get("hits", -1))])
 
-	_run_compute(rd, rd_texture, result)
+	_run_compute(rd, rd_texture, result, plane_count, texture)
 
 
-func _run_compute(rd: RenderingDevice, rd_texture: RID, result) -> void:
+func _run_compute(rd: RenderingDevice, rd_texture: RID, result, plane_count: int, texture) -> void:
 	var width: int = int(result.get_width())
 	var height: int = int(result.get_height())
 	if width <= 0 or height <= 0:
@@ -362,32 +376,51 @@ func _run_compute(rd: RenderingDevice, rd_texture: RID, result) -> void:
 		return
 	_step_ok("compute covered every pixel (%d)" % pixel_count)
 
-	# Content proof: the same sum computed on the CPU from the same member.
-	var image: Image = result.to_image()
-	if image == null:
-		_fail("to_image() returned null; cannot cross-check compute content")
-		return
-	var cpu_sum := 0
-	var data: PackedByteArray = image.get_data()
-	var stride := 4
-	var i := 0
-	while i < data.size():
-		cpu_sum += data[i]
-		i += stride
-	print("compute red_sum=%d cpu red_sum=%d ratio=%.4f"
-		% [red_sum, cpu_sum, (float(red_sum) / float(cpu_sum)) if cpu_sum > 0 else 0.0])
-	if cpu_sum <= 0:
+	# Content proof.
+	#
+	# Plane 0 is luma for a planar member and the packed pixel for a packed one,
+	# so the shader's per-texel .r is the first byte of each sample either way.
+	# The CPU reference walks the same bytes: for a planar member that is the
+	# retained Y plane read back out of to_image()'s source, which is why the
+	# packed case compares against to_image() while the planar case compares
+	# against the plane texture's own image.
+	var reference_sum := 0
+	var reference_label := ""
+	if plane_count > 1:
+		var plane_img: Image = (texture as Texture2D).get_image()
+		if plane_img == null:
+			_fail("could not read back plane 0 for the CPU reference")
+			return
+		var pdata: PackedByteArray = plane_img.get_data()
+		for i in range(pdata.size()):
+			reference_sum += pdata[i]
+		reference_label = "plane0(%s)" % plane_img.get_format()
+	else:
+		var image: Image = result.to_image()
+		if image == null:
+			_fail("to_image() returned null; cannot cross-check compute content")
+			return
+		var data: PackedByteArray = image.get_data()
+		var i2 := 0
+		while i2 < data.size():
+			reference_sum += data[i2]
+			i2 += 4
+		reference_label = "to_image().r"
+	print("compute red_sum=%d cpu reference=%d (%s) ratio=%.4f"
+		% [red_sum, reference_sum, reference_label,
+		   (float(red_sum) / float(reference_sum)) if reference_sum > 0 else 0.0])
+	if reference_sum <= 0:
 		_fail("CPU reference sum is zero; capture image appears empty")
 		return
 	if red_sum == 0:
 		_fail("compute read all-zero pixels from a non-empty capture")
 		return
-	var ratio := float(red_sum) / float(cpu_sum)
+	var ratio := float(red_sum) / float(reference_sum)
 	if ratio < 0.98 or ratio > 1.02:
 		_fail("compute content does not match CPU reference (compute=%d cpu=%d ratio=%.4f)"
-			% [red_sum, cpu_sum, ratio])
+			% [red_sum, reference_sum, ratio])
 		return
-	_step_ok("compute content matches CPU reference (ratio=%.4f)" % ratio)
+	_step_ok("compute content matches CPU reference (%s ratio=%.4f)" % [reference_label, ratio])
 
 	_finish_ok()
 

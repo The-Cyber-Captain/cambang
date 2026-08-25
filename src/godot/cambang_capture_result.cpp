@@ -639,10 +639,6 @@ int CamBANGCaptureResult::can_get_encoded_bytes() const {
       CoreResultAccessOperation::ENCODED_BYTES));
 }
 
-int CamBANGCaptureResult::can_get_compute_texture() const {
-  return can_get_compute_texture_member(0);
-}
-
 int CamBANGCaptureResult::can_get_compute_texture_member(int image_member_index) const {
   if (image_member_index < 0) {
     return CAPABILITY_UNSUPPORTED;
@@ -651,22 +647,24 @@ int CamBANGCaptureResult::can_get_compute_texture_member(int image_member_index)
       data_, static_cast<uint32_t>(image_member_index)));
 }
 
-godot::Ref<godot::Texture2D> CamBANGCaptureResult::get_compute_texture() const {
-  return get_compute_texture_member(0);
+int CamBANGCaptureResult::get_compute_texture_plane_count(int image_member_index) const {
+  if (image_member_index < 0) {
+    return 0;
+  }
+  return static_cast<int>(capture_compute_texture_plane_count(
+      data_, static_cast<uint32_t>(image_member_index)));
 }
 
-godot::Ref<godot::Texture2D> CamBANGCaptureResult::get_compute_texture_member(
-    int image_member_index) const {
-  if (image_member_index < 0) {
+godot::Ref<godot::Texture2D> CamBANGCaptureResult::get_compute_texture_plane(
+    int image_member_index,
+    int plane_index) const {
+  if (image_member_index < 0 || plane_index < 0) {
     return {};
   }
-  // The supplier runs only when a full-frame upload is genuinely required, and
-  // it goes through the ordinary application materialization path so the upload
-  // is attributed to the application rather than to the calibration probe.
-  return capture_compute_texture_for_member(
+  return capture_compute_texture_plane(
       data_,
       static_cast<uint32_t>(image_member_index),
-      [this, image_member_index]() { return to_image_member(image_member_index); });
+      static_cast<uint32_t>(plane_index));
 }
 
 godot::Variant CamBANGCaptureResult::get_display_view() const {
@@ -707,10 +705,9 @@ void CamBANGCaptureResult::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("to_image_member", "image_member_index"), &CamBANGCaptureResult::to_image_member);
   godot::ClassDB::bind_method(godot::D_METHOD("can_get_encoded_bytes"), &CamBANGCaptureResult::can_get_encoded_bytes);
 
-  godot::ClassDB::bind_method(godot::D_METHOD("can_get_compute_texture"), &CamBANGCaptureResult::can_get_compute_texture);
   godot::ClassDB::bind_method(godot::D_METHOD("can_get_compute_texture_member", "image_member_index"), &CamBANGCaptureResult::can_get_compute_texture_member);
-  godot::ClassDB::bind_method(godot::D_METHOD("get_compute_texture"), &CamBANGCaptureResult::get_compute_texture);
-  godot::ClassDB::bind_method(godot::D_METHOD("get_compute_texture_member", "image_member_index"), &CamBANGCaptureResult::get_compute_texture_member);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_compute_texture_plane_count", "image_member_index"), &CamBANGCaptureResult::get_compute_texture_plane_count);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_compute_texture_plane", "image_member_index", "plane_index"), &CamBANGCaptureResult::get_compute_texture_plane);
 
   godot::ClassDB::bind_method(godot::D_METHOD("get_display_view"), &CamBANGCaptureResult::get_display_view);
   godot::ClassDB::bind_method(godot::D_METHOD("to_image"), &CamBANGCaptureResult::to_image);
