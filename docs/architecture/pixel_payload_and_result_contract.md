@@ -1397,6 +1397,34 @@ an absent entry means "not implemented yet", never "excluded by design".
   committed, and `include_filter` does not pick up a raw copy either. Embedding
   removes that dependency and makes the scene behave identically on both
   targets.
+- **Where the cost actually is, measured.** Scene 74 times a cold `to_image()`,
+  then the first `get_compute_texture()`, then a warm `to_image()`. Windows,
+  mobile renderer, 1280x720:
+
+  | Payload | cold `to_image()` | `get_compute_texture()` | implied upload |
+  | --- | --- | --- | --- |
+  | `CPU_PACKED` (RGBA) | 833 us | 1451 us | ~620 us |
+  | `CPU_PLANAR` (NV12) | 20024 us | 20646 us | ~620 us |
+
+  The GPU upload is ~620 us regardless of payload kind, because the uploaded
+  RGBA is the same size either way. The planar -> RGBA conversion is ~20 ms and
+  runs on every call, since no converted image is cached. So for a planar
+  capture the upload is about **3%** of producing a compute texture and the CPU
+  conversion is about **97%**.
+
+  This matters for where optimisation effort belongs. A GPU-resident camera
+  buffer would remove the 620 us and leave the 20 ms untouched. Uploading the Y
+  and CbCr planes as two single-plane textures and converting in a shader would
+  remove the 20 ms instead, needs no Y'CbCr sampler (each plane is an ordinary
+  single-plane format), no `AHardwareBuffer`, and no platform-specific code --
+  and it moves 1.5 bytes/pixel instead of 4.
+
+  A first attempt measured 102 ms for the planar `get_compute_texture()` call
+  when it was the first access to that member. Calling `to_image()` first makes
+  that figure collapse to ~20 ms, so the excess was first-touch cost on the
+  member -- retained-access calibration performing its own probe conversions --
+  and not attributable to this operation. Recorded because the raw first-call
+  number is misleading if quoted on its own.
 - The READY row is implemented and exercised, but only from Synthetic. Scene 74
   run with `--cambang-synth-producer-output-form=gpu_only` under the mobile
   renderer reports support READY, returns the GPU wrapper class rather than an

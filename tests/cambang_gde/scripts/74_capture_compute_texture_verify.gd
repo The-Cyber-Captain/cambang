@@ -56,6 +56,13 @@ void main() {
 """
 const TIMEOUT_MS := 20000
 const LOCAL_GROUP := 8
+# make_fourcc('N','V','1','2') -- see src/pixels/format/pixel_format_descriptor.h.
+const FOURCC_NV12 := 842094158
+# Optional: --cambang-probe-still-format=nv12 requests a planar still so the
+# planar -> RGBA conversion inside to_image() is included in the timing. Without
+# it the capture is packed RGBA and to_image() is close to a straight copy,
+# which understates what a real Camera2 still costs.
+const ARG_STILL_FORMAT := "--cambang-probe-still-format="
 
 var _step := 0
 var _done := false
@@ -63,6 +70,7 @@ var _verdict_emitted := false
 var _quit_requested := false
 var _device_instance_id := 0
 var _capture_triggered := false
+var _still_profile_requested := false
 var _elapsed_ms := 0
 
 
@@ -121,10 +129,39 @@ func _latch_device() -> void:
 	_step_ok("device latched (instance_id=%d)" % _device_instance_id)
 
 
+func _requested_still_fourcc() -> int:
+	# run_godot.ps1 passes -ExtraArgs as engine args (before Godot's "--"), while
+	# its own harness args go after it, so both lists have to be searched.
+	var all_args: PackedStringArray = OS.get_cmdline_args()
+	all_args.append_array(OS.get_cmdline_user_args())
+	for arg in all_args:
+		if arg.begins_with(ARG_STILL_FORMAT):
+			var name := arg.substr(ARG_STILL_FORMAT.length()).to_lower()
+			if name == "nv12":
+				return FOURCC_NV12
+	return 0
+
+
 func _trigger_capture() -> void:
 	var device = CamBANGServer.get_device(_device_instance_id)
 	if device == null:
 		return
+
+	var wanted_fourcc := _requested_still_fourcc()
+	if wanted_fourcc != 0 and not _still_profile_requested:
+		var err_profile := int(device.set_still_capture_profile({"format_fourcc": wanted_fourcc}))
+		if err_profile != OK:
+			_fail("set_still_capture_profile(format_fourcc=%d) failed err=%d" % [wanted_fourcc, err_profile])
+			return
+		_still_profile_requested = true
+		_step_ok("planar still profile requested (format_fourcc=%d)" % wanted_fourcc)
+		return
+	if wanted_fourcc != 0:
+		# Wait for the requested format to actually be the device's still profile
+		# before triggering, so the capture is the one being measured.
+		var current: Dictionary = device.get_still_capture_profile()
+		if int(current.get("format_fourcc", 0)) != wanted_fourcc:
+			return
 	# trigger_capture() returns { id, error }; the id is the caller's handle for
 	# this capture, and the error is the admission outcome.
 	var capture: Dictionary = device.trigger_capture()
@@ -176,6 +213,16 @@ func _try_verify() -> void:
 	# GPU-resident source would avoid, and on the READY row it is what that path
 	# already costs. to_image() is timed too, since on the EXPENSIVE row the
 	# upload is preceded by a CPU materialization the caller also pays.
+	# Cold to_image() first, so the first-touch cost of this member (planar
+	# conversion plus whatever retained-access calibration does on first access)
+	# is attributed separately instead of landing inside the compute-texture
+	# number and inflating it.
+	var tc := Time.get_ticks_usec()
+	var cold_image: Image = result.to_image()
+	var cold_to_image_us := Time.get_ticks_usec() - tc
+	if cold_image == null:
+		_fail("cold to_image() returned null")
+		return
 	var t0 := Time.get_ticks_usec()
 	var texture = result.get_compute_texture()
 	var produce_us := Time.get_ticks_usec() - t0
@@ -185,9 +232,10 @@ func _try_verify() -> void:
 	var t1 := Time.get_ticks_usec()
 	var timing_image: Image = result.to_image()
 	var to_image_us := Time.get_ticks_usec() - t1
-	print("TIMING get_compute_texture_first_call_us=%d to_image_us=%d size=%dx%d support=%d class=%s"
-		% [produce_us, to_image_us,
-		   int(result.get_width()), int(result.get_height()), support,
+	print("TIMING cold_to_image_us=%d get_compute_texture_first_call_us=%d warm_to_image_us=%d size=%dx%d format=%d payload_kind=%d support=%d class=%s"
+		% [cold_to_image_us, produce_us, to_image_us,
+		   int(result.get_width()), int(result.get_height()),
+		   int(result.get_format()), int(result.get_payload_kind()), support,
 		   texture.get_class()])
 	if timing_image == null:
 		_fail("to_image() returned null during timing")
