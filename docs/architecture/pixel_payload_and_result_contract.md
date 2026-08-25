@@ -1390,10 +1390,31 @@ an absent entry means "not implemented yet", never "excluded by design".
   that wait and skips its planar phase with the reason stated rather than
   hanging. Worth noting as provider behaviour: a request is accepted that can
   never be applied, and nothing tells the caller so.
-- **Known gap:** the retained payload carries `PayloadColorimetry`, and nothing
-  exposes it. A caller converting Y'CbCr to RGB in its own shader therefore has
-  to assume a colour matrix and range. The member's format tells it the plane
-  layout but not the colour interpretation.
+- **Colour interpretation is reported with the planes.** `get_image_member(i)`
+  carries a `colorimetry` dictionary -- `range`, `matrix`, `transfer`,
+  `primaries`, and a `declared` flag -- whenever the member retains CPU bytes.
+  A caller writing its own Y'CbCr maths needs it, and CamBANG holds the answer:
+  §6.2's contract refuses to render one colour space with another's
+  coefficients internally, so leaving a caller to do exactly that would have
+  been inconsistent.
+
+  Values are reported verbatim. `unspecified` is truthful absence, not a value,
+  and nothing here substitutes a default -- a caller must be able to tell
+  whether the provider declared a colour space or CamBANG is simply unaware of
+  it. For reference, CamBANG's own CPU conversion resolves absence to BT.601
+  limited (`is_convertible_colorimetry`,
+  `src/imaging/api/provider_contract_datatypes.h`), and a caller wanting its
+  shader to agree with `to_image()` should do the same; that fallback is
+  deliberately not reported as though it had been declared.
+
+  Observed from Synthetic: a packed RGBA member reports all four as
+  `unspecified` with `declared=false`, which is correct -- packed RGB carries no
+  Y'CbCr interpretation. An NV12 member reports `limited` / `bt601` / `srgb` /
+  `bt709` with `declared=true`.
+
+  Note the plane *order* question is answered separately and was never a gap:
+  the member's format distinguishes NV12 from NV21, so U/V order is knowable
+  from `get_format()` alone.
 - The cache is bounded by entry count and deliberately has **no** coupling to
   Core's capture eviction. It cannot be: the texture is a Godot-layer object,
   and Core must not own Godot display adapters. Dropping an entry is safe

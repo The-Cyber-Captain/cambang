@@ -294,6 +294,24 @@ func _verify_phase(capture_id: String, expected_planes: int, label: String) -> v
 	_step_ok("compute texture planes obtained (planes=%d class=%s support=%d produce_us=%d)"
 		% [plane_count, texture.get_class(), support, produce_us])
 
+	# Colour interpretation must accompany the planes. A caller writing its own
+	# Y'CbCr maths cannot get it right otherwise, and CamBANG holds the answer:
+	# the provider contract refuses to render one colour space with another's
+	# coefficients internally, so it must not leave a caller to do that either.
+	var member_info: Dictionary = result.get_image_member(0)
+	if not member_info.has("colorimetry"):
+		_fail("%s: get_image_member(0) reported no colorimetry for a member with planes" % label)
+		return
+	var colorimetry: Dictionary = member_info["colorimetry"]
+	for required_key in ["range", "matrix", "transfer", "primaries", "declared"]:
+		if not colorimetry.has(required_key):
+			_fail("%s: colorimetry is missing '%s'" % [label, required_key])
+			return
+	print("COLORIMETRY phase=%s range=%s matrix=%s transfer=%s primaries=%s declared=%s"
+		% [label, colorimetry["range"], colorimetry["matrix"], colorimetry["transfer"],
+		   colorimetry["primaries"], colorimetry["declared"]])
+	_step_ok("%s: colorimetry reported alongside the planes" % label)
+
 	# The one documented route to the RenderingDevice texture, identical for
 	# every CamBANG-provided texture regardless of which path produced it.
 	var rs_rid: RID = texture.get_rid()
