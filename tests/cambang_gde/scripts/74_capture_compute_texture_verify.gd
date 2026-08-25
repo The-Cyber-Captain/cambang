@@ -171,11 +171,29 @@ func _try_verify() -> void:
 		_fail("can_get_compute_texture() declared CHEAP; only READY/EXPENSIVE are derivable")
 		return
 
+	# Timed because it is the number that decides whether a zero-copy native path
+	# is worth building: on the EXPENSIVE row this is the full-frame upload a
+	# GPU-resident source would avoid, and on the READY row it is what that path
+	# already costs. to_image() is timed too, since on the EXPENSIVE row the
+	# upload is preceded by a CPU materialization the caller also pays.
+	var t0 := Time.get_ticks_usec()
 	var texture = result.get_compute_texture()
+	var produce_us := Time.get_ticks_usec() - t0
 	if texture == null or not (texture is Texture2D):
 		_fail("get_compute_texture() returned no Texture2D despite support=%d" % support)
 		return
-	_step_ok("compute texture obtained (class=%s support=%d)" % [texture.get_class(), support])
+	var t1 := Time.get_ticks_usec()
+	var timing_image: Image = result.to_image()
+	var to_image_us := Time.get_ticks_usec() - t1
+	print("TIMING get_compute_texture_first_call_us=%d to_image_us=%d size=%dx%d support=%d class=%s"
+		% [produce_us, to_image_us,
+		   int(result.get_width()), int(result.get_height()), support,
+		   texture.get_class()])
+	if timing_image == null:
+		_fail("to_image() returned null during timing")
+		return
+	_step_ok("compute texture obtained (class=%s support=%d produce_us=%d)"
+		% [texture.get_class(), support, produce_us])
 
 	# The one documented route to the RenderingDevice texture, identical for
 	# every CamBANG-provided texture regardless of which path produced it.

@@ -1323,6 +1323,20 @@ actually compute over it:
   Compute Texture that disagrees with `get_image_member()` about size, or with
   the retained payload about colour interpretation, is a defect, not a variant.
 
+A **multi-planar** standard format is as unusable here as a vendor external one,
+for a different reason. Vulkan requires that an image in a format such as
+`G8_B8R8_2PLANE_420_UNORM` be sampled through a `VkSamplerYcbcrConversion` bound
+as an immutable sampler, and Godot's RenderingDevice API exposes no Y'CbCr
+conversion at all -- `RDSamplerState` has no such property and `RenderingDevice`
+has no such method (checked against godot-cpp 4.5-stable). So a YUV
+`AHardwareBuffer` cannot be imported and sampled through the GDExtension
+RenderingDevice API even when `texture_create_from_extension()` can name its
+format. This matters because Camera2 still formats are YUV, JPEG, PRIVATE and
+RAW -- there is no RGBA still to fall back on. A native zero-copy path on
+Android therefore requires CamBANG to perform its own raw-Vulkan conversion into
+a single-plane image before Godot sees anything, which is a far larger
+undertaking than importing a buffer.
+
 #### Lifetime and release
 
 The texture's lifetime is bounded by the retained result. It is released when
