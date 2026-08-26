@@ -356,6 +356,37 @@ One gap this table makes visible:
   order, and the retained payload carries the delivered FourCC, so payload
   truth is correct. The stream *profile* still records the requested tag, so
   profile and payload can name different formats for the same stream.
+- **The BT.601-*limited* conversion fallback is measured WRONG on at least one
+  Camera2 device, and neither platform provider declares colorimetry at all.**
+  `is_convertible_colorimetry` resolves absence to BT.601 limited, and its
+  source comment claimed that is "what both current targets deliver for 8-bit
+  4:2:0". For Camera2 that is false on the hardware measured.
+
+  Measured 2026-08-26, Quest 3 / Horizon OS v207 (Android 14, API 34), cameras
+  1, 50 and 51, all three identical: `AImage_getDataSpace` returns
+  `146931712` == `ADATASPACE_JFIF` -- decoding to BT.601-625 primaries,
+  SMPTE 170M transfer, and `ADATASPACE_RANGE_FULL`. Luma corroborates on the
+  two passthrough cameras: 640x480 frames spanning min 3 / max 255 and
+  min 5 / max 255, with 26.7% and 12.8% of pixels respectively outside the
+  16-235 window. Applying a limited-to-full expansion to full-range data clamps
+  every one of those pixels -- crushed blacks, blown highlights, and a contrast
+  boost. Precisely the "plausible image, which is worse than no image" this
+  contract warns about, and it is current shipped behaviour for every planar
+  frame converted on that device by `get_display_view()` or `to_image()`.
+
+  Scope, deliberately not generalised:
+  - One device family. This is NOT a statement that Camera2 delivers full range
+    everywhere; other devices are unmeasured, and treating one handset as a
+    platform specification is the error this project avoids elsewhere.
+  - The WinRT half of the original claim is untested and may well be correct;
+    NV12 from a MediaCapture video pipeline is conventionally limited range.
+  - The platform *declares* this per buffer. `AImage_getDataSpace` gives
+    standard, transfer and range directly, so this is a fact available to the
+    provider and simply not read -- a guess standing where an answer exists.
+    The principled fix is for the provider to populate `PayloadColorimetry`
+    from the dataspace, leaving the fallback for genuinely unknown cases.
+  - `AImage_getDataSpace` is `__INTRODUCED_IN(34)`. Devices below API 34 cannot
+    be queried this way, and what the fallback should be *there* remains open.
 
 Pixel format is independent of pattern content. The synthetic stream render
 spec is packed RGBA8 regardless of the requested profile format, and format
@@ -1405,7 +1436,10 @@ an absent entry means "not implemented yet", never "excluded by design".
   limited (`is_convertible_colorimetry`,
   `src/imaging/api/provider_contract_datatypes.h`), and a caller wanting its
   shader to agree with `to_image()` should do the same; that fallback is
-  deliberately not reported as though it had been declared.
+  deliberately not reported as though it had been declared. Note that agreeing
+  with `to_image()` is not the same as being correct: on the Camera2 hardware
+  measured in 6.3.1 that fallback is the wrong range, so a shader matching it
+  reproduces the same error rather than avoiding it.
 
   Observed from Synthetic: a packed RGBA member reports all four as
   `unspecified` with `declared=false`, which is correct -- packed RGB carries no

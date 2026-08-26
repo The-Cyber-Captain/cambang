@@ -129,9 +129,20 @@ struct PayloadColorimetry {
 // this, so adding a colour space is one edit rather than several.
 //
 // UNSPECIFIED is truthful absence, not a value, so the fallback has to be
-// chosen explicitly rather than assumed: absence resolves to BT.601 limited,
-// which is what both current targets deliver for 8-bit 4:2:0 (Camera2's
-// YUV_420_888 and WinRT's NV12). A *declared* colour space CamBANG cannot
+// chosen explicitly rather than assumed: absence resolves to BT.601 limited.
+//
+// That fallback is KNOWN WRONG for Camera2 on measured hardware. This comment
+// used to claim limited range "is what both current targets deliver for 8-bit
+// 4:2:0 (Camera2's YUV_420_888 and WinRT's NV12)"; a Quest 3 reports
+// ADATASPACE_JFIF for all three cameras -- BT.601-625, SMPTE 170M, and RANGE_
+// FULL -- and its luma spans 0-255. See pixel_payload_and_result_contract.md
+// 6.3.1 for the measurement and its scope limits. The fallback is left as-is
+// deliberately: correcting it by flipping the guess would replace one
+// assumption with another, and the platform declares the answer per buffer
+// (AImage_getDataSpace) for a provider that does not yet read it. WinRT's half
+// of the original claim remains untested.
+//
+// A *declared* colour space CamBANG cannot
 // convert is refused outright -- rendering BT.709 content with BT.601
 // coefficients yields a plausible image, which is worse than no image.
 inline bool is_convertible_colorimetry(const PayloadColorimetry& c) noexcept {
