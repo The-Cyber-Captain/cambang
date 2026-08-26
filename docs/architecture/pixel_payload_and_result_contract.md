@@ -1524,6 +1524,33 @@ an absent entry means "not implemented yet", never "excluded by design".
   Backing Plan evaluation cannot select a GPU posture on real hardware. The
   `EXPENSIVE` CPU-upload row of the table above is therefore the only row
   reachable on any currently supported device.
+- **The same holds for streams, and no GPU-primary path has ever run against
+  real camera data.** `stream_backing_capabilities` also returns CPU-only from
+  both platform providers (`{true, false, false}` in
+  `src/imaging/platform/android/camera2_camera_provider.cpp` and
+  `src/imaging/platform/windows/winrt_camera_provider.cpp`), so
+  `SyntheticProvider` is the only producer in the tree that ever sets
+  `primary_backing_kind = ProducerBackingKind::GPU`, on either surface. The
+  consequence is worth stating plainly: the whole GPU-primary tier -- the
+  retained backing descriptor, the display bridge, and the `READY`
+  compute-texture row that wraps rather than uploads -- has only ever executed
+  against Synthetic frames. Scene 870's `gpu_only` producer output form is a
+  synthetic-only knob, and the matrix runner's `-ProviderOutputForms` axis
+  cannot drive a platform-backed provider into it.
+- **On Android the bytes arrive in GPU-capable memory and are copied out of
+  it.** Every AImageReader buffer is an AHardwareBuffer allocation, but the
+  caller's stream and the still both open the no-usage constructor
+  (`AImageReader_new(..., AIMAGE_FORMAT_YUV_420_888, ...)`) and are read
+  through `AImage_getPlaneData` and copied into provider heap slots.
+  `AImage_getHardwareBuffer` is never called, so no GPU-importable handle
+  leaves the provider. The machinery is not absent: the *pilot* stream already
+  opens `AImageReader_newWithUsage(..., AIMAGE_FORMAT_PRIVATE,
+  AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE, ...)` under an API-26 availability
+  guard, and those frames are counted and deleted without a plane being read
+  (`src/imaging/platform/android/camera2_camera_provider.cpp`). WinRT is
+  further from a GPU route: its pixels arrive as a `SoftwareBitmap` read via
+  `IMemoryBufferByteAccess`, and the provider references no D3D or DXGI
+  interface at all.
 - The descriptor can distinguish a linear backing from an opaque external one
   and can declare that display or import costs real work
   (`GpuBackingLayoutKind`, `display_requires_import`,
