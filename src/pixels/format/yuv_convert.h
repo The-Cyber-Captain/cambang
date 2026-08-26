@@ -73,4 +73,31 @@ constexpr RgbSample yuv_to_rgb_bt601_limited(uint8_t y, uint8_t u, uint8_t v) no
   return out;
 }
 
+// YUV -> RGB, BT.601 FULL range (JFIF).
+//
+// Distinct from the limited-range function above, not a parameterisation of it,
+// for the reason this file already follows: a caller holding content in one
+// range must not be able to reach for the other by default.
+//
+// The difference is not cosmetic. Limited range maps Y 16..235 onto 0..255, so
+// applying it to full-range data clamps everything outside that window --
+// crushed blacks and blown highlights. Camera2 on measured hardware declares
+// ADATASPACE_JFIF, which is this function's domain, not the one above's; see
+// pixel_payload_and_result_contract.md 6.3.1.
+//
+// Full range needs no black-level offset and no 255/219 scaling: Y passes
+// through, and only the chroma terms are weighted. Fixed point at 1/256 to
+// match the limited-range path, so both stay integer-only and reproducible.
+constexpr RgbSample yuv_to_rgb_bt601_full(uint8_t y, uint8_t u, uint8_t v) noexcept {
+  const int32_t yi = static_cast<int32_t>(y);
+  const int32_t d = static_cast<int32_t>(u) - 128;
+  const int32_t e = static_cast<int32_t>(v) - 128;
+  RgbSample out{};
+  // 1.402, 0.344136, 0.714136, 1.772 at 1/256.
+  out.r = yuv_detail::clamp_u8(yi + ((359 * e + 128) >> 8));
+  out.g = yuv_detail::clamp_u8(yi + ((-88 * d - 183 * e + 128) >> 8));
+  out.b = yuv_detail::clamp_u8(yi + ((454 * d + 128) >> 8));
+  return out;
+}
+
 } // namespace cambang

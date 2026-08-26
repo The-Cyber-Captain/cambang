@@ -148,8 +148,13 @@ struct PayloadColorimetry {
 inline bool is_convertible_colorimetry(const PayloadColorimetry& c) noexcept {
   const bool matrix_ok =
       c.matrix == ColorMatrix::UNSPECIFIED || c.matrix == ColorMatrix::BT601;
-  const bool range_ok =
-      c.range == ColorRange::UNSPECIFIED || c.range == ColorRange::LIMITED;
+  // FULL is admitted because Core implements it (yuv_to_rgb_bt601_full).
+  // Before that existed, a provider declaring the truth about a full-range
+  // camera would have made every one of its planar frames UNSUPPORTED -- the
+  // declaration must not be the thing that breaks the path.
+  const bool range_ok = c.range == ColorRange::UNSPECIFIED ||
+                        c.range == ColorRange::LIMITED ||
+                        c.range == ColorRange::FULL;
   return matrix_ok && range_ok;
 }
 

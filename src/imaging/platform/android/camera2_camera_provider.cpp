@@ -15,10 +15,12 @@
 #include <camera/NdkCameraMetadataTags.h>
 #include <camera/NdkCaptureRequest.h>
 #include <media/NdkImage.h>
+#include <android/data_space.h>
 #include <android/hardware_buffer.h>
 #include <media/NdkImageReader.h>
 
 #include <android/log.h>
+#include <dlfcn.h>
 
 #include <algorithm>
 #include <chrono>
@@ -737,6 +739,9 @@ struct BurstCollector {
     // planes it collapsed to. Only meaningful for planar captures.
     uint32_t fourcc = 0;
     uint8_t plane_count = 0;
+    // Read at acquisition, because the AImage is gone by the time the
+    // FrameView is assembled.
+    PayloadColorimetry colorimetry{};
   };
   std::vector<Image> images;      // arrival order == capture order
   size_t failed_count = 0;        // onCaptureFailed, per member
@@ -992,6 +997,69 @@ std::optional<SourcedFact<ImageAcquisitionTiming>> make_acquisition_timing(
   return SourcedFact<ImageAcquisitionTiming>{*timing, FactOrigin::NATIVE_REPORTED};
 }
 
+// Colour interpretation, read from the platform rather than assumed.
+//
+// Android declares this per buffer. CamBANG previously had no answer here and
+// consumers fell back to BT.601 limited, which is wrong on measured hardware:
+// a Quest 3 reports ADATASPACE_JFIF for every camera -- BT.601-625, SMPTE 170M,
+// FULL range -- and expanding full-range data as limited clamps a quarter of
+// the frame. See pixel_payload_and_result_contract.md 6.3.1.
+//
+// AImage_getDataSpace is __INTRODUCED_IN(34) while this provider builds at 26,
+// and clang will not accept a __builtin_available guard for it at that floor,
+// so the symbol is resolved once at runtime. An absent symbol (pre-34 device)
+// or an absent answer both leave the record UNSPECIFIED, which is truthful
+// absence and lets the documented fallback apply rather than substituting a
+// guess here.
+PayloadColorimetry read_payload_colorimetry(AImage* image) {
+  PayloadColorimetry out{};
+  using GetDataSpaceFn = media_status_t (*)(const AImage*, int32_t*);
+  static GetDataSpaceFn get_data_space = reinterpret_cast<GetDataSpaceFn>(
+      dlsym(RTLD_DEFAULT, "AImage_getDataSpace"));
+  if (get_data_space == nullptr || image == nullptr) {
+    return out;
+  }
+  int32_t dataspace = 0;
+  if (get_data_space(image, &dataspace) != AMEDIA_OK) {
+    return out;
+  }
+
+  switch (dataspace & ADATASPACE_RANGE_MASK) {
+    case ADATASPACE_RANGE_FULL: out.range = ColorRange::FULL; break;
+    case ADATASPACE_RANGE_LIMITED: out.range = ColorRange::LIMITED; break;
+    default: break;  // UNSPECIFIED / EXTENDED: no claim
+  }
+
+  switch (dataspace & ADATASPACE_STANDARD_MASK) {
+    case ADATASPACE_STANDARD_BT601_625:
+    case ADATASPACE_STANDARD_BT601_525:
+      out.matrix = ColorMatrix::BT601;
+      break;
+    case ADATASPACE_STANDARD_BT709:
+      out.matrix = ColorMatrix::BT709;
+      out.primaries = ColorPrimaries::BT709;
+      break;
+    case ADATASPACE_STANDARD_BT2020:
+    case ADATASPACE_STANDARD_BT2020_CONSTANT_LUMINANCE:
+      out.matrix = ColorMatrix::BT2020_NCL;
+      out.primaries = ColorPrimaries::BT2020;
+      break;
+    default: break;
+  }
+  // BT.601-625 primaries are EBU 3213, which ColorPrimaries cannot name, so
+  // they stay UNSPECIFIED rather than being rounded to BT.709.
+
+  switch (dataspace & ADATASPACE_TRANSFER_MASK) {
+    // SMPTE 170M and BT.709 are the same transfer function.
+    case ADATASPACE_TRANSFER_SMPTE_170M: out.transfer = ColorTransfer::BT709; break;
+    case ADATASPACE_TRANSFER_SRGB: out.transfer = ColorTransfer::SRGB; break;
+    case ADATASPACE_TRANSFER_ST2084: out.transfer = ColorTransfer::PQ; break;
+    case ADATASPACE_TRANSFER_HLG: out.transfer = ColorTransfer::HLG; break;
+    default: break;
+  }
+  return out;
+}
+
 // Routes one arrived stream image into the repeating stream pool. Caller
 // holds backend.m. Still captures never come through here; they have their
 // own reader and waiter.
@@ -1073,6 +1141,7 @@ void deliver_stream_image_locked(DeviceBackend& backend, AImage* image) {
     layout.format_fourcc = delivered_fourcc;
     layout.width = s->width;
     layout.height = s->height;
+    layout.colorimetry = read_payload_colorimetry(image);
     layout.plane_count = delivered_planes;
     // Camera2 does not surface the colour interpretation here, so this stays
     // UNSPECIFIED and the contract's documented fallback applies.
@@ -1352,6 +1421,7 @@ void on_still_image_available(void* context, AImageReader* reader) {
       item.plane_count = member_planes;
       item.has_timestamp = (timestamp_ns >= 0);
       item.timestamp_ns = timestamp_ns;
+      item.colorimetry = read_payload_colorimetry(image);
       burst->images.push_back(std::move(item));
     } else {
       ++burst->failed_count;
@@ -2021,6 +2091,9 @@ struct Camera2CameraProvider::CapturedMemberFrame {
   uint8_t plane_count = 0;
   bool has_timestamp = false;
   int64_t timestamp_ns = 0;
+  // Declared by the platform at acquisition, carried through because the
+  // AImage is released long before the FrameView is assembled.
+  PayloadColorimetry colorimetry{};
   bool has_facts = false;
   ResultFacts facts{};
 };
@@ -4341,6 +4414,7 @@ bool Camera2CameraProvider::capture_burst_(
     out_frames[i].plane_count = img.plane_count;
     out_frames[i].has_timestamp = img.has_timestamp;
     out_frames[i].timestamp_ns = img.timestamp_ns;
+    out_frames[i].colorimetry = img.colorimetry;
 
     // Pair by sensor timestamp. Positional pairing is only sound for a single
     // capture, where there is nothing to confuse it with; within a real burst
@@ -5228,6 +5302,7 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
         layout.width = job.request.width;
         layout.height = job.request.height;
         layout.plane_count = captured.plane_count;
+        layout.colorimetry = captured.colorimetry;
         const size_t luma_bytes =
             static_cast<size_t>(job.request.width) * job.request.height;
         const uint32_t chroma_rows = (job.request.height + 1u) / 2u;

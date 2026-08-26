@@ -408,6 +408,12 @@ inline bool planar_payload_to_rgba8(const CoreResultPayloadCpu& payload, uint8_t
     return false;
   }
 
+  // Range decides which conversion is correct, and getting it wrong produces a
+  // plausible image rather than a failure. FULL is Camera2's declared answer on
+  // measured hardware (ADATASPACE_JFIF); UNSPECIFIED keeps the documented
+  // limited-range fallback, because absence is not evidence of full range.
+  const bool full_range = (payload.colorimetry.range == ColorRange::FULL);
+
   for (uint32_t y = 0; y < h; ++y) {
     const uint8_t* y_row = y_plane + static_cast<size_t>(y_stride) * y;
     const uint8_t* u_row = u_plane + static_cast<size_t>(u_stride) * (y / 2u);
@@ -415,8 +421,12 @@ inline bool planar_payload_to_rgba8(const CoreResultPayloadCpu& payload, uint8_t
     uint8_t* out = dst + static_cast<size_t>(w) * 4u * y;
     for (uint32_t x = 0; x < w; ++x) {
       const size_t c = static_cast<size_t>(x / 2u) * chroma_sample_stride;
-      const RgbSample s = yuv_to_rgb_bt601_limited(
-          y_row[x], u_row[c + u_byte_offset], v_row[c + v_byte_offset]);
+      const RgbSample s =
+          full_range
+              ? yuv_to_rgb_bt601_full(
+                    y_row[x], u_row[c + u_byte_offset], v_row[c + v_byte_offset])
+              : yuv_to_rgb_bt601_limited(
+                    y_row[x], u_row[c + u_byte_offset], v_row[c + v_byte_offset]);
       out[static_cast<size_t>(x) * 4u + 0u] = s.r;
       out[static_cast<size_t>(x) * 4u + 1u] = s.g;
       out[static_cast<size_t>(x) * 4u + 2u] = s.b;

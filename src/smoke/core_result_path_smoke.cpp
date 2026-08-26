@@ -1317,6 +1317,54 @@ int main() {
     assert(!planar_payload_to_rgba8(bt709, rgba.data()));
   }
 
+  // --- BT.601 FULL range (JFIF) ---------------------------------------------
+  //
+  // Camera2 declares ADATASPACE_JFIF on measured hardware, so full range is a
+  // real payload shape rather than a hypothetical. Two separate things are
+  // asserted: the convertibility gate ADMITS full range -- a provider
+  // declaring the truth must not be what turns its frames UNSUPPORTED -- and
+  // the conversion dispatches to the full-range maths instead of silently
+  // using the limited-range one.
+  {
+    constexpr uint32_t kFW = 2;
+    constexpr uint32_t kFH = 2;
+    CoreResultPayloadCpu p{};
+    p.format_fourcc = FOURCC_NV12;
+    p.width = kFW;
+    p.height = kFH;
+    p.plane_count = 2;
+    p.stride_bytes = kFW;
+    p.colorimetry.range = ColorRange::FULL;
+    p.colorimetry.matrix = ColorMatrix::BT601;
+    const size_t luma = static_cast<size_t>(kFW) * kFH;
+    p.planes[0] = {0, kFW, kFH};
+    p.planes[1] = {luma, kFW, kFH / 2u};
+    p.bytes.assign(luma + static_cast<size_t>(kFW) * (kFH / 2u), 0u);
+
+    // Luma above 235 is the discriminating case: limited-range expansion
+    // clamps it to white, full range passes it through.
+    const uint8_t y = 250;
+    const uint8_t u = 128;
+    const uint8_t v = 128;
+    for (size_t i = 0; i < luma; ++i) {
+      p.bytes[i] = y;
+    }
+    p.bytes[luma + 0] = u;
+    p.bytes[luma + 1] = v;
+
+    const RgbSample full = yuv_to_rgb_bt601_full(y, u, v);
+    const RgbSample limited = yuv_to_rgb_bt601_limited(y, u, v);
+    // The assertion below only means anything if the two disagree here.
+    assert(full.r != limited.r || full.g != limited.g || full.b != limited.b);
+
+    std::vector<uint8_t> rgba(luma * 4u, 0u);
+    assert(planar_payload_to_rgba8(p, rgba.data()));
+    assert(rgba[0] == full.r);
+    assert(rgba[1] == full.g);
+    assert(rgba[2] == full.b);
+    assert(rgba[3] == 255u);
+  }
+
   // --- NV21 / YV12 chroma order ---------------------------------------------
   //
   // A real Galaxy S20+ delivers NV21, so V-before-U is the common Android case
