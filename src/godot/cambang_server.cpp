@@ -1,6 +1,7 @@
 #include "godot/cambang_server.h"
 #include "godot/cambang_capture_result.h"
 #include "godot/capture_compute_texture.h"
+#include "godot/stream_compute_texture.h"
 #include "godot/cambang_device.h"
 #include "godot/cambang_stream.h"
 #include "godot/cambang_stream_result.h"
@@ -1665,6 +1666,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
   has_godot_counters_ = false;
   CamBANGStreamResult::clear_live_stream_cpu_display_views();
   clear_capture_compute_texture_cache();
+  clear_stream_compute_texture_cache();
   result_access_cost_evidence::clear();
   _clear_live_retained_result_access_calibration_state_();
 
@@ -1704,6 +1706,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
     latest_capture_id_by_device_instance_id_.clear();
     CamBANGStreamResult::clear_live_stream_cpu_display_views();
   clear_capture_compute_texture_cache();
+  clear_stream_compute_texture_cache();
     result_access_cost_evidence::clear();
     _clear_live_retained_result_access_calibration_state_();
 
@@ -1785,6 +1788,7 @@ void CamBANGServer::stop() {
   }
   CamBANGStreamResult::clear_live_stream_cpu_display_views();
   clear_capture_compute_texture_cache();
+  clear_stream_compute_texture_cache();
   synthetic_gpu_backing_drain_render_releases_before_stop();
   drain_live_cpu_display_bridge_before_stop();
   result_access_cost_evidence::clear();
@@ -2227,6 +2231,7 @@ godot::Error CamBANGServer::destroy_direct_stream_handle(
   const godot::Error rc = map_try_destroy_stream_status(status);
   if (rc == godot::OK) {
     CamBANGStreamResult::remove_live_stream_cpu_display_view(stream_id);
+    remove_stream_compute_textures(stream_id);
     direct_stream_hardware_id_by_stream_id_.erase(it);
   } else if (status == TryDestroyStreamStatus::Started) {
     ERR_PRINT("CamBANGServer: destroy_stream rejected because stream is started; call stop() before destroy().");
@@ -3390,6 +3395,7 @@ bool CamBANGServer::_consume_latest_core_snapshot() {
       }
       godot_gpu_display_invalidate_stream(prior_stream.stream_id);
       CamBANGStreamResult::remove_live_stream_cpu_display_view(prior_stream.stream_id);
+      remove_stream_compute_textures(prior_stream.stream_id);
     }
   }
 
@@ -4215,6 +4221,7 @@ godot::Dictionary CamBANGServer::get_result_access_timing_evidence() const {
   godot::Dictionary d = result_access_cost_evidence::snapshot();
   d["capture_materializations"] = capture_materialization_stats();
   d["capture_compute_textures"] = capture_compute_texture_metrics();
+  d["stream_compute_textures"] = stream_compute_texture_metrics();
   return d;
 }
 

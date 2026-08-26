@@ -19,6 +19,8 @@
 #include "godot/cambang_result_convert.h"
 #include "godot/cambang_server.h"
 #include "godot/godot_gpu_display_service.h"
+#include "godot/colorimetry_convert.h"
+#include "godot/stream_compute_texture.h"
 #include "godot/result_access_cost_evidence.h"
 #include "godot/cambang_stream_result_internal.h"
 
@@ -529,6 +531,29 @@ godot::Dictionary CamBANGStreamResult::get_image_properties_provenance() const {
   return has_image_properties() ? to_dict(data_->facts.image_properties_provenance) : godot::Dictionary();
 }
 
+int CamBANGStreamResult::can_get_compute_texture() const {
+  return static_cast<int>(stream_compute_texture_support(data_));
+}
+
+int CamBANGStreamResult::get_compute_texture_plane_count() const {
+  return static_cast<int>(stream_compute_texture_plane_count(data_));
+}
+
+godot::Ref<godot::Texture2D> CamBANGStreamResult::get_compute_texture_plane(
+    int plane_index) const {
+  if (!data_ || plane_index < 0) {
+    return {};
+  }
+  return stream_compute_texture_plane(data_, static_cast<uint32_t>(plane_index));
+}
+
+godot::Dictionary CamBANGStreamResult::get_colorimetry() const {
+  if (!data_) {
+    return godot::Dictionary();
+  }
+  return colorimetry_to_dict(data_->payload.colorimetry);
+}
+
 int CamBANGStreamResult::can_get_display_view() const {
   if (!data_) {
     return CAPABILITY_UNSUPPORTED;
@@ -788,6 +813,11 @@ void CamBANGStreamResult::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_image_properties"), &CamBANGStreamResult::get_image_properties);
 
   godot::ClassDB::bind_method(godot::D_METHOD("get_image_properties_provenance"), &CamBANGStreamResult::get_image_properties_provenance);
+
+  godot::ClassDB::bind_method(godot::D_METHOD("can_get_compute_texture"), &CamBANGStreamResult::can_get_compute_texture);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_compute_texture_plane_count"), &CamBANGStreamResult::get_compute_texture_plane_count);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_compute_texture_plane", "plane_index"), &CamBANGStreamResult::get_compute_texture_plane);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_colorimetry"), &CamBANGStreamResult::get_colorimetry);
 
   godot::ClassDB::bind_method(godot::D_METHOD("can_get_display_view"), &CamBANGStreamResult::can_get_display_view);
   godot::ClassDB::bind_method(godot::D_METHOD("can_to_image"), &CamBANGStreamResult::can_to_image);

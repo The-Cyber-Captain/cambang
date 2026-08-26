@@ -46,6 +46,18 @@ public:
 
   godot::Dictionary get_image_properties_provenance() const;
 
+  // Stream Compute Texture -- an additional, deliberately rawer surface than
+  // get_display_view(), not a replacement for it. Frame-frozen and plane-wise;
+  // see stream_compute_texture.h.
+  int can_get_compute_texture() const;
+  int get_compute_texture_plane_count() const;
+  godot::Ref<godot::Texture2D> get_compute_texture_plane(int plane_index) const;
+
+  // Colour interpretation of the planes above, as the provider declared it.
+  // A caller doing its own Y'CbCr maths needs this, and "declared" tells it
+  // whether CamBANG was told or is simply unaware.
+  godot::Dictionary get_colorimetry() const;
+
   int can_get_display_view() const;
   int can_to_image() const;
 
