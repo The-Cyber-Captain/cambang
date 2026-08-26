@@ -1,5 +1,6 @@
 #include "godot/stream_compute_texture.h"
 
+#include <chrono>
 #include <deque>
 #include <map>
 #include <mutex>
@@ -13,9 +14,17 @@
 
 #include "godot/cambang_result_convert.h"
 #include "godot/compute_texture_planes.h"
+#include "godot/result_access_cost_evidence.h"
 
 namespace cambang {
 namespace {
+
+// Same clock the other result-access paths measure with, so the three routes
+// are directly comparable.
+uint64_t access_now_ns() {
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
+}
 
 // A GPU device is what makes any of this possible. Under the Compatibility
 // renderer there is no RenderingDevice, so there is nowhere to put a texture
@@ -112,20 +121,38 @@ uint32_t stream_compute_texture_plane_count(const SharedStreamResultData& data) 
 godot::Ref<godot::Texture2D> stream_compute_texture_plane(
     const SharedStreamResultData& data,
     uint32_t plane_index) {
+  // Measured through the same cost-evidence machinery as get_display_view()
+  // and to_image(), so the three are comparable rather than each having its own
+  // notion of what a measurement is.
+  const uint64_t begin_ns = access_now_ns();
+  const ResultCapability reported = stream_compute_texture_support(data);
   const uint32_t plane_count = stream_compute_texture_plane_count(data);
   if (plane_count == 0 || plane_index >= plane_count) {
+    result_access_cost_evidence::record_stream_access(
+        result_access_cost_evidence::kRouteStreamAccessUnsupported, data,
+        access_now_ns() - begin_ns, false,
+        ResultCapability::UNSUPPORTED);
     return {};
   }
 
   const CacheKey key{data->stream_id, data->device_instance_id,
                      data->retained_frame_id, plane_index};
+  godot::Ref<godot::Texture2D> cached;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     const auto it = g_cache.find(key);
     if (it != g_cache.end() && it->second.is_valid()) {
       ++g_hits;
-      return it->second;
+      cached = it->second;
     }
+  }
+
+  if (cached.is_valid()) {
+    // Recorded outside the lock, like every other write here.
+    result_access_cost_evidence::record_stream_access(
+        result_access_cost_evidence::kRouteStreamComputeTexturePlaneCached, data,
+        access_now_ns() - begin_ns, true, reported);
+    return cached;
   }
 
   godot::Ref<godot::Texture2D> produced;
@@ -175,6 +202,9 @@ godot::Ref<godot::Texture2D> stream_compute_texture_plane(
   // cache does it: a deferred GPU wrapper's destructor hands work to the
   // render-thread release drain, which is not work to do while holding this.
   dropped.clear();
+  result_access_cost_evidence::record_stream_access(
+      result_access_cost_evidence::kRouteStreamComputeTexturePlaneUpload, data,
+      access_now_ns() - begin_ns, true, reported);
   return produced;
 }
 
