@@ -225,9 +225,14 @@ public:
   }
 
   // Camera2 delivers YUV_420_888, whose concrete member the device decides at
-  // runtime. Both the semi-planar and fully planar members are advertised
-  // because either may arrive and CamBANG converts both; the packed formats
-  // remain available via the provider's own conversion.
+  // runtime. NV12 and I420 name the semi-planar and fully planar FAMILIES
+  // here, not exact guarantees: a planar frame is passed through unconverted
+  // and copy_acquired_image_planar reports whichever member arrived, which on
+  // every handset measured is NV21. (An earlier version of this comment said
+  // CamBANG converts both -- it does not; only the packed formats below are
+  // produced by conversion, and those ARE exact guarantees.) See
+  // pixel_payload_and_result_contract.md 6.3.0, "What a pinned format means
+  // on a camera provider", including the NV21/YV12 asymmetry this leaves.
   ProducerFormatCapabilities stream_format_capabilities(
       const CaptureProfile& profile,
       const PictureConfig& picture) const noexcept override {

@@ -799,6 +799,17 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
 
   std::mutex m;
 
+  // Reader-callback lifetime. AImageReader callbacks run on their OWN thread
+  // holding a raw reader pointer, and teardown deletes those readers.
+  // Nothing in a callback keeps its reader alive -- the weak_ptr it locks
+  // covers this backend, not the reader -- and backend.m does not help,
+  // because teardown deletes outside it. Deletion therefore waits for
+  // callbacks to leave: see ReaderCallbackGuard/Quiesce below.
+  std::mutex reader_cb_mutex;
+  std::condition_variable reader_cb_idle;
+  uint32_t reader_cb_inflight = 0;
+  bool readers_closing = false;
+
   ACameraDevice* device = nullptr;
   ACameraCaptureSession* session = nullptr;
   ACaptureSessionOutputContainer* output_container = nullptr;
@@ -809,6 +820,14 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   AImageReader* still_reader = nullptr;
   ANativeWindow* stream_window = nullptr;
   ANativeWindow* still_window = nullptr;
+
+  // Declared colour interpretation of each window's buffers, latched when
+  // the session is realized and read by the reader callbacks. Atomic because
+  // the callbacks read it without backend.m; ADATASPACE_UNKNOWN until set.
+  std::atomic<int32_t> stream_dataspace{0};
+  std::atomic<int32_t> still_dataspace{0};
+  std::atomic<uint32_t> stream_dataspace_attempts{0};
+  std::atomic<uint32_t> still_dataspace_attempts{0};
   ACameraOutputTarget* stream_target = nullptr;
   ACaptureRequest* repeating_request = nullptr;
 
@@ -939,6 +958,82 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   }
 };
 
+// A reader callback does bounded per-frame work, so this only has to outlast
+// the slowest one -- it is not sized for any camera operation.
+constexpr int kReaderCallbackDrainMs = 500;
+
+// Marks one reader callback as in-flight for as long as it may touch its
+// AImageReader. entered() is false once teardown has begun, and a callback that
+// is not entered MUST return without calling anything on `reader`.
+//
+// This covers callbacks already RUNNING when teardown starts. It cannot cover
+// one still queued on the reader's looper, which arrives afterwards -- each
+// callback also checks reader identity under backend.m for that.
+class ReaderCallbackGuard {
+ public:
+  explicit ReaderCallbackGuard(DeviceBackend& backend) : backend_(&backend) {
+    std::lock_guard<std::mutex> lk(backend_->reader_cb_mutex);
+    if (backend_->readers_closing) {
+      return;
+    }
+    ++backend_->reader_cb_inflight;
+    entered_ = true;
+  }
+  ~ReaderCallbackGuard() {
+    if (!entered_) {
+      return;
+    }
+    bool idle = false;
+    {
+      std::lock_guard<std::mutex> lk(backend_->reader_cb_mutex);
+      idle = (--backend_->reader_cb_inflight == 0);
+    }
+    if (idle) {
+      backend_->reader_cb_idle.notify_all();
+    }
+  }
+  bool entered() const { return entered_; }
+
+  ReaderCallbackGuard(const ReaderCallbackGuard&) = delete;
+  ReaderCallbackGuard& operator=(const ReaderCallbackGuard&) = delete;
+
+ private:
+  DeviceBackend* backend_ = nullptr;
+  bool entered_ = false;
+};
+
+// Holds new reader callbacks out and waits for those already inside to leave,
+// so the readers can be deleted. Construct immediately before deleting them.
+//
+// drained() gates the delete instead of the wait being unbounded: a callback
+// that never returns would otherwise hang this control job forever. Leaking one
+// reader is recoverable and logged; aborting the process is neither.
+class ReaderCallbackQuiesce {
+ public:
+  explicit ReaderCallbackQuiesce(DeviceBackend& backend) : backend_(&backend) {
+    std::unique_lock<std::mutex> lk(backend_->reader_cb_mutex);
+    backend_->readers_closing = true;
+    drained_ = backend_->reader_cb_idle.wait_for(
+        lk, std::chrono::milliseconds(kReaderCallbackDrainMs),
+        [this] { return backend_->reader_cb_inflight == 0; });
+  }
+  ~ReaderCallbackQuiesce() {
+    {
+      std::lock_guard<std::mutex> lk(backend_->reader_cb_mutex);
+      backend_->readers_closing = false;
+    }
+    backend_->reader_cb_idle.notify_all();
+  }
+  bool drained() const { return drained_; }
+
+  ReaderCallbackQuiesce(const ReaderCallbackQuiesce&) = delete;
+  ReaderCallbackQuiesce& operator=(const ReaderCallbackQuiesce&) = delete;
+
+ private:
+  DeviceBackend* backend_ = nullptr;
+  bool drained_ = false;
+};
+
 // Frame release leases: FrameView.release must stay valid on any thread and
 // with any provider-side storage teardown ordering, so each posted frame owns
 // its backing through a heap lease (matches SyntheticProvider's pattern).
@@ -1005,22 +1100,85 @@ std::optional<SourcedFact<ImageAcquisitionTiming>> make_acquisition_timing(
 // FULL range -- and expanding full-range data as limited clamps a quarter of
 // the frame. See pixel_payload_and_result_contract.md 6.3.1.
 //
+// The colour interpretation the camera declares, read from an image ONCE per
+// session and cached.
+//
+// Two earlier shapes of this are worth not repeating. Reading it per image
+// aborted the process inside libc ("pthread_mutex_lock called on a destroyed
+// mutex", on the ImageReader thread) on every Quest 3 platform-provider run of
+// scene 870: the call consults the image's reader, and a capture-driven
+// reprovision deletes that reader. Reading the reader's WINDOW instead via
+// ANativeWindow_getBuffersDataSpace avoids that but answers nothing -- measured
+// 2026-08-26 as ADATASPACE_UNKNOWN (0) on all three test handsets (Quest 3,
+// Galaxy S20+, Hammer Construction 2 Thermal), at realize and with frames
+// flowing, because a consumer-side ImageReader window does not carry the
+// producer's dataspace.
+//
+// So the image read stays, and the reader is kept alive underneath it by
+// ReaderCallbackGuard/Quiesce plus the reader-identity check in each callback.
+// Note that backend.m alone does NOT make it safe: the original crashing call
+// was already under that lock, because teardown deletes readers outside it.
+// Once per session also means one exposure per session rather than one per
+// frame -- the dataspace is a property of the stream configuration anyway.
+//
 // AImage_getDataSpace is __INTRODUCED_IN(34) while this provider builds at 26,
 // and clang will not accept a __builtin_available guard for it at that floor,
 // so the symbol is resolved once at runtime. An absent symbol (pre-34 device)
 // or an absent answer both leave the record UNSPECIFIED, which is truthful
-// absence and lets the documented fallback apply rather than substituting a
-// guess here.
-PayloadColorimetry read_payload_colorimetry(AImage* image) {
-  PayloadColorimetry out{};
+// absence and lets the documented fallback apply rather than a guess here.
+int32_t read_image_dataspace(AImage* image) {
   using GetDataSpaceFn = media_status_t (*)(const AImage*, int32_t*);
   static GetDataSpaceFn get_data_space = reinterpret_cast<GetDataSpaceFn>(
       dlsym(RTLD_DEFAULT, "AImage_getDataSpace"));
   if (get_data_space == nullptr || image == nullptr) {
-    return out;
+    return 0;  // ADATASPACE_UNKNOWN
   }
   int32_t dataspace = 0;
   if (get_data_space(image, &dataspace) != AMEDIA_OK) {
+    return 0;
+  }
+  return dataspace < 0 ? 0 : dataspace;
+}
+
+// How many frames a session will ask before it stops asking.
+//
+// The cap is the point. A device can have the symbol and still never declare a
+// value, and an uncapped retry would then call AImage_getDataSpace on EVERY
+// frame for the life of the session -- which is precisely the per-frame
+// exposure the once-per-session design removed. Both devices that do declare
+// (Quest 3, Hammer) latch on the first frame, so a handful is generous.
+constexpr uint32_t kDataspaceLatchAttempts = 8;
+
+// Latches a session's dataspace from an early image. Caller holds backend.m.
+void latch_image_dataspace_locked(std::atomic<int32_t>& cached,
+                                  std::atomic<uint32_t>& attempts, AImage* image,
+                                  uint64_t device_instance_id, const char* which) {
+  if (cached.load(std::memory_order_acquire) != 0 ||
+      attempts.load(std::memory_order_acquire) >= kDataspaceLatchAttempts) {
+    return;
+  }
+  const uint32_t attempt = attempts.fetch_add(1, std::memory_order_acq_rel) + 1;
+  const int32_t dataspace = read_image_dataspace(image);
+  if (dataspace == 0) {
+    if (attempt == kDataspaceLatchAttempts) {
+      log_line("dataspace device=%llu %s: not declared after %u frames; colour "
+               "interpretation stays UNSPECIFIED and the documented fallback applies",
+               static_cast<unsigned long long>(device_instance_id), which,
+               kDataspaceLatchAttempts);
+    }
+    return;  // No claim. Ask again next frame, until the cap.
+  }
+  cached.store(dataspace, std::memory_order_release);
+  log_line("dataspace device=%llu %s=0x%08x latched on frame %u",
+           static_cast<unsigned long long>(device_instance_id), which, dataspace,
+           attempt);
+}
+
+// Maps a declared ADataSpace onto the payload colour record. Pure arithmetic on
+// a value cached per session, so this is safe to call per frame.
+PayloadColorimetry colorimetry_from_dataspace(int32_t dataspace) {
+  PayloadColorimetry out{};
+  if (dataspace == 0) {  // ADATASPACE_UNKNOWN: no claim
     return out;
   }
 
@@ -1141,7 +1299,11 @@ void deliver_stream_image_locked(DeviceBackend& backend, AImage* image) {
     layout.format_fourcc = delivered_fourcc;
     layout.width = s->width;
     layout.height = s->height;
-    layout.colorimetry = read_payload_colorimetry(image);
+    latch_image_dataspace_locked(backend.stream_dataspace,
+                                 backend.stream_dataspace_attempts, image,
+                                 backend.device_instance_id, "stream");
+    layout.colorimetry = colorimetry_from_dataspace(
+        backend.stream_dataspace.load(std::memory_order_acquire));
     layout.plane_count = delivered_planes;
     // Camera2 does not surface the colour interpretation here, so this stays
     // UNSPECIFIED and the contract's documented fallback applies.
@@ -1217,6 +1379,11 @@ void on_stream_image_available(void* context, AImageReader* reader) {
   if (!ctx || !reader) return;
   std::shared_ptr<DeviceBackend> backend = ctx->backend.lock();
   if (!backend) return;
+  // Registered before anything touches `reader`: teardown deletes readers on
+  // another thread. Not entered means teardown owns them now -- leave without
+  // calling into one.
+  ReaderCallbackGuard reader_guard(*backend);
+  if (!reader_guard.entered()) return;
   backend->image_arrived_count.fetch_add(1, std::memory_order_relaxed);
 
   // Frames reach this reader from two different things: a caller's stream, and
@@ -1228,10 +1395,18 @@ void on_stream_image_available(void* context, AImageReader* reader) {
   // line as "the stream traffic sharing this session"; letting pilot stream frames
   // into them would make a device with no stream report stream activity, in
   // exactly the traces used to tell those two cases apart.
+  bool reader_is_current = false;
   const bool has_stream_production = [&] {
     std::lock_guard<std::mutex> bl(backend->m);
+    reader_is_current = (reader == backend->stream_reader);
     return backend->stream != nullptr;
   }();
+  // A callback dispatched from a reader this session has already replaced. The
+  // guard above only covers callbacks already running when teardown began; one
+  // still queued on the old reader's looper arrives after it, and calling into
+  // that reader is a use-after-free. Identity under backend.m is what separates
+  // them, and teardown clears these pointers under the same lock.
+  if (!reader_is_current) return;
 
   // Latest-only: repeating frames are lossy by contract, and taking the
   // newest keeps the preview from lagging behind the sensor when Core is
@@ -1307,6 +1482,20 @@ void on_still_image_available(void* context, AImageReader* reader) {
   if (!ctx || !reader) return;
   std::shared_ptr<DeviceBackend> backend = ctx->backend.lock();
   if (!backend) return;
+  // Registered before anything touches `reader`: teardown deletes readers on
+  // another thread. Not entered means teardown owns them now -- leave without
+  // calling into one.
+  ReaderCallbackGuard reader_guard(*backend);
+  if (!reader_guard.entered()) return;
+  // A callback dispatched from a reader this session has already replaced. The
+  // guard above only covers callbacks already running when teardown began; one
+  // still queued on the old reader's looper arrives after it, and calling into
+  // that reader is a use-after-free. Identity under backend.m is what separates
+  // them, and teardown clears these pointers under the same lock.
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    if (reader != backend->still_reader) return;
+  }
 
   AImage* image = nullptr;
   if (AImageReader_acquireNextImage(reader, &image) != AMEDIA_OK || !image) {
@@ -1377,6 +1566,9 @@ void on_still_image_available(void* context, AImageReader* reader) {
   {
     std::lock_guard<std::mutex> bl(backend->m);
     burst = backend->burst;
+    latch_image_dataspace_locked(backend->still_dataspace,
+                                 backend->still_dataspace_attempts, image,
+                                 backend->device_instance_id, "still");
   }
   if (!burst) {
     // No capture is collecting (a late image from an abandoned burst, or from
@@ -1421,7 +1613,8 @@ void on_still_image_available(void* context, AImageReader* reader) {
       item.plane_count = member_planes;
       item.has_timestamp = (timestamp_ns >= 0);
       item.timestamp_ns = timestamp_ns;
-      item.colorimetry = read_payload_colorimetry(image);
+      item.colorimetry = colorimetry_from_dataspace(
+          backend->still_dataspace.load(std::memory_order_acquire));
       burst->images.push_back(std::move(item));
     } else {
       ++burst->failed_count;
@@ -2900,13 +3093,32 @@ void Camera2CameraProvider::teardown_session_locked_(
         }
         if (stream_output) ACaptureSessionOutput_free(stream_output);
         if (still_output) ACaptureSessionOutput_free(still_output);
+        // Drain callbacks that are already inside before deleting the readers
+        // they hold a raw pointer to. Closing the session above stops NEW frames,
+        // but a callback that already entered will still call into `reader`.
+        // Deleting underneath it aborts the process inside libc with
+        // "pthread_mutex_lock called on a destroyed mutex" on the ImageReader
+        // thread -- observed on Quest 3 at every capture-driven reprovision. Callbacks that arrive
+        // LATER, queued on the old reader's looper, are turned away by the
+        // reader-identity check in each callback instead; the drain cannot see
+        // those, which is why both exist.
+        camera2_detail::ReaderCallbackQuiesce quiesce(*backend);
+        if (!quiesce.drained()) {
+          // Deliberate leak. A callback is still inside after the bound, and
+          // deleting now is exactly the abort this guard exists to prevent.
+          camera2_detail::log_line(
+              "device=%llu reader teardown: callback still in flight after %dms; "
+              "leaking readers rather than deleting underneath one",
+              static_cast<unsigned long long>(backend->device_instance_id),
+              camera2_detail::kReaderCallbackDrainMs);
+        }
         if (stream_reader) {
           AImageReader_setImageListener(stream_reader, nullptr);
-          AImageReader_delete(stream_reader);
+          if (quiesce.drained()) AImageReader_delete(stream_reader);
         }
         if (still_reader) {
           AImageReader_setImageListener(still_reader, nullptr);
-          AImageReader_delete(still_reader);
+          if (quiesce.drained()) AImageReader_delete(still_reader);
         }
       },
       token, kControlJobTimeoutMs);
@@ -3161,13 +3373,32 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
           if (container) ACaptureSessionOutputContainer_free(container);
           if (stream_output) ACaptureSessionOutput_free(stream_output);
           if (still_output) ACaptureSessionOutput_free(still_output);
+          // Drain callbacks that are already inside before deleting the readers
+          // they hold a raw pointer to. Closing the session above stops NEW frames,
+          // but a callback that already entered will still call into `reader`.
+          // Deleting underneath it aborts the process inside libc with
+          // "pthread_mutex_lock called on a destroyed mutex" on the ImageReader
+          // thread -- observed on Quest 3 at the same point, via this unwind. Callbacks that arrive
+          // LATER, queued on the old reader's looper, are turned away by the
+          // reader-identity check in each callback instead; the drain cannot see
+          // those, which is why both exist.
+          camera2_detail::ReaderCallbackQuiesce quiesce(*backend);
+          if (!quiesce.drained()) {
+            // Deliberate leak. A callback is still inside after the bound, and
+            // deleting now is exactly the abort this guard exists to prevent.
+            camera2_detail::log_line(
+                "device=%llu reader teardown: callback still in flight after %dms; "
+                "leaking readers rather than deleting underneath one",
+                static_cast<unsigned long long>(backend->device_instance_id),
+                camera2_detail::kReaderCallbackDrainMs);
+          }
           if (stream_reader) {
             AImageReader_setImageListener(stream_reader, nullptr);
-            AImageReader_delete(stream_reader);
+            if (quiesce.drained()) AImageReader_delete(stream_reader);
           }
           if (still_reader) {
             AImageReader_setImageListener(still_reader, nullptr);
-            AImageReader_delete(still_reader);
+            if (quiesce.drained()) AImageReader_delete(still_reader);
           }
         };
 
@@ -3316,6 +3547,14 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
           backend->still_reader = still_reader;
           backend->stream_window = stream_window;
           backend->still_window = still_window;
+          // Deliberately NOT read here. A window reports ADATASPACE_UNKNOWN
+          // until its producer has queued a buffer, so a realize-time read is
+          // always 0 (measured on Quest 3); the reader callbacks latch it on
+          // first frame instead. Reset so a rebuilt session re-latches.
+          backend->stream_dataspace.store(0, std::memory_order_release);
+          backend->still_dataspace.store(0, std::memory_order_release);
+          backend->stream_dataspace_attempts.store(0, std::memory_order_release);
+          backend->still_dataspace_attempts.store(0, std::memory_order_release);
           backend->stream_output = stream_output;
           backend->still_output = still_output;
           backend->output_container = container;
