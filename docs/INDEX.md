@@ -101,6 +101,7 @@ canonical rules.
 | frame_sinks.md | Describes frame sink types and responsibilities. |
 | imaging_spec_seam.md | Locks `ImagingSpec` as the retained cross-camera / imaging-subsystem capability seam used for Core admission and validation truth. |
 | pixel_payload_and_result_contract.md | Defines the multi-representation payload/result contract for release-facing stream and capture paths. |
+| stream_compute_texture_integration.md | Integrator-facing guide to the stream compute-texture plane surface. Derived from `pixel_payload_and_result_contract.md` 11.6.2 / 6.2 / 6.3.0; defines nothing of its own. |
 | synthetic_timeline_scenarios.md | Fixes scenario terminology and ownership boundaries for SyntheticProvider timeline work. |
 | synthetic_picture_appearance_in_scenarios.md | Defines scenario-authored synthetic appearance/state boundaries for timeline replay. |
 | pattern_module.md | Explains the deterministic pattern generator module used for testing and diagnostics. |
@@ -126,6 +127,8 @@ For release-facing image/result architecture, read:
 1. frame_sinks.md (internal sink boundary and current result-oriented split)
 2. pixel_payload_and_result_contract.md (payload kinds, ownership, retention, and materialization)
 3. naming.md (public result vocabulary and Godot-facing terminology)
+4. stream_compute_texture_integration.md (how a Godot consumer uses the stream plane surface;
+   written for integrators outside this repository, and subordinate to 2 above)
 
 ### Roles of current supplements include:
 

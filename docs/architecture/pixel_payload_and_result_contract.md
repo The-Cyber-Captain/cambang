@@ -263,6 +263,34 @@ image that is plausible and incorrect, which is worse than a failure.
 concrete value must choose its fallback explicitly; it must not silently treat
 `UNSPECIFIED` as any particular colour space.
 
+### Who applies colorimetry, and who must apply it themselves
+
+`to_image()` and the CPU display view apply it for you: `planar_payload_to_rgba8`
+selects full- or limited-range conversion from `payload.colorimetry.range`. A
+caller on those paths gets correct colour without doing anything.
+
+The compute-texture plane surface does not, and cannot. It hands over the frame's
+native planes precisely so the caller can convert in its own shader, which means
+the caller must make the same decision CamBANG makes internally -- branch on
+`get_colorimetry()["range"]`, and choose an explicit fallback when `declared` is
+false. The information needed is present; nothing enforces its use.
+
+A declaration is truthful for the source that made it and is NOT portable
+between sources. Measured 2026-08-27 on the same call:
+
+| Source | range | matrix | transfer | primaries | declared |
+|---|---|---|---|---|---|
+| SyntheticProvider | limited | bt601 | srgb | bt709 | true |
+| Camera2, Quest 3 / Hammer (API 34) | full | bt601 | bt709 | unspecified | true |
+| Camera2, Galaxy S20+ (API < 34) | unspecified | unspecified | unspecified | unspecified | false |
+
+All three are correct. Synthetic really does generate limited-range BT.601; the
+Quest camera really does deliver full range; the S20+ really cannot say. The
+hazard is not disagreement, it is **calibrating a shader against whichever source
+a developer happens to build against** -- typically Synthetic -- and shipping it
+to the others. Synthetic's declaration is representative of Synthetic and of no
+camera. Read colorimetry at runtime; do not bake it in.
+
 ## 6.3 Native format capability and selection
 
 Providers declare the formats they can emit **without converting**, in their own
@@ -315,6 +343,33 @@ pattern preset and seed, so it belongs in `PictureConfig` with the rest of the
 synthetic appearance controls rather than in a hardware-facing profile.
 Pinning a format is meaningful for Synthetic in a way it is not for a camera.
 
+#### What a pinned format means on a camera provider
+
+Naming a 4:2:0 member selects the **family**, not the member. Camera2 can only
+open an `AImageReader` as `AIMAGE_FORMAT_YUV_420_888`, whose concrete memory
+layout the device chooses at runtime -- there is no NDK format that pins NV12.
+The provider passes that layout through unconverted and reports what arrived, so
+a stream pinned to NV12 is delivered as NV21 on every handset measured (Quest 3,
+Galaxy S20+, Hammer Construction 2 Thermal, 2026-08-26).
+
+`CamBANGStreamResult.get_format()` is therefore authoritative for what a caller
+actually holds, and `CamBANGStream.get_requested_format()` returns what was
+asked for so the two can be compared at setup rather than discovered as a
+swapped chroma order inside someone's shader.
+
+Packed pins behave differently, and the difference is not arbitrary: a provider
+that converts honours them exactly. Camera2 converts YUV to RGBA/BGRA, so a
+packed pin IS a guarantee. `format_fourcc` thus means three things by context --
+an exact guarantee for packed formats, a family selection for 4:2:0 members, and
+an exact instruction to a generator per the Synthetic exception above.
+
+Known wart, recorded rather than fixed: the advertisement names each family by
+a single member. Camera2 advertises NV12 and I420 only, so a pin of NV21 or YV12
+is rejected at `create_stream` -- even though NV21 is precisely what these
+devices deliver. Widening the advertised set to all four members would make
+family pins symmetric and changes no selection behaviour, since selection takes
+the first usable entry.
+
 ### 6.3.1 Current implementation status
 
 Recorded so a declared-but-unimplemented kind stays distinguishable from a
@@ -356,8 +411,9 @@ One gap this table makes visible:
   order, and the retained payload carries the delivered FourCC, so payload
   truth is correct. The stream *profile* still records the requested tag, so
   profile and payload can name different formats for the same stream.
-- **The BT.601-*limited* conversion fallback is measured WRONG on at least one
-  Camera2 device, and neither platform provider declares colorimetry at all.**
+- **The BT.601-*limited* conversion fallback was measured WRONG on at least one
+  Camera2 device, which then declared no colorimetry at all. RESOLVED for
+  API-34+ Camera2 devices; see the resolution note at the end of this bullet.**
   `is_convertible_colorimetry` resolves absence to BT.601 limited, and its
   source comment claimed that is "what both current targets deliver for 8-bit
   4:2:0". For Camera2 that is false on the hardware measured.
@@ -387,6 +443,18 @@ One gap this table makes visible:
     from the dataspace, leaving the fallback for genuinely unknown cases.
   - `AImage_getDataSpace` is `__INTRODUCED_IN(34)`. Devices below API 34 cannot
     be queried this way, and what the fallback should be *there* remains open.
+
+  **Resolution (2026-08-27).** The Camera2 provider now populates
+  `PayloadColorimetry` from the dataspace, read ONCE per session from an early
+  image and cached, capped at 8 attempts so a device that has the symbol but
+  never declares cannot pull the call back onto every frame. The read is
+  guarded by the reader-callback drain and the reader-identity check, because
+  a per-frame version of it aborted the process during session rebuild.
+  Measured after the change: Quest 3 and Hammer latch `0x08c20000`
+  (`ADATASPACE_JFIF`) on the first frame; the Galaxy S20+ is below API 34, the
+  symbol is absent, and the record stays UNSPECIFIED with the documented
+  fallback applying. So colour fidelity is API-tier dependent, and
+  `declared` is the only signal a caller gets for which tier it is on.
 
 Pixel format is independent of pattern content. The synthetic stream render
 spec is packed RGBA8 regardless of the requested profile format, and format
@@ -1568,7 +1636,8 @@ an absent entry means "not implemented yet", never "excluded by design".
   consequence is worth stating plainly: the whole GPU-primary tier -- the
   retained backing descriptor, the display bridge, and the `READY`
   compute-texture row that wraps rather than uploads -- has only ever executed
-  against Synthetic frames. Scene 870's `gpu_only` producer output form is a
+  against Synthetic frames. That `READY` row is the capture surface's (11.6.1);
+  the stream surface deliberately has none, for the reason given in 11.6.2. Scene 870's `gpu_only` producer output form is a
   synthetic-only knob, and the matrix runner's `-ProviderOutputForms` axis
   cannot drive a platform-backed provider into it.
 - **On Android the bytes arrive in GPU-capable memory and are copied out of
@@ -1613,6 +1682,73 @@ an absent entry means "not implemented yet", never "excluded by design".
   Compatibility the absence of a RenderingDevice is reported rather than
   treated as a failure. With the fix reverted the same assertion fails with
   `rd_rid=0`.
+
+### 11.6.2 Stream Compute Texture
+
+The stream counterpart of 11.6.1. It is **additional to** `get_display_view()`,
+not a replacement: the two answer different needs and coexist on the same
+result.
+
+`CamBANGStreamResult.can_get_compute_texture()`,
+`get_compute_texture_plane_count()`, `get_compute_texture_plane(plane_index)`,
+`get_colorimetry()`.
+
+Planes are the frame's native planes and are never converted, for the reason
+measured in 4d12d67: for a planar frame the CPU conversion is ~97% of the cost
+of producing a texture and the upload ~3%. A caller wanting RGB converts in its
+own shader, where it also controls colour handling -- which is why the declared
+colorimetry is reported alongside, and why that caller carries an obligation
+the `to_image()` caller does not (6.2, "Who applies colorimetry, and who must
+apply it themselves").
+
+**Frozen, unlike the display view.** A plane belongs to one retained frame and
+never changes; the cache is keyed on `retained_frame_id`, so a newer frame
+yields distinct texture objects rather than the same object with new pixels.
+The live CPU display view is deliberately the opposite -- one texture per
+`stream_id`, refreshed in place. The freeze is what lets a caller pair pixels
+with that frame's acquisition mark; an aliased texture would give a mark from
+one frame against the pixels of another, with nothing in the API to reveal it.
+`get_result()` returns a fresh result per call, so polling still sees every
+frame: the freeze applies to a result a caller holds, not to the stream.
+
+**No READY row, unlike 11.6.1.** A stream's `retained_gpu_backing` is
+stream-owned live backing updated in place, not frozen per-frame GPU artifact
+identity, so wrapping it would return an aliased texture from a surface whose
+whole contract is that it is frozen. A GPU-only stream frame is therefore
+UNSUPPORTED here; a GPU-primary frame with a current CPU sidecar is served from
+the sidecar. This costs nothing today -- both platform providers advertise
+CPU-only -- and becomes a real gap when the GPU-fill payload path lands.
+
+**The renderer requirement is 11.6.1's, unchanged and for the same reason.**
+The surface needs a RenderingDevice, so under the Compatibility renderer it
+reports UNSUPPORTED -- the correct answer, not a failure, exactly as the
+capture matrix records for `Windows | headless, Compatibility` and as scene 70
+asserts for the display-view RID route. Compatibility is the reasonable default
+for a project to declare and the Android default export launches
+`gl_compatibility`, so exercising this surface requires
+`--rendering-method=mobile` just as the capture GPU rows do. A run without it
+verdicts `expected_unsupported`, which is why such a run verifies nothing about
+this surface and must not be read as covering it.
+
+**Measured 2026-08-27**, scene 572 under `--rendering-method=mobile`:
+
+| Target | Provider | Support | Planes | Delivered | Colorimetry |
+| --- | --- | --- | --- | --- | --- |
+| Quest 3 | platform | EXPENSIVE | 2 | NV21 | full / bt601 / bt709, declared |
+| Galaxy S20+ | platform | EXPENSIVE | 2 | NV21 | undeclared (pre-API-34) |
+| Hammer Construction 2 Thermal | platform | EXPENSIVE | 2 | NV21 | full / bt601 / bt709, declared |
+| Windows | synthetic | EXPENSIVE | 2 | NV12 | limited / bt601 / srgb, declared |
+
+Never CHEAP: producing a plane is a full-frame copy, and 11.2 gives that as the
+worked example of EXPENSIVE. Every platform row delivers NV21 while the
+synthetic row honours a pinned NV12 -- the family-selection behaviour of 6.3.0.
+
+Scene 572 is the verifier. It asserts capability honesty, plane count against
+the *delivered* format, plane materialisation and out-of-range refusal, the
+freeze in both directions (a held result keeps its textures; a newer frame
+produces distinct ones), requested-versus-delivered format, colorimetry
+stability across frames within a session, and -- on synthetic, which owns its
+own pixels -- that a declared range matches the actual luma statistics.
 
 ## 11.7 Access-cost evidence guardrail
 
