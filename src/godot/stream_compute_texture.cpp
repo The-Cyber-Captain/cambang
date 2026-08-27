@@ -1,11 +1,8 @@
 #include "godot/stream_compute_texture.h"
 
+#include <atomic>
 #include <chrono>
-#include <deque>
-#include <map>
-#include <mutex>
 #include <utility>
-#include <vector>
 
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/image_texture.hpp>
@@ -44,40 +41,17 @@ bool stream_has_packed_source(const CoreStreamResultData& data) {
          retained_cpu_payload_is_packed_readable(data.payload);
 }
 
-// Frame identity, not stream identity. See the header: keying on stream_id
-// alone would serve a previous frame's pixels for the current frame's mark.
-struct CacheKey {
-  uint64_t stream_id = 0;
-  uint64_t device_instance_id = 0;
-  uint64_t retained_frame_id = 0;
-  uint32_t plane_index = 0;
-
-  bool operator<(const CacheKey& other) const noexcept {
-    if (stream_id != other.stream_id) return stream_id < other.stream_id;
-    if (device_instance_id != other.device_instance_id) {
-      return device_instance_id < other.device_instance_id;
-    }
-    if (retained_frame_id != other.retained_frame_id) {
-      return retained_frame_id < other.retained_frame_id;
-    }
-    return plane_index < other.plane_index;
-  }
-};
-
-// Bounded on purpose, and smaller than the capture cache relative to its churn:
-// a stream replaces its retained frame every frame, so entries go stale fast and
-// the cache exists only so that several plane requests against ONE frame do not
-// each re-upload. It is not a retention mechanism. Dropping an entry is always
-// safe because a caller holding the Ref keeps its texture alive independently --
-// eviction costs a later re-upload, never a dangling texture.
-constexpr size_t kMaxCachedStreamComputeTextures = 12;
-
-std::mutex g_mutex;
-std::map<CacheKey, godot::Ref<godot::Texture2D>> g_cache;
-std::deque<CacheKey> g_insertion_order;
-uint64_t g_uploads = 0;
-uint64_t g_hits = 0;
-uint64_t g_uploaded_bytes = 0;
+// No cache lives here any more. Plane textures are held by the
+// CamBANGStreamResult that produced them, because that object IS the identity
+// a cache would have to key on: stream, device and retained frame. See the
+// comment on CamBANGStreamResult::compute_texture_planes_ for what the global
+// FIFO that used to be here cost and why it never paid for itself.
+//
+// These counters remain because they are cheap and answer a real question:
+// how often a caller re-requests a plane it is already holding.
+std::atomic<uint64_t> g_uploads{0};
+std::atomic<uint64_t> g_hits{0};
+std::atomic<uint64_t> g_uploaded_bytes{0};
 
 } // namespace
 
@@ -135,26 +109,6 @@ godot::Ref<godot::Texture2D> stream_compute_texture_plane(
     return {};
   }
 
-  const CacheKey key{data->stream_id, data->device_instance_id,
-                     data->retained_frame_id, plane_index};
-  godot::Ref<godot::Texture2D> cached;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    const auto it = g_cache.find(key);
-    if (it != g_cache.end() && it->second.is_valid()) {
-      ++g_hits;
-      cached = it->second;
-    }
-  }
-
-  if (cached.is_valid()) {
-    // Recorded outside the lock, like every other write here.
-    result_access_cost_evidence::record_stream_access(
-        result_access_cost_evidence::kRouteStreamComputeTexturePlaneCached, data,
-        access_now_ns() - begin_ns, true, reported);
-    return cached;
-  }
-
   godot::Ref<godot::Texture2D> produced;
   uint64_t uploaded_bytes = 0;
 
@@ -181,81 +135,41 @@ godot::Ref<godot::Texture2D> stream_compute_texture_plane(
     return {};
   }
 
-  std::vector<godot::Ref<godot::Texture2D>> dropped;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    ++g_uploads;
-    g_uploaded_bytes += uploaded_bytes;
-    g_cache[key] = produced;
-    g_insertion_order.push_back(key);
-    while (g_insertion_order.size() > kMaxCachedStreamComputeTextures) {
-      const CacheKey oldest = g_insertion_order.front();
-      g_insertion_order.pop_front();
-      const auto it = g_cache.find(oldest);
-      if (it != g_cache.end()) {
-        dropped.push_back(std::move(it->second));
-        g_cache.erase(it);
-      }
-    }
-  }
-  // Evicted refs are released after the lock, for the same reason the capture
-  // cache does it: a deferred GPU wrapper's destructor hands work to the
-  // render-thread release drain, which is not work to do while holding this.
-  dropped.clear();
+  g_uploads.fetch_add(1, std::memory_order_relaxed);
+  g_uploaded_bytes.fetch_add(uploaded_bytes, std::memory_order_relaxed);
   result_access_cost_evidence::record_stream_access(
       result_access_cost_evidence::kRouteStreamComputeTexturePlaneUpload, data,
       access_now_ns() - begin_ns, true, reported);
   return produced;
 }
 
-void remove_stream_compute_textures(uint64_t stream_id) {
-  // Called where the other per-stream Godot-side caches are dropped. Without
-  // it a destroyed stream's textures stay resident until later entries push
-  // them out -- bounded, but holding GPU memory for a stream that no longer
-  // exists, and inconsistent with how the live display view is handled.
-  std::vector<godot::Ref<godot::Texture2D>> dropped;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    for (auto it = g_cache.begin(); it != g_cache.end();) {
-      if (it->first.stream_id == stream_id) {
-        dropped.push_back(std::move(it->second));
-        it = g_cache.erase(it);
-      } else {
-        ++it;
-      }
-    }
-    std::deque<CacheKey> kept;
-    for (const CacheKey& k : g_insertion_order) {
-      if (k.stream_id != stream_id) {
-        kept.push_back(k);
-      }
-    }
-    g_insertion_order.swap(kept);
-  }
-  // Released outside the lock, for the same reason eviction is.
-  dropped.clear();
+void stream_compute_texture_note_cached_plane(const SharedStreamResultData& data) {
+  // A plane the caller already holds, returned from the result's own storage.
+  // Recorded so `hits` still means what it always meant -- a re-request that
+  // cost no upload -- now that the holding is done by the result rather than
+  // by a cache here.
+  g_hits.fetch_add(1, std::memory_order_relaxed);
+  result_access_cost_evidence::record_stream_access(
+      result_access_cost_evidence::kRouteStreamComputeTexturePlaneCached, data,
+      0, true, ResultCapability::EXPENSIVE);
 }
 
 void clear_stream_compute_texture_cache() {
-  std::map<CacheKey, godot::Ref<godot::Texture2D>> dropped;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    dropped.swap(g_cache);
-    g_insertion_order.clear();
-    g_uploads = 0;
-    g_hits = 0;
-    g_uploaded_bytes = 0;
-  }
-  dropped.clear();
+  // Nothing to free: the textures belong to the results that produced them and
+  // go when those go. The name is kept because this is called beside the other
+  // per-runtime cache resets on stop/restart, and the counters must reset with
+  // them or a new session inherits the last one's totals.
+  g_uploads.store(0, std::memory_order_relaxed);
+  g_hits.store(0, std::memory_order_relaxed);
+  g_uploaded_bytes.store(0, std::memory_order_relaxed);
 }
 
 godot::Dictionary stream_compute_texture_metrics() {
   godot::Dictionary out;
-  std::lock_guard<std::mutex> lock(g_mutex);
-  out["uploads"] = static_cast<int64_t>(g_uploads);
-  out["hits"] = static_cast<int64_t>(g_hits);
-  out["entries"] = static_cast<int64_t>(g_cache.size());
-  out["uploaded_bytes"] = static_cast<int64_t>(g_uploaded_bytes);
+  out["uploads"] = static_cast<int64_t>(g_uploads.load(std::memory_order_relaxed));
+  out["hits"] = static_cast<int64_t>(g_hits.load(std::memory_order_relaxed));
+  out["uploaded_bytes"] =
+      static_cast<int64_t>(g_uploaded_bytes.load(std::memory_order_relaxed));
   return out;
 }
 

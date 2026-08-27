@@ -9,7 +9,7 @@ void CamBANGStream::_register_with_server_() {
     return;
   }
   server_->register_tracked_stream_wrapper_(
-      static_cast<uint64_t>(godot::Object::get_instance_id()));
+      static_cast<uint64_t>(godot::Object::get_instance_id()), stream_id_);
 }
 
 void CamBANGStream::_set_result_live_from_server_(bool live) {
@@ -58,6 +58,7 @@ godot::Ref<CamBANGStreamResult> CamBANGStream::get_result() const {
 
 void CamBANGStream::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_stream_id"), &CamBANGStream::get_stream_id);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_requested_format"), &CamBANGStream::get_requested_format);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device_instance_id"), &CamBANGStream::get_device_instance_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_hardware_id"), &CamBANGStream::get_hardware_id);
   godot::ClassDB::bind_method(godot::D_METHOD("is_result_live"), &CamBANGStream::is_result_live);

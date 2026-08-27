@@ -47,31 +47,29 @@ ResultCapability stream_compute_texture_support(const SharedStreamResultData& da
 // unsupported.
 uint32_t stream_compute_texture_plane_count(const SharedStreamResultData& data);
 
-// One plane, produced on first request and cached against the retained frame it
-// came from. Null when unsupported, out of range, or production fails.
+// One plane, produced fresh on every call. Null when unsupported, out of
+// range, or production fails.
 //
-// The cache keys on retained_frame_id, not merely on stream_id: a stream
-// replaces its retained frame constantly, and a key that ignored the frame
-// would hand back a texture of a previous one -- silently, and with the
-// caller's acquisition mark saying otherwise.
-//
-// The returned Ref keeps the texture alive on its own, so an eviction never
-// invalidates a texture a caller still holds; it only means the next request
-// pays again.
+// This does NOT cache. CamBANGStreamResult holds the planes it produced, for
+// as long as a caller holds that result -- see its compute_texture_planes_
+// member. Caching here would have to be keyed on stream, device and retained
+// frame, which is exactly the identity of the result object, so the result is
+// where it belongs and there is no eviction policy or entry cap to get wrong.
 godot::Ref<godot::Texture2D> stream_compute_texture_plane(
     const SharedStreamResultData& data,
     uint32_t plane_index);
 
-// Drops just this stream's entries. Called when a stream is destroyed, where
-// the other per-stream Godot-side caches are dropped.
-void remove_stream_compute_textures(uint64_t stream_id);
+// Records a plane returned from a result's own storage rather than produced.
+// Keeps `hits` meaningful now that the holding happens on the result.
+void stream_compute_texture_note_cached_plane(const SharedStreamResultData& data);
 
-// Dropped on stop/restart, like the other Godot-side caches, so no texture
-// outlives the runtime that produced its pixels.
+// Resets the counters below. Called beside the other per-runtime resets on
+// stop/restart; there are no textures here to free.
 void clear_stream_compute_texture_cache();
 
-// Diagnostic: { uploads, hits, entries, uploaded_bytes }. No gpu_wraps row:
-// this surface has no GPU-wrap path, for the reason given on support() above.
+// Diagnostic: { uploads, hits, uploaded_bytes }. No `entries` row any more --
+// there is no cache to count. No gpu_wraps row either: this surface has no
+// GPU-wrap path, for the reason given on support() above.
 godot::Dictionary stream_compute_texture_metrics();
 
 } // namespace cambang

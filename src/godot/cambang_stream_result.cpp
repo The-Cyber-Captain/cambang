@@ -544,7 +544,23 @@ godot::Ref<godot::Texture2D> CamBANGStreamResult::get_compute_texture_plane(
   if (!data_ || plane_index < 0) {
     return {};
   }
-  return stream_compute_texture_plane(data_, static_cast<uint32_t>(plane_index));
+  const uint32_t index = static_cast<uint32_t>(plane_index);
+  const uint32_t count = stream_compute_texture_plane_count(data_);
+  if (count == 0 || index >= count) {
+    // Still recorded as an access, so an out-of-range request is visible in
+    // the cost evidence rather than silently absent.
+    return stream_compute_texture_plane(data_, index);
+  }
+  if (compute_texture_planes_.size() != count) {
+    compute_texture_planes_.assign(count, godot::Ref<godot::Texture2D>());
+  }
+  if (compute_texture_planes_[index].is_valid()) {
+    stream_compute_texture_note_cached_plane(data_);
+    return compute_texture_planes_[index];
+  }
+  godot::Ref<godot::Texture2D> produced = stream_compute_texture_plane(data_, index);
+  compute_texture_planes_[index] = produced;
+  return produced;
 }
 
 godot::Dictionary CamBANGStreamResult::get_colorimetry() const {
