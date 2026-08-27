@@ -414,23 +414,48 @@ inline bool planar_payload_to_rgba8(const CoreResultPayloadCpu& payload, uint8_t
   // limited-range fallback, because absence is not evidence of full range.
   const bool full_range = (payload.colorimetry.range == ColorRange::FULL);
 
-  for (uint32_t y = 0; y < h; ++y) {
-    const uint8_t* y_row = y_plane + static_cast<size_t>(y_stride) * y;
-    const uint8_t* u_row = u_plane + static_cast<size_t>(u_stride) * (y / 2u);
-    const uint8_t* v_row = v_plane + static_cast<size_t>(v_stride) * (y / 2u);
-    uint8_t* out = dst + static_cast<size_t>(w) * 4u * y;
-    for (uint32_t x = 0; x < w; ++x) {
-      const size_t c = static_cast<size_t>(x / 2u) * chroma_sample_stride;
-      const RgbSample s =
-          full_range
-              ? yuv_to_rgb_bt601_full(
-                    y_row[x], u_row[c + u_byte_offset], v_row[c + v_byte_offset])
-              : yuv_to_rgb_bt601_limited(
-                    y_row[x], u_row[c + u_byte_offset], v_row[c + v_byte_offset]);
-      out[static_cast<size_t>(x) * 4u + 0u] = s.r;
-      out[static_cast<size_t>(x) * 4u + 1u] = s.g;
-      out[static_cast<size_t>(x) * 4u + 2u] = s.b;
-      out[static_cast<size_t>(x) * 4u + 3u] = 255u;
+  // The two loops are written out rather than selecting a converter inside one.
+  //
+  // This is not style. A runtime choice between two converters in the innermost
+  // loop stops either being inlined, and it costs roughly 20% of the whole
+  // conversion -- measured against the pre-change build at -Og on a Galaxy S20+
+  // (+20.9% display view) and a Quest 3 (+9.0%), with the branch as the only
+  // difference. Two attempts to keep a single loop failed: a ternary costs the
+  // inlining, and a generic lambda taking the converter costs it again through
+  // its captures. Each loop below has exactly one callee, which is what lets it
+  // inline; that restored the S20+ to -7.4% and the Quest to +0.7% against
+  // baseline. Do not "simplify" this back into one loop without re-measuring.
+  if (full_range) {
+    for (uint32_t y = 0; y < h; ++y) {
+      const uint8_t* y_row = y_plane + static_cast<size_t>(y_stride) * y;
+      const uint8_t* u_row = u_plane + static_cast<size_t>(u_stride) * (y / 2u);
+      const uint8_t* v_row = v_plane + static_cast<size_t>(v_stride) * (y / 2u);
+      uint8_t* out = dst + static_cast<size_t>(w) * 4u * y;
+      for (uint32_t x = 0; x < w; ++x) {
+        const size_t c = static_cast<size_t>(x / 2u) * chroma_sample_stride;
+        const RgbSample s = yuv_to_rgb_bt601_full(
+            y_row[x], u_row[c + u_byte_offset], v_row[c + v_byte_offset]);
+        out[static_cast<size_t>(x) * 4u + 0u] = s.r;
+        out[static_cast<size_t>(x) * 4u + 1u] = s.g;
+        out[static_cast<size_t>(x) * 4u + 2u] = s.b;
+        out[static_cast<size_t>(x) * 4u + 3u] = 255u;
+      }
+    }
+  } else {
+    for (uint32_t y = 0; y < h; ++y) {
+      const uint8_t* y_row = y_plane + static_cast<size_t>(y_stride) * y;
+      const uint8_t* u_row = u_plane + static_cast<size_t>(u_stride) * (y / 2u);
+      const uint8_t* v_row = v_plane + static_cast<size_t>(v_stride) * (y / 2u);
+      uint8_t* out = dst + static_cast<size_t>(w) * 4u * y;
+      for (uint32_t x = 0; x < w; ++x) {
+        const size_t c = static_cast<size_t>(x / 2u) * chroma_sample_stride;
+        const RgbSample s = yuv_to_rgb_bt601_limited(
+            y_row[x], u_row[c + u_byte_offset], v_row[c + v_byte_offset]);
+        out[static_cast<size_t>(x) * 4u + 0u] = s.r;
+        out[static_cast<size_t>(x) * 4u + 1u] = s.g;
+        out[static_cast<size_t>(x) * 4u + 2u] = s.b;
+        out[static_cast<size_t>(x) * 4u + 3u] = 255u;
+      }
     }
   }
   return true;
