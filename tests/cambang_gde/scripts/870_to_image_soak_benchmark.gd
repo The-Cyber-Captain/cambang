@@ -56,13 +56,12 @@ const EQUIPMENT := {
 				"label": "galaxy_s20_plus",
 				"model_match": "SM-G986U1",
 				"permissions": ["android.permission.CAMERA"],
-				# Stable Camera2 ids (maintainer-supplied): five cameras, with the
-				# device's real concurrent combinations. The rig drives one of them.
+				# Five Camera2 ids; two real concurrent combinations, of which
+				# the rig drives 0+1.
 				"cameras": ["0", "1", "2", "3", "4"],
 				"concurrent_combinations": [["0", "1"], ["0", "3"]],
 				"rig_pair": ["0", "1"],
 			},
-			# hammer_thermal, meta_quest_3: filled after the
 			{
 				# Label is identification only -- device matching keys on
 				# model_match, never on this. Kept short because it is
@@ -71,8 +70,15 @@ const EQUIPMENT := {
 				"label": "hammer_thermal",
 				"model_match": "Hammer_Construction_2_Thermal_5G",
 				"permissions": ["android.permission.CAMERA"],
-				# Stable Camera2 ids (maintainer-supplied): five cameras, with the
-				# device's real concurrent combinations. The rig drives one of them.
+				# Two Camera2 ids and NO concurrency. These empty fields are the
+				# device's verified truth (confirmed on the handset with
+				# Aide-De-Cam, 2026-08-26), NOT an unfilled row -- so do not
+				# populate them speculatively. 870 therefore skips the
+				# whole scene here by design -- the soak needs two cameras live at
+				# once -- and reports status=expected_unsupported with
+				# reason=no_concurrent_combinations:hammer_thermal.
+				# dumpsys media.camera lists five camera devices on this handset;
+				# only 0 and 1 are usable, so do not widen this list from dumpsys.
 				"cameras": ["0", "1"],
 				"concurrent_combinations": [],
 				"rig_pair": [],
@@ -90,13 +96,15 @@ const EQUIPMENT := {
 					"horizonos.permission.HEADSET_CAMERA",
 					"horizonos.permission.AVATAR_CAMERA",
 				],
-				# Stable Camera2 ids (maintainer-supplied): five cameras, with the
-				# device's real concurrent combinations. The rig drives one of them.
+				# Three Camera2 ids: the passthrough pair (50/51) plus the virtual
+				# camera (1), concurrent as a single combination. The rig drives
+				# the passthrough pair.
 				"cameras": ["1", "50", "51"],
 				"concurrent_combinations": [["1", "50", "51"]],
 				"rig_pair": ["50", "51"],
 			},
-			# galaxy_s20_plus proof of concept (each needs a physical plug/unplug).
+			# Further Android handsets are added as one more entry above,
+			# following the galaxy_s20_plus pattern.
 		],
 		"Windows": [
 			{
@@ -179,6 +187,13 @@ const SETTLEMENT_PROBE_SETTLE_TIMEOUT_US := 2500000
 # ~250ms per still measured on the slowest handset here, because expiring this
 # reintroduces the very race it exists to remove.
 const SETTLEMENT_PROBE_DRAIN_TIMEOUT_US := 10000000
+# A drained device can still refuse the next trigger: an empty outstanding set
+# is not a promise of admission, because ERR_BUSY is overloaded and cannot say
+# which condition refused. Measured on a Galaxy S20+ as roughly 1 run in 3
+# failing the whole scene at the last step. Retried within this bound instead.
+# Safe for the recorded benchmark statistics: _freeze_benchmark_metrics() runs
+# at the drain -> trigger transition, before any of this.
+const SETTLEMENT_PROBE_TRIGGER_TIMEOUT_US := 5000000
 const LOAD_PROFILE_HUMAN := "human"
 const LOAD_PROFILE_ELEVATED := "elevated"
 const LOAD_PROFILE_SUPERHUMAN := "superhuman"
@@ -308,6 +323,7 @@ var _acq_probe_drain_deadline_us := 0
 # probe triggered anyway. Recorded rather than hidden: it means the probe's
 # result was taken under the conditions the drain exists to avoid.
 var _acq_probe_drain_expired := false
+var _acq_probe_trigger_deadline_us := 0
 var _acq_probe_settle_deadline_us := 0
 var _acq_probe_bundle_label := ""
 var _acq_probe_required_member_count := 0
@@ -417,11 +433,21 @@ func _bootstrap_from_known_ids(equip: Dictionary, synthetic: bool) -> void:
 	var cameras: Array = equip.get("cameras", [])
 	var combinations: Array = equip.get("concurrent_combinations", [])
 	var rig_pair: Array = equip.get("rig_pair", [])
-	# Fewer than two cameras means the two-device soak cannot run at all -- that
-	# stays a whole-run bail. An absent rig_pair is different: every device-scoped
+	# Two of these are whole-run bails because this scene is a TWO-DEVICE soak
+	# from setup onwards -- it engages both cameras and starts a stream on each
+	# before any phase runs. An absent rig_pair is different: every device-scoped
 	# phase is still valid, so run them and skip only the rig-scoped ones.
 	if cameras.size() < 2:
 		_finish(0, true, "equipment_incomplete:%s" % str(equip.get("label", _provider_arg)))
+		return
+	# No declared concurrency means no two of this device's cameras can be live
+	# at once, so the soak cannot start, let alone run. Skipping the rig is not
+	# enough: a Hammer Construction 2 Thermal gets as far as stream.start() on
+	# device_a and the HAL refuses it (ProviderRejected), which the scene could
+	# only report as status=fail -- indistinguishable from a CamBANG defect when
+	# it is really the hardware premise not holding. Bail as unsupported.
+	if combinations.is_empty():
+		_finish(0, true, "no_concurrent_combinations:%s" % str(equip.get("label", _provider_arg)))
 		return
 	if rig_pair.size() < 2:
 		_skip_rig = true
@@ -1346,9 +1372,47 @@ func _poll_acquisition_session_settlement_probe() -> void:
 		# Frozen here rather than at probe start: the drain is the tail of the
 		# last benchmark phase's own work and belongs in its metrics.
 		_freeze_benchmark_metrics()
+		_acq_probe_trigger_deadline_us = _now_us() + SETTLEMENT_PROBE_TRIGGER_TIMEOUT_US
+		_acq_probe_stage = "trigger"
+		return
+	if _acq_probe_stage == "trigger":
+		# Retried rather than accepted first time. A refusal here is a Busy
+		# that carries no attribution, so the only way to tell a device that
+		# is briefly unavailable from one that will never admit is to ask
+		# again until the bound expires.
+		var pending := []
 		for device_key in [DEV_A, DEV_B]:
-			_queue_settlement_probe_capture(device_key)
-		_acq_probe_stage = "capture"
+			var entry_v = _acq_probe_devices.get(device_key, {})
+			if typeof(entry_v) != TYPE_DICTIONARY:
+				continue
+			var entry: Dictionary = entry_v
+			if bool(entry.get("capture_failed", false)):
+				continue
+			if str(entry.get("trigger_status", "")) != "probe_not_attempted":
+				continue
+			if _queue_settlement_probe_capture(device_key):
+				continue
+			pending.append(device_key)
+		if pending.is_empty():
+			_acq_probe_stage = "capture"
+			return
+		if _now_us() >= _acq_probe_trigger_deadline_us:
+			for device_key in pending:
+				var refusals := int((_acq_probe_devices[device_key] as Dictionary).get("trigger_refusals", 0))
+				_acq_probe_mark_capture_failure(device_key, "trigger_refused")
+				# Read here and nowhere earlier: this is after the freeze, so it is
+				# diagnostic only and cannot move a recorded figure. It says whether
+				# the runtime still held captures or refused an idle device.
+				var outstanding: Dictionary = CamBANGServer.get_unfinished_captures()
+				_log("settlement probe trigger refused on %s after %.2fs (%d attempts): %s" % [
+					device_key,
+					float(SETTLEMENT_PROBE_TRIGGER_TIMEOUT_US) / 1000000.0,
+					refusals,
+					error_string(int((_acq_probe_devices[device_key] as Dictionary).get("capture_error", FAILED))),
+				])
+				_log("settlement probe outstanding at refusal: total=%d by_device=%s" % [
+					int(outstanding.get("total", 0)), str(outstanding.get("by_device", {}))])
+			_acq_probe_stage = "capture"
 		return
 	if _acq_probe_stage == "capture":
 		if not _acq_probe_all_captures_finished():
@@ -1402,6 +1466,14 @@ func _acq_probe_devices_missing_payload() -> Array:
 # probe. Reads the scene's own per-device counter, which is the same tally the
 # normal capture path gates on -- the probe previously bypassed it entirely.
 func _acq_probe_devices_still_capturing() -> Array:
+	# DELIBERATELY the scene's own tally, not CamBANGServer.get_unfinished_
+	# captures(). This gate closes the benchmark window -- _freeze_benchmark_
+	# metrics() fires the moment it clears, and the drain is charged to the
+	# last phase's metrics by design. Consulting the runtime's outstanding
+	# set here can hold the window open longer and shift every recorded
+	# figure, which would break comparison against the existing library of
+	# pre-change performance results. The authoritative check belongs after
+	# the freeze, in the trigger stage, where it costs the metrics nothing.
 	var busy := []
 	for device_key in [DEV_A, DEV_B]:
 		var info_v = _devices.get(device_key, {})
@@ -1461,25 +1533,28 @@ func _backing_plan_acquisition_session_report_for_device_id(reports: Array, devi
 	return {}
 
 
-func _queue_settlement_probe_capture(device_key: String) -> void:
+func _queue_settlement_probe_capture(device_key: String) -> bool:
 	var info: Dictionary = _devices[device_key]
 	var device = info.get("device", null)
 	if device == null:
 		_acq_probe_mark_capture_failure(device_key, "no_device_object")
-		return
+		return true  # Terminal: retrying cannot conjure a device handle.
 	var trigger_start := _now_us()
 	var capture: Dictionary = device.trigger_capture()
 	var err := int(capture.get("error", FAILED))
 	var trigger_end := _now_us()
 	if err != OK:
-		_acq_probe_mark_capture_failure(device_key, "trigger_refused")
+		# NOT a failure yet -- the caller retries within its bound and records
+		# the failure only when that expires. Logged on the first refusal per
+		# device so the run log still says a refusal happened, without a line
+		# per frame for the whole retry window.
+		var refusals := int(_acq_probe_devices[device_key].get("trigger_refusals", 0)) + 1
+		_acq_probe_devices[device_key]["trigger_refusals"] = refusals
 		_acq_probe_devices[device_key]["capture_error"] = err
-		# Logged as well as recorded: a probe failure whose reason lives only in
-		# the summary JSON is invisible to anyone reading the run log, and this
-		# is the line that says whether the probe was refused or the device was
-		# missing.
-		_log("settlement probe trigger refused on %s: %s" % [device_key, error_string(err)])
-		return
+		if refusals == 1:
+			_log("settlement probe trigger refused on %s: %s (retrying)" % [
+				device_key, error_string(err)])
+		return false
 	info["inflight_captures"] = int(info.get("inflight_captures", 0)) + 1
 	_devices[device_key] = info
 	_capture_jobs.append({
@@ -1505,6 +1580,11 @@ func _queue_settlement_probe_capture(device_key: String) -> void:
 		"visual_sequence": _current_phase_visual_sequence,
 		"is_settlement_probe": true,
 	})
+	# Distinguishes "triggered, awaiting completion" from "not yet
+	# triggered", which the retry loop above needs and which
+	# probe_not_attempted previously conflated.
+	_acq_probe_devices[device_key]["trigger_status"] = "triggered"
+	return true
 
 
 func _acq_probe_mark_capture_failure(device_key: String, status: String) -> void:
