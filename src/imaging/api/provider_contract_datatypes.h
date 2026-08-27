@@ -399,6 +399,23 @@ struct PictureConfig {
   uint8_t solid_a = 0xFF;
 
   uint32_t checker_size_px = 16;
+
+  // Range of the YUV a generator EMITS, and therefore what it declares in
+  // PayloadColorimetry. Selects the encoder; it is not a label applied to
+  // unchanged pixels, because a declaration that does not match the bytes is
+  // the precise defect this contract exists to prevent.
+  //
+  // Belongs here rather than on a profile for the reason format does: for a
+  // generator, output colour is a property of the generator, alongside pattern
+  // and seed. A camera has no equivalent knob -- it reports what its hardware
+  // produced -- so platform providers ignore this field.
+  //
+  // Exists so the full-range branch can be exercised without an API-34 handset.
+  // Camera2 declares full range on measured hardware while Synthetic emits
+  // limited, so a consumer developing against Synthetic and shipping to device
+  // otherwise meets that difference for the first time in production.
+  // LIMITED is the default: existing callers see no change.
+  ColorRange synthetic_output_range = ColorRange::LIMITED;
 };
 
 struct StreamTemplate {

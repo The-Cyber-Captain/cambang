@@ -52,7 +52,12 @@ bool synthetic_rgba_to_planar_420(
     uint32_t src_stride,
     uint32_t w,
     uint32_t h,
+    ColorRange range,
     std::vector<uint8_t>& out) {
+  // Selected once, not per sample: the branch is loop-invariant and putting
+  // it inside the pixel loops costs the inlining that makes them fast (the
+  // same lesson core_result_store.h records for the decode direction).
+  const bool full_range = (range == ColorRange::FULL);
   const PixelFormatDescriptor desc = describe_pixel_format(fourcc);
   if (!desc.valid || !desc.is_yuv ||
       desc.layout_class == PixelLayoutClass::Packed) {
@@ -84,7 +89,8 @@ bool synthetic_rgba_to_planar_420(
       const uint8_t r = row[static_cast<size_t>(x) * 4u + 0u];
       const uint8_t g = row[static_cast<size_t>(x) * 4u + 1u];
       const uint8_t b = row[static_cast<size_t>(x) * 4u + 2u];
-      y_row[x] = rgb_to_yuv_bt601_limited(r, g, b).y;
+      y_row[x] = full_range ? rgb_to_yuv_bt601_full(r, g, b).y
+                            : rgb_to_yuv_bt601_limited(r, g, b).y;
     }
   }
 
@@ -98,7 +104,9 @@ bool synthetic_rgba_to_planar_420(
         : nullptr;
     for (uint32_t cx = 0; cx < chroma_cols; ++cx) {
       const size_t sx = static_cast<size_t>(cx) * 2u * 4u;
-      const YuvSample s = rgb_to_yuv_bt601_limited(row[sx + 0u], row[sx + 1u], row[sx + 2u]);
+      const YuvSample s = full_range
+          ? rgb_to_yuv_bt601_full(row[sx + 0u], row[sx + 1u], row[sx + 2u])
+          : rgb_to_yuv_bt601_limited(row[sx + 0u], row[sx + 1u], row[sx + 2u]);
       if (semi_planar) {
         const size_t first = static_cast<size_t>(cx) * 2u;
         uv_row[first + (desc.chroma_v_first ? 1u : 0u)] = s.u;
@@ -117,6 +125,7 @@ bool synthetic_rgba_to_planar_420(
 // synthetic_rgba_to_planar_420(). Shared by the stream and capture emitters so
 // the two cannot drift into describing the same bytes differently.
 void synthetic_fill_planar_420_layout(uint32_t fourcc,
+                                      ColorRange range,
                                       uint8_t* base,
                                       size_t size_bytes,
                                       uint32_t w,
@@ -127,8 +136,11 @@ void synthetic_fill_planar_420_layout(uint32_t fourcc,
   layout.width = w;
   layout.height = h;
   layout.plane_count = desc.plane_count;
-  // Must match the coefficients in rgb_to_yuv_bt601_limited().
-  layout.colorimetry.range = ColorRange::LIMITED;
+  // Must match the encoder synthetic_rgba_to_planar_420() actually ran. This
+  // is passed in rather than assumed precisely so the two cannot diverge: a
+  // declaration that does not describe the bytes is the defect measured on
+  // Camera2 (contract 6.3, BT.601-limited fallback) reproduced by hand.
+  layout.colorimetry.range = range;
   layout.colorimetry.matrix = ColorMatrix::BT601;
   layout.colorimetry.transfer = ColorTransfer::SRGB;
   layout.colorimetry.primaries = ColorPrimaries::BT709;
@@ -2609,6 +2621,7 @@ bool SyntheticProvider::generate_device_capture_payloads_(
       planar_bytes = std::make_shared<std::vector<std::uint8_t>>();
       synthetic_rgba_to_planar_420(job.format_fourcc, bytes->data(),
                                    job.stride_bytes, req.width, req.height,
+                                   req.picture.synthetic_output_range,
                                    *planar_bytes);
     }
     if (retain_cpu_payload) {
@@ -2616,6 +2629,7 @@ bool SyntheticProvider::generate_device_capture_payloads_(
         fv.data = planar_bytes->data();
         fv.size_bytes = planar_bytes->size();
         synthetic_fill_planar_420_layout(job.format_fourcc,
+                                         req.picture.synthetic_output_range,
                                          planar_bytes->data(),
                                          planar_bytes->size(), req.width,
                                          req.height, fv.payload_layout);
@@ -4019,11 +4033,13 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     // acquisition guard entirely.
     auto planar = std::make_shared<std::vector<uint8_t>>();
     synthetic_rgba_to_planar_420(stream_fourcc, slot->bytes.data(), stride, w, h,
-                                 *planar);
+                                 s.picture.synthetic_output_range, *planar);
 
     fv.data = planar->data();
     fv.size_bytes = planar->size();
-    synthetic_fill_planar_420_layout(stream_fourcc, planar->data(),
+    synthetic_fill_planar_420_layout(stream_fourcc,
+                                     s.picture.synthetic_output_range,
+                                     planar->data(),
                                      planar->size(), w, h, fv.payload_layout);
 
     fv.cpu_payload_owner = std::move(planar);
