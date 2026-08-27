@@ -57,7 +57,6 @@ void main() {
 const TIMEOUT_MS := 20000
 const LOCAL_GROUP := 8
 # make_fourcc('N','V','1','2') -- see src/pixels/format/pixel_format_descriptor.h.
-const FOURCC_NV12 := 842094158
 
 # Two phases in one run, with no command-line knob, so both payload kinds are
 # covered wherever the scene runs -- including Android, whose ExtraArgs
@@ -172,11 +171,11 @@ func _request_planar_profile() -> void:
 	var device = _device()
 	if device == null:
 		return
-	var err := int(device.set_still_capture_profile({"format_fourcc": FOURCC_NV12}))
+	var err := int(device.set_still_capture_profile({"format_fourcc": CamBANGServer.PIXEL_FORMAT_NV12}))
 	if err != OK:
 		_fail("set_still_capture_profile(NV12) failed err=%d" % err)
 		return
-	_step_ok("planar still profile requested (format_fourcc=%d)" % FOURCC_NV12)
+	_step_ok("planar still profile requested (format_fourcc=%d)" % CamBANGServer.PIXEL_FORMAT_NV12)
 	_phase = PHASE_AWAIT_PLANAR
 
 
@@ -193,7 +192,7 @@ func _await_planar_profile() -> void:
 	if device == null:
 		return
 	var current: Dictionary = device.get_still_capture_profile()
-	if int(current.get("format_fourcc", 0)) == FOURCC_NV12:
+	if int(current.get("format_fourcc", 0)) == CamBANGServer.PIXEL_FORMAT_NV12:
 		_step_ok("planar still profile is now the device profile")
 		_phase = PHASE_CAPTURE_PLANAR
 		return
