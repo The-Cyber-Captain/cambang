@@ -4294,6 +4294,14 @@ godot::Dictionary CamBANGServer::get_result_access_timing_evidence() const {
   d["capture_materializations"] = capture_materialization_stats();
   d["capture_compute_textures"] = capture_compute_texture_metrics();
   d["stream_compute_textures"] = stream_compute_texture_metrics();
+  // Live CPU display-view refresh counters. Sourced here rather than through
+  // get_synthetic_metrics_snapshot(), which returns nil on any non-synthetic
+  // provider -- a caller then reads an empty dictionary and every counter
+  // looks like a measured zero. These counters describe the shared display
+  // path and are meaningful on every provider, so they belong on the
+  // provider-agnostic evidence surface.
+  d["cpu_display_refresh"] =
+      CamBANGStreamResult::get_live_stream_cpu_display_metrics_snapshot();
   return d;
 }
 
