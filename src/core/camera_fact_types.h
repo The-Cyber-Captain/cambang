@@ -685,8 +685,6 @@ struct CameraStaticFacts {
   std::optional<SourcedFact<CameraFacing>> facing;
   std::optional<SourcedFact<CameraNature>> nature;
   std::optional<SourcedFact<SensorOrientationDegrees>> sensor_orientation;
-  std::optional<SourcedFact<Intrinsics>> intrinsics;
-  std::optional<SourcedFact<Distortion>> distortion;
   std::optional<SourcedFact<CameraPose>> pose;
   // Device-constant assertions for otherwise per-capture quantities. A camera
   // whose hardware genuinely fixes these (fixed-focus lens, fixed iris, prime
@@ -698,6 +696,35 @@ struct CameraStaticFacts {
   std::optional<SourcedFact<SensorSensitivityIso>> sensor_sensitivity_iso;
   std::optional<SourcedFact<ApertureFNumber>> aperture_f_number;
   std::optional<SourcedFact<FocalLengthMm>> focal_length_mm;
+  // Intrinsics and distortion sit here, with the assertions, rather than with
+  // the device-scoped facts above. Both platform providers source them per
+  // image and anchored to a format, so there is no such thing as *the*
+  // intrinsics of a device: a device-scoped value carries no format and cannot
+  // be applied to a frame. What a device-keyed source can honestly say is that
+  // this camera holds them constant -- an authored virtual camera, or an
+  // ingested description standing in for hardware that exposes no API to read
+  // them. That is an assertion, and it resolves into CaptureImageFacts, never
+  // into a device-scoped fact.
+  std::optional<SourcedFact<Intrinsics>> intrinsics;
+  std::optional<SourcedFact<Distortion>> distortion;
+};
+
+// The RESOLVED device-scoped facts: what CamBANG concluded about the camera
+// itself, after applying source precedence. Deliberately a distinct type from
+// CameraStaticFacts, which is the device-keyed SOURCE carrier and also holds
+// device-constant assertions of per-image quantities (intrinsics, distortion,
+// exposure, focus). Those resolve into CaptureImageFacts and are never
+// device-scoped facts.
+//
+// One type served both roles until 2026-08-29. A reader could then ask a
+// resolved device record for intrinsics, compile clean, and receive nullopt
+// forever -- which is exactly what happened to provider_compliance_verify. The
+// split makes that a compile error instead.
+struct ResolvedCameraDeviceFacts {
+  std::optional<SourcedFact<CameraFacing>> facing;
+  std::optional<SourcedFact<CameraNature>> nature;
+  std::optional<SourcedFact<SensorOrientationDegrees>> sensor_orientation;
+  std::optional<SourcedFact<CameraPose>> pose;
 };
 
 struct CaptureAdmissionFacts {
@@ -707,6 +734,10 @@ struct CaptureAdmissionFacts {
 
 struct CaptureImageFacts {
   std::optional<SourcedFact<ImageAcquisitionTiming>> acquisition_timing;
+  // Image-scoped: the calibration that applies to THIS image, in the
+  // coordinate domain and reference frame it was measured in.
+  std::optional<SourcedFact<Intrinsics>> intrinsics;
+  std::optional<SourcedFact<Distortion>> distortion;
   std::optional<SourcedFact<FocusState>> focus_state;
   std::optional<SourcedFact<ExposureTime>> exposure_time;
   std::optional<SourcedFact<SensorSensitivityIso>> sensor_sensitivity_iso;

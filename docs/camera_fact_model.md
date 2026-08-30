@@ -43,8 +43,24 @@ CamBANG does not:
 - use calibration to affect admission, arbitration, provider selection, backing
   plans, or capture execution.
 
-Rich camera facts are principally a still-capture concern. `StreamResult`
-remains deliberately metadata-light.
+`StreamResult` and `CaptureResult` carry the same fact record, resolved by the
+same precedence chain and projected by the same converter. Neither surface
+filters what it publishes.
+
+What separates them is available input, not policy. The chain is external
+(ingested description) > provider per-image > provider device-level, and both
+delivery paths can reach all three: a capture image carries its per-image tier
+through `EvCaptureImageFacts`, a stream frame through `FrameView::image_facts`.
+
+A stream therefore carries whatever its sources supply — the facts fixed at
+device open, `acquisition_timing` from the frame itself, any quantity an
+ingested description or an authored virtual camera asserts the camera holds
+constant, and any per-image value the provider binds to that frame.
+
+A fact is absent only because no source supplied it, never because a surface
+withheld it. `realized_image_transform` is the one fact no external source may
+assert: it describes what the provider did to those pixels, so it resolves from
+the provider's own report or not at all.
 
 ---
 
@@ -89,6 +105,13 @@ Camera facts in CamBANG remain split by authority and operational role.
 
 It is the home for stable per-camera description truth such as classification,
 intrinsics, distortion, and pose.
+
+Being a device-keyed *source* is not the same as being a device-scoped
+*fact*. Intrinsics and distortion supplied here are assertions that this
+camera holds them constant; they resolve into `CaptureImageFacts`, per image,
+because both platform providers report them per image and anchored to a
+format. A device-scoped intrinsics value would carry no format and could not
+be applied to a frame, so no surface exposes one.
 
 ### 3.2 `ImagingSpec`
 
@@ -440,7 +463,9 @@ This applies to:
 - physical focal length (mm)
 
 Classification values resolve independently. Intrinsics, distortion, and pose
-remain atomic.
+remain atomic. Intrinsics and distortion resolve into image scope (§3.1);
+the chain above describes which source wins, not where the resolved fact
+lands.
 
 The last five are the quantities described in §12.2.1. They are listed here
 because being per-capture on some hardware does not make a fact provider-owned:

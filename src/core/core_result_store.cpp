@@ -384,7 +384,8 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
                                    uint64_t stream_applied_access_posture_epoch,
                                    uint64_t capture_applied_access_posture_epoch,
                                    CoreRetainedProductionPlan stream_requested_retained_plan,
-                                   CoreRetainedProductionPlan capture_requested_retained_plan) {
+                                   CoreRetainedProductionPlan capture_requested_retained_plan,
+    CoreResolvedImageFacts stream_facts) {
   if (frame.stream_id != 0 && !stream_requested_retained_plan.valid) {
     return false;
   }
@@ -464,7 +465,9 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
         mutable_stream_result->image_width,
         mutable_stream_result->image_height,
         mutable_stream_result->image_format_fourcc);
-    mutable_stream_result->image_facts.acquisition_timing = frame.acquisition_timing;
+    mutable_stream_result->resolved_image_facts = stream_facts;
+    mutable_stream_result->resolved_image_facts.image.acquisition_timing =
+        frame.acquisition_timing;
     mutable_stream_result->facts = facts;
     stream_result = std::move(mutable_stream_result);
   }
@@ -678,7 +681,7 @@ bool CoreResultStore::finalize_capture_facts(
     uint64_t capture_id,
     uint64_t device_instance_id,
     std::optional<CaptureAdmissionContext> admission_context,
-    const std::function<CoreResolvedCaptureImageFacts(uint32_t image_member_index)>&
+    const std::function<CoreResolvedImageFacts(uint32_t image_member_index)>&
         resolve_image_facts) {
   if (capture_id == 0 || device_instance_id == 0 || !resolve_image_facts) {
     return false;

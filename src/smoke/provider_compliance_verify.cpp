@@ -6000,6 +6000,112 @@ bool run_provider_camera_fact_ingress_check() {
   return true;
 }
 
+// A stream frame carries the same per-image facts a capture image does, and the
+// ingested-description tier still wins on that path.
+//
+// This exists because the stream per-image tier had NO deterministic coverage
+// when it was added: the whole of its proof was a log line from one platform
+// run, so a regression in resolution, projection or plumbing would have left
+// every host-native check green. The reference provider is the right place to
+// pin it -- it authors known facts, so the assertions are about the model
+// rather than about any device.
+bool run_synthetic_stream_image_facts_check() {
+  VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
+  std::string error;
+  const auto fail = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    harness.stop_runtime();
+    return false;
+  };
+
+  // Overrides one device-scoped fact and one per-image fact the provider also
+  // reports, so precedence is proven on the stream path and not merely assumed
+  // to match the capture path.
+  const std::string description = R"JSON({
+    "schema_version":2,
+    "cameras":[
+      {"camera_id":"synthetic:0",
+       "facing":{"source":"user_supplied","value":"external"},
+       "focus_state":{"source":"user_supplied","state":"at_distance","distance_m":2.5}}
+    ]
+  })JSON";
+  // Ingested BEFORE the runtime starts: that is the documented ordering, and a
+  // description applied afterwards does not reach devices already opened.
+  const auto ingest =
+      harness.runtime().replace_external_camera_description_json_for_internal(description);
+  if (ingest.status != CoreRuntime::ReplaceExternalCameraDescriptionStatus::Ok) {
+    std::cerr << "FAIL synthetic stream image facts ingest rejected status="
+              << static_cast<int>(ingest.status) << "\n";
+    return false;
+  }
+  if (!harness.start_runtime(error)) {
+    std::cerr << "FAIL synthetic stream image facts harness start: " << error << "\n";
+    return false;
+  }
+
+  if (!harness.open_device(error) || !harness.create_stream(error) ||
+      !harness.start_stream(error)) {
+    return fail("FAIL synthetic stream image facts stream setup failed");
+  }
+
+  // The reference provider runs on virtual time: frames are driven, not awaited.
+  SharedStreamResultData result;
+  for (int i = 0; i < 16; ++i) {
+    if (!harness.emit_frame(error)) {
+      return fail("FAIL synthetic stream image facts emit_frame failed");
+    }
+    (void)harness.tick();
+    result = harness.runtime().get_latest_stream_result(VerifyCaseHarness::kStreamId);
+    if (result && result->resolved_image_facts.image.intrinsics) break;
+  }
+  if (!result) {
+    return fail("FAIL synthetic stream image facts no retained stream result");
+  }
+  const auto& camera = result->resolved_image_facts.camera;
+  const auto& image = result->resolved_image_facts.image;
+
+  // Per-image tier reached the stream at all.
+  if (!image.intrinsics || image.intrinsics->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED) {
+    return fail("FAIL synthetic stream image facts intrinsics absent or misattributed");
+  }
+  if (!image.distortion || image.distortion->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED) {
+    return fail("FAIL synthetic stream image facts distortion absent or misattributed");
+  }
+  if (!image.sensor_sensitivity_iso ||
+      image.sensor_sensitivity_iso->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED) {
+    return fail("FAIL synthetic stream image facts iso absent or misattributed");
+  }
+  // Timing is frame-owned and must be present on a delivered frame.
+  if (!image.acquisition_timing) {
+    return fail("FAIL synthetic stream image facts acquisition_timing absent");
+  }
+  // Never invented: this virtual camera has no shutter or iris, so these stay
+  // absent rather than resolving to a fabricated zero.
+  if (image.exposure_time || image.aperture_f_number || image.focal_length_mm) {
+    return fail("FAIL synthetic stream image facts invented a photometric value");
+  }
+  // Provenance: no external source may assert what the provider did to pixels.
+  if (image.realized_image_transform &&
+      image.realized_image_transform->origin == FactOrigin::USER_SUPPLIED) {
+    return fail("FAIL synthetic stream realized_image_transform was externally asserted");
+  }
+
+  // Ingested description beats the provider on BOTH scopes, on the stream path.
+  if (!camera.facing || camera.facing->value != CameraFacing::EXTERNAL ||
+      camera.facing->origin != FactOrigin::USER_SUPPLIED) {
+    return fail("FAIL synthetic stream device-scoped override did not win");
+  }
+  if (!image.focus_state || image.focus_state->origin != FactOrigin::USER_SUPPLIED) {
+    return fail("FAIL synthetic stream per-image override did not win");
+  }
+  const auto* at_distance = std::get_if<FocusAtDistance>(&image.focus_state->value);
+  if (!at_distance || at_distance->distance_m() != 2.5) {
+    return fail("FAIL synthetic stream per-image override value mismatch");
+  }
+
+  harness.stop_runtime();
+  return true;
+}
 bool run_synthetic_provider_reference_camera_facts_check() {
   constexpr uint64_t kDeviceA = 17401;
   constexpr uint64_t kDeviceB = 17402;
@@ -6427,24 +6533,30 @@ bool run_core_capture_result_fact_resolution_check() {
       !has_synthetic_image_facts(*bracket_member_1)) {
     return fail_with_cleanup("FAIL core result fact resolution admission context was not retained");
   }
-  const CameraStaticFacts& a0 = bracket_member_0->resolved_image_facts.camera;
-  const CameraStaticFacts& a1 = bracket_member_1->resolved_image_facts.camera;
-  if (!a0.facing || !a0.nature || !a0.sensor_orientation || !a0.intrinsics ||
-      !a0.distortion || !a0.pose ||
+  const ResolvedCameraDeviceFacts& a0 = bracket_member_0->resolved_image_facts.camera;
+  const ResolvedCameraDeviceFacts& a1 = bracket_member_1->resolved_image_facts.camera;
+  // Intrinsics and distortion resolve into the image tier, not the device tier,
+  // because they are format-anchored. The device-keyed source tiers still feed
+  // them -- which is what the USER_SUPPLIED origin below proves -- but the
+  // resolved fact is per image.
+  const CaptureImageFacts& i0 = bracket_member_0->resolved_image_facts.image;
+  const CaptureImageFacts& i1 = bracket_member_1->resolved_image_facts.image;
+  if (!a0.facing || !a0.nature || !a0.sensor_orientation || !i0.intrinsics ||
+      !i0.distortion || !a0.pose ||
       a0.facing->value != CameraFacing::FRONT ||
       a0.facing->origin != FactOrigin::USER_SUPPLIED ||
       a0.nature->value != CameraNature::VIRTUAL ||
       a0.nature->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
       a0.sensor_orientation->value != SensorOrientationDegrees::DEGREES_0 ||
       a0.sensor_orientation->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
-      a0.intrinsics->value.focal_length_x_px() != 901.0 ||
-      a0.intrinsics->origin != FactOrigin::USER_SUPPLIED ||
+      i0.intrinsics->value.focal_length_x_px() != 901.0 ||
+      i0.intrinsics->origin != FactOrigin::USER_SUPPLIED ||
       a0.pose->origin != FactOrigin::USER_SUPPLIED ||
       a0.pose->value.translation_m().x != 10.0 ||
-      a0.distortion->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
-      !std::holds_alternative<NoDistortion>(a0.distortion->value) ||
-      !a1.intrinsics || a1.intrinsics->value.focal_length_x_px() != 901.0 ||
-      !a1.distortion || a1.distortion->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
+      i0.distortion->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
+      !std::holds_alternative<NoDistortion>(i0.distortion->value) ||
+      !i1.intrinsics || i1.intrinsics->value.focal_length_x_px() != 901.0 ||
+      !i1.distortion || i1.distortion->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
       !a1.pose || a1.pose->value.translation_m().x != 10.0) {
     return fail_with_cleanup("FAIL core result fact resolution external/provider precedence failed");
   }
@@ -6465,11 +6577,11 @@ bool run_core_capture_result_fact_resolution_check() {
       absent_member->resolved_image_facts.camera.nature ||
       absent_member->resolved_image_facts.camera.sensor_orientation ||
       absent_member->resolved_image_facts.camera.pose ||
-      !absent_member->resolved_image_facts.camera.intrinsics ||
-      absent_member->resolved_image_facts.camera.intrinsics->origin !=
+      !absent_member->resolved_image_facts.image.intrinsics ||
+      absent_member->resolved_image_facts.image.intrinsics->origin !=
           FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
-      !absent_member->resolved_image_facts.camera.distortion ||
-      absent_member->resolved_image_facts.camera.distortion->origin !=
+      !absent_member->resolved_image_facts.image.distortion ||
+      absent_member->resolved_image_facts.image.distortion->origin !=
           FactOrigin::VIRTUAL_CAMERA_AUTHORED) {
     return fail_with_cleanup("FAIL core result fact resolution absence was not preserved");
   }
@@ -6535,8 +6647,8 @@ bool run_core_capture_result_fact_resolution_check() {
       !rig_b_member->resolved_image_facts.camera.nature ||
       rig_b_member->resolved_image_facts.camera.nature->value != CameraNature::HYBRID ||
       rig_b_member->resolved_image_facts.camera.nature->origin != FactOrigin::USER_SUPPLIED ||
-      !rig_b_member->resolved_image_facts.camera.intrinsics ||
-      rig_b_member->resolved_image_facts.camera.intrinsics->origin !=
+      !rig_b_member->resolved_image_facts.image.intrinsics ||
+      rig_b_member->resolved_image_facts.image.intrinsics->origin !=
           FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
       !rig_b_member->resolved_image_facts.camera.pose ||
       rig_b_member->resolved_image_facts.camera.pose->value.translation_m().x != 1.0 ||
@@ -11779,6 +11891,7 @@ int main(int argc, char** argv) {
       {"run_core_synthetic_multi_member_capture_admission_context_check", [] { return run_core_synthetic_multi_member_capture_admission_context_check(); }},
       {"run_provider_camera_fact_ingress_check", [] { return run_provider_camera_fact_ingress_check(); }},
       {"run_synthetic_provider_reference_camera_facts_check", [] { return run_synthetic_provider_reference_camera_facts_check(); }},
+      {"run_synthetic_stream_image_facts_check", [] { return run_synthetic_stream_image_facts_check(); }},
       {"run_core_capture_result_fact_resolution_check", [] { return run_core_capture_result_fact_resolution_check(); }},
       {"run_core_synthetic_three_member_realized_unknown_propagation_check", [] { return run_core_synthetic_three_member_realized_unknown_propagation_check(); }},
       {"run_synthetic_stream_plus_still_single_session_truth_check", [] { return run_synthetic_stream_plus_still_single_session_truth_check(); }},

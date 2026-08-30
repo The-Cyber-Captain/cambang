@@ -1166,25 +1166,30 @@ void SyntheticProvider::emit_camera_static_facts_(const DeviceState& d) {
   strand_.post_camera_static_facts(d.device_instance_id, std::move(facts));
 }
 
-void SyntheticProvider::emit_capture_image_facts_(
-    const CaptureRequest& request,
-    uint32_t image_member_index,
-    int32_t applied_exposure_compensation_milli_ev) {
-  if (!callbacks_) return;
-  std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
-  const char* hardware_id = resolve_hardware_id_for_device_locked_(request.device_instance_id);
-  if (!hardware_id) return;
+// The one authored per-image fact set for this provider, used by BOTH delivery
+// paths. A stream frame and a capture image from the same virtual camera must
+// describe it identically; building them in two places is how they would stop.
+//
+// Caller holds provider_state_mutex_.
+ProviderCaptureImageFacts SyntheticProvider::authored_image_facts_locked_(
+    uint64_t device_instance_id,
+    uint32_t width,
+    uint32_t height,
+    int32_t applied_exposure_compensation_milli_ev) const {
+  ProviderCaptureImageFacts empty{};
+  const char* hardware_id = resolve_hardware_id_for_device_locked_(device_instance_id);
+  if (!hardware_id) return empty;
   const uint32_t device_index = static_cast<uint32_t>(
       std::strtoul(hardware_id + std::strlen(kHardwareIdPrefix), nullptr, 10));
   const auto intrinsics = Intrinsics::create(
-      static_cast<double>(request.width) * (1.0 + (0.01 * device_index)),
-      static_cast<double>(request.height) * (1.0 + (0.01 * device_index)),
-      static_cast<double>(request.width) / 2.0, static_cast<double>(request.height) / 2.0,
+      static_cast<double>(width) * (1.0 + (0.01 * device_index)),
+      static_cast<double>(height) * (1.0 + (0.01 * device_index)),
+      static_cast<double>(width) / 2.0, static_cast<double>(height) / 2.0,
       std::nullopt,
-      request.width,
-      request.height,
+      width,
+      height,
       CoordinateDomain{CoordinateDomainDeliveredImage{}});
-  if (!intrinsics) return;
+  if (!intrinsics) return empty;
   ProviderCaptureImageFacts facts{};
   facts.intrinsics = SourcedFact<Intrinsics>{
       *intrinsics, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
@@ -1215,6 +1220,18 @@ void SyntheticProvider::emit_capture_image_facts_(
     facts.sensor_sensitivity_iso =
         SourcedFact<SensorSensitivityIso>{*iso, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
   }
+  return facts;
+}
+
+void SyntheticProvider::emit_capture_image_facts_(
+    const CaptureRequest& request,
+    uint32_t image_member_index,
+    int32_t applied_exposure_compensation_milli_ev) {
+  if (!callbacks_) return;
+  std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
+  ProviderCaptureImageFacts facts = authored_image_facts_locked_(
+      request.device_instance_id, request.width, request.height,
+      applied_exposure_compensation_milli_ev);
   strand_.post_capture_image_facts(
       request.capture_id, request.device_instance_id, image_member_index, std::move(facts));
 }
@@ -4022,6 +4039,12 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     fv.acquisition_timing =
         SourcedFact<ImageAcquisitionTiming>{*timing, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
   }
+  // Per-image facts for THIS frame, from the same authored source the
+  // capture path uses. A stream frame carries them because this provider
+  // knows them at delivery: nothing here is deferred or approximated, so
+  // absence in the result means a fact this virtual camera does not have.
+  fv.image_facts = authored_image_facts_locked_(
+      s.req.device_instance_id, w, h, 0);
   fv.retain_cpu_sidecar = publish_cpu_payload;
   fv.requested_retained_plan = s.req.requested_retained_plan;
   if (publish_cpu_payload && emit_planar) {

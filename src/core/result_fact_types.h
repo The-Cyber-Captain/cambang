@@ -30,7 +30,7 @@ struct ResultImagePropertiesProvenance {
 };
 
 // Optical-calibration truth lives in the resolved per-member camera facts
-// (CoreResolvedCaptureImageFacts / get_image_member camera_facts); location
+// (CoreResolvedImageFacts / get_image_member camera_facts); location
 // truth lives in the capture-admission context (get_geolocation()). The former
 // flattened optical-calibration, location, and capture-attributes fact groups
 // were writer-less duplicates and were removed.

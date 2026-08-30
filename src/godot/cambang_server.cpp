@@ -1,4 +1,5 @@
 #include "godot/cambang_server.h"
+#include "godot/camera_fact_convert.h"
 #include "godot/cambang_capture_result.h"
 #include "godot/capture_compute_texture.h"
 #include "godot/stream_compute_texture.h"

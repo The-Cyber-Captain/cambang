@@ -1530,6 +1530,12 @@ CoreRuntime::CoreRuntime()
   dispatcher_.set_result_store(&result_store_);
   dispatcher_.set_capture_assembly_registry(&capture_assembly_registry_);
   dispatcher_.set_provider_camera_fact_state(&provider_camera_fact_state_);
+  // Same resolver the capture path uses. Bound here because only CoreRuntime
+  // owns the external camera-description state the precedence chain needs.
+  dispatcher_.set_device_camera_facts_resolver(
+      [this](uint64_t device_instance_id, const ProviderCaptureImageFacts* frame_image) {
+        return device_scoped_image_facts_on_core_thread_(device_instance_id, frame_image);
+      });
   dispatcher_.set_capture_lifecycle_ingress_sink(
       [this](const CoreCaptureLifecycleIngressEvent& event) {
         note_capture_lifecycle_ingress_(event);
@@ -3993,7 +3999,79 @@ void CoreRuntime::note_capture_lifecycle_ingress_(
   }
 }
 
-CoreResolvedCaptureImageFacts CoreRuntime::resolve_capture_image_facts_(
+namespace {
+
+// The one precedence chain, used by both delivery paths: ingested description
+// wins, then the provider's per-image report, then the provider's device-level
+// report. A stream frame passes image=nullptr because a provider delivers no
+// per-image fact record with a repeating frame -- that is the ONLY difference
+// between the two paths, and it is an absence of input rather than a different
+// rule. Written once so a fact cannot resolve differently depending on which
+// surface asked.
+CoreResolvedImageFacts resolve_image_facts_from_tiers(
+    const CameraStaticFacts* external,
+    const CameraStaticFacts* provider_static,
+    const ProviderCaptureImageFacts* provider_image) {
+  static const CameraStaticFacts kNoStatic{};
+  static const ProviderCaptureImageFacts kNoImage{};
+  const CameraStaticFacts& e = external ? *external : kNoStatic;
+  const CameraStaticFacts& p = provider_static ? *provider_static : kNoStatic;
+  const ProviderCaptureImageFacts& i = provider_image ? *provider_image : kNoImage;
+
+  CoreResolvedImageFacts out{};
+  // Device-scoped. Facing, nature and orientation have no per-image tier: no
+  // provider reports them per image, so none is offered one.
+  out.camera.facing = e.facing ? e.facing : p.facing;
+  out.camera.nature = e.nature ? e.nature : p.nature;
+  out.camera.sensor_orientation =
+      e.sensor_orientation ? e.sensor_orientation : p.sensor_orientation;
+  out.camera.pose = e.pose ? e.pose : i.pose ? i.pose : p.pose;
+
+  // Image-scoped. The device-keyed tiers (e and p) are assertions that this
+  // camera holds the value constant -- an ingested description covering
+  // hardware that exposes no API to read it, or an authored virtual camera.
+  // That is why a stream frame can carry these at all: the assertion does not
+  // need the frame to have reported anything.
+  out.image.intrinsics = e.intrinsics ? e.intrinsics : i.intrinsics ? i.intrinsics : p.intrinsics;
+  out.image.distortion = e.distortion ? e.distortion : i.distortion ? i.distortion : p.distortion;
+  out.image.focus_state = e.focus_state ? e.focus_state : i.focus_state ? i.focus_state : p.focus_state;
+  out.image.exposure_time =
+      e.exposure_time ? e.exposure_time : i.exposure_time ? i.exposure_time : p.exposure_time;
+  out.image.sensor_sensitivity_iso = e.sensor_sensitivity_iso ? e.sensor_sensitivity_iso
+      : i.sensor_sensitivity_iso ? i.sensor_sensitivity_iso
+      : p.sensor_sensitivity_iso;
+  out.image.aperture_f_number = e.aperture_f_number ? e.aperture_f_number
+      : i.aperture_f_number ? i.aperture_f_number
+      : p.aperture_f_number;
+  out.image.focal_length_mm = e.focal_length_mm ? e.focal_length_mm
+      : i.focal_length_mm ? i.focal_length_mm
+      : p.focal_length_mm;
+
+  // realized_image_transform stays provider-per-image only: it describes what
+  // this provider did to these delivered pixels, which no external source can
+  // assert on the provider's behalf. A stream frame therefore never has one.
+  out.image.realized_image_transform = i.realized_image_transform;
+  return out;
+}
+
+}  // namespace
+
+CoreResolvedImageFacts CoreRuntime::device_scoped_image_facts_on_core_thread_(
+    uint64_t device_instance_id,
+    const ProviderCaptureImageFacts* frame_image) const {
+  assert(core_thread_.is_core_thread());
+  const CoreDeviceRegistry::DeviceRecord* device = devices_.find(device_instance_id);
+  const ExternalCameraDescriptionEntry* external =
+      device ? active_external_camera_description_.find_exact(device->hardware_id) : nullptr;
+  const ProviderCameraFacts* provider_static =
+      provider_camera_fact_state_.find_static(device_instance_id);
+  return resolve_image_facts_from_tiers(
+      external ? &external->facts : nullptr,
+      provider_static ? &provider_static->static_facts : nullptr,
+      frame_image);
+}
+
+CoreResolvedImageFacts CoreRuntime::resolve_capture_image_facts_(
     uint64_t capture_id,
     uint64_t device_instance_id,
     uint32_t image_member_index) const {
@@ -4005,69 +4083,11 @@ CoreResolvedCaptureImageFacts CoreRuntime::resolve_capture_image_facts_(
       provider_camera_fact_state_.find_static(device_instance_id);
   const ProviderCameraFactState::CaptureImageKey image_key{
       capture_id, device_instance_id, image_member_index};
-  const ProviderCaptureImageFacts* provider_image =
-      provider_camera_fact_state_.find_capture_image(image_key);
-
-  CoreResolvedCaptureImageFacts resolved{};
-  const CameraStaticFacts* external_facts = external ? &external->facts : nullptr;
-  const CameraStaticFacts* static_facts =
-      provider_static ? &provider_static->static_facts : nullptr;
-  resolved.camera.facing = external_facts && external_facts->facing
-      ? external_facts->facing
-      : static_facts ? static_facts->facing : std::nullopt;
-  resolved.camera.nature = external_facts && external_facts->nature
-      ? external_facts->nature
-      : static_facts ? static_facts->nature : std::nullopt;
-  resolved.camera.sensor_orientation = external_facts && external_facts->sensor_orientation
-      ? external_facts->sensor_orientation
-      : static_facts ? static_facts->sensor_orientation : std::nullopt;
-  resolved.camera.intrinsics = external_facts && external_facts->intrinsics
-      ? external_facts->intrinsics
-      : provider_image && provider_image->intrinsics ? provider_image->intrinsics
-      : static_facts ? static_facts->intrinsics : std::nullopt;
-  resolved.camera.distortion = external_facts && external_facts->distortion
-      ? external_facts->distortion
-      : provider_image && provider_image->distortion ? provider_image->distortion
-      : static_facts ? static_facts->distortion : std::nullopt;
-  resolved.camera.pose = external_facts && external_facts->pose
-      ? external_facts->pose
-      : provider_image && provider_image->pose ? provider_image->pose
-      : static_facts ? static_facts->pose : std::nullopt;
-  // These five are device-constant on some hardware and per-capture on other
-  // hardware, so they resolve through the same three-tier chain as intrinsics/
-  // distortion/pose rather than being provider-per-image only.
-  resolved.image.focus_state = external_facts && external_facts->focus_state
-      ? external_facts->focus_state
-      : provider_image && provider_image->focus_state ? provider_image->focus_state
-      : static_facts ? static_facts->focus_state : std::nullopt;
-  resolved.image.exposure_time = external_facts && external_facts->exposure_time
-      ? external_facts->exposure_time
-      : provider_image && provider_image->exposure_time ? provider_image->exposure_time
-      : static_facts ? static_facts->exposure_time : std::nullopt;
-  resolved.image.sensor_sensitivity_iso =
-      external_facts && external_facts->sensor_sensitivity_iso
-      ? external_facts->sensor_sensitivity_iso
-      : provider_image && provider_image->sensor_sensitivity_iso
-          ? provider_image->sensor_sensitivity_iso
-      : static_facts ? static_facts->sensor_sensitivity_iso : std::nullopt;
-  resolved.image.aperture_f_number = external_facts && external_facts->aperture_f_number
-      ? external_facts->aperture_f_number
-      : provider_image && provider_image->aperture_f_number
-          ? provider_image->aperture_f_number
-      : static_facts ? static_facts->aperture_f_number : std::nullopt;
-  resolved.image.focal_length_mm = external_facts && external_facts->focal_length_mm
-      ? external_facts->focal_length_mm
-      : provider_image && provider_image->focal_length_mm ? provider_image->focal_length_mm
-      : static_facts ? static_facts->focal_length_mm : std::nullopt;
-  // realized_image_transform stays provider-per-image only: it describes what
-  // this provider did to the delivered pixels, which no external source can
-  // assert on the provider's behalf.
-  if (provider_image) {
-    resolved.image.realized_image_transform = provider_image->realized_image_transform;
-  }
-  return resolved;
+  return resolve_image_facts_from_tiers(
+      external ? &external->facts : nullptr,
+      provider_static ? &provider_static->static_facts : nullptr,
+      provider_camera_fact_state_.find_capture_image(image_key));
 }
-
 void CoreRuntime::finalize_completed_capture_facts_(
     uint64_t capture_id, uint64_t device_instance_id) {
   assert(core_thread_.is_core_thread());

@@ -775,7 +775,24 @@ struct FrameView {
 
   // Optional provider-authored timing for this exact acquired frame. A present
   // zero-valued acquisition mark is valid and remains distinct from absence.
+  //
+  // Kept separate from image_facts below rather than folded into it: timing is
+  // provider-owned and never externally overridable, because it is an
+  // identity-bearing property of this exact frame. The facts below are.
   std::optional<SourcedFact<ImageAcquisitionTiming>> acquisition_timing{};
+
+  // Optional per-image facts for this exact acquired frame -- the same record a
+  // still capture publishes through EvCaptureImageFacts, carried here because a
+  // repeating frame has no capture id to be keyed by and correlating facts to
+  // pixels through a side channel would let one frame's facts describe
+  // another's image with nothing in the API to reveal it.
+  //
+  // A provider fills what it knows for THIS frame and omits the rest; absence
+  // stays truthful absence. Core resolves these as the per-image tier of the
+  // one precedence chain (external > per-image > device-level), identically to
+  // a capture, so a fact cannot resolve differently depending on which surface
+  // asked for it.
+  ProviderCaptureImageFacts image_facts{};
 
   // Buffer
   const uint8_t* data = nullptr;

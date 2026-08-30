@@ -676,7 +676,7 @@ func _try_verify_stream_result() -> void:
 		_step_ok("stream direct properties verified")
 
 		var stream_camera_facts: Dictionary = stream_result.get_camera_facts()
-		_require(_scene70_has_only_acquisition_timing(stream_camera_facts), "step %d FAIL: stream camera_facts must contain acquisition_timing only" % _step)
+		_require(_scene70_has_only_permitted_stream_camera_facts(stream_camera_facts), "step %d FAIL: stream camera_facts must carry acquisition_timing and no unexpected key; got %s" % [_step, str(stream_camera_facts.keys())])
 		_require(_scene70_has_canonical_acquisition_timing(stream_camera_facts.get("acquisition_timing", {})), "step %d FAIL: stream acquisition_timing shape invalid" % _step)
 		_step_ok("stream camera_facts acquisition_timing verified")
 
@@ -1089,8 +1089,39 @@ func _format_fixed_fact_lines(lines: Array) -> String:
 	return "\n".join(normalized)
 
 
-func _scene70_has_only_acquisition_timing(facts: Dictionary) -> bool:
-	return facts.keys().size() == 1 and facts.has("acquisition_timing")
+# This asserted "acquisition_timing only" until the device-scoped four were
+# approved onto this surface (2026-08-27). Updated rather than removed: the
+# point was never the count, it was that no UNEXPECTED key appears, and that
+# still holds. acquisition_timing remains required; the four are permitted
+# and individually optional, since a provider that does not report one must
+# omit it rather than invent a value.
+func _scene70_has_only_permitted_stream_camera_facts(facts: Dictionary) -> bool:
+	# Widened 2026-08-29 when the device-keyed tiers began resolving for stream
+	# frames too, and again once FrameView carried the per-image record: a
+	# stream can now carry anything a capture can, so every fact name is
+	# permitted and this stays an unexpected-KEY test only.
+	#
+	# realized_image_transform was excluded here on the reasoning that it could
+	# never reach a stream. That was wrong -- a provider may set it on a
+	# delivered frame. What is actually invariant is its PROVENANCE: no
+	# external source may assert what a provider did to its own pixels, so that
+	# is what is checked instead of excluding the key.
+	const PERMITTED_DEVICE_SCOPED := ["facing", "camera_nature", "sensor_orientation_degrees", "pose",
+		"intrinsics", "distortion", "focus_state", "exposure_time",
+		"sensor_sensitivity_iso", "aperture_f_number", "focal_length_mm",
+		"realized_image_transform"]
+	if not facts.has("acquisition_timing"):
+		return false
+	for key in facts.keys():
+		var k := str(key)
+		if k == "acquisition_timing":
+			continue
+		if not PERMITTED_DEVICE_SCOPED.has(k):
+			return false
+	if facts.has("realized_image_transform"):
+		if str((facts["realized_image_transform"] as Dictionary).get("origin", "")) == "user_supplied":
+			return false
+	return true
 
 
 func _scene70_has_canonical_acquisition_timing(timing: Dictionary) -> bool:

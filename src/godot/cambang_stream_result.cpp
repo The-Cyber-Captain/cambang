@@ -1,4 +1,5 @@
 #include "godot/cambang_stream_result.h"
+#include "godot/camera_fact_convert.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -516,9 +517,12 @@ godot::Dictionary CamBANGStreamResult::get_camera_facts() const {
   if (!data_) {
     return godot::Dictionary();
   }
-  godot::Dictionary out;
-  add_acquisition_timing_camera_fact(out, data_->image_facts.acquisition_timing);
-  return out;
+  // The same record, projected by the same function, as a capture image member.
+  // It was resolved when this frame was retained, so a held result reports what
+  // was true when its pixels were taken. Nothing is filtered on the way out: a
+  // stream shows fewer facts than a capture only because a provider delivers
+  // fewer with a frame.
+  return camera_fact_convert::camera_facts_to_dict(data_->resolved_image_facts);
 }
 
 bool CamBANGStreamResult::has_image_properties() const { return data_ && data_->facts.has_image_properties; }

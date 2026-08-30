@@ -80,10 +80,53 @@ work.
 To detect whether the frame actually advanced, compare the acquisition mark:
 
 ```gdscript
-var timing: Dictionary = result.get_camera_facts()["acquisition_timing"]
+var facts: Dictionary = result.get_camera_facts()
+var timing: Dictionary = facts["acquisition_timing"]
 # { origin, acquisition_mark, tick_period_numerator_ns, tick_period_denominator,
 #   clock_domain, reference_event, comparability }
 ```
+
+## Camera facts on the frame
+
+`get_camera_facts()` returns more than the mark. It describes the camera and
+this image, and it is the same dictionary a capture result gives you:
+
+| Key | What it is |
+|---|---|
+| `facing`, `camera_nature`, `sensor_orientation_degrees`, `pose` | fixed when the device opens |
+| `acquisition_timing` | identifies this exact frame |
+| `intrinsics`, `distortion` | calibration for this image, in the coordinate domain it was measured in |
+| `exposure_time`, `sensor_sensitivity_iso`, `aperture_f_number`, `focal_length_mm`, `focus_state` | what the sensor did for this image |
+| `realized_image_transform` | what the provider did to these pixels |
+
+Two rules govern reading any of them, and both matter more here than on a
+capture, because you are processing the pixels yourself:
+
+**Every key is optional.** A fact is present only when a source supplied it.
+Absence is truthful: it means this camera does not report that value and no
+description supplied it — never that the value is zero or a default. Test with
+`has()` before reading; do not use a fallback that could be mistaken for a
+measurement.
+
+**Every value is a Dictionary carrying `origin`**, never a bare number:
+
+```gdscript
+if facts.has("exposure_time"):
+    var ns := int(facts["exposure_time"]["nanoseconds"])
+    var origin := str(facts["exposure_time"]["origin"])   # native_reported | user_supplied
+                                                           # | derived | virtual_camera_authored
+                                                           # | runtime_injected | core_derived
+                                                           # | unknown
+```
+
+`origin` tells you where a value came from. `native_reported` is the camera's
+own report; `user_supplied` means it came from a description ingested through
+`CamBANGServer.ingest_camera_description()`, which overrides what the camera
+said. If your processing depends on a value being measured rather than
+declared, check the origin — the two are not interchangeable.
+
+Which facts appear varies by camera and by provider, and is not something to
+assume from one device you tested on. Read what is there at runtime.
 
 ## Capability
 

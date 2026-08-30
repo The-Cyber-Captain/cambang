@@ -785,6 +785,7 @@ enum class TryCloseDeviceStatus : uint8_t {
 #endif
 
   std::vector<CoreBackingPlanEvaluationReport> backing_plan_evaluation_reports() const;
+
   std::vector<CoreCaptureLifecycleTimingReport>
   recent_capture_lifecycle_timing_reports() const;
 
@@ -1100,7 +1101,7 @@ private:
   void sweep_capture_cohort_closure_(uint64_t now_ns);
 
   CaptureAdmissionContext make_capture_admission_context_() const;
-  CoreResolvedCaptureImageFacts resolve_capture_image_facts_(
+  CoreResolvedImageFacts resolve_capture_image_facts_(
       uint64_t capture_id, uint64_t device_instance_id,
       uint32_t image_member_index) const;
   void finalize_completed_capture_facts_(
@@ -1476,6 +1477,15 @@ private:
       const MeasuredPlanEvidence& evidence) noexcept;
   std::vector<CoreBackingPlanEvaluationReport>
   backing_plan_evaluation_reports_on_core_thread_() const;
+  // The facts resolvable for a device without a per-image provider report:
+  // everything an ingested description or the provider's device-level report
+  // can supply. This is what a stream frame gets.
+  // frame_image is the per-image tier a delivered frame carries, or nullptr
+  // when the caller has none. Passing it here rather than resolving without it
+  // is what lets a stream frame reach the same facts a capture does.
+  CoreResolvedImageFacts device_scoped_image_facts_on_core_thread_(
+      uint64_t device_instance_id,
+      const ProviderCaptureImageFacts* frame_image) const;
   std::vector<CoreCaptureLifecycleTimingReport>
   recent_capture_lifecycle_timing_reports_on_core_thread_() const;
   void note_capture_lifecycle_ingress_(

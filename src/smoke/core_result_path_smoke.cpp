@@ -410,7 +410,7 @@ int main() {
   assert(stream_result->access_posture.has_retained_cpu_payload);
   assert(!stream_result->access_posture.has_retained_gpu_backing);
   assert(stream_result->retained_frame_id != 0);
-  assert(!stream_result->image_facts.acquisition_timing);
+  assert(!stream_result->resolved_image_facts.image.acquisition_timing);
   const uint64_t cpu_stream_posture_id = stream_result->access_posture.posture_id;
 
   const auto integral_period = TickPeriod::create(5, 2);
@@ -443,17 +443,17 @@ int main() {
   assert(repeated_cpu_stream_result);
   assert(repeated_cpu_stream_result->access_posture.posture_id == cpu_stream_posture_id);
   assert(repeated_cpu_stream_result->retained_frame_id != stream_result->retained_frame_id);
-  assert(repeated_cpu_stream_result->image_facts.acquisition_timing);
-  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.acquisition_mark() == 0);
-  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.tick_period().numerator_ns() ==
+  assert(repeated_cpu_stream_result->resolved_image_facts.image.acquisition_timing);
+  assert(repeated_cpu_stream_result->resolved_image_facts.image.acquisition_timing->value.acquisition_mark() == 0);
+  assert(repeated_cpu_stream_result->resolved_image_facts.image.acquisition_timing->value.tick_period().numerator_ns() ==
          integral_period->numerator_ns());
-  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.tick_period().denominator() ==
+  assert(repeated_cpu_stream_result->resolved_image_facts.image.acquisition_timing->value.tick_period().denominator() ==
          integral_period->denominator());
-  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.clock_domain() ==
+  assert(repeated_cpu_stream_result->resolved_image_facts.image.acquisition_timing->value.clock_domain() ==
          ImageAcquisitionClockDomain::DOMAIN_OPAQUE);
-  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.reference_event() ==
+  assert(repeated_cpu_stream_result->resolved_image_facts.image.acquisition_timing->value.reference_event() ==
          ImageAcquisitionReferenceEvent::EXPOSURE_MIDPOINT);
-  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.comparability() ==
+  assert(repeated_cpu_stream_result->resolved_image_facts.image.acquisition_timing->value.comparability() ==
          ImageAcquisitionComparability::SAME_IMAGE_ONLY);
 
   store.retain_frame(stream_frame, StreamIntent::VIEWFINDER, kStreamEpochB, 0, requested_cpu);
@@ -722,14 +722,14 @@ int main() {
     assert(first->retained_frame_id != 0);
     assert(second->retained_frame_id != 0);
     assert(first->retained_frame_id != second->retained_frame_id);
-    assert(first->image_facts.acquisition_timing);
-    assert(second->image_facts.acquisition_timing);
-    assert(first->image_facts.acquisition_timing->value.acquisition_mark() ==
-           second->image_facts.acquisition_timing->value.acquisition_mark());
-    assert(first->image_facts.acquisition_timing->value.tick_period().numerator_ns() ==
-           second->image_facts.acquisition_timing->value.tick_period().numerator_ns());
-    assert(first->image_facts.acquisition_timing->value.tick_period().denominator() ==
-           second->image_facts.acquisition_timing->value.tick_period().denominator());
+    assert(first->resolved_image_facts.image.acquisition_timing);
+    assert(second->resolved_image_facts.image.acquisition_timing);
+    assert(first->resolved_image_facts.image.acquisition_timing->value.acquisition_mark() ==
+           second->resolved_image_facts.image.acquisition_timing->value.acquisition_mark());
+    assert(first->resolved_image_facts.image.acquisition_timing->value.tick_period().numerator_ns() ==
+           second->resolved_image_facts.image.acquisition_timing->value.tick_period().numerator_ns());
+    assert(first->resolved_image_facts.image.acquisition_timing->value.tick_period().denominator() ==
+           second->resolved_image_facts.image.acquisition_timing->value.tick_period().denominator());
   }
 
   {

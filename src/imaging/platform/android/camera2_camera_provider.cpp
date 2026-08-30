@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <deque>
 #include <ctime>
 #include <cmath>
 #include <cstdarg>
@@ -690,6 +691,15 @@ inline bool af_state_is_settled(uint8_t af_state) noexcept {
          af_state == ACAMERA_CONTROL_AF_STATE_NOT_FOCUSED_LOCKED;
 }
 
+struct StreamProduction;
+// Defined below, in the same anonymous namespace, beside the frame-release
+// helpers it uses. Declared inside namespace {} deliberately: a declaration at
+// namespace scope here would name a different entity from the definition, and
+// the library then links but fails to dlopen on an undefined symbol.
+namespace {
+void flush_pending_frames(StreamProduction& s, CBProviderStrand* strand);
+}  // namespace
+
 struct StreamProduction {
   uint64_t stream_id = 0;
   uint64_t device_instance_id = 0;
@@ -711,6 +721,34 @@ struct StreamProduction {
   // Guarded by DeviceBackend::m.
   bool producing = false;
   uint64_t pool_exhausted_drops = 0;
+
+  // Frames copied out of the reader but not yet published, waiting for the
+  // capture result that describes them. Camera2 hands us the buffer before
+  // onCaptureCompleted delivers that buffer's metadata (~7 ms on a Quest 3),
+  // so publishing on image arrival would mean a frame can never carry its own
+  // per-image facts.
+  //
+  // Each entry owns a pool slot and an unreleased FrameView, so nothing may
+  // drop one silently: it is either posted (the strand then owns the release)
+  // or released through discard_pending_frame(). Bounded to
+  // kMaxPendingFactFrames; the oldest is published factless when that is
+  // exceeded, so a device that stops reporting results costs latency and
+  // facts, never frames.
+  static constexpr size_t kMaxPendingFactFrames = 2;
+  struct PendingFactFrame {
+    int64_t timestamp_ns = -1;
+    FrameView frame{};
+  };
+  // Results that arrived before their image. Camera2 does not guarantee an
+  // order between the ImageReader callback and onCaptureCompleted, and a
+  // Quest 3 was measured delivering BOTH orders within one session, so
+  // matching has to work in either direction or the facts are lost in
+  // whichever direction is unhandled.
+  static constexpr size_t kMaxPendingFactRecords = 4;
+  std::deque<std::pair<int64_t, ProviderCaptureImageFacts>> pending_fact_records;
+
+  std::mutex pending_facts_m;
+  std::deque<PendingFactFrame> pending_fact_frames;
 };
 
 // Collector for one in-flight burst (a burst of one is the ordinary single
@@ -873,6 +911,7 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   uint8_t ae_state = 0;
 
 
+
   std::string hardware_id;
   uint64_t device_instance_id = 0;
   uint64_t root_id = 0;
@@ -951,6 +990,9 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
       strand->post_device_error(device_instance_id, error);
       if (stream && stream->producing) {
         stream->producing = false;
+        // Anything held for its metadata is published now, factless: the frame
+        // was copied out and is real, and facts that never arrived are absent.
+        flush_pending_frames(*stream, strand);
         strand->post_stream_error(stream->stream_id, error);
         strand->post_stream_stopped(stream->stream_id, error);
       }
@@ -1047,6 +1089,7 @@ struct CaptureFrameLease {
 
 namespace {
 
+
 void release_stream_frame(void* user, const FrameView* /*frame*/) {
   auto* lease = static_cast<StreamFrameLease*>(user);
   if (!lease) return;
@@ -1056,6 +1099,34 @@ void release_stream_frame(void* user, const FrameView* /*frame*/) {
   delete lease;
 }
 
+// Releases a pending frame that will never be published -- the pool slot goes
+// back and the lease is deleted. Used only on teardown; the normal exits both
+// post, and posting transfers the release to the strand.
+void discard_pending_frame(FrameView& fv) {
+  if (fv.release) {
+    fv.release(fv.release_user, &fv);
+    fv.release = nullptr;
+    fv.release_user = nullptr;
+  }
+}
+
+// Publishes everything still waiting, without facts. Called when a stream stops
+// or a device fails: a frame already copied out is real and should reach Core,
+// and the facts that never arrived are honestly absent.
+void flush_pending_frames(StreamProduction& s, CBProviderStrand* strand) {
+  std::deque<StreamProduction::PendingFactFrame> drained;
+  {
+    std::lock_guard<std::mutex> pl(s.pending_facts_m);
+    drained.swap(s.pending_fact_frames);
+  }
+  for (auto& pending : drained) {
+    if (strand) {
+      strand->post_frame(pending.frame);
+    } else {
+      discard_pending_frame(pending.frame);
+    }
+  }
+}
 void release_capture_frame(void* user, const FrameView* /*frame*/) {
   delete static_cast<CaptureFrameLease*>(user);
 }
@@ -1291,6 +1362,10 @@ void deliver_stream_image_locked(DeviceBackend& backend, AImage* image) {
     fv.acquisition_timing =
         make_acquisition_timing(timestamp_ns, backend.chars.timestamp_source_realtime);
   }
+  // fv.image_facts is deliberately left empty: this device's per-image metadata
+  // does not exist yet when the buffer arrives (see
+  // on_repeating_capture_completed). Core completes this frame's facts when its
+  // result lands.
   fv.data = slot->bytes.data();
   fv.size_bytes = slot->bytes.size();
   fv.stride_bytes = stream_is_planar ? s->width : (s->width * 4u);
@@ -1340,7 +1415,49 @@ void deliver_stream_image_locked(DeviceBackend& backend, AImage* image) {
   fv.requested_retained_plan = s->plan;
   fv.release = &release_stream_frame;
   fv.release_user = new StreamFrameLease{slot};
-  backend.strand->post_frame(fv);
+
+  // Held, not posted: this frame's own metadata has not arrived yet (see
+  // on_repeating_capture_completed). A frame without a usable timestamp cannot
+  // be matched to a result, so it goes straight out rather than waiting for
+  // something that could never identify it.
+  if (timestamp_ns < 0) {
+    backend.strand->post_frame(fv);
+    return;
+  }
+  // If this frame's result already arrived, publish immediately with its
+  // facts: nothing is held and no latency is added in that direction.
+  bool publish_now = false;
+  FrameView overflow{};
+  bool has_overflow = false;
+  {
+    std::lock_guard<std::mutex> pl(s->pending_facts_m);
+    for (auto it = s->pending_fact_records.begin();
+         it != s->pending_fact_records.end(); ++it) {
+      if (it->first == timestamp_ns) {
+        fv.image_facts = std::move(it->second);
+        s->pending_fact_records.erase(it);
+        publish_now = true;
+        break;
+      }
+    }
+    if (!publish_now &&
+        s->pending_fact_frames.size() >= StreamProduction::kMaxPendingFactFrames) {
+      overflow = std::move(s->pending_fact_frames.front().frame);
+      s->pending_fact_frames.pop_front();
+      has_overflow = true;
+    }
+    if (!publish_now) {
+      s->pending_fact_frames.push_back(
+          StreamProduction::PendingFactFrame{timestamp_ns, std::move(fv)});
+    }
+  }
+  // Outside the lock: posting runs the strand's admission path.
+  if (publish_now) {
+    backend.strand->post_frame(fv);
+  }
+  if (has_overflow) {
+    backend.strand->post_frame(overflow);
+  }
 }
 
 // ---- NDK callbacks --------------------------------------------------------
@@ -1724,6 +1841,137 @@ void extract_result_facts(const ACameraMetadata* result, ResultFacts& out) {
   }
 }
 
+// Camera2 result metadata -> the per-image fact record, for ONE delivered
+// image. Shared by the still-capture path and the repeating-stream path: both
+// receive the same ACameraMetadata result, so both must turn it into facts the
+// same way. Written once so a stream frame and a capture of the same moment
+// cannot describe the camera differently.
+ProviderCaptureImageFacts image_facts_from_result_facts(
+    const ResultFacts& facts, const StaticCharacteristics& chars) {
+  ProviderCaptureImageFacts image_facts{};
+  if (facts.has_exposure_ns) {
+    if (const auto fact = ExposureTime::create(
+            static_cast<double>(facts.exposure_ns))) {
+      image_facts.exposure_time =
+          SourcedFact<ExposureTime>{*fact, FactOrigin::NATIVE_REPORTED};
+    }
+  }
+  if (facts.has_iso) {
+    if (const auto fact = SensorSensitivityIso::create(
+            static_cast<double>(facts.iso))) {
+      image_facts.sensor_sensitivity_iso =
+          SourcedFact<SensorSensitivityIso>{*fact, FactOrigin::NATIVE_REPORTED};
+    }
+  }
+  if (facts.has_aperture) {
+    if (const auto fact = ApertureFNumber::create(
+            static_cast<double>(facts.aperture))) {
+      image_facts.aperture_f_number =
+          SourcedFact<ApertureFNumber>{*fact, FactOrigin::NATIVE_REPORTED};
+    }
+  }
+  if (facts.has_focal_length_mm) {
+    if (const auto fact = FocalLengthMm::create(
+            static_cast<double>(facts.focal_length_mm))) {
+      image_facts.focal_length_mm =
+          SourcedFact<FocalLengthMm>{*fact, FactOrigin::NATIVE_REPORTED};
+    }
+  }
+  // Focus distance is reported in diopters, and only devices whose
+  // calibration is APPROXIMATE or CALIBRATED report it in real ones. An
+  // UNCALIBRATED reading is a hardware-dependent number with no unit, so
+  // converting it to metres would be exactly the unit fabrication the
+  // brief forbids -- it is omitted instead.
+  if (facts.has_focus_diopters && chars.focus_distance_is_metric) {
+    const float diopters = facts.focus_diopters;
+    if (diopters == 0.0f) {
+      image_facts.focus_state =
+          SourcedFact<FocusState>{FocusAtInfinity{}, FactOrigin::NATIVE_REPORTED};
+    } else if (diopters > 0.0f) {
+      if (const auto fact =
+              FocusAtDistance::create(1.0 / static_cast<double>(diopters))) {
+        image_facts.focus_state =
+            SourcedFact<FocusState>{*fact, FactOrigin::NATIVE_REPORTED};
+      }
+    }
+  }
+  // Intrinsics and distortion are per-image rather than static because
+  // the coordinate system they are expressed in is decided per capture
+  // by ACAMERA_DISTORTION_CORRECTION_MODE, which is only knowable from
+  // that capture's own result metadata:
+  //   OFF      -> pre-correction active array, delivered pixels DISTORTED
+  //   FAST/HQ  -> active array, delivered pixels RECTIFIED
+  // Both arrays are sensor rectangles, not the delivered image. The
+  // delivered frame is cropped and scaled from them, so these f/c values
+  // are NOT valid in delivered-image pixels. They are published in the
+  // sensor domain they were measured in and left there: rescaling them
+  // to the output size would be exactly the intrinsic rescaling and
+  // coordinate-domain conversion CamBANG does not do. A consumer that
+  // needs delivered-image intrinsics must do that conversion itself,
+  // knowing the crop it asked for.
+  //
+  // A result may omit the mode entirely -- real hardware does; the S20
+  // reports intrinsics and distortion on every capture but never the
+  // correction mode. That omission is only ambiguous for a device that
+  // *can* correct. Camera2 documents that a device not supporting the
+  // correction API "will always list only OFF", so for a device
+  // advertising no correction capability, OFF is derived from stated
+  // capability rather than assumed. When the device can correct but did
+  // not say whether it did, the domain genuinely is unknowable and both
+  // facts are omitted rather than published against a guessed frame.
+  const bool correction_mode_known =
+      facts.has_distortion_correction_mode ||
+      !chars.distortion_correction_supported;
+  if (correction_mode_known) {
+    const bool corrected =
+        facts.has_distortion_correction_mode &&
+        facts.distortion_correction_mode !=
+            ACAMERA_DISTORTION_CORRECTION_MODE_OFF;
+    const bool have_reference =
+        corrected ? chars.has_active_array : chars.has_pre_correction_array;
+    const uint32_t ref_w =
+        corrected ? chars.active_array_w : chars.pre_correction_array_w;
+    const uint32_t ref_h =
+        corrected ? chars.active_array_h : chars.pre_correction_array_h;
+    const CoordinateDomain domain =
+        corrected ? CoordinateDomain{CoordinateDomainAndroidSensorActiveArray{}}
+                  : CoordinateDomain{
+                        CoordinateDomainAndroidSensorPreCorrectionActiveArray{}};
+
+    if (have_reference && facts.has_intrinsics) {
+      // [f_x, f_y, c_x, c_y, s] -- Camera2 reports skew, which the
+      // WinRT backend cannot, so it is carried rather than dropped.
+      if (const auto intrinsics_fact = Intrinsics::create(
+              static_cast<double>(facts.intrinsics[0]),
+              static_cast<double>(facts.intrinsics[1]),
+              static_cast<double>(facts.intrinsics[2]),
+              static_cast<double>(facts.intrinsics[3]),
+              static_cast<double>(facts.intrinsics[4]),
+              ref_w, ref_h, domain)) {
+        image_facts.intrinsics =
+            SourcedFact<Intrinsics>{*intrinsics_fact, FactOrigin::NATIVE_REPORTED};
+      }
+    }
+    if (have_reference && facts.has_distortion) {
+      // [kappa_1..kappa_3] radial, [kappa_4, kappa_5] tangential.
+      if (const auto distortion_fact = BrownConrady5Distortion::create(
+              static_cast<double>(facts.distortion[0]),
+              static_cast<double>(facts.distortion[1]),
+              static_cast<double>(facts.distortion[2]),
+              static_cast<double>(facts.distortion[3]),
+              static_cast<double>(facts.distortion[4]),
+              ref_w, ref_h, domain,
+              corrected ? DistortionImageState::RECTIFIED
+                        : DistortionImageState::DISTORTED)) {
+        image_facts.distortion = SourcedFact<Distortion>{
+            Distortion{*distortion_fact}, FactOrigin::NATIVE_REPORTED};
+      }
+    }
+  }
+  return image_facts;
+}
+
+
 void on_capture_completed(void* context,
                           ACameraCaptureSession* /*session*/,
                           ACaptureRequest* /*request*/,
@@ -1793,6 +2041,55 @@ void on_repeating_capture_completed(void* context,
   if (!ctx || !result) return;
   std::shared_ptr<DeviceBackend> backend = ctx->backend.lock();
   if (!backend) return;
+
+  // This frame's per-image facts. Camera2 delivers the same result metadata for
+  // a repeating request as for a still, so reading them costs only the parse of
+  // what has already arrived on a callback we already run.
+  //
+  // The image itself was copied out earlier and is being held for exactly this:
+  // matching on ACAMERA_SENSOR_TIMESTAMP, which the result and the image both
+  // carry for the same frame, binds the facts to the pixels they describe
+  // rather than to whichever frame happens to be current.
+  if (StreamProduction* s = backend->stream.get()) {
+    ResultFacts rf{};
+    extract_result_facts(result, rf);
+    if (rf.has_sensor_timestamp) {
+      FrameView matched{};
+      bool found = false;
+      {
+        std::lock_guard<std::mutex> pl(s->pending_facts_m);
+        for (auto it = s->pending_fact_frames.begin();
+             it != s->pending_fact_frames.end(); ++it) {
+          if (it->timestamp_ns == rf.sensor_timestamp_ns) {
+            matched = std::move(it->frame);
+            s->pending_fact_frames.erase(it);
+            found = true;
+            break;
+          }
+        }
+      }
+      ProviderCaptureImageFacts facts =
+          image_facts_from_result_facts(rf, backend->chars);
+      if (found) {
+        matched.image_facts = std::move(facts);
+        if (backend->strand) {
+          backend->strand->post_frame(matched);
+        } else {
+          discard_pending_frame(matched);
+        }
+      } else {
+        // The image has not surfaced yet. Hold the facts for it rather than
+        // dropping them: this is the other delivery order, and discarding
+        // here is what made the first implementation of this silently inert.
+        std::lock_guard<std::mutex> pl(s->pending_facts_m);
+        s->pending_fact_records.emplace_back(rf.sensor_timestamp_ns, std::move(facts));
+        while (s->pending_fact_records.size() >
+               StreamProduction::kMaxPendingFactRecords) {
+          s->pending_fact_records.pop_front();
+        }
+      }
+    }
+  }
 
   ACameraMetadata_const_entry entry{};
 
@@ -3616,6 +3913,9 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
         if (backend->stream) {
           dark_stream_id = backend->stream->stream_id;
           backend->stream->producing = false;
+          // Anything held for its metadata is published now, factless: the frame
+          // was copied out and is real, and facts that never arrived are absent.
+          camera2_detail::flush_pending_frames(*backend->stream, backend->strand);
         }
       }
       camera2_detail::log_line(
@@ -4021,6 +4321,9 @@ ProviderResult Camera2CameraProvider::stop_stream(uint64_t stream_id) {
       if (stream && stream->stream_id == stream_id) {
         already_stopped_by_error = !stream->producing;
         stream->producing = false;
+        // Anything held for its metadata is published now, factless: the frame
+        // was copied out and is real, and facts that never arrived are absent.
+        camera2_detail::flush_pending_frames(*backend->stream, backend->strand);
       }
     }
     // Stop the repeating flow for real; leaving it running would keep the
@@ -5582,127 +5885,8 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
       // is a supply-side addition only: Core's precedence (external ADC
       // ingestion > provider per-image > provider static) is untouched.
       if (captured.has_facts) {
-        ProviderCaptureImageFacts image_facts{};
-        if (captured.facts.has_exposure_ns) {
-          if (const auto fact = ExposureTime::create(
-                  static_cast<double>(captured.facts.exposure_ns))) {
-            image_facts.exposure_time =
-                SourcedFact<ExposureTime>{*fact, FactOrigin::NATIVE_REPORTED};
-          }
-        }
-        if (captured.facts.has_iso) {
-          if (const auto fact = SensorSensitivityIso::create(
-                  static_cast<double>(captured.facts.iso))) {
-            image_facts.sensor_sensitivity_iso =
-                SourcedFact<SensorSensitivityIso>{*fact, FactOrigin::NATIVE_REPORTED};
-          }
-        }
-        if (captured.facts.has_aperture) {
-          if (const auto fact = ApertureFNumber::create(
-                  static_cast<double>(captured.facts.aperture))) {
-            image_facts.aperture_f_number =
-                SourcedFact<ApertureFNumber>{*fact, FactOrigin::NATIVE_REPORTED};
-          }
-        }
-        if (captured.facts.has_focal_length_mm) {
-          if (const auto fact = FocalLengthMm::create(
-                  static_cast<double>(captured.facts.focal_length_mm))) {
-            image_facts.focal_length_mm =
-                SourcedFact<FocalLengthMm>{*fact, FactOrigin::NATIVE_REPORTED};
-          }
-        }
-        // Focus distance is reported in diopters, and only devices whose
-        // calibration is APPROXIMATE or CALIBRATED report it in real ones. An
-        // UNCALIBRATED reading is a hardware-dependent number with no unit, so
-        // converting it to metres would be exactly the unit fabrication the
-        // brief forbids -- it is omitted instead.
-        if (captured.facts.has_focus_diopters && chars.focus_distance_is_metric) {
-          const float diopters = captured.facts.focus_diopters;
-          if (diopters == 0.0f) {
-            image_facts.focus_state =
-                SourcedFact<FocusState>{FocusAtInfinity{}, FactOrigin::NATIVE_REPORTED};
-          } else if (diopters > 0.0f) {
-            if (const auto fact =
-                    FocusAtDistance::create(1.0 / static_cast<double>(diopters))) {
-              image_facts.focus_state =
-                  SourcedFact<FocusState>{*fact, FactOrigin::NATIVE_REPORTED};
-            }
-          }
-        }
-        // Intrinsics and distortion are per-image rather than static because
-        // the coordinate system they are expressed in is decided per capture
-        // by ACAMERA_DISTORTION_CORRECTION_MODE, which is only knowable from
-        // that capture's own result metadata:
-        //   OFF      -> pre-correction active array, delivered pixels DISTORTED
-        //   FAST/HQ  -> active array, delivered pixels RECTIFIED
-        // Both arrays are sensor rectangles, not the delivered image. The
-        // delivered frame is cropped and scaled from them, so these f/c values
-        // are NOT valid in delivered-image pixels. They are published in the
-        // sensor domain they were measured in and left there: rescaling them
-        // to the output size would be exactly the intrinsic rescaling and
-        // coordinate-domain conversion CamBANG does not do. A consumer that
-        // needs delivered-image intrinsics must do that conversion itself,
-        // knowing the crop it asked for.
-        //
-        // A result may omit the mode entirely -- real hardware does; the S20
-        // reports intrinsics and distortion on every capture but never the
-        // correction mode. That omission is only ambiguous for a device that
-        // *can* correct. Camera2 documents that a device not supporting the
-        // correction API "will always list only OFF", so for a device
-        // advertising no correction capability, OFF is derived from stated
-        // capability rather than assumed. When the device can correct but did
-        // not say whether it did, the domain genuinely is unknowable and both
-        // facts are omitted rather than published against a guessed frame.
-        const bool correction_mode_known =
-            captured.facts.has_distortion_correction_mode ||
-            !chars.distortion_correction_supported;
-        if (correction_mode_known) {
-          const bool corrected =
-              captured.facts.has_distortion_correction_mode &&
-              captured.facts.distortion_correction_mode !=
-                  ACAMERA_DISTORTION_CORRECTION_MODE_OFF;
-          const bool have_reference =
-              corrected ? chars.has_active_array : chars.has_pre_correction_array;
-          const uint32_t ref_w =
-              corrected ? chars.active_array_w : chars.pre_correction_array_w;
-          const uint32_t ref_h =
-              corrected ? chars.active_array_h : chars.pre_correction_array_h;
-          const CoordinateDomain domain =
-              corrected ? CoordinateDomain{CoordinateDomainAndroidSensorActiveArray{}}
-                        : CoordinateDomain{
-                              CoordinateDomainAndroidSensorPreCorrectionActiveArray{}};
-
-          if (have_reference && captured.facts.has_intrinsics) {
-            // [f_x, f_y, c_x, c_y, s] -- Camera2 reports skew, which the
-            // WinRT backend cannot, so it is carried rather than dropped.
-            if (const auto intrinsics_fact = Intrinsics::create(
-                    static_cast<double>(captured.facts.intrinsics[0]),
-                    static_cast<double>(captured.facts.intrinsics[1]),
-                    static_cast<double>(captured.facts.intrinsics[2]),
-                    static_cast<double>(captured.facts.intrinsics[3]),
-                    static_cast<double>(captured.facts.intrinsics[4]),
-                    ref_w, ref_h, domain)) {
-              image_facts.intrinsics =
-                  SourcedFact<Intrinsics>{*intrinsics_fact, FactOrigin::NATIVE_REPORTED};
-            }
-          }
-          if (have_reference && captured.facts.has_distortion) {
-            // [kappa_1..kappa_3] radial, [kappa_4, kappa_5] tangential.
-            if (const auto distortion_fact = BrownConrady5Distortion::create(
-                    static_cast<double>(captured.facts.distortion[0]),
-                    static_cast<double>(captured.facts.distortion[1]),
-                    static_cast<double>(captured.facts.distortion[2]),
-                    static_cast<double>(captured.facts.distortion[3]),
-                    static_cast<double>(captured.facts.distortion[4]),
-                    ref_w, ref_h, domain,
-                    corrected ? DistortionImageState::RECTIFIED
-                              : DistortionImageState::DISTORTED)) {
-              image_facts.distortion = SourcedFact<Distortion>{
-                  Distortion{*distortion_fact}, FactOrigin::NATIVE_REPORTED};
-            }
-          }
-        }
-
+        ProviderCaptureImageFacts image_facts =
+            camera2_detail::image_facts_from_result_facts(captured.facts, chars);
         // Reported after construction, not merely after the metadata read: the
         // create() validators reject non-finite or degenerately-referenced
         // values, so "device supplied it" and "we published it" are different
@@ -6255,6 +6439,10 @@ ProviderResult Camera2CameraProvider::shutdown() {
       std::lock_guard<std::mutex> bl(dev_it->second.backend->m);
       if (dev_it->second.backend->stream) {
         dev_it->second.backend->stream->producing = false;
+        // Anything held for its metadata is published now, factless: the frame
+        // was copied out and is real, and facts that never arrived are absent.
+        camera2_detail::flush_pending_frames(*dev_it->second.backend->stream,
+                             dev_it->second.backend->strand);
       }
     }
     st.started = false;

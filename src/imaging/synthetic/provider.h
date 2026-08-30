@@ -475,6 +475,15 @@ private:
   void emit_native_create_device_(const DeviceState& d);
   void emit_native_destroy_(uint64_t native_id);
   void emit_camera_static_facts_(const DeviceState& d);
+  // The authored per-image facts for one delivered image, shared by the
+  // capture path and the stream path so the two cannot describe the same
+  // virtual camera differently. Caller holds provider_state_mutex_.
+  ProviderCaptureImageFacts authored_image_facts_locked_(
+      uint64_t device_instance_id,
+      uint32_t width,
+      uint32_t height,
+      int32_t applied_exposure_compensation_milli_ev) const;
+
   void emit_capture_image_facts_(const CaptureRequest& request,
                                  uint32_t image_member_index,
                                  int32_t applied_exposure_compensation_milli_ev);

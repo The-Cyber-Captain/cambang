@@ -165,11 +165,16 @@ struct CoreImageFactBundle {
   ResultImagePropertiesProvenance image_properties_provenance{};
 };
 
-// Private completed-result fact view. These source-neutral facts deliberately
-// remain separate from the legacy flattened result facts above until a public
-// result surface is explicitly approved.
-struct CoreResolvedCaptureImageFacts {
-  CameraStaticFacts camera;
+// Completed-result fact view. These source-neutral facts remain separate from
+// the legacy flattened result facts above.
+//
+// The device-scoped subset (facing, nature, sensor orientation, pose) IS now a
+// public result surface, approved 2026-08-27 and projected on both
+// CamBANGCaptureResult and CamBANGStreamResult through one resolver, so the
+// two cannot describe the same camera differently. The remaining fields stay
+// private pending their own approval.
+struct CoreResolvedImageFacts {
+  ResolvedCameraDeviceFacts camera;
   CaptureImageFacts image;
 };
 
@@ -200,7 +205,19 @@ struct CoreStreamResultData {
   // retained stream result. Used to distinguish current CPU materialization
   // from unsupported GPU-only readback.
   uint64_t payload_retained_frame_id = 0;
-  CaptureImageFacts image_facts{};
+  // The same record, under the same name, as a capture image member holds. A
+  // stream frame and a capture image are both delivered images, so they carry
+  // one fact record rather than two shapes that have to be kept in agreement.
+  //
+  // Resolved once and frozen with this frame rather than looked up on access,
+  // so a held stream result reports the facts that were true when its pixels
+  // were taken, and a stream result and a capture result from the same moment
+  // cannot disagree.
+  //
+  // Today a provider delivers only acquisition_timing with a stream frame, so
+  // the rest of the image half stays empty here. That is absence of knowledge,
+  // not a suppressed field: nothing filters this record on the way out.
+  CoreResolvedImageFacts resolved_image_facts{};
   CoreImageFactBundle facts{};
 };
 
@@ -229,7 +246,7 @@ struct CoreCaptureResultData {
     SharedResultAccessClassificationRecord access_classification{};
     CoreResultAccessPostureKey access_posture{};
 
-    CoreResolvedCaptureImageFacts resolved_image_facts{};
+    CoreResolvedImageFacts resolved_image_facts{};
   };
 
   uint64_t capture_id = 0;
@@ -546,12 +563,17 @@ public:
   CoreResultStore() = default;
   ~CoreResultStore() = default;
 
+  // stream_facts is resolved by the caller because this store has no access to
+  // external camera-description state; see
+  // CoreDispatcher::set_device_camera_facts_resolver. Its acquisition_timing is
+  // filled here from the delivered frame, mirroring finalize_capture_facts.
   bool retain_frame(const FrameView& frame,
                     std::optional<StreamIntent> stream_intent,
                     uint64_t stream_applied_access_posture_epoch = 0,
                     uint64_t capture_applied_access_posture_epoch = 0,
                     CoreRetainedProductionPlan stream_requested_retained_plan = {},
-                    CoreRetainedProductionPlan capture_requested_retained_plan = {});
+                    CoreRetainedProductionPlan capture_requested_retained_plan = {},
+                    CoreResolvedImageFacts stream_facts = {});
   bool append_additional_capture_image(uint64_t capture_id,
                                        uint64_t device_instance_id,
                                        CoreCaptureResultData::ImageMemberData image_member,
@@ -561,7 +583,7 @@ public:
       uint64_t capture_id,
       uint64_t device_instance_id,
       std::optional<CaptureAdmissionContext> admission_context,
-      const std::function<CoreResolvedCaptureImageFacts(uint32_t image_member_index)>&
+      const std::function<CoreResolvedImageFacts(uint32_t image_member_index)>&
           resolve_image_facts);
   static bool try_build_capture_image_member_data_from_frame(
       const FrameView& frame,
@@ -571,6 +593,7 @@ public:
                                                               CoreResultPayloadCpu& out_payload);
 
   SharedStreamResultData get_latest_stream_result(uint64_t stream_id) const;
+
   // A Device Capture Id identifies one device capture on its own: the id
   // spaces were split (capture_identity_and_lifecycle.md 2.1) so nothing else
   // can share it, and the per-device nesting below survives only because

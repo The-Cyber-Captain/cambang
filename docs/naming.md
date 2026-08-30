@@ -643,10 +643,14 @@ Public/runtime-visible image-bearing nouns remain:
 - **Capture Result**
 - **Capture Result Set**
 
-`Capture Result` is the sole current Godot result surface for rich still-camera
-facts and capture-admission context. It uses the existing member dictionary,
-not a `get_camera_facts()` method or a new fact-wrapper class; `Stream Result`
-remains metadata-light.
+`Capture Result` is the Godot result surface for the full still-camera fact set
+and capture-admission context. It uses the existing member dictionary, not a
+`get_camera_facts()` method or a new fact-wrapper class.
+
+`Stream Result` carries the same fact record, through its own
+`get_camera_facts()` method. It is lighter only because less is known about a
+stream frame: it holds every fact a device-keyed source can supply, and lacks
+only what a live provider reports for one delivered image.
 
 These are distinct from:
 

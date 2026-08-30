@@ -313,7 +313,49 @@ func _assert_camera_facts(result, label: String) -> void:
 func _assert_stream_camera_facts(stream_result, label: String) -> void:
 	var facts: Dictionary = stream_result.get_camera_facts()
 	var keys := facts.keys()
-	_require(keys.size() == 1 and keys[0] == "acquisition_timing", "%s: stream camera_facts must initially contain acquisition_timing only" % label)
+	# This asserted "acquisition_timing only" until the device-scoped four
+	# were approved onto this surface (2026-08-27). Updated rather than
+	# removed: the point was never the count, it was that no UNEXPECTED key
+	# appears, and that still holds. acquisition_timing remains required;
+	# the four are permitted and individually optional, since a provider
+	# that does not report one must omit it rather than invent a value.
+	# Widened 2026-08-29 when the device-keyed tiers began resolving for stream
+	# frames too, and again once FrameView carried the per-image record: a
+	# stream can now carry anything a capture can, so every fact name is
+	# permitted and this stays an unexpected-KEY test only.
+	#
+	# realized_image_transform was excluded here on the reasoning that it could
+	# never reach a stream. That was wrong -- a provider may set it on a
+	# delivered frame. What is actually invariant is its PROVENANCE: it
+	# describes what a provider did to its own pixels, so no external source
+	# may assert it. That is asserted below instead of excluding the key.
+	const PERMITTED_DEVICE_SCOPED := ["facing", "camera_nature", "sensor_orientation_degrees", "pose",
+		"intrinsics", "distortion", "focus_state", "exposure_time",
+		"sensor_sensitivity_iso", "aperture_f_number", "focal_length_mm",
+		"realized_image_transform"]
+	_require(
+		facts.has("acquisition_timing"),
+		"%s: stream camera_facts must carry acquisition_timing; got %s" % [label, str(keys)]
+	)
+	for key in keys:
+		var k := str(key)
+		if k == "acquisition_timing":
+			continue
+		_require(
+			PERMITTED_DEVICE_SCOPED.has(k),
+			"%s: unexpected key on stream camera_facts: '%s' (permitted: %s)"
+				% [label, k, str(PERMITTED_DEVICE_SCOPED)]
+		)
+
+	# Provenance, not presence: a provider may report what it did to these
+	# pixels, but no ingested description or other external source may claim to
+	# know it on the provider's behalf.
+	if facts.has("realized_image_transform"):
+		_require(
+			str((facts["realized_image_transform"] as Dictionary).get("origin", "")) != "user_supplied",
+			"%s: realized_image_transform must not be externally asserted; origin=%s"
+				% [label, str((facts["realized_image_transform"] as Dictionary).get("origin", ""))]
+		)
 	var timing: Dictionary = facts.get("acquisition_timing", {})
 	_require(
 		timing.get("origin", "") == "virtual_camera_authored"
