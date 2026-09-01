@@ -245,6 +245,21 @@ public:
     return caps;
   }
 
+  // Configurations this camera advertises, read straight from its static
+  // characteristics. Answerable with the camera CLOSED: Camera2 exposes
+  // ACameraManager_getCameraCharacteristics for any id in the id list, which is
+  // the same read enumerate_endpoints already performs.
+  //
+  // Sizes come from ACAMERA_SCALER_AVAILABLE_STREAM_CONFIGURATIONS for
+  // YUV_420_888. Each is paired with every format this provider advertises,
+  // because that is exactly the set a caller may pin: the 4:2:0 members name
+  // families rather than exact guarantees (see stream_format_capabilities),
+  // and the packed formats are produced by conversion from whatever the device
+  // delivered, so they are available at every size the device offers.
+  ProviderProfileCatalog stream_profile_catalog(
+      const std::string& hardware_id) const override;
+  ProviderProfileCatalog capture_profile_catalog(
+      const std::string& hardware_id) const override;
   // Still capture takes the same YUV_420_888 output as streams, so it can
   // deliver the planar family unconverted too.
   ProducerFormatCapabilities capture_format_capabilities(

@@ -315,6 +315,23 @@ godot::Dictionary CamBANGDevice::get_still_capture_profile() const {
   return server_->get_device_still_capture_profile(device_instance_id);
 }
 
+// Convenience wrappers over the endpoint-scoped pair on CamBANGServer. The
+// answer describes the camera behind this device, not this device's state, so
+// it is the same before and after engage().
+godot::Dictionary CamBANGDevice::get_supported_stream_profiles() const {
+  if (!server_) {
+    return godot::Dictionary();
+  }
+  return server_->get_supported_stream_profiles(get_hardware_id());
+}
+
+godot::Dictionary CamBANGDevice::get_supported_capture_profiles() const {
+  if (!server_) {
+    return godot::Dictionary();
+  }
+  return server_->get_supported_capture_profiles(get_hardware_id());
+}
+
 void CamBANGDevice::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_instance_id"), &CamBANGDevice::get_instance_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_hardware_id"), &CamBANGDevice::get_hardware_id);
@@ -333,6 +350,8 @@ void CamBANGDevice::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("set_still_capture_profile", "profile"), &CamBANGDevice::set_still_capture_profile);
   godot::ClassDB::bind_method(godot::D_METHOD("set_capture_picture", "picture"), &CamBANGDevice::set_capture_picture);
   godot::ClassDB::bind_method(godot::D_METHOD("get_still_capture_profile"), &CamBANGDevice::get_still_capture_profile);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_supported_stream_profiles"), &CamBANGDevice::get_supported_stream_profiles);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_supported_capture_profiles"), &CamBANGDevice::get_supported_capture_profiles);
   ADD_PROPERTY(godot::PropertyInfo(godot::Variant::BOOL, "live"), "", "is_live");
   ADD_SIGNAL(godot::MethodInfo(
       "live_changed",

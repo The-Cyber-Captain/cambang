@@ -4034,6 +4034,16 @@ CoreResolvedImageFacts resolve_image_facts_from_tiers(
   // need the frame to have reported anything.
   out.image.intrinsics = e.intrinsics ? e.intrinsics : i.intrinsics ? i.intrinsics : p.intrinsics;
   out.image.distortion = e.distortion ? e.distortion : i.distortion ? i.distortion : p.distortion;
+  // Same chain, resolved independently: a description may correct the
+  // delivered-image calibration without touching the sensor-domain one, or
+  // either alone. Core never derives one from the other -- that is the
+  // provider's job, because only it knows what it measured.
+  out.image.intrinsics_delivered = e.intrinsics_delivered ? e.intrinsics_delivered
+      : i.intrinsics_delivered ? i.intrinsics_delivered
+      : p.intrinsics_delivered;
+  out.image.delivered_image_region = e.delivered_image_region ? e.delivered_image_region
+      : i.delivered_image_region ? i.delivered_image_region
+      : p.delivered_image_region;
   out.image.focus_state = e.focus_state ? e.focus_state : i.focus_state ? i.focus_state : p.focus_state;
   out.image.exposure_time =
       e.exposure_time ? e.exposure_time : i.exposure_time ? i.exposure_time : p.exposure_time;
@@ -4056,6 +4066,87 @@ CoreResolvedImageFacts resolve_image_facts_from_tiers(
 
 }  // namespace
 
+namespace {
+
+// Provider enumeration narrowed by an ingested description.
+//
+// A description CONSTRAINS: an entry it names that the device does not
+// advertise is dropped, not added, so a description can never invent a
+// configuration the hardware will refuse. Where there is no native enumeration
+// at all, the description stands on its own -- that is the one case where its
+// entries are taken as given, and the origin says so.
+ResolvedProfileCatalog resolve_profile_catalog(
+    const ProviderProfileCatalog& native,
+    const ProviderProfileCatalog* constraint) {
+  ResolvedProfileCatalog out{};
+  const auto same = [](const ProviderProfileEntry& a, const ProviderProfileEntry& b) {
+    // Identity is the geometry and format only; max_fps is informational and
+    // may legitimately differ between the two sources.
+    return a.width == b.width && a.height == b.height &&
+           a.format_fourcc == b.format_fourcc;
+  };
+
+  // Not this provider's endpoint: no catalog, and a description may NOT stand
+  // in. Checked first and unconditionally, because this is the case that would
+  // otherwise report configurations for hardware that is not present.
+  if (native.availability == ProfileCatalogAvailability::NOT_THIS_PROVIDER) {
+    return out;
+  }
+
+  if (native.availability == ProfileCatalogAvailability::CANNOT_ENUMERATE) {
+    // The endpoint exists but the provider cannot list it. A description may
+    // supply the catalog; without one there is simply nothing to report.
+    if (!constraint) {
+      return out;
+    }
+    out.enumerated = true;
+    out.entries = constraint->entries;
+    out.origin = FactOrigin::USER_SUPPLIED;
+    return out;
+  }
+
+  out.enumerated = true;
+  if (!constraint) {
+    out.entries = native.entries;
+    out.origin = FactOrigin::NATIVE_REPORTED;
+    return out;
+  }
+  // Narrowed, never extended: an entry the description names but the device
+  // does not advertise is dropped.
+  for (const auto& entry : native.entries) {
+    for (const auto& allowed : constraint->entries) {
+      if (same(entry, allowed)) {
+        out.entries.push_back(entry);
+        break;
+      }
+    }
+  }
+  // Core produced this, not either source alone.
+  out.origin = FactOrigin::CORE_DERIVED;
+  return out;
+}
+
+}  // namespace
+
+ResolvedProfileCatalog CoreRuntime::resolve_profile_catalog_on_core_thread_(
+    const std::string& hardware_id, bool want_capture) const {
+  assert(core_thread_.is_core_thread());
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    return ResolvedProfileCatalog{};
+  }
+  const ProviderProfileCatalog native = want_capture
+      ? prov->capture_profile_catalog(hardware_id)
+      : prov->stream_profile_catalog(hardware_id);
+  const ExternalCameraDescriptionEntry* external =
+      active_external_camera_description_.find_exact(hardware_id);
+  const std::optional<ProviderProfileCatalog>* constraint = nullptr;
+  if (external) {
+    constraint = want_capture ? &external->capture_profiles : &external->stream_profiles;
+  }
+  return resolve_profile_catalog(
+      native, (constraint && *constraint) ? &**constraint : nullptr);
+}
 CoreResolvedImageFacts CoreRuntime::device_scoped_image_facts_on_core_thread_(
     uint64_t device_instance_id,
     const ProviderCaptureImageFacts* frame_image) const {
@@ -6337,6 +6428,38 @@ TrySetWarmHoldStatus CoreRuntime::try_set_device_warm_hold_ms(
   return TrySetWarmHoldStatus::Busy;
 }
 
+bool CoreRuntime::profile_catalog_for_server(const std::string& hardware_id,
+                                             bool want_capture,
+                                             ResolvedProfileCatalog& out) const {
+  out = ResolvedProfileCatalog{};
+  if (hardware_id.empty()) {
+    return false;
+  }
+  // Resolved on demand rather than retained. The provider query is a static
+  // characteristics read, callers list profiles at setup rather than per frame,
+  // and answering here means the catalog is available as soon as an endpoint is
+  // known -- with no window where it exists but is not yet readable.
+  if (core_thread_.is_core_thread()) {
+    out = resolve_profile_catalog_on_core_thread_(hardware_id, want_capture);
+    return true;
+  }
+  auto completion = std::make_shared<std::promise<ResolvedProfileCatalog>>();
+  std::future<ResolvedProfileCatalog> completed = completion->get_future();
+  CoreRuntime* self = const_cast<CoreRuntime*>(this);
+  const CoreThread::PostResult pr = self->try_post(
+      [this, hardware_id, want_capture, completion]() {
+        completion->set_value(
+            resolve_profile_catalog_on_core_thread_(hardware_id, want_capture));
+      });
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return false;
+  }
+  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    return false;
+  }
+  out = completed.get();
+  return true;
+}
 bool CoreRuntime::materialize_capture_request_for_server(uint64_t device_instance_id, CaptureRequest& out) const {
   out = CaptureRequest{};
   if (device_instance_id == 0) {

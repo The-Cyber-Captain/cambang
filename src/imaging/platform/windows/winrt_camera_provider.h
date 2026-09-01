@@ -50,6 +50,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -205,6 +206,17 @@ public:
 
   ProviderResult initialize(IProviderCallbacks* callbacks) override;
   ProviderResult enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) override;
+
+  // Configurations this endpoint advertises.
+  //
+  // WinRT reads formats from a MediaFrameSource, which exists only once the
+  // camera is open, so an open device answers ENUMERATED and a known-but-closed
+  // one answers CANNOT_ENUMERATE -- an honest "it exists, I cannot list it",
+  // which an ingested description may fill in.
+  ProviderProfileCatalog stream_profile_catalog(
+      const std::string& hardware_id) const override;
+  ProviderProfileCatalog capture_profile_catalog(
+      const std::string& hardware_id) const override;
 
   ProviderResult open_device(
       const std::string& hardware_id,
@@ -478,6 +490,17 @@ private:
 
   // Provider bookkeeping state. Lock ordering when both are needed:
   // capture_mutex_ before state_mutex_ (matches SyntheticProvider).
+  // Ids returned by the most recent enumerate_endpoints(). Lets the profile
+  // catalog tell an endpoint this provider owns but has not opened (which a
+  // description may describe) from one it does not own at all (which a
+  // description must NOT be allowed to describe). WinRT cannot list a
+  // camera's formats without an initialised MediaFrameSource, so that
+  // distinction cannot come from the format query itself.
+  //
+  // Empty until something enumerates, which makes an unenumerated id read as
+  // not-ours: conservative, and the order a caller works in anyway.
+  mutable std::mutex known_endpoints_mutex_;
+  std::set<std::string> known_endpoint_ids_;
   mutable std::mutex state_mutex_;
   std::map<uint64_t, DeviceState> devices_;   // key: device_instance_id
   std::map<uint64_t, StreamState> streams_;   // key: stream_id

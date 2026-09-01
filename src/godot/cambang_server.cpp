@@ -3096,6 +3096,58 @@ bool CamBANGServer::get_endpoint_capture_template_profile(const godot::String& h
   return out_profile.width > 0 && out_profile.height > 0 && out_profile.format_fourcc != 0;
 }
 
+godot::Dictionary CamBANGServer::get_supported_stream_profiles(
+    const godot::String& hardware_id) const {
+  return get_device_profile_catalog(hardware_id, false);
+}
+
+godot::Dictionary CamBANGServer::get_supported_capture_profiles(
+    const godot::String& hardware_id) const {
+  return get_device_profile_catalog(hardware_id, true);
+}
+
+godot::Dictionary CamBANGServer::get_device_profile_catalog(const godot::String& hardware_id,
+                                                            bool want_capture) const {
+  godot::Dictionary out;
+  if (hardware_id.is_empty() || !is_public_boundary_ready_()) {
+    return out;
+  }
+  ResolvedProfileCatalog catalog{};
+  if (!runtime_.profile_catalog_for_server(
+          std::string(hardware_id.utf8().get_data()), want_capture, catalog)) {
+    return out;
+  }
+  // "profiles" is present only when the provider could enumerate. An empty
+  // array then means the device offers nothing, which is a different answer
+  // from this key being absent, and a caller acts on the difference.
+  if (!catalog.enumerated) {
+    return out;
+  }
+  godot::Array profiles;
+  for (const auto& entry : catalog.entries) {
+    // The profile is NESTED, and uses exactly the keys create_stream() accepts,
+    // so a caller hands entry["profile"] straight back with no translation.
+    // Flattening max_fps in beside them would either break that parser (its key
+    // list is deliberately strict) or blur a capability into a request:
+    // max_fps is what the device can do, target_fps_max is what you ask for,
+    // and those must not be confused.
+    godot::Dictionary profile;
+    profile["width"] = static_cast<int64_t>(entry.width);
+    profile["height"] = static_cast<int64_t>(entry.height);
+    profile["format_fourcc"] = static_cast<int64_t>(entry.format_fourcc);
+
+    godot::Dictionary p;
+    p["profile"] = profile;
+    // Omitted rather than zeroed when the provider cannot derive it: a zero
+    // frame rate would read as a measurement.
+    if (entry.max_fps) p["max_fps"] = *entry.max_fps;
+    profiles.push_back(p);
+  }
+  out["profiles"] = profiles;
+  out["origin"] = godot::String(camera_fact_convert::fact_origin_name(catalog.origin));
+  return out;
+}
+
 godot::Dictionary CamBANGServer::get_device_still_capture_profile(uint64_t device_instance_id) const {
   godot::Dictionary out;
   if (device_instance_id == 0 || !is_public_boundary_ready_()) {
@@ -4899,6 +4951,8 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_backing_plan_evaluation_diagnostics"), &CamBANGServer::get_backing_plan_evaluation_diagnostics);
   godot::ClassDB::bind_method(godot::D_METHOD("enumerate_devices"), &CamBANGServer::enumerate_devices);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device_for_hardware_id", "hardware_id"), &CamBANGServer::get_device_for_hardware_id);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_supported_stream_profiles", "hardware_id"), &CamBANGServer::get_supported_stream_profiles);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_supported_capture_profiles", "hardware_id"), &CamBANGServer::get_supported_capture_profiles);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device", "device_instance_id"), &CamBANGServer::get_device);
   godot::ClassDB::bind_method(godot::D_METHOD("get_rig", "rig_id"), &CamBANGServer::get_rig);
   godot::ClassDB::bind_method(godot::D_METHOD("create_rig", "devices"), &CamBANGServer::create_rig);

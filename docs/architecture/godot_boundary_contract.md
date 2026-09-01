@@ -125,6 +125,109 @@ runtime-instance seam rather than endpoint-handle identity alone;
 
 Endpoint startup intent is also narrow and hardware-id scoped. During the pre-baseline startup window, endpoint-handle `engage()`, `set_still_capture_profile(...)`, and `set_warm_policy(...)` may be accepted as startup intent. Those calls do not execute core/provider runtime effects before baseline: the clean `state_published(gen, 0, 0)` snapshot is emitted and latch-visible first, and accepted endpoint intents are applied only afterward, so their observable device/profile/warm-policy effects appear in later snapshots (normally `version >= 1`). Multiple pre-baseline profile or warm-policy calls for the same endpoint/session are deterministic last-write-wins. Accepted endpoint startup intent either applies after baseline or fails visibly; it is not retained indefinitely. Stream creation, capture triggering, result lookup, rig capture, timeline advancement, and commands that depend on runtime instance lineage are not part of this exception.
 
+---
+
+# Supported Profile Catalogs
+
+`CamBANGServer` reports the configurations an endpoint advertises:
+
+```gdscript
+CamBANGServer.get_supported_stream_profiles(hardware_id) -> Dictionary
+CamBANGServer.get_supported_capture_profiles(hardware_id) -> Dictionary
+```
+
+`CamBANGDevice` carries the same pair without arguments, answering for the
+endpoint behind that device:
+
+```gdscript
+device.get_supported_stream_profiles() -> Dictionary
+device.get_supported_capture_profiles() -> Dictionary
+```
+
+Both routes return the same value for the same endpoint. The server pair is the
+discovery form -- a caller listing cameras to build a settings screen reads it
+straight after `enumerate_devices()`, without constructing a device object per
+camera to ask a question that needs none.
+
+## A catalog describes an endpoint, not a session
+
+A catalog is endpoint truth, readable through endpoint identity, in the same
+narrow startup-safe sense as `enumerate_devices()` above. It is therefore
+**readable before `engage()`**, and does not change when a device is engaged or
+disengaged. This is deliberate: a caller chooses a configuration before opening
+a camera, and requiring the camera to be open first would invert the order in
+which the decision is made.
+
+## Shape
+
+```gdscript
+{
+  "profiles": [                       # key ABSENT when the provider cannot enumerate
+    {
+      "profile": { "width": 1280, "height": 720, "format_fourcc": 842094158 },
+      "max_fps": 30.0                 # omitted when the provider cannot derive one
+    },
+  ],
+  "origin": "native_reported",
+}
+```
+
+The profile is **nested**, and carries exactly the keys `create_stream()` and
+`set_still_capture_profile()` accept, so an advertised entry is handed back
+without translation:
+
+```gdscript
+device.create_stream({ "intent": CamBANGStream.INTENT_PREVIEW,
+                       "profile": entry["profile"] })
+```
+
+`max_fps` sits beside the profile rather than inside it because it is a
+**capability, not a request**. It reports what the device can do; `target_fps`
+and `target_fps_max` in a stream profile ask for something. Those must not be
+confused, and the nesting is what keeps them apart.
+
+## Absence is not emptiness
+
+`profiles` is **absent** when the provider cannot enumerate configurations for
+that endpoint. It is **present and empty** when the endpoint genuinely offers
+none. These are different claims and a caller acts on the difference, so the
+test is:
+
+```gdscript
+if not caps.has("profiles"):
+    return   # cannot enumerate -- do not silently fall back to a guessed default
+```
+
+A provider legitimately cannot enumerate in some states: a backend that reads
+formats from an open camera reports nothing while that camera is closed. An
+unknown or unowned `hardware_id` likewise reports no catalog, so a catalog is
+never returned for hardware that is not present.
+
+## Identity of an entry
+
+`width`, `height` and `format_fourcc` identify a configuration. `max_fps` does
+not: it is derived on at least one backend and can move with a driver update
+while the geometry is unchanged. A caller matching a remembered choice matches
+on the three integers.
+
+Entries are per format, not per resolution: the same geometry appears once for
+each format that supports it, and the frame rate may differ between them.
+
+## Origin
+
+| Value | Meaning |
+|---|---|
+| `native_reported` | the provider enumerated it and nothing altered it |
+| `core_derived` | an ingested camera description narrowed the enumeration |
+| `user_supplied` | the provider could not enumerate; a description supplied it |
+
+A description **constrains** and never adds: a configuration it names that the
+device does not advertise is dropped. `core_derived` therefore says a catalog
+is shorter than the hardware allows, which is worth surfacing in a diagnostics
+view -- a missing resolution is then explained by the description rather than
+by the camera.
+
+---
 Synthetic timeline scenario staging is also a narrow exception because it is startup configuration intent, not a runtime-effect command: when synthetic timeline mode is active and provider storage exists, `select_builtin_scenario(...)` and `load_external_scenario(...)` may stage provider-owned scenario data during the pre-baseline window. If a valid scenario has been staged, `start_scenario()` may also be accepted during this window as pending playback intent. Actual scenario playback is not started until after the baseline `state_published(gen, 0, 0)` has been emitted and is latch-visible, so scenario effects must appear only after baseline (normally at `version >= 1`). These exceptions are not a general pre-baseline command queue; stream, rig, capture, result lookup, instance-id lookup, non-startup endpoint operations, and `advance_timeline(...)` runtime effects remain baseline-gated.
 
 The first observable publish of a generation will always be:

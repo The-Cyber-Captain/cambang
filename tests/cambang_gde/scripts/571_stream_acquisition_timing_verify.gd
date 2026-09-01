@@ -223,6 +223,12 @@ func _verify_device(hardware_id: String) -> void:
 	for key in first_facts.keys():
 		if str(key) != "acquisition_timing":
 			reported[key] = first_facts[key]
+	# Key list on its own line first. The full dictionary is already long enough
+	# to be truncated by Android logcat, which hid a fact that was present and
+	# made it look absent; the structure must survive even when the values do not.
+	var key_list := reported.keys()
+	key_list.sort()
+	print("  camera fact keys: %s" % str(key_list))
 	print("  camera facts (all keys): %s" % str(reported))
 	var first_timing: Dictionary = first_facts.get("acquisition_timing", {})
 	var first_mark := int(first_timing.get("acquisition_mark", -1))
@@ -250,7 +256,11 @@ func _verify_device(hardware_id: String) -> void:
 	const PERMITTED_DEVICE_SCOPED := ["facing", "camera_nature", "sensor_orientation_degrees", "pose",
 		"intrinsics", "distortion", "focus_state", "exposure_time",
 		"sensor_sensitivity_iso", "aperture_f_number", "focal_length_mm",
-		"realized_image_transform"]
+		"realized_image_transform",
+		# Added 2026-08-30 with the delivered-image calibration surface: the
+		# calibration a caller builds a projection from, and the region linking
+		# it back to the sensor frame it was derived from.
+		"intrinsics_delivered", "delivered_image_region"]
 	var facts_keys := first_facts.keys()
 	_require(
 		first_facts.has("acquisition_timing"),

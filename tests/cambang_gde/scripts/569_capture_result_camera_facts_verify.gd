@@ -332,7 +332,11 @@ func _assert_stream_camera_facts(stream_result, label: String) -> void:
 	const PERMITTED_DEVICE_SCOPED := ["facing", "camera_nature", "sensor_orientation_degrees", "pose",
 		"intrinsics", "distortion", "focus_state", "exposure_time",
 		"sensor_sensitivity_iso", "aperture_f_number", "focal_length_mm",
-		"realized_image_transform"]
+		"realized_image_transform",
+		# Added 2026-08-30 with the delivered-image calibration surface: the
+		# calibration a caller builds a projection from, and the region linking
+		# it back to the sensor frame it was derived from.
+		"intrinsics_delivered", "delivered_image_region"]
 	_require(
 		facts.has("acquisition_timing"),
 		"%s: stream camera_facts must carry acquisition_timing; got %s" % [label, str(keys)]

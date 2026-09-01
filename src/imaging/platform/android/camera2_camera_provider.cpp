@@ -8,6 +8,8 @@
 
 #include "imaging/platform/android/camera2_camera_provider.h"
 
+#include "imaging/api/delivered_calibration.h"
+
 #include <camera/NdkCameraCaptureSession.h>
 #include <camera/NdkCameraDevice.h>
 #include <camera/NdkCameraManager.h>
@@ -640,6 +642,14 @@ struct ResultFacts {
   // whether the delivered pixels have already been corrected.
   bool has_distortion_correction_mode = false;
   uint8_t distortion_correction_mode = 0;
+
+  // The region of the reference array that was read out for this capture, and
+  // the zoom ratio in force. Both bear on where the delivered pixels sit in the
+  // sensor frame; see the delivered-image region derivation below.
+  bool has_crop_region = false;
+  int32_t crop_region[4] = {0, 0, 0, 0};
+  bool has_zoom_ratio = false;
+  float zoom_ratio = 1.0f;
 
   // ACAMERA_SENSOR_TIMESTAMP. The only key that ties a result back to the
   // image it describes once a burst has several captures in flight at once.
@@ -1788,6 +1798,16 @@ void extract_result_facts(const ACameraMetadata* result, ResultFacts& out) {
     out.has_distortion_correction_mode = true;
     out.distortion_correction_mode = entry.data.u8[0];
   }
+  if (ACameraMetadata_getConstEntry(result, ACAMERA_SCALER_CROP_REGION, &entry) ==
+          ACAMERA_OK && entry.count >= 4) {
+    out.has_crop_region = true;
+    for (int i = 0; i < 4; ++i) out.crop_region[i] = entry.data.i32[i];
+  }
+  if (ACameraMetadata_getConstEntry(result, ACAMERA_CONTROL_ZOOM_RATIO, &entry) ==
+          ACAMERA_OK && entry.count >= 1) {
+    out.has_zoom_ratio = true;
+    out.zoom_ratio = entry.data.f[0];
+  }
   if (ACameraMetadata_getConstEntry(result, ACAMERA_SENSOR_TIMESTAMP, &entry) == ACAMERA_OK &&
       entry.count >= 1) {
     out.has_sensor_timestamp = true;
@@ -1847,7 +1867,10 @@ void extract_result_facts(const ACameraMetadata* result, ResultFacts& out) {
 // same way. Written once so a stream frame and a capture of the same moment
 // cannot describe the camera differently.
 ProviderCaptureImageFacts image_facts_from_result_facts(
-    const ResultFacts& facts, const StaticCharacteristics& chars) {
+    const ResultFacts& facts,
+    const StaticCharacteristics& chars,
+    uint32_t delivered_width,
+    uint32_t delivered_height) {
   ProviderCaptureImageFacts image_facts{};
   if (facts.has_exposure_ns) {
     if (const auto fact = ExposureTime::create(
@@ -1895,12 +1918,34 @@ ProviderCaptureImageFacts image_facts_from_result_facts(
       }
     }
   }
-  // Intrinsics and distortion are per-image rather than static because
-  // the coordinate system they are expressed in is decided per capture
-  // by ACAMERA_DISTORTION_CORRECTION_MODE, which is only knowable from
-  // that capture's own result metadata:
-  //   OFF      -> pre-correction active array, delivered pixels DISTORTED
-  //   FAST/HQ  -> active array, delivered pixels RECTIFIED
+  // Intrinsics and distortion are per-image rather than static because whether
+  // the delivered pixels were geometrically corrected is decided per capture by
+  // ACAMERA_DISTORTION_CORRECTION_MODE, knowable only from that capture's own
+  // result metadata:
+  //   OFF      -> delivered pixels DISTORTED
+  //   FAST/HQ  -> delivered pixels RECTIFIED
+  //
+  // The correction mode decides that image state and NOTHING ELSE here. It does
+  // NOT move the coordinate system these values are expressed in. Camera2 states
+  // for LENS_INTRINSIC_CALIBRATION, in both CameraCharacteristics and
+  // CaptureResult and with no mode dependence, that "the coordinate system for
+  // this transform is the SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE system".
+  // DISTORTION_CORRECTION_MODE separately enumerates the metadata it rescales --
+  // AF/AE/AWB regions, SCALER_CROP_REGION and statistics.faces -- and neither
+  // LENS_INTRINSIC_CALIBRATION nor LENS_DISTORTION appears in that list.
+  //
+  // This branch previously selected the active array when correction was on,
+  // which labelled pre-correction values as active-array values and paired them
+  // with the wrong reference dimensions. It was invisible on all hardware
+  // measured here, where the two arrays are identical and no device reported a
+  // correction mode, so the branch happened to resolve correctly.
+  //
+  // Note the asymmetry this leaves, which is Camera2's and not ours: the crop
+  // region DOES follow the correction mode. On a device that corrects, the crop
+  // region is in active-array coordinates while these values are in
+  // pre-correction coordinates, and Camera2 documents the bridge between them as
+  // "only linear scaling ... not very precise". Anything composing the two must
+  // check their domains rather than assume they match.
   // Both arrays are sensor rectangles, not the delivered image. The
   // delivered frame is cropped and scaled from them, so these f/c values
   // are NOT valid in delivered-image pixels. They are published in the
@@ -1916,9 +1961,21 @@ ProviderCaptureImageFacts image_facts_from_result_facts(
   // *can* correct. Camera2 documents that a device not supporting the
   // correction API "will always list only OFF", so for a device
   // advertising no correction capability, OFF is derived from stated
-  // capability rather than assumed. When the device can correct but did
-  // not say whether it did, the domain genuinely is unknowable and both
-  // facts are omitted rather than published against a guessed frame.
+  // capability rather than assumed.
+  //
+  // When the device can correct but did not say whether it did, both facts are
+  // still withheld -- but note the reason has narrowed. It is no longer that the
+  // coordinate domain is unknowable (it is not: see below, it is always the
+  // pre-correction array). It is that DistortionImageState would have to be
+  // guessed, and a caller cannot tell rectified pixels from distorted ones by
+  // looking at them.
+  //
+  // That reason applies squarely to distortion and only incidentally to
+  // intrinsics, which no longer depend on the mode at all. Publishing intrinsics
+  // through this gap would be defensible and would widen coverage on such
+  // devices; it is deliberately NOT done here, because it changes when a fact
+  // appears rather than what it says, which is a separate decision from
+  // correcting the label.
   const bool correction_mode_known =
       facts.has_distortion_correction_mode ||
       !chars.distortion_correction_supported;
@@ -1927,16 +1984,13 @@ ProviderCaptureImageFacts image_facts_from_result_facts(
         facts.has_distortion_correction_mode &&
         facts.distortion_correction_mode !=
             ACAMERA_DISTORTION_CORRECTION_MODE_OFF;
-    const bool have_reference =
-        corrected ? chars.has_active_array : chars.has_pre_correction_array;
-    const uint32_t ref_w =
-        corrected ? chars.active_array_w : chars.pre_correction_array_w;
-    const uint32_t ref_h =
-        corrected ? chars.active_array_h : chars.pre_correction_array_h;
+    // Always the pre-correction array: that is the system these values are
+    // defined in, whatever the correction mode did to the pixels.
+    const bool have_reference = chars.has_pre_correction_array;
+    const uint32_t ref_w = chars.pre_correction_array_w;
+    const uint32_t ref_h = chars.pre_correction_array_h;
     const CoordinateDomain domain =
-        corrected ? CoordinateDomain{CoordinateDomainAndroidSensorActiveArray{}}
-                  : CoordinateDomain{
-                        CoordinateDomainAndroidSensorPreCorrectionActiveArray{}};
+        CoordinateDomain{CoordinateDomainAndroidSensorPreCorrectionActiveArray{}};
 
     if (have_reference && facts.has_intrinsics) {
       // [f_x, f_y, c_x, c_y, s] -- Camera2 reports skew, which the
@@ -1968,6 +2022,71 @@ ProviderCaptureImageFacts image_facts_from_result_facts(
       }
     }
   }
+
+  // Where these delivered pixels sit in the frame the calibration above is
+  // expressed in, and the calibration restated for those pixels -- the pair a
+  // caller needs to build a projection without knowing anything about sensor
+  // coordinate systems.
+  //
+  // Withheld in two cases, both of which would otherwise produce a plausible
+  // and wrong answer rather than an obvious failure:
+  //
+  //   Zoom. From API 30 the crop region moves to a POST-zoom coordinate system
+  //   while LENS_INTRINSIC_CALIBRATION explicitly does not follow it. Composing
+  //   the two would silently cross frames. An absent tag means the device
+  //   predates the control, where crop-region zoom is already reflected in the
+  //   region itself, so absence is fine and only a stated non-unity value is not.
+  //
+  //   Distortion correction. The crop region follows the correction mode
+  //   (active array when correcting, pre-correction when not) but the intrinsics
+  //   are always pre-correction. When they differ, Camera2 bridges them with
+  //   "only linear scaling ... not very precise", so CamBANG declines rather
+  //   than publishing an approximation as a fact.
+  const bool zoom_disturbs_frames = facts.has_zoom_ratio && facts.zoom_ratio != 1.0f;
+  const bool correcting = facts.has_distortion_correction_mode &&
+                          facts.distortion_correction_mode !=
+                              ACAMERA_DISTORTION_CORRECTION_MODE_OFF;
+  if (image_facts.intrinsics && facts.has_crop_region && !zoom_disturbs_frames &&
+      !correcting && facts.crop_region[2] > 0 && facts.crop_region[3] > 0) {
+    const auto readout = DeliveredImageRegion::create(
+        static_cast<uint32_t>(facts.crop_region[0]),
+        static_cast<uint32_t>(facts.crop_region[1]),
+        static_cast<uint32_t>(facts.crop_region[2]),
+        static_cast<uint32_t>(facts.crop_region[3]),
+        image_facts.intrinsics->value.coordinate_domain());
+    // The reported region is what the sensor read out; this stream may have
+    // received a further centred crop of it that the device does not report.
+    const auto region = readout
+        ? region_cropped_to_aspect(*readout, delivered_width, delivered_height)
+        : std::nullopt;
+    if (region) {
+      if (const auto delivered = delivered_intrinsics_from_region(
+              image_facts.intrinsics->value, *region, delivered_width,
+              delivered_height)) {
+        // Origin follows who made THIS assertion, not who supplied the inputs.
+        //
+        // The device asserted a crop region. Where the output shares its
+        // aspect, that is exactly the rectangle published and the camera stated
+        // it. Where it does not, the rectangle published is the narrowed one
+        // CamBANG computed -- the device never named it -- so claiming the
+        // camera reported it would overstate a value the camera cannot be held
+        // to.
+        const bool region_as_reported = region->left() == readout->left() &&
+                                        region->top() == readout->top() &&
+                                        region->width() == readout->width() &&
+                                        region->height() == readout->height();
+        image_facts.delivered_image_region = SourcedFact<DeliveredImageRegion>{
+            *region, region_as_reported ? FactOrigin::NATIVE_REPORTED
+                                        : FactOrigin::CORE_DERIVED};
+        // No Camera2 device states a calibration in the delivered image's own
+        // frame; this one is CamBANG's arithmetic on two native reports, and is
+        // labelled so even when the scale happens to be 1.
+        image_facts.intrinsics_delivered =
+            SourcedFact<Intrinsics>{*delivered, FactOrigin::CORE_DERIVED};
+      }
+    }
+  }
+
   return image_facts;
 }
 
@@ -2069,7 +2188,7 @@ void on_repeating_capture_completed(void* context,
         }
       }
       ProviderCaptureImageFacts facts =
-          image_facts_from_result_facts(rf, backend->chars);
+          image_facts_from_result_facts(rf, backend->chars, s->width, s->height);
       if (found) {
         matched.image_facts = std::move(facts);
         if (backend->strand) {
@@ -4003,6 +4122,56 @@ ProviderResult Camera2CameraProvider::close_device(uint64_t device_instance_id) 
   return ProviderResult::success();
 }
 
+ProviderProfileCatalog Camera2CameraProvider::stream_profile_catalog(
+    const std::string& hardware_id) const {
+  ProviderProfileCatalog catalog{};
+  if (hardware_id.empty()) {
+    return catalog;
+  }
+  ACameraManager* manager = as_manager(manager_);
+  if (!manager) {
+    return catalog;
+  }
+  ACameraMetadata* meta = nullptr;
+  if (ACameraManager_getCameraCharacteristics(manager, hardware_id.c_str(), &meta) !=
+          ACAMERA_OK ||
+      !meta) {
+    // No characteristics for this id: not a camera this provider owns. Left as
+    // NOT_THIS_PROVIDER so an ingested description cannot stand in for it.
+    return catalog;
+  }
+  camera2_detail::StaticCharacteristics chars{};
+  camera2_detail::read_static_characteristics(meta, chars);
+  ACameraMetadata_free(meta);
+
+  // The id exists. Whether it advertises anything is a separate question, and
+  // an empty list here is a real answer rather than an inability.
+  catalog.availability = ProfileCatalogAvailability::ENUMERATED;
+  for (const auto& size : chars.supported_yuv_sizes) {
+    const int64_t min_duration_ns =
+        chars.min_frame_duration_for(size.first, size.second);
+    for (const uint32_t fourcc : {FOURCC_NV12, FOURCC_I420, FOURCC_RGBA, FOURCC_BGRA}) {
+      ProviderProfileEntry entry{};
+      entry.width = size.first;
+      entry.height = size.second;
+      entry.format_fourcc = fourcc;
+      // Omitted when the device states no minimum duration for this geometry:
+      // a fabricated rate would read as a measurement.
+      if (min_duration_ns > 0) {
+        entry.max_fps = 1e9 / static_cast<double>(min_duration_ns);
+      }
+      catalog.entries.push_back(entry);
+    }
+  }
+  return catalog;
+}
+
+// Still capture takes the same YUV_420_888 outputs as streams on this backend,
+// so it advertises the same configurations.
+ProviderProfileCatalog Camera2CameraProvider::capture_profile_catalog(
+    const std::string& hardware_id) const {
+  return stream_profile_catalog(hardware_id);
+}
 ProviderResult Camera2CameraProvider::create_stream(const StreamRequest& req) {
   if (!initialized_.load(std::memory_order_acquire) ||
       shutting_down_.load(std::memory_order_acquire)) {
@@ -5886,7 +6055,8 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
       // ingestion > provider per-image > provider static) is untouched.
       if (captured.has_facts) {
         ProviderCaptureImageFacts image_facts =
-            camera2_detail::image_facts_from_result_facts(captured.facts, chars);
+            camera2_detail::image_facts_from_result_facts(
+                captured.facts, chars, job.request.width, job.request.height);
         // Reported after construction, not merely after the metadata read: the
         // create() validators reject non-finite or degenerately-referenced
         // values, so "device supplied it" and "we published it" are different

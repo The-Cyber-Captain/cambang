@@ -173,6 +173,16 @@ inline godot::Dictionary to_dict(const SourcedFact<Intrinsics>& fact) {
   return out;
 }
 
+inline godot::Dictionary to_dict(const SourcedFact<DeliveredImageRegion>& fact) {
+  godot::Dictionary out;
+  out["origin"] = godot::String(fact_origin_name(fact.origin));
+  out["left"] = static_cast<int64_t>(fact.value.left());
+  out["top"] = static_cast<int64_t>(fact.value.top());
+  out["width"] = static_cast<int64_t>(fact.value.width());
+  out["height"] = static_cast<int64_t>(fact.value.height());
+  add_coordinate_domain(out, fact.value.coordinate_domain());
+  return out;
+}
 inline godot::Dictionary to_dict(const SourcedFact<Distortion>& fact) {
   godot::Dictionary out;
   out["origin"] = godot::String(fact_origin_name(fact.origin));
@@ -263,7 +273,18 @@ inline godot::Dictionary camera_facts_to_dict(const CoreResolvedImageFacts& fact
   // Image-scoped, and so capture-only: both providers source these per image
   // and anchored to a format. They read from the image tier for that reason --
   // a device-scoped copy would carry no format and could not be applied here.
+  // The delivered-image calibration first: it is what a caller building a
+  // projection or frustum for the image in their hands needs, and using it
+  // requires no knowledge of sensor coordinate domains at all.
+  if (facts.image.intrinsics_delivered) {
+    out["intrinsics_delivered"] = to_dict(*facts.image.intrinsics_delivered);
+  }
+  // The sensor-domain calibration, and the region linking it to the delivered
+  // image: the advanced surface, for a caller working in sensor space.
   if (facts.image.intrinsics) out["intrinsics"] = to_dict(*facts.image.intrinsics);
+  if (facts.image.delivered_image_region) {
+    out["delivered_image_region"] = to_dict(*facts.image.delivered_image_region);
+  }
   if (facts.image.distortion) out["distortion"] = to_dict(*facts.image.distortion);
   add_acquisition_timing_camera_fact(out, facts.image.acquisition_timing);
   if (facts.image.focus_state) out["focus_state"] = to_dict(*facts.image.focus_state);

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <optional>
 #include <vector>
 
 #include "core/capture_admission_context.h"

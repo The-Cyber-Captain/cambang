@@ -298,6 +298,15 @@ public:
   godot::Error set_device_warm_hold_ms(uint64_t device_instance_id, uint32_t warm_hold_ms);
   godot::Error set_endpoint_warm_hold_ms_startup_intent(const godot::String& hardware_id, uint32_t warm_hold_ms);
   godot::Dictionary get_device_still_capture_profile(uint64_t device_instance_id) const;
+  // Endpoint-scoped, for discovery: a caller building a settings screen reads
+  // these straight after enumerate_devices(), without instantiating a device
+  // per camera to ask a question that needs none. CamBANGDevice carries the
+  // same pair as a convenience for a caller that already holds one.
+  godot::Dictionary get_supported_stream_profiles(const godot::String& hardware_id) const;
+  godot::Dictionary get_supported_capture_profiles(const godot::String& hardware_id) const;
+
+  godot::Dictionary get_device_profile_catalog(const godot::String& hardware_id,
+                                               bool want_capture) const;
   bool get_endpoint_capture_template_profile(const godot::String& hardware_id, CaptureProfile& out_profile) const;
   godot::Error engage_endpoint_handle(const godot::String& hardware_id, const godot::String& display_name);
   godot::Error disengage_endpoint_handle(const godot::String& hardware_id);

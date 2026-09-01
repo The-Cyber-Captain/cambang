@@ -8,6 +8,8 @@
 
 #include "imaging/platform/windows/winrt_camera_provider.h"
 
+#include "imaging/api/delivered_calibration.h"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -378,7 +380,6 @@ bool subtype_equals(const winrt::hstring& a, const winrt::hstring& b) {
   }
   return true;
 }
-
 ProducerFormatCapabilities native_format_capabilities_for_source(
     const wmcf::MediaFrameSource& source) {
   ProducerFormatCapabilities caps{};
@@ -468,6 +469,11 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   std::mutex m;
   wmc::MediaCapture capture{nullptr};
   wmcf::MediaFrameSource frame_source{nullptr};
+  // Calibration for the format this stream was configured with, fetched once
+  // when the source is bound rather than per frame. TryGetCameraIntrinsics is
+  // anchored to a FORMAT, and the format does not change while a stream runs, so
+  // a per-frame call would re-answer an unchanging question on the hot path.
+  std::optional<Intrinsics> stream_intrinsics;
   wmcf::MediaFrameReader reader{nullptr};
   // Still-capture pipeline, prepared lazily on first capture. Stills come
   // from here, not from the frame reader above, which serves streams only.
@@ -715,6 +721,27 @@ void deliver_frame_locked(DeviceBackend& backend,
   fv.capture_id = 0;
   fv.width = s->width;
   fv.height = s->height;
+  // Per-image calibration for THIS frame, from the format cache. Scaled to the
+  // delivered geometry so a caller can build a projection without knowing what
+  // format the camera was configured in.
+  if (backend.stream_intrinsics) {
+    fv.image_facts.intrinsics =
+        SourcedFact<Intrinsics>{*backend.stream_intrinsics, FactOrigin::NATIVE_REPORTED};
+    std::optional<Intrinsics> delivered;
+    std::optional<DeliveredImageRegion> region;
+    if (derive_delivered_calibration_scaled(*backend.stream_intrinsics, s->width, s->height,
+                                     delivered, region)) {
+      // Both are CamBANG's assertions, not the camera's. WinRT reports a
+      // calibration against a reference frame and never reports a region at
+      // all: the full-frame rectangle below is CamBANG stating that this frame
+      // is covered whole, and the rescaled calibration is CamBANG's arithmetic.
+      // Only `intrinsics` above carries what WinRT actually said.
+      fv.image_facts.intrinsics_delivered =
+          SourcedFact<Intrinsics>{*delivered, FactOrigin::CORE_DERIVED};
+      fv.image_facts.delivered_image_region =
+          SourcedFact<DeliveredImageRegion>{*region, FactOrigin::CORE_DERIVED};
+    }
+  }
   fv.format_fourcc = s->fourcc;
   if (has_sample_time) {
     fv.acquisition_timing = make_acquisition_timing(sample_time_100ns);
@@ -1035,6 +1062,90 @@ ProviderResult WinrtCameraProvider::initialize(IProviderCallbacks* callbacks) {
   return ProviderResult::success();
 }
 
+ProviderProfileCatalog WinrtCameraProvider::stream_profile_catalog(
+    const std::string& hardware_id) const {
+  ProviderProfileCatalog catalog{};
+  if (hardware_id.empty()) {
+    return catalog;
+  }
+  {
+    std::lock_guard<std::mutex> kl(known_endpoints_mutex_);
+    if (known_endpoint_ids_.find(hardware_id) == known_endpoint_ids_.end()) {
+      // Never seen in an enumeration: not ours, so no description may stand in.
+      return catalog;
+    }
+  }
+
+  // Ours. Whether we can list it depends on there being an open frame source.
+  catalog.availability = ProfileCatalogAvailability::CANNOT_ENUMERATE;
+  std::shared_ptr<winrt_detail::DeviceBackend> backend;
+  {
+    std::lock_guard<std::mutex> sl(state_mutex_);
+    for (const auto& kv : devices_) {
+      if (kv.second.hardware_id == hardware_id && kv.second.open && kv.second.backend) {
+        backend = kv.second.backend;
+        break;
+      }
+    }
+  }
+  if (!backend) {
+    return catalog;
+  }
+  wmcf::MediaFrameSource source{nullptr};
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    source = backend->frame_source;
+  }
+  if (!source) {
+    return catalog;
+  }
+  try {
+    for (const auto& fmt : source.SupportedFormats()) {
+      const auto video = fmt.VideoFormat();
+      if (!video || video.Width() == 0 || video.Height() == 0) {
+        continue;
+      }
+      // Only subtypes this provider maps. An unmapped subtype (MJPG and the
+      // other encoded ones) is omitted rather than reported under a format
+      // CamBANG would then fail to deliver.
+      uint32_t fourcc = 0;
+      const winrt::hstring subtype = fmt.Subtype();
+      if (winrt_detail::subtype_equals(subtype, wmm::MediaEncodingSubtypes::Nv12())) {
+        fourcc = FOURCC_NV12;
+      } else if (winrt_detail::subtype_equals(subtype, wmm::MediaEncodingSubtypes::Yuy2())) {
+        fourcc = FOURCC_YUY2;
+      } else if (winrt_detail::subtype_equals(subtype, wmm::MediaEncodingSubtypes::Bgra8())) {
+        fourcc = FOURCC_BGRA;
+      } else {
+        continue;
+      }
+      ProviderProfileEntry entry{};
+      entry.width = static_cast<uint32_t>(video.Width());
+      entry.height = static_cast<uint32_t>(video.Height());
+      entry.format_fourcc = fourcc;
+      const auto rate = fmt.FrameRate();
+      if (rate && rate.Denominator() != 0) {
+        entry.max_fps = static_cast<double>(rate.Numerator()) /
+                        static_cast<double>(rate.Denominator());
+      }
+      catalog.entries.push_back(entry);
+    }
+    catalog.availability = ProfileCatalogAvailability::ENUMERATED;
+  } catch (const winrt::hresult_error& e) {
+    winrt_detail::log_line("profile catalog enumeration threw hr=0x%08X",
+                           static_cast<unsigned>(e.code()));
+    catalog.entries.clear();
+    catalog.availability = ProfileCatalogAvailability::CANNOT_ENUMERATE;
+  }
+  return catalog;
+}
+
+// The photo pipeline is coupled to the stream geometry on this backend, so it
+// advertises the same configurations.
+ProviderProfileCatalog WinrtCameraProvider::capture_profile_catalog(
+    const std::string& hardware_id) const {
+  return stream_profile_catalog(hardware_id);
+}
 ProviderResult WinrtCameraProvider::enumerate_endpoints(
     std::vector<CameraEndpoint>& out_endpoints) {
   if (!initialized_.load(std::memory_order_acquire) ||
@@ -1084,6 +1195,17 @@ ProviderResult WinrtCameraProvider::enumerate_endpoints(
     return ProviderResult::failure(result->error);
   }
   out_endpoints = std::move(result->endpoints);
+  // Remembered so the profile catalog can tell an endpoint we own but have not
+  // opened from one that is not ours at all. Replaced wholesale rather than
+  // merged: a camera that has been unplugged should stop being ours.
+  {
+    std::set<std::string> ids;
+    for (const auto& ep : out_endpoints) {
+      ids.insert(ep.hardware_id);
+    }
+    std::lock_guard<std::mutex> kl(known_endpoints_mutex_);
+    known_endpoint_ids_ = std::move(ids);
+  }
   return ProviderResult::success();
 }
 
@@ -1519,6 +1641,27 @@ ProviderResult WinrtCameraProvider::ensure_reader_realized_(
           } else {
             backend->frame_source = source;
             backend->reader = reader;
+            // Cached here, where the source and its format are both known and
+            // the cost is paid once. Absent when this camera reports none,
+            // which most UVC webcams do.
+            backend->stream_intrinsics.reset();
+            try {
+              const auto fmt = source.CurrentFormat();
+              const auto ci = fmt ? source.TryGetCameraIntrinsics(fmt) : nullptr;
+              if (ci) {
+                backend->stream_intrinsics = Intrinsics::create(
+                    static_cast<double>(ci.FocalLength().x),
+                    static_cast<double>(ci.FocalLength().y),
+                    static_cast<double>(ci.PrincipalPoint().x),
+                    static_cast<double>(ci.PrincipalPoint().y),
+                    std::nullopt,
+                    ci.ImageWidth(), ci.ImageHeight(),
+                    CoordinateDomain{CoordinateDomainDeliveredImage{}});
+              }
+            } catch (...) {
+              backend->stream_intrinsics.reset();
+            }
+
             // The subtype this reader was actually created with, recorded at
             // the moment it exists rather than inferred later.
             backend->realized_reader_fourcc = backend->reader_fourcc;
@@ -2888,6 +3031,21 @@ void WinrtCameraProvider::run_device_capture_job_(const DeviceCaptureJob& job) n
                   domain)) {
             image_facts.intrinsics =
                 SourcedFact<Intrinsics>{*intrinsics_fact, FactOrigin::NATIVE_REPORTED};
+            // The delivered-image calibration, which is what a caller building a
+            // projection for this image needs, plus the region tying it back to
+            // the frame WinRT anchored the native values to.
+            std::optional<Intrinsics> delivered;
+            std::optional<DeliveredImageRegion> region;
+            if (derive_delivered_calibration_scaled(
+                    *intrinsics_fact, job.request.width, job.request.height,
+                    delivered, region)) {
+              // CamBANG's assertions, not WinRT's -- see the stream path for
+              // why the region is derived even though it is the whole frame.
+              image_facts.intrinsics_delivered =
+                  SourcedFact<Intrinsics>{*delivered, FactOrigin::CORE_DERIVED};
+              image_facts.delivered_image_region =
+                  SourcedFact<DeliveredImageRegion>{*region, FactOrigin::CORE_DERIVED};
+            }
           }
           // WinRT delivers the raw sensor frame; these coefficients describe
           // (but have not been used to correct) that raw distortion.
@@ -2909,7 +3067,8 @@ void WinrtCameraProvider::run_device_capture_job_(const DeviceCaptureJob& job) n
           image_facts.focus_state =
               SourcedFact<FocusState>{FocusAtInfinity{}, FactOrigin::NATIVE_REPORTED};
         }
-        if (image_facts.intrinsics || image_facts.distortion || image_facts.focus_state) {
+        if (image_facts.intrinsics || image_facts.intrinsics_delivered ||
+            image_facts.distortion || image_facts.focus_state) {
           strand_.post_capture_image_facts(capture_id, device_id, member.image_member_index,
                                            image_facts);
         }

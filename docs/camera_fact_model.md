@@ -35,13 +35,21 @@ CamBANG does not:
 - perform lens calibration;
 - rectify or distort images;
 - project or unproject points;
-- convert calibration between coordinate domains;
-- rescale intrinsics for delivered images;
 - fit or approximately translate one distortion model into another;
 - infer missing calibration from sensor size, physical focal length, or similar
   approximations;
 - use calibration to affect admission, arbitration, provider selection, backing
   plans, or capture execution.
+
+**Core** converts no calibration between coordinate domains. Where a platform
+anchors its calibration to a sensor frame, the **provider** derives the
+delivered-image calibration -- scaling by the region the image covers and
+shifting by that region's origin -- and publishes it as a distinct fact,
+`intrinsics_delivered`, carrying `core_derived` rather than `native_reported`.
+The device's own record is retained unchanged beside it. Core resolves and
+retains both and computes neither; the shared derivation lives at the provider
+boundary in `imaging/api/delivered_calibration.h`, and the caller's view of it
+is `architecture/camera_geometry_integration.md`.
 
 `StreamResult` and `CaptureResult` carry the same fact record, resolved by the
 same precedence chain and projected by the same converter. Neither surface
@@ -296,7 +304,7 @@ merge part of one record with part of another.
 Intrinsics are pixel-space calibration with required reference dimensions and a
 required coordinate domain.
 
-CamBANG carries them descriptively and performs no rescaling, crop adjustment,
+Core carries them descriptively and performs no rescaling, crop adjustment,
 rotation adjustment, or projection work.
 
 ### 10.2 Distortion

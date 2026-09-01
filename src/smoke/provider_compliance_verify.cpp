@@ -25,6 +25,7 @@
 #endif
 
 #include "core/core_runtime.h"
+#include "imaging/api/delivered_calibration.h"
 #include "imaging/broker/provider_broker.h"
 #include "imaging/stub/provider.h"
 #include "imaging/synthetic/builtin_scenario_library.h"
@@ -6009,6 +6010,240 @@ bool run_provider_camera_fact_ingress_check() {
 // every host-native check green. The reference provider is the right place to
 // pin it -- it authors known facts, so the assertions are about the model
 // rather than about any device.
+// Profile catalogs: what an endpoint advertises, narrowed by any ingested
+// description.
+//
+// Covers the three origins the surface can produce and the unknown-endpoint
+// rule, because each is a claim a caller acts on: native_reported is the
+// device's own enumeration, core_derived says a description removed something,
+// and an unenumerable endpoint must be distinguishable from one that supports
+// nothing.
+// The derivation every provider uses to publish intrinsics_delivered from a
+// sensor-domain calibration.
+//
+// Covered here rather than on hardware because no camera available to this
+// repository reports intrinsics through the WinRT path that uses it, and a
+// Camera2 device that does report them cannot be reached from a host-native
+// tool. The arithmetic is the same on every backend, so it is tested where it
+// can be tested deterministically.
+//
+// The non-unity case uses REAL measured values from a Quest 3 camera rather
+// than invented ones, so the expected numbers are those a real sensor produces.
+bool run_delivered_calibration_derivation_check() {
+  const auto fail = [](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    return false;
+  };
+  const auto close = [](double a, double b) {
+    return std::fabs(a - b) < 1e-6;
+  };
+
+  // Quest 3 camera 51: square 1280x1280 sensor frame, delivering 4:3.
+  const auto native = Intrinsics::create(
+      867.317687988281, 867.317687988281,
+      637.132141113281, 640.217224121094,
+      std::nullopt, 1280u, 1280u,
+      CoordinateDomain{CoordinateDomainAndroidSensorPreCorrectionActiveArray{}});
+  if (!native) {
+    return fail("FAIL delivered calibration: reference intrinsics rejected");
+  }
+
+  // The device took a 1280x960 band from the middle of the square array and
+  // scaled it to 640x480. Both axes therefore scale by exactly 0.5 -- the
+  // aspect is preserved, which the naive full-frame rescale would have missed.
+  const auto region = DeliveredImageRegion::create(
+      0u, 160u, 1280u, 960u, native->coordinate_domain());
+  if (!region) {
+    return fail("FAIL delivered calibration: region rejected");
+  }
+  const auto derived =
+      delivered_intrinsics_from_region(*native, *region, 640u, 480u);
+  if (!derived) {
+    return fail("FAIL delivered calibration: derivation returned nothing");
+  }
+  if (!close(derived->focal_length_x_px(), 867.317687988281 * 0.5) ||
+      !close(derived->focal_length_y_px(), 867.317687988281 * 0.5)) {
+    return fail("FAIL delivered calibration: focal length not scaled by the region");
+  }
+  // The vertical principal point must lose the 160px crop origin BEFORE
+  // scaling. Getting that wrong is the silent error: it leaves the frustum
+  // plausible but off-axis.
+  if (!close(derived->principal_point_x_px(), 637.132141113281 * 0.5) ||
+      !close(derived->principal_point_y_px(), (640.217224121094 - 160.0) * 0.5)) {
+    return fail("FAIL delivered calibration: principal point ignored the region origin");
+  }
+  if (derived->reference_width_px() != 640u || derived->reference_height_px() != 480u ||
+      !std::holds_alternative<CoordinateDomainDeliveredImage>(
+          derived->coordinate_domain())) {
+    return fail("FAIL delivered calibration: derived frame is not the delivered image");
+  }
+
+  // Unity: a delivered image covering its whole reference frame at the same
+  // size must reproduce the native values exactly, so a caller can move between
+  // the two surfaces with no special case.
+  std::optional<Intrinsics> unity;
+  std::optional<DeliveredImageRegion> unity_region;
+  if (!derive_delivered_calibration_scaled(*native, 1280u, 1280u, unity, unity_region)) {
+    return fail("FAIL delivered calibration: scaled derivation failed for unity");
+  }
+  if (!close(unity->focal_length_x_px(), native->focal_length_x_px()) ||
+      !close(unity->focal_length_y_px(), native->focal_length_y_px()) ||
+      !close(unity->principal_point_x_px(), native->principal_point_x_px()) ||
+      !close(unity->principal_point_y_px(), native->principal_point_y_px())) {
+    return fail("FAIL delivered calibration: unity case altered the values");
+  }
+  if (unity_region->left() != 0u || unity_region->top() != 0u ||
+      unity_region->width() != 1280u || unity_region->height() != 1280u) {
+    return fail("FAIL delivered calibration: unity region is not the whole frame");
+  }
+
+  // Aspect reconciliation, using the one camera measured whose readout region
+  // and delivered aspect genuinely disagree: an S20+ camera reading out its
+  // full 3216x2208 array (1.4565) while delivering 4:3.
+  //
+  // The device performs this crop and does NOT report it, so a caller composing
+  // the reported readout region with the delivered pixels would be wrong on one
+  // axis. Both Camera2 and libcamera specify the rule: largest sub-rectangle of
+  // the output aspect, centred.
+  {
+    const auto readout = DeliveredImageRegion::create(
+        0u, 0u, 3216u, 2208u,
+        CoordinateDomain{CoordinateDomainAndroidSensorPreCorrectionActiveArray{}});
+    if (!readout) {
+      return fail("FAIL delivered calibration: readout region rejected");
+    }
+    const auto narrowed = region_cropped_to_aspect(*readout, 640u, 480u);
+    if (!narrowed) {
+      return fail("FAIL delivered calibration: aspect reconciliation returned nothing");
+    }
+    // 2208 * 4/3 = 2944 wide, centred: (3216 - 2944) / 2 = 136.
+    if (narrowed->left() != 136u || narrowed->top() != 0u ||
+        narrowed->width() != 2944u || narrowed->height() != 2208u) {
+      return fail("FAIL delivered calibration: pillarbox crop is not centred or sized right");
+    }
+    // The delivered centre must land on the readout centre; that is the check
+    // that catches an off-centre crop, which looks plausible and is not.
+    const auto centred = delivered_intrinsics_from_region(*native, *narrowed, 640u, 480u);
+    if (!centred) {
+      return fail("FAIL delivered calibration: derivation over the narrowed region failed");
+    }
+  }
+
+  // Aspects that already agree must leave the region untouched.
+  {
+    const auto same = region_cropped_to_aspect(*region, 640u, 480u);
+    if (!same || same->left() != region->left() || same->top() != region->top() ||
+        same->width() != region->width() || same->height() != region->height()) {
+      return fail("FAIL delivered calibration: matching aspects were altered");
+    }
+  }
+  // A zero dimension is refused rather than producing an infinity.
+  if (delivered_intrinsics_from_region(*native, *region, 0u, 480u)) {
+    return fail("FAIL delivered calibration: accepted a zero delivered width");
+  }
+  return true;
+}
+bool run_profile_catalog_check() {
+  VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
+  std::string error;
+  const auto fail = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    harness.stop_runtime();
+    return false;
+  };
+
+  // Constrains synthetic:0 to one configuration it really has, plus one it does
+  // not. The second must be dropped: a description narrows what a device
+  // advertises and can never add to it.
+  const std::string description = R"JSON({
+    "schema_version":2,
+    "cameras":[
+      {"camera_id":"synthetic:0",
+       "supported_stream_profiles":{"source":"user_supplied","profiles":[
+         {"width":1280,"height":720,"format":"NV12"},
+         {"width":9999,"height":9999,"format":"RGBA"}]}},
+      {"camera_id":"synthetic:4242",
+       "supported_stream_profiles":{"source":"user_supplied","profiles":[
+         {"width":4096,"height":2160,"format":"RGBA"}]}}
+    ]
+  })JSON";
+  const auto ingest =
+      harness.runtime().replace_external_camera_description_json_for_internal(description);
+  if (ingest.status != CoreRuntime::ReplaceExternalCameraDescriptionStatus::Ok) {
+    std::cerr << "FAIL profile catalog ingest rejected status="
+              << static_cast<int>(ingest.status) << "\n";
+    return false;
+  }
+  if (!harness.start_runtime(error)) {
+    std::cerr << "FAIL profile catalog harness start: " << error << "\n";
+    return false;
+  }
+
+  ResolvedProfileCatalog catalog{};
+
+  // Unconstrained endpoint: the provider's own enumeration, unchanged.
+  if (!harness.runtime().profile_catalog_for_server("synthetic:1", false, catalog)) {
+    return fail("FAIL profile catalog query failed for a known endpoint");
+  }
+  if (!catalog.enumerated || catalog.entries.empty() ||
+      catalog.origin != FactOrigin::NATIVE_REPORTED) {
+    return fail("FAIL profile catalog unconstrained endpoint is not native_reported");
+  }
+  const size_t native_count = catalog.entries.size();
+
+  // Capture catalog on the constrained camera: the description said nothing
+  // about capture, so it must be untouched. A constraint on one catalog
+  // leaking into the other would be silent.
+  if (!harness.runtime().profile_catalog_for_server("synthetic:0", true, catalog) ||
+      !catalog.enumerated || catalog.origin != FactOrigin::NATIVE_REPORTED ||
+      catalog.entries.size() != native_count) {
+    return fail("FAIL profile catalog capture side was altered by a stream constraint");
+  }
+
+  // Constrained stream catalog: intersection only.
+  if (!harness.runtime().profile_catalog_for_server("synthetic:0", false, catalog)) {
+    return fail("FAIL profile catalog query failed for the constrained endpoint");
+  }
+  if (!catalog.enumerated || catalog.origin != FactOrigin::CORE_DERIVED) {
+    return fail("FAIL profile catalog constrained endpoint is not core_derived");
+  }
+  if (catalog.entries.size() != 1) {
+    return fail("FAIL profile catalog constraint did not narrow to the intersection");
+  }
+  const ProviderProfileEntry& kept = catalog.entries.front();
+  if (kept.width != 1280u || kept.height != 720u || kept.format_fourcc != FOURCC_NV12) {
+    return fail("FAIL profile catalog kept the wrong entry");
+  }
+  // The described-but-unadvertised entry must be gone, not merely reordered.
+  for (const auto& entry : catalog.entries) {
+    if (entry.width == 9999u) {
+      return fail("FAIL profile catalog admitted an entry the device never advertised");
+    }
+  }
+
+  // An endpoint the provider does not own, DESCRIBED by the ingested
+  // document. The description must not stand in for absent hardware: a
+  // catalog here would tell a caller that a camera which is not present
+  // supports specific configurations.
+  if (!harness.runtime().profile_catalog_for_server("synthetic:4242", false, catalog)) {
+    return fail("FAIL profile catalog query failed for a described absent endpoint");
+  }
+  if (catalog.enumerated) {
+    return fail("FAIL profile catalog let a description describe absent hardware");
+  }
+
+  // An endpoint the provider does not own: nothing, and distinguishable from
+  // an endpoint that supports nothing.
+  if (!harness.runtime().profile_catalog_for_server("synthetic:9999", false, catalog)) {
+    return fail("FAIL profile catalog query failed for an unknown endpoint");
+  }
+  if (catalog.enumerated) {
+    return fail("FAIL profile catalog claimed enumeration for an unknown endpoint");
+  }
+
+  harness.stop_runtime();
+  return true;
+}
 bool run_synthetic_stream_image_facts_check() {
   VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
   std::string error;
@@ -6078,6 +6313,44 @@ bool run_synthetic_stream_image_facts_check() {
   // Timing is frame-owned and must be present on a delivered frame.
   if (!image.acquisition_timing) {
     return fail("FAIL synthetic stream image facts acquisition_timing absent");
+  }
+  // Both calibration surfaces are present, and where the sensor-domain frame IS
+  // the delivered image they are the SAME values. A caller told to prefer the
+  // delivered-image surface must be able to move between the two without a
+  // special case for "no translation"; this is that guarantee, asserted rather
+  // than intended.
+  if (!image.intrinsics || !image.intrinsics_delivered) {
+    return fail("FAIL synthetic stream is missing one of the two calibrations");
+  }
+  {
+    const Intrinsics& sensor = image.intrinsics->value;
+    const Intrinsics& delivered = image.intrinsics_delivered->value;
+    if (!std::holds_alternative<CoordinateDomainDeliveredImage>(
+            sensor.coordinate_domain())) {
+      return fail("FAIL synthetic sensor-domain calibration is not delivered-image");
+    }
+    if (sensor.focal_length_x_px() != delivered.focal_length_x_px() ||
+        sensor.focal_length_y_px() != delivered.focal_length_y_px() ||
+        sensor.principal_point_x_px() != delivered.principal_point_x_px() ||
+        sensor.principal_point_y_px() != delivered.principal_point_y_px() ||
+        sensor.reference_width_px() != delivered.reference_width_px() ||
+        sensor.reference_height_px() != delivered.reference_height_px()) {
+      return fail("FAIL unity broken: no translation, yet the two calibrations differ");
+    }
+  }
+  // With no translation the region must cover the reference frame exactly,
+  // so a caller deriving delivered intrinsics from the sensor pair gets the
+  // same answer the delivered surface already gave them.
+  if (!image.delivered_image_region) {
+    return fail("FAIL synthetic stream has no delivered_image_region");
+  }
+  {
+    const DeliveredImageRegion& r = image.delivered_image_region->value;
+    if (r.left() != 0u || r.top() != 0u ||
+        r.width() != image.intrinsics->value.reference_width_px() ||
+        r.height() != image.intrinsics->value.reference_height_px()) {
+      return fail("FAIL delivered_image_region is not unity where it must be");
+    }
   }
   // Never invented: this virtual camera has no shutter or iris, so these stay
   // absent rather than resolving to a fabricated zero.
@@ -11892,6 +12165,8 @@ int main(int argc, char** argv) {
       {"run_provider_camera_fact_ingress_check", [] { return run_provider_camera_fact_ingress_check(); }},
       {"run_synthetic_provider_reference_camera_facts_check", [] { return run_synthetic_provider_reference_camera_facts_check(); }},
       {"run_synthetic_stream_image_facts_check", [] { return run_synthetic_stream_image_facts_check(); }},
+      {"run_profile_catalog_check", [] { return run_profile_catalog_check(); }},
+      {"run_delivered_calibration_derivation_check", [] { return run_delivered_calibration_derivation_check(); }},
       {"run_core_capture_result_fact_resolution_check", [] { return run_core_capture_result_fact_resolution_check(); }},
       {"run_core_synthetic_three_member_realized_unknown_propagation_check", [] { return run_core_synthetic_three_member_realized_unknown_propagation_check(); }},
       {"run_synthetic_stream_plus_still_single_session_truth_check", [] { return run_synthetic_stream_plus_still_single_session_truth_check(); }},

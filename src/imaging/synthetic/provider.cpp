@@ -1193,6 +1193,22 @@ ProviderCaptureImageFacts SyntheticProvider::authored_image_facts_locked_(
   ProviderCaptureImageFacts facts{};
   facts.intrinsics = SourcedFact<Intrinsics>{
       *intrinsics, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  // This virtual camera calibrates in delivered-image coordinates, so the
+  // sensor-domain and delivered-image calibrations are the SAME values, and the
+  // delivered image covers its reference frame entirely.
+  //
+  // Stated rather than left absent, and stated as equal rather than approximately
+  // so: a caller must be able to move between the two surfaces without a special
+  // case for "no translation", and unity here is what makes that assertable
+  // without hardware.
+  facts.intrinsics_delivered = SourcedFact<Intrinsics>{
+      *intrinsics, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  if (const auto region = DeliveredImageRegion::create(
+          0u, 0u, width, height,
+          CoordinateDomain{CoordinateDomainDeliveredImage{}})) {
+    facts.delivered_image_region = SourcedFact<DeliveredImageRegion>{
+        *region, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  }
   facts.distortion = SourcedFact<Distortion>{
       Distortion{NoDistortion{DistortionImageState::RECTIFIED}},
       FactOrigin::VIRTUAL_CAMERA_AUTHORED};

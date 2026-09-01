@@ -12,6 +12,10 @@ namespace cambang {
 struct ExternalCameraDescriptionEntry {
   std::string camera_id;
   CameraStaticFacts facts;
+  // Optional catalog constraints. Present means the description restricts what
+  // the device may advertise; absent means it says nothing about profiles.
+  std::optional<ProviderProfileCatalog> stream_profiles;
+  std::optional<ProviderProfileCatalog> capture_profiles;
 };
 
 // Typed configured/active external facts. Camera identity remains outside the

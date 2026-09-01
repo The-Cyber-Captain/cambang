@@ -88,7 +88,41 @@ public:
     return synthetic_420_format_capabilities();
   }
 
+  // An authored catalog, identical for every synthetic endpoint. This is the
+  // reference answer: fixed, known, and therefore assertable without hardware.
+  ProviderProfileCatalog stream_profile_catalog(
+      const std::string& hardware_id) const override {
+    return is_known_hardware_id_(hardware_id) ? synthetic_profile_catalog()
+                                              : ProviderProfileCatalog{};
+  }
+
+  ProviderProfileCatalog capture_profile_catalog(
+      const std::string& hardware_id) const override {
+    return is_known_hardware_id_(hardware_id) ? synthetic_profile_catalog()
+                                              : ProviderProfileCatalog{};
+  }
+
  private:
+  // Geometries the synthetic renderer actually produces, paired with the two
+  // formats it advertises. max_fps is stated because virtual time makes it
+  // exact rather than derived.
+  static ProviderProfileCatalog synthetic_profile_catalog() {
+    ProviderProfileCatalog catalog{};
+    catalog.availability = ProfileCatalogAvailability::ENUMERATED;
+    for (const auto& wh : {std::pair<uint32_t, uint32_t>{640u, 480u},
+                           std::pair<uint32_t, uint32_t>{1280u, 720u}}) {
+      for (const uint32_t fourcc : {FOURCC_RGBA, FOURCC_NV12}) {
+        ProviderProfileEntry entry{};
+        entry.width = wh.first;
+        entry.height = wh.second;
+        entry.format_fourcc = fourcc;
+        entry.max_fps = 30.0;
+        catalog.entries.push_back(entry);
+      }
+    }
+    return catalog;
+  }
+
   static ProducerFormatCapabilities synthetic_420_format_capabilities() noexcept {
     ProducerFormatCapabilities caps{};
     caps.add(FOURCC_RGBA);

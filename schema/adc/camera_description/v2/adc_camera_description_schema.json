@@ -848,6 +848,22 @@
         },
         "focal_length_mm": {
           "$ref": "#/$defs/focalLengthMmRecord"
+        },
+        "supported_stream_profiles": {
+          "description": "Constrains the configurations advertised for repeating streams.",
+          "$ref": "#/$defs/profileCatalogRecord"
+        },
+        "supported_capture_profiles": {
+          "description": "Constrains the configurations advertised for still capture.",
+          "$ref": "#/$defs/profileCatalogRecord"
+        },
+        "intrinsics_delivered": {
+          "description": "Overrides or supplies the delivered-image calibration.",
+          "$ref": "#/$defs/intrinsicsDelivered"
+        },
+        "delivered_image_region": {
+          "description": "Overrides or supplies the delivered-image region.",
+          "$ref": "#/$defs/deliveredImageRegion"
         }
       },
       "additionalProperties": true
@@ -903,6 +919,172 @@
         },
         {
           "$ref": "#/$defs/concurrentCameraSupportUnsupported"
+        }
+      ]
+    },
+    "pixelFormatFourcc": {
+      "description": "A CamBANG pixel format named by its four-character FourCC, e.g. \"NV12\" or \"RGBA\". The FourCC is the vocabulary the rest of the surface already uses, so no separate token table has to be kept in step with it. A FourCC CamBANG does not name is rejected rather than carried: it could never match a configuration the device advertises, so it would silently narrow the catalog to nothing instead of failing where the mistake is.",
+      "type": "string",
+      "minLength": 4,
+      "maxLength": 4
+    },
+    "profileEntry": {
+      "description": "One configuration this camera may be permitted to advertise. Geometry and format only. No frame rate: a description constrains WHICH configurations exist, and a rate is something the device measures rather than something a description grants.",
+      "type": "object",
+      "required": [
+        "width",
+        "height",
+        "format"
+      ],
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "format": {
+          "$ref": "#/$defs/pixelFormatFourcc"
+        }
+      },
+      "additionalProperties": true
+    },
+    "profileCatalogRecord": {
+      "description": "A CONSTRAINT on the configurations this camera may advertise, not a declaration of them. Core intersects this list with what the provider enumerates: an entry named here that the device does not advertise is dropped, never added, so a description can never invent a configuration the hardware will refuse. Where the provider owns the camera but cannot enumerate it at all, this list stands on its own. Where the provider does not own the camera, it is ignored entirely -- a description may not describe hardware that is not there.",
+      "type": "object",
+      "required": [
+        "source",
+        "profiles"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/factSource"
+        },
+        "profiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/profileEntry"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "intrinsicsDelivered": {
+      "type": "object",
+      "required": [
+        "source",
+        "focal_length_x_px",
+        "focal_length_y_px",
+        "principal_point_x_px",
+        "principal_point_y_px",
+        "reference_width_px",
+        "reference_height_px"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/factSource"
+        },
+        "focal_length_x_px": {
+          "$ref": "#/$defs/finiteNumber"
+        },
+        "focal_length_y_px": {
+          "$ref": "#/$defs/finiteNumber"
+        },
+        "principal_point_x_px": {
+          "$ref": "#/$defs/finiteNumber"
+        },
+        "principal_point_y_px": {
+          "$ref": "#/$defs/finiteNumber"
+        },
+        "skew_px": {
+          "$ref": "#/$defs/finiteNumber"
+        },
+        "reference_width_px": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reference_height_px": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "coordinate_domain": {
+          "description": "Fixed: a delivered-image calibration is in the delivered image.",
+          "const": "delivered_image"
+        }
+      },
+      "additionalProperties": true,
+      "description": "A calibration expressed in DELIVERED-IMAGE pixels: the surface a caller builds a projection or frustum from. Identical in shape to `intrinsics`, but its coordinate_domain is fixed to delivered_image -- a delivered-image calibration labelled with a sensor array would be self-contradictory.\n\nreference_width_px / reference_height_px state the image size this calibration was measured at. That is NOT necessarily the size a caller receives: a description cannot know what geometry an application will request, so a caller whose image differs must scale, exactly as it would for any reference-anchored calibration.",
+      "not": {
+        "required": [
+          "platform_defined_domain"
+        ]
+      }
+    },
+    "deliveredImageRegion": {
+      "description": "Where the delivered image sits inside the frame the sensor-domain calibration is expressed in.\n\nSupplied by a description only where the provider cannot report it, or reports it wrongly. coordinate_domain names the frame the rectangle is measured in and must match the domain of the `intrinsics` it is meant to be composed with; a region in one frame and a calibration in another cannot be combined.",
+      "type": "object",
+      "required": [
+        "source",
+        "left",
+        "top",
+        "width",
+        "height",
+        "coordinate_domain"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/factSource"
+        },
+        "left": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "top": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "coordinate_domain": {
+          "$ref": "#/$defs/coordinateDomain"
+        },
+        "platform_defined_domain": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "coordinate_domain": {
+                "const": "platform_defined"
+              }
+            },
+            "required": [
+              "coordinate_domain"
+            ]
+          },
+          "then": {
+            "required": [
+              "platform_defined_domain"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "platform_defined_domain"
+              ]
+            }
+          }
         }
       ]
     }

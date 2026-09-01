@@ -375,6 +375,12 @@ enum class TryCloseDeviceStatus : uint8_t {
   TryTriggerDeviceCaptureStatus try_trigger_device_capture_with_capture_id_for_server(
       uint64_t device_instance_id,
       uint64_t capture_id) noexcept;
+  // Reads a device's retained catalog for the Godot boundary. want_capture
+  // selects which of the two. Returns false when the device is not open.
+  bool profile_catalog_for_server(const std::string& hardware_id,
+                                  bool want_capture,
+                                  ResolvedProfileCatalog& out) const;
+
   bool materialize_capture_request_for_server(uint64_t device_instance_id, CaptureRequest& out) const;
 
   // Compatibility alias for smoke/internal callers; still marshals to the core thread.
@@ -1483,6 +1489,12 @@ private:
   // frame_image is the per-image tier a delivered frame carries, or nullptr
   // when the caller has none. Passing it here rather than resolving without it
   // is what lets a stream frame reach the same facts a capture does.
+  // Provider enumeration for one endpoint, narrowed by any ingested
+  // description. Endpoint-scoped so it can be answered before the camera is
+  // opened, which is when a caller actually needs it.
+  ResolvedProfileCatalog resolve_profile_catalog_on_core_thread_(
+      const std::string& hardware_id, bool want_capture) const;
+
   CoreResolvedImageFacts device_scoped_image_facts_on_core_thread_(
       uint64_t device_instance_id,
       const ProviderCaptureImageFacts* frame_image) const;

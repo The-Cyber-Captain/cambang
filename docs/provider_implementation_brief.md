@@ -445,6 +445,49 @@ implement this gate — but platform providers are the eventual source of
 truthful concurrency capability descriptions, and must not admit grouped
 captures their backend cannot actually run concurrently.
 
+## 9A. Profile catalogs, and the three answers
+
+`stream_profile_catalog(hardware_id)` and `capture_profile_catalog(hardware_id)`
+report the configurations an endpoint advertises. They are keyed by hardware id,
+not device instance, so they can be answered before the camera is opened -- a
+caller chooses a configuration before opening anything.
+
+Implementing them is OPTIONAL. Getting the answer wrong is not.
+
+The return carries a three-state `availability`, and the distinction between the
+first two states is the one that matters:
+
+| Answer | Meaning | Consequence |
+|---|---|---|
+| `NOT_THIS_PROVIDER` | not an endpoint you own | no catalog; an ingested description may NOT stand in |
+| `CANNOT_ENUMERATE` | yours, but you cannot list it | an ingested description MAY supply the catalog |
+| `ENUMERATED` | yours, and `entries` is what it advertises | an empty list means it offers nothing |
+
+`NOT_THIS_PROVIDER` is the default, so a provider that has not implemented these
+yields no catalog rather than one for hardware that may not be there.
+
+**Answer `NOT_THIS_PROVIDER` for any hardware id you do not own.** This is not a
+formality. A camera description may supply a catalog for an endpoint you own but
+cannot enumerate; if you answer `CANNOT_ENUMERATE` for an id that is not yours,
+that description will be reported as the catalog of a camera that does not
+exist. The two states look interchangeable and are not.
+
+**Answer `CANNOT_ENUMERATE`, not an empty `ENUMERATED`, when you cannot list a
+camera you own.** A backend that reads formats from an open camera cannot
+enumerate while it is closed; that is truthful, and reporting an empty list
+instead would claim the camera offers nothing.
+
+**Advertise only configurations you will accept.** A caller hands an advertised
+entry straight back to `create_stream()`. A catalog listing geometries the
+backend then refuses is worse than no catalog, because the refusal surfaces far
+from the advertisement that caused it.
+
+`max_fps` per entry is optional: omit it rather than fabricating a rate, because
+a stated zero reads as a measurement. It is a capability, never a request, and
+must not be confused with the `target_fps` fields of a capture profile.
+
+Core intersects an ingested description with your enumeration; you do not
+implement that, and you never see the description.
 ## 10. Shutdown ordering
 
 Reference order (see `SyntheticProvider::shutdown()`): mark shutting-down →
