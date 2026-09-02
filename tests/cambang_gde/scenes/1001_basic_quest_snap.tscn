@@ -151,9 +151,9 @@ func _ready():
 	stream_00 = device_00.create_stream(({
 	\"intent\": CamBANGStream.INTENT_VIEWFINDER,
 	\"profile\": {
-		\"width\": 1280,#800,
-		\"height\": 1280,#600,
-		\"format_fourcc\": CamBANGServer.PIXEL_FORMAT_RGBA,
+		\"width\": 1280,
+		\"height\": 1280,
+		#\"format_fourcc\": CamBANGServer.PIXEL_FORMAT_RGBA,
 		\"target_fps_min\": 30,
 		\"target_fps_max\": 30,
 		}
@@ -164,7 +164,7 @@ func _ready():
 	\"profile\": {
 		\"width\": 1280,#800,
 		\"height\": 1280,#600,
-		\"format_fourcc\": CamBANGServer.PIXEL_FORMAT_RGBA,
+		#\"format_fourcc\": CamBANGServer.PIXEL_FORMAT_RGBA,
 		\"target_fps_min\": 30,
 		\"target_fps_max\": 30,
 		}

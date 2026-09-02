@@ -1,6 +1,7 @@
 #pragma once
 
 #include <godot_cpp/classes/image.hpp>
+#include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
@@ -87,6 +88,35 @@ public:
   int can_to_image_member(int image_member_index) const;
   godot::Ref<godot::Image> to_image_member(int image_member_index) const;
   int can_get_encoded_bytes() const;
+
+  // Capture Compute Textures (pixel_payload_and_result_contract.md 11.6.1).
+  //
+  // GPU-resident, frozen textures of an image member, for running compute over
+  // the captured image. Not a display view -- no freshness or demand semantics
+  // -- and to_image_member() remains the CPU path, unchanged and unaffected.
+  //
+  // Planes are exposed in the member's NATIVE format and are never converted.
+  // A packed member has one plane; NV12/NV21 have two (luma, then interleaved
+  // chroma); I420/YV12 have three. get_format() names the member's format, so
+  // a caller knows what each plane means. A caller wanting RGB converts in its
+  // own shader, where it also controls the colour handling.
+  //
+  // There is deliberately no no-argument convenience. A planar member has no
+  // single texture to return, and an accessor that silently picked one plane
+  // would encode exactly the wrong idea about what a compute texture is.
+  //
+  // Reach the RenderingDevice texture the same way as for any CamBANG texture:
+  //   RenderingServer.texture_get_rd_texture(tex.get_rid())
+  // That route does not vary with which internal path produced the object.
+  //
+  // can_* reports READY when the member is already GPU-resident, EXPENSIVE
+  // when producing planes means uploading them, and UNSUPPORTED when there is
+  // no RenderingDevice (Compatibility) or no pixels to work from. Nothing is
+  // produced until asked for.
+  int can_get_compute_texture_member(int image_member_index) const;
+  int get_compute_texture_plane_count(int image_member_index) const;
+  godot::Ref<godot::Texture2D> get_compute_texture_plane(int image_member_index,
+                                                         int plane_index) const;
 
   godot::Variant get_display_view() const;
   godot::Ref<godot::Image> to_image() const;

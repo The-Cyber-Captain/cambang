@@ -1,4 +1,5 @@
 #include "godot/cambang_stream_result.h"
+#include "godot/camera_fact_convert.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -19,6 +20,8 @@
 #include "godot/cambang_result_convert.h"
 #include "godot/cambang_server.h"
 #include "godot/godot_gpu_display_service.h"
+#include "godot/colorimetry_convert.h"
+#include "godot/stream_compute_texture.h"
 #include "godot/result_access_cost_evidence.h"
 #include "godot/cambang_stream_result_internal.h"
 
@@ -514,9 +517,12 @@ godot::Dictionary CamBANGStreamResult::get_camera_facts() const {
   if (!data_) {
     return godot::Dictionary();
   }
-  godot::Dictionary out;
-  add_acquisition_timing_camera_fact(out, data_->image_facts.acquisition_timing);
-  return out;
+  // The same record, projected by the same function, as a capture image member.
+  // It was resolved when this frame was retained, so a held result reports what
+  // was true when its pixels were taken. Nothing is filtered on the way out: a
+  // stream shows fewer facts than a capture only because a provider delivers
+  // fewer with a frame.
+  return camera_fact_convert::camera_facts_to_dict(data_->resolved_image_facts);
 }
 
 bool CamBANGStreamResult::has_image_properties() const { return data_ && data_->facts.has_image_properties; }
@@ -527,6 +533,45 @@ godot::Dictionary CamBANGStreamResult::get_image_properties() const {
 
 godot::Dictionary CamBANGStreamResult::get_image_properties_provenance() const {
   return has_image_properties() ? to_dict(data_->facts.image_properties_provenance) : godot::Dictionary();
+}
+
+int CamBANGStreamResult::can_get_compute_texture() const {
+  return static_cast<int>(stream_compute_texture_support(data_));
+}
+
+int CamBANGStreamResult::get_compute_texture_plane_count() const {
+  return static_cast<int>(stream_compute_texture_plane_count(data_));
+}
+
+godot::Ref<godot::Texture2D> CamBANGStreamResult::get_compute_texture_plane(
+    int plane_index) const {
+  if (!data_ || plane_index < 0) {
+    return {};
+  }
+  const uint32_t index = static_cast<uint32_t>(plane_index);
+  const uint32_t count = stream_compute_texture_plane_count(data_);
+  if (count == 0 || index >= count) {
+    // Still recorded as an access, so an out-of-range request is visible in
+    // the cost evidence rather than silently absent.
+    return stream_compute_texture_plane(data_, index);
+  }
+  if (compute_texture_planes_.size() != count) {
+    compute_texture_planes_.assign(count, godot::Ref<godot::Texture2D>());
+  }
+  if (compute_texture_planes_[index].is_valid()) {
+    stream_compute_texture_note_cached_plane(data_);
+    return compute_texture_planes_[index];
+  }
+  godot::Ref<godot::Texture2D> produced = stream_compute_texture_plane(data_, index);
+  compute_texture_planes_[index] = produced;
+  return produced;
+}
+
+godot::Dictionary CamBANGStreamResult::get_colorimetry() const {
+  if (!data_) {
+    return godot::Dictionary();
+  }
+  return colorimetry_to_dict(data_->payload.colorimetry);
 }
 
 int CamBANGStreamResult::can_get_display_view() const {
@@ -788,6 +833,11 @@ void CamBANGStreamResult::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_image_properties"), &CamBANGStreamResult::get_image_properties);
 
   godot::ClassDB::bind_method(godot::D_METHOD("get_image_properties_provenance"), &CamBANGStreamResult::get_image_properties_provenance);
+
+  godot::ClassDB::bind_method(godot::D_METHOD("can_get_compute_texture"), &CamBANGStreamResult::can_get_compute_texture);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_compute_texture_plane_count"), &CamBANGStreamResult::get_compute_texture_plane_count);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_compute_texture_plane", "plane_index"), &CamBANGStreamResult::get_compute_texture_plane);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_colorimetry"), &CamBANGStreamResult::get_colorimetry);
 
   godot::ClassDB::bind_method(godot::D_METHOD("can_get_display_view"), &CamBANGStreamResult::can_get_display_view);
   godot::ClassDB::bind_method(godot::D_METHOD("can_to_image"), &CamBANGStreamResult::can_to_image);

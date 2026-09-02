@@ -25,6 +25,7 @@
 #endif
 
 #include "core/core_runtime.h"
+#include "imaging/api/delivered_calibration.h"
 #include "imaging/broker/provider_broker.h"
 #include "imaging/stub/provider.h"
 #include "imaging/synthetic/builtin_scenario_library.h"
@@ -3328,6 +3329,301 @@ bool run_synthetic_live_gpu_backing_truth_check() {
       cb.snapshot_events(), "synthetic_live_gpu_backing_truth");
 }
 
+// The descriptor is the only thing Core and the Godot display layer ever learn
+// about a GPU backing, so its self-description has to survive a producer whose
+// memory is not a linear RGBA8 grid. Everything below is contract, not
+// synthetic behaviour: it is what a Camera2 AHardwareBuffer or a WinRT
+// IDirect3DSurface will have to be describable in.
+bool run_gpu_backing_descriptor_layout_contract_check() {
+  RetainedGpuBackingDescriptor linear{};
+  linear.valid = true;
+  linear.width = 64;
+  linear.height = 32;
+  linear.stride_bytes = 64 * 4;
+  linear.format_fourcc = FOURCC_RGBA;
+  if (!retained_gpu_backing_descriptor_is_self_consistent(linear) ||
+      retained_gpu_backing_footprint_bytes(linear) != 64ull * 4ull * 32ull) {
+    std::cerr << "FAIL gpu backing descriptor layout contract linear footprint mismatch\n";
+    return false;
+  }
+
+  // An opaque backing must not carry a stride, and must still be accounted for.
+  // Before the layout kind existed this case contributed exactly zero bytes to
+  // the retention budget, so opaque allocations could accumulate unevicted.
+  RetainedGpuBackingDescriptor opaque{};
+  opaque.valid = true;
+  opaque.width = 64;
+  opaque.height = 32;
+  opaque.layout_kind = GpuBackingLayoutKind::OPAQUE_EXTERNAL;
+  if (!retained_gpu_backing_descriptor_is_self_consistent(opaque)) {
+    std::cerr << "FAIL gpu backing descriptor layout contract opaque rejected as inconsistent\n";
+    return false;
+  }
+  const uint64_t opaque_bytes = retained_gpu_backing_footprint_bytes(opaque);
+  if (opaque_bytes == 0 ||
+      opaque_bytes != 64ull * 32ull * kUndeclaredGpuBackingBytesPerPixel) {
+    std::cerr << "FAIL gpu backing descriptor layout contract opaque footprint not conservatively estimated\n";
+    return false;
+  }
+
+  // A producer that knows its real allocation size overrides the estimate.
+  RetainedGpuBackingDescriptor declared = opaque;
+  declared.allocation_size_bytes = 12345;
+  if (retained_gpu_backing_footprint_bytes(declared) != 12345ull) {
+    std::cerr << "FAIL gpu backing descriptor layout contract declared allocation size ignored\n";
+    return false;
+  }
+
+  // An opaque descriptor claiming a row stride is describing memory it cannot
+  // describe; that must be caught rather than silently multiplied out.
+  RetainedGpuBackingDescriptor opaque_with_stride = opaque;
+  opaque_with_stride.stride_bytes = 64 * 4;
+  if (retained_gpu_backing_descriptor_is_self_consistent(opaque_with_stride)) {
+    std::cerr << "FAIL gpu backing descriptor layout contract opaque stride accepted\n";
+    return false;
+  }
+
+  RetainedGpuBackingDescriptor degenerate{};
+  degenerate.valid = true;
+  if (retained_gpu_backing_descriptor_is_self_consistent(degenerate)) {
+    std::cerr << "FAIL gpu backing descriptor layout contract zero-extent descriptor accepted\n";
+    return false;
+  }
+  RetainedGpuBackingDescriptor absent{};
+  if (!retained_gpu_backing_descriptor_is_self_consistent(absent) ||
+      retained_gpu_backing_footprint_bytes(absent) != 0) {
+    std::cerr << "FAIL gpu backing descriptor layout contract absent backing mishandled\n";
+    return false;
+  }
+
+  // The one producer in tree that actually emits a GPU backing must satisfy the
+  // same invariants it will be held to when it is not the only one.
+  SyntheticGpuBackingTruthProbeScope runtime_scope;
+  RecorderCallbacks cb;
+  cb.display_demand_active.store(true, std::memory_order_release);
+
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 16;
+  cfg.nominal.height = 16;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  cfg.nominal.fps_num = 30;
+  cfg.nominal.fps_den = 1;
+  cfg.nominal.start_stream_warmup_ns = 0;
+  cfg.producer_output_form_mode = SyntheticProducerOutputFormMode::CpuAndGpu;
+
+  constexpr uint64_t kDeviceId = 8301;
+  constexpr uint64_t kRootId = 8302;
+  constexpr uint64_t kStreamId = 8303;
+  StreamRequest req{};
+  req.stream_id = kStreamId;
+  req.device_instance_id = kDeviceId;
+  req.intent = StreamIntent::PREVIEW;
+  req.profile.width = cfg.nominal.width;
+  req.profile.height = cfg.nominal.height;
+  req.profile.format_fourcc = cfg.nominal.format_fourcc;
+  req.profile.target_fps_min = cfg.nominal.fps_num;
+  req.profile.target_fps_max = cfg.nominal.fps_num;
+  req.requested_retained_plan =
+      CoreRetainedProductionPlan{CoreProductionPostureShape::GpuPrimaryWithCpuSidecar, true};
+
+  SyntheticProvider provider(cfg);
+  if (!provider.initialize(&cb).ok() ||
+      !provider.open_device("synthetic:0", kDeviceId, kRootId).ok() ||
+      !provider.create_stream(req).ok() ||
+      !provider.start_stream(kStreamId, req.profile, req.picture).ok()) {
+    std::cerr << "FAIL gpu backing descriptor layout contract setup failed\n";
+    (void)provider.shutdown();
+    return false;
+  }
+
+  constexpr uint64_t kFramePeriodNs = 33'333'334ull;
+  // The probe fails the first upload and its retry by design; advance past
+  // those before inspecting a published descriptor.
+  provider.advance(0);
+  provider.advance(kFramePeriodNs);
+
+  bool saw_gpu_frame = false;
+  for (const auto& event : cb.snapshot_events()) {
+    if (event.tag != "frame" || event.id != kStreamId || event.capture_id != 0) {
+      continue;
+    }
+    const RetainedGpuBackingDescriptor& d = event.retained_gpu_backing_descriptor;
+    if (!d.valid) {
+      continue;
+    }
+    saw_gpu_frame = true;
+    if (!retained_gpu_backing_descriptor_is_self_consistent(d)) {
+      std::cerr << "FAIL gpu backing descriptor layout contract synthetic descriptor self-inconsistent\n";
+      (void)provider.shutdown();
+      return false;
+    }
+    if (d.layout_kind != GpuBackingLayoutKind::LINEAR || d.stride_bytes == 0 ||
+        d.display_requires_import ||
+        retained_gpu_backing_footprint_bytes(d) == 0) {
+      std::cerr << "FAIL gpu backing descriptor layout contract synthetic descriptor is not a measurable linear backing\n";
+      (void)provider.shutdown();
+      return false;
+    }
+  }
+  if (!saw_gpu_frame) {
+    std::cerr << "FAIL gpu backing descriptor layout contract produced no GPU-backed frame to inspect\n";
+    (void)provider.shutdown();
+    return false;
+  }
+
+  if (!provider.stop_stream(kStreamId).ok() ||
+      !provider.destroy_stream(kStreamId).ok() ||
+      !provider.close_device(kDeviceId).ok() ||
+      !provider.shutdown().ok()) {
+    std::cerr << "FAIL gpu backing descriptor layout contract teardown failed\n";
+    return false;
+  }
+
+  // A still capture belongs to no stream, so its descriptor's stream_id is 0.
+  // That must not cost it its identity: backing_id has to be a real value, or
+  // the backing cannot be told apart from any other and every identity-gated
+  // display path silently declines it.
+  {
+    RecorderCallbacks cap_cb;
+    SyntheticProviderConfig cap_cfg{};
+    cap_cfg.endpoint_count = 1;
+    cap_cfg.nominal.width = 32;
+    cap_cfg.nominal.height = 32;
+    cap_cfg.nominal.format_fourcc = FOURCC_RGBA;
+    cap_cfg.producer_output_form_mode = SyntheticProducerOutputFormMode::GpuOnly;
+    constexpr uint64_t kCapDeviceId = 8311;
+    constexpr uint64_t kCaptureId = 8312;
+    SyntheticProvider cap_provider(cap_cfg);
+    if (!cap_provider.initialize(&cap_cb).ok() ||
+        !cap_provider.open_device("synthetic:0", kCapDeviceId, 8313).ok()) {
+      std::cerr << "FAIL gpu backing descriptor layout contract capture setup failed\n";
+      (void)cap_provider.shutdown();
+      return false;
+    }
+    CaptureRequest cap = make_direct_provider_default_still_capture_request(
+        kCaptureId, kCapDeviceId, 32, 32, FOURCC_RGBA);
+    if (!cap_provider.trigger_capture(cap).ok() ||
+        !wait_for_capture_completed_with_frames(cap_cb, kCaptureId, 1)) {
+      std::cerr << "FAIL gpu backing descriptor layout contract capture did not complete\n";
+      (void)cap_provider.shutdown();
+      return false;
+    }
+    bool saw_capture_backing = false;
+    for (const auto& ev : cap_cb.snapshot_events()) {
+      if (ev.tag != "frame" || ev.capture_id != kCaptureId) {
+        continue;
+      }
+      const RetainedGpuBackingDescriptor& d = ev.retained_gpu_backing_descriptor;
+      if (!d.valid) {
+        continue;
+      }
+      saw_capture_backing = true;
+      if (d.stream_id != 0) {
+        std::cerr << "FAIL gpu backing descriptor layout contract capture descriptor claims a stream\n";
+        (void)cap_provider.shutdown();
+        return false;
+      }
+      if (d.backing_id == 0 || !retained_gpu_backing_descriptor_is_self_consistent(d)) {
+        std::cerr << "FAIL gpu backing descriptor layout contract capture backing has no usable identity\n";
+        (void)cap_provider.shutdown();
+        return false;
+      }
+    }
+    if (!saw_capture_backing) {
+      std::cerr << "FAIL gpu backing descriptor layout contract produced no GPU-backed capture to inspect\n";
+      (void)cap_provider.shutdown();
+      return false;
+    }
+    if (!cap_provider.close_device(kCapDeviceId).ok() || !cap_provider.shutdown().ok()) {
+      std::cerr << "FAIL gpu backing descriptor layout contract capture teardown failed\n";
+      return false;
+    }
+  }
+
+  // backing_id is provider-scoped, not stream-scoped. Two concurrent streams
+  // must not both mint the same value: a descriptor-keyed cache would then
+  // serve one stream's texture for the other's frame.
+  {
+    RecorderCallbacks multi_cb;
+    multi_cb.display_demand_active.store(true, std::memory_order_release);
+    SyntheticProviderConfig multi_cfg{};
+    multi_cfg.endpoint_count = 1;
+    multi_cfg.nominal.width = 16;
+    multi_cfg.nominal.height = 16;
+    multi_cfg.nominal.format_fourcc = FOURCC_RGBA;
+    multi_cfg.nominal.fps_num = 30;
+    multi_cfg.nominal.fps_den = 1;
+    multi_cfg.nominal.start_stream_warmup_ns = 0;
+    multi_cfg.producer_output_form_mode = SyntheticProducerOutputFormMode::CpuAndGpu;
+
+    constexpr uint64_t kMultiDeviceId = 8321;
+    constexpr uint64_t kStreamA = 8323;
+    constexpr uint64_t kStreamB = 8324;
+    SyntheticProvider multi(multi_cfg);
+    if (!multi.initialize(&multi_cb).ok() ||
+        !multi.open_device("synthetic:0", kMultiDeviceId, 8322).ok()) {
+      std::cerr << "FAIL gpu backing descriptor layout contract multi-stream setup failed\n";
+      (void)multi.shutdown();
+      return false;
+    }
+    auto start_one = [&](uint64_t stream_id) -> bool {
+      StreamRequest r{};
+      r.stream_id = stream_id;
+      r.device_instance_id = kMultiDeviceId;
+      r.intent = StreamIntent::PREVIEW;
+      r.profile.width = multi_cfg.nominal.width;
+      r.profile.height = multi_cfg.nominal.height;
+      r.profile.format_fourcc = multi_cfg.nominal.format_fourcc;
+      r.profile.target_fps_min = multi_cfg.nominal.fps_num;
+      r.profile.target_fps_max = multi_cfg.nominal.fps_num;
+      r.requested_retained_plan =
+          CoreRetainedProductionPlan{CoreProductionPostureShape::GpuPrimaryWithCpuSidecar, true};
+      return multi.create_stream(r).ok() && multi.start_stream(stream_id, r.profile, r.picture).ok();
+    };
+    if (!start_one(kStreamA) || !start_one(kStreamB)) {
+      std::cerr << "FAIL gpu backing descriptor layout contract multi-stream start failed\n";
+      (void)multi.shutdown();
+      return false;
+    }
+    multi.advance(0);
+    multi.advance(kFramePeriodNs);
+
+    std::map<uint64_t, uint64_t> owner_by_backing_id;
+    for (const auto& ev : multi_cb.snapshot_events()) {
+      if (ev.tag != "frame" || ev.capture_id != 0) {
+        continue;
+      }
+      const RetainedGpuBackingDescriptor& d = ev.retained_gpu_backing_descriptor;
+      if (!d.valid || d.backing_id == 0) {
+        continue;
+      }
+      const auto it = owner_by_backing_id.find(d.backing_id);
+      if (it != owner_by_backing_id.end() && it->second != d.stream_id) {
+        std::cerr << "FAIL gpu backing descriptor layout contract backing_id " << d.backing_id
+                  << " reused across streams " << it->second << " and " << d.stream_id << "\n";
+        (void)multi.shutdown();
+        return false;
+      }
+      owner_by_backing_id.emplace(d.backing_id, d.stream_id);
+    }
+    if (owner_by_backing_id.size() < 2) {
+      std::cerr << "FAIL gpu backing descriptor layout contract multi-stream produced too few identified backings\n";
+      (void)multi.shutdown();
+      return false;
+    }
+    if (!multi.stop_stream(kStreamA).ok() || !multi.destroy_stream(kStreamA).ok() ||
+        !multi.stop_stream(kStreamB).ok() || !multi.destroy_stream(kStreamB).ok() ||
+        !multi.close_device(kMultiDeviceId).ok() || !multi.shutdown().ok()) {
+      std::cerr << "FAIL gpu backing descriptor layout contract multi-stream teardown failed\n";
+      return false;
+    }
+  }
+
+  return assert_native_balance(
+      cb.snapshot_events(), "gpu_backing_descriptor_layout_contract");
+}
+
 // ===== Family E: Synthetic frame/picture integration compliance =====
 
 bool run_synthetic_timeline_picture_appearance_check() {
@@ -5705,6 +6001,384 @@ bool run_provider_camera_fact_ingress_check() {
   return true;
 }
 
+// A stream frame carries the same per-image facts a capture image does, and the
+// ingested-description tier still wins on that path.
+//
+// This exists because the stream per-image tier had NO deterministic coverage
+// when it was added: the whole of its proof was a log line from one platform
+// run, so a regression in resolution, projection or plumbing would have left
+// every host-native check green. The reference provider is the right place to
+// pin it -- it authors known facts, so the assertions are about the model
+// rather than about any device.
+// Profile catalogs: what an endpoint advertises, narrowed by any ingested
+// description.
+//
+// Covers the three origins the surface can produce and the unknown-endpoint
+// rule, because each is a claim a caller acts on: native_reported is the
+// device's own enumeration, core_derived says a description removed something,
+// and an unenumerable endpoint must be distinguishable from one that supports
+// nothing.
+// The derivation every provider uses to publish intrinsics_delivered from a
+// sensor-domain calibration.
+//
+// Covered here rather than on hardware because no camera available to this
+// repository reports intrinsics through the WinRT path that uses it, and a
+// Camera2 device that does report them cannot be reached from a host-native
+// tool. The arithmetic is the same on every backend, so it is tested where it
+// can be tested deterministically.
+//
+// The non-unity case uses REAL measured values from a Quest 3 camera rather
+// than invented ones, so the expected numbers are those a real sensor produces.
+bool run_delivered_calibration_derivation_check() {
+  const auto fail = [](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    return false;
+  };
+  const auto close = [](double a, double b) {
+    return std::fabs(a - b) < 1e-6;
+  };
+
+  // Quest 3 camera 51: square 1280x1280 sensor frame, delivering 4:3.
+  const auto native = Intrinsics::create(
+      867.317687988281, 867.317687988281,
+      637.132141113281, 640.217224121094,
+      std::nullopt, 1280u, 1280u,
+      CoordinateDomain{CoordinateDomainAndroidSensorPreCorrectionActiveArray{}});
+  if (!native) {
+    return fail("FAIL delivered calibration: reference intrinsics rejected");
+  }
+
+  // The device took a 1280x960 band from the middle of the square array and
+  // scaled it to 640x480. Both axes therefore scale by exactly 0.5 -- the
+  // aspect is preserved, which the naive full-frame rescale would have missed.
+  const auto region = DeliveredImageRegion::create(
+      0u, 160u, 1280u, 960u, native->coordinate_domain());
+  if (!region) {
+    return fail("FAIL delivered calibration: region rejected");
+  }
+  const auto derived =
+      delivered_intrinsics_from_region(*native, *region, 640u, 480u);
+  if (!derived) {
+    return fail("FAIL delivered calibration: derivation returned nothing");
+  }
+  if (!close(derived->focal_length_x_px(), 867.317687988281 * 0.5) ||
+      !close(derived->focal_length_y_px(), 867.317687988281 * 0.5)) {
+    return fail("FAIL delivered calibration: focal length not scaled by the region");
+  }
+  // The vertical principal point must lose the 160px crop origin BEFORE
+  // scaling. Getting that wrong is the silent error: it leaves the frustum
+  // plausible but off-axis.
+  if (!close(derived->principal_point_x_px(), 637.132141113281 * 0.5) ||
+      !close(derived->principal_point_y_px(), (640.217224121094 - 160.0) * 0.5)) {
+    return fail("FAIL delivered calibration: principal point ignored the region origin");
+  }
+  if (derived->reference_width_px() != 640u || derived->reference_height_px() != 480u ||
+      !std::holds_alternative<CoordinateDomainDeliveredImage>(
+          derived->coordinate_domain())) {
+    return fail("FAIL delivered calibration: derived frame is not the delivered image");
+  }
+
+  // Unity: a delivered image covering its whole reference frame at the same
+  // size must reproduce the native values exactly, so a caller can move between
+  // the two surfaces with no special case.
+  std::optional<Intrinsics> unity;
+  std::optional<DeliveredImageRegion> unity_region;
+  if (!derive_delivered_calibration_scaled(*native, 1280u, 1280u, unity, unity_region)) {
+    return fail("FAIL delivered calibration: scaled derivation failed for unity");
+  }
+  if (!close(unity->focal_length_x_px(), native->focal_length_x_px()) ||
+      !close(unity->focal_length_y_px(), native->focal_length_y_px()) ||
+      !close(unity->principal_point_x_px(), native->principal_point_x_px()) ||
+      !close(unity->principal_point_y_px(), native->principal_point_y_px())) {
+    return fail("FAIL delivered calibration: unity case altered the values");
+  }
+  if (unity_region->left() != 0u || unity_region->top() != 0u ||
+      unity_region->width() != 1280u || unity_region->height() != 1280u) {
+    return fail("FAIL delivered calibration: unity region is not the whole frame");
+  }
+
+  // Aspect reconciliation, using the one camera measured whose readout region
+  // and delivered aspect genuinely disagree: an S20+ camera reading out its
+  // full 3216x2208 array (1.4565) while delivering 4:3.
+  //
+  // The device performs this crop and does NOT report it, so a caller composing
+  // the reported readout region with the delivered pixels would be wrong on one
+  // axis. Both Camera2 and libcamera specify the rule: largest sub-rectangle of
+  // the output aspect, centred.
+  {
+    const auto readout = DeliveredImageRegion::create(
+        0u, 0u, 3216u, 2208u,
+        CoordinateDomain{CoordinateDomainAndroidSensorPreCorrectionActiveArray{}});
+    if (!readout) {
+      return fail("FAIL delivered calibration: readout region rejected");
+    }
+    const auto narrowed = region_cropped_to_aspect(*readout, 640u, 480u);
+    if (!narrowed) {
+      return fail("FAIL delivered calibration: aspect reconciliation returned nothing");
+    }
+    // 2208 * 4/3 = 2944 wide, centred: (3216 - 2944) / 2 = 136.
+    if (narrowed->left() != 136u || narrowed->top() != 0u ||
+        narrowed->width() != 2944u || narrowed->height() != 2208u) {
+      return fail("FAIL delivered calibration: pillarbox crop is not centred or sized right");
+    }
+    // The delivered centre must land on the readout centre; that is the check
+    // that catches an off-centre crop, which looks plausible and is not.
+    const auto centred = delivered_intrinsics_from_region(*native, *narrowed, 640u, 480u);
+    if (!centred) {
+      return fail("FAIL delivered calibration: derivation over the narrowed region failed");
+    }
+  }
+
+  // Aspects that already agree must leave the region untouched.
+  {
+    const auto same = region_cropped_to_aspect(*region, 640u, 480u);
+    if (!same || same->left() != region->left() || same->top() != region->top() ||
+        same->width() != region->width() || same->height() != region->height()) {
+      return fail("FAIL delivered calibration: matching aspects were altered");
+    }
+  }
+  // A zero dimension is refused rather than producing an infinity.
+  if (delivered_intrinsics_from_region(*native, *region, 0u, 480u)) {
+    return fail("FAIL delivered calibration: accepted a zero delivered width");
+  }
+  return true;
+}
+bool run_profile_catalog_check() {
+  VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
+  std::string error;
+  const auto fail = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    harness.stop_runtime();
+    return false;
+  };
+
+  // Constrains synthetic:0 to one configuration it really has, plus one it does
+  // not. The second must be dropped: a description narrows what a device
+  // advertises and can never add to it.
+  const std::string description = R"JSON({
+    "schema_version":2,
+    "cameras":[
+      {"camera_id":"synthetic:0",
+       "supported_stream_profiles":{"source":"user_supplied","profiles":[
+         {"width":1280,"height":720,"format":"NV12"},
+         {"width":9999,"height":9999,"format":"RGBA"}]}},
+      {"camera_id":"synthetic:4242",
+       "supported_stream_profiles":{"source":"user_supplied","profiles":[
+         {"width":4096,"height":2160,"format":"RGBA"}]}}
+    ]
+  })JSON";
+  const auto ingest =
+      harness.runtime().replace_external_camera_description_json_for_internal(description);
+  if (ingest.status != CoreRuntime::ReplaceExternalCameraDescriptionStatus::Ok) {
+    std::cerr << "FAIL profile catalog ingest rejected status="
+              << static_cast<int>(ingest.status) << "\n";
+    return false;
+  }
+  if (!harness.start_runtime(error)) {
+    std::cerr << "FAIL profile catalog harness start: " << error << "\n";
+    return false;
+  }
+
+  ResolvedProfileCatalog catalog{};
+
+  // Unconstrained endpoint: the provider's own enumeration, unchanged.
+  if (!harness.runtime().profile_catalog_for_server("synthetic:1", false, catalog)) {
+    return fail("FAIL profile catalog query failed for a known endpoint");
+  }
+  if (!catalog.enumerated || catalog.entries.empty() ||
+      catalog.origin != FactOrigin::NATIVE_REPORTED) {
+    return fail("FAIL profile catalog unconstrained endpoint is not native_reported");
+  }
+  const size_t native_count = catalog.entries.size();
+
+  // Capture catalog on the constrained camera: the description said nothing
+  // about capture, so it must be untouched. A constraint on one catalog
+  // leaking into the other would be silent.
+  if (!harness.runtime().profile_catalog_for_server("synthetic:0", true, catalog) ||
+      !catalog.enumerated || catalog.origin != FactOrigin::NATIVE_REPORTED ||
+      catalog.entries.size() != native_count) {
+    return fail("FAIL profile catalog capture side was altered by a stream constraint");
+  }
+
+  // Constrained stream catalog: intersection only.
+  if (!harness.runtime().profile_catalog_for_server("synthetic:0", false, catalog)) {
+    return fail("FAIL profile catalog query failed for the constrained endpoint");
+  }
+  if (!catalog.enumerated || catalog.origin != FactOrigin::CORE_DERIVED) {
+    return fail("FAIL profile catalog constrained endpoint is not core_derived");
+  }
+  if (catalog.entries.size() != 1) {
+    return fail("FAIL profile catalog constraint did not narrow to the intersection");
+  }
+  const ProviderProfileEntry& kept = catalog.entries.front();
+  if (kept.width != 1280u || kept.height != 720u || kept.format_fourcc != FOURCC_NV12) {
+    return fail("FAIL profile catalog kept the wrong entry");
+  }
+  // The described-but-unadvertised entry must be gone, not merely reordered.
+  for (const auto& entry : catalog.entries) {
+    if (entry.width == 9999u) {
+      return fail("FAIL profile catalog admitted an entry the device never advertised");
+    }
+  }
+
+  // An endpoint the provider does not own, DESCRIBED by the ingested
+  // document. The description must not stand in for absent hardware: a
+  // catalog here would tell a caller that a camera which is not present
+  // supports specific configurations.
+  if (!harness.runtime().profile_catalog_for_server("synthetic:4242", false, catalog)) {
+    return fail("FAIL profile catalog query failed for a described absent endpoint");
+  }
+  if (catalog.enumerated) {
+    return fail("FAIL profile catalog let a description describe absent hardware");
+  }
+
+  // An endpoint the provider does not own: nothing, and distinguishable from
+  // an endpoint that supports nothing.
+  if (!harness.runtime().profile_catalog_for_server("synthetic:9999", false, catalog)) {
+    return fail("FAIL profile catalog query failed for an unknown endpoint");
+  }
+  if (catalog.enumerated) {
+    return fail("FAIL profile catalog claimed enumeration for an unknown endpoint");
+  }
+
+  harness.stop_runtime();
+  return true;
+}
+bool run_synthetic_stream_image_facts_check() {
+  VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
+  std::string error;
+  const auto fail = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    harness.stop_runtime();
+    return false;
+  };
+
+  // Overrides one device-scoped fact and one per-image fact the provider also
+  // reports, so precedence is proven on the stream path and not merely assumed
+  // to match the capture path.
+  const std::string description = R"JSON({
+    "schema_version":2,
+    "cameras":[
+      {"camera_id":"synthetic:0",
+       "facing":{"source":"user_supplied","value":"external"},
+       "focus_state":{"source":"user_supplied","state":"at_distance","distance_m":2.5}}
+    ]
+  })JSON";
+  // Ingested BEFORE the runtime starts: that is the documented ordering, and a
+  // description applied afterwards does not reach devices already opened.
+  const auto ingest =
+      harness.runtime().replace_external_camera_description_json_for_internal(description);
+  if (ingest.status != CoreRuntime::ReplaceExternalCameraDescriptionStatus::Ok) {
+    std::cerr << "FAIL synthetic stream image facts ingest rejected status="
+              << static_cast<int>(ingest.status) << "\n";
+    return false;
+  }
+  if (!harness.start_runtime(error)) {
+    std::cerr << "FAIL synthetic stream image facts harness start: " << error << "\n";
+    return false;
+  }
+
+  if (!harness.open_device(error) || !harness.create_stream(error) ||
+      !harness.start_stream(error)) {
+    return fail("FAIL synthetic stream image facts stream setup failed");
+  }
+
+  // The reference provider runs on virtual time: frames are driven, not awaited.
+  SharedStreamResultData result;
+  for (int i = 0; i < 16; ++i) {
+    if (!harness.emit_frame(error)) {
+      return fail("FAIL synthetic stream image facts emit_frame failed");
+    }
+    (void)harness.tick();
+    result = harness.runtime().get_latest_stream_result(VerifyCaseHarness::kStreamId);
+    if (result && result->resolved_image_facts.image.intrinsics) break;
+  }
+  if (!result) {
+    return fail("FAIL synthetic stream image facts no retained stream result");
+  }
+  const auto& camera = result->resolved_image_facts.camera;
+  const auto& image = result->resolved_image_facts.image;
+
+  // Per-image tier reached the stream at all.
+  if (!image.intrinsics || image.intrinsics->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED) {
+    return fail("FAIL synthetic stream image facts intrinsics absent or misattributed");
+  }
+  if (!image.distortion || image.distortion->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED) {
+    return fail("FAIL synthetic stream image facts distortion absent or misattributed");
+  }
+  if (!image.sensor_sensitivity_iso ||
+      image.sensor_sensitivity_iso->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED) {
+    return fail("FAIL synthetic stream image facts iso absent or misattributed");
+  }
+  // Timing is frame-owned and must be present on a delivered frame.
+  if (!image.acquisition_timing) {
+    return fail("FAIL synthetic stream image facts acquisition_timing absent");
+  }
+  // Both calibration surfaces are present, and where the sensor-domain frame IS
+  // the delivered image they are the SAME values. A caller told to prefer the
+  // delivered-image surface must be able to move between the two without a
+  // special case for "no translation"; this is that guarantee, asserted rather
+  // than intended.
+  if (!image.intrinsics || !image.intrinsics_delivered) {
+    return fail("FAIL synthetic stream is missing one of the two calibrations");
+  }
+  {
+    const Intrinsics& sensor = image.intrinsics->value;
+    const Intrinsics& delivered = image.intrinsics_delivered->value;
+    if (!std::holds_alternative<CoordinateDomainDeliveredImage>(
+            sensor.coordinate_domain())) {
+      return fail("FAIL synthetic sensor-domain calibration is not delivered-image");
+    }
+    if (sensor.focal_length_x_px() != delivered.focal_length_x_px() ||
+        sensor.focal_length_y_px() != delivered.focal_length_y_px() ||
+        sensor.principal_point_x_px() != delivered.principal_point_x_px() ||
+        sensor.principal_point_y_px() != delivered.principal_point_y_px() ||
+        sensor.reference_width_px() != delivered.reference_width_px() ||
+        sensor.reference_height_px() != delivered.reference_height_px()) {
+      return fail("FAIL unity broken: no translation, yet the two calibrations differ");
+    }
+  }
+  // With no translation the region must cover the reference frame exactly,
+  // so a caller deriving delivered intrinsics from the sensor pair gets the
+  // same answer the delivered surface already gave them.
+  if (!image.delivered_image_region) {
+    return fail("FAIL synthetic stream has no delivered_image_region");
+  }
+  {
+    const DeliveredImageRegion& r = image.delivered_image_region->value;
+    if (r.left() != 0u || r.top() != 0u ||
+        r.width() != image.intrinsics->value.reference_width_px() ||
+        r.height() != image.intrinsics->value.reference_height_px()) {
+      return fail("FAIL delivered_image_region is not unity where it must be");
+    }
+  }
+  // Never invented: this virtual camera has no shutter or iris, so these stay
+  // absent rather than resolving to a fabricated zero.
+  if (image.exposure_time || image.aperture_f_number || image.focal_length_mm) {
+    return fail("FAIL synthetic stream image facts invented a photometric value");
+  }
+  // Provenance: no external source may assert what the provider did to pixels.
+  if (image.realized_image_transform &&
+      image.realized_image_transform->origin == FactOrigin::USER_SUPPLIED) {
+    return fail("FAIL synthetic stream realized_image_transform was externally asserted");
+  }
+
+  // Ingested description beats the provider on BOTH scopes, on the stream path.
+  if (!camera.facing || camera.facing->value != CameraFacing::EXTERNAL ||
+      camera.facing->origin != FactOrigin::USER_SUPPLIED) {
+    return fail("FAIL synthetic stream device-scoped override did not win");
+  }
+  if (!image.focus_state || image.focus_state->origin != FactOrigin::USER_SUPPLIED) {
+    return fail("FAIL synthetic stream per-image override did not win");
+  }
+  const auto* at_distance = std::get_if<FocusAtDistance>(&image.focus_state->value);
+  if (!at_distance || at_distance->distance_m() != 2.5) {
+    return fail("FAIL synthetic stream per-image override value mismatch");
+  }
+
+  harness.stop_runtime();
+  return true;
+}
 bool run_synthetic_provider_reference_camera_facts_check() {
   constexpr uint64_t kDeviceA = 17401;
   constexpr uint64_t kDeviceB = 17402;
@@ -6132,24 +6806,30 @@ bool run_core_capture_result_fact_resolution_check() {
       !has_synthetic_image_facts(*bracket_member_1)) {
     return fail_with_cleanup("FAIL core result fact resolution admission context was not retained");
   }
-  const CameraStaticFacts& a0 = bracket_member_0->resolved_image_facts.camera;
-  const CameraStaticFacts& a1 = bracket_member_1->resolved_image_facts.camera;
-  if (!a0.facing || !a0.nature || !a0.sensor_orientation || !a0.intrinsics ||
-      !a0.distortion || !a0.pose ||
+  const ResolvedCameraDeviceFacts& a0 = bracket_member_0->resolved_image_facts.camera;
+  const ResolvedCameraDeviceFacts& a1 = bracket_member_1->resolved_image_facts.camera;
+  // Intrinsics and distortion resolve into the image tier, not the device tier,
+  // because they are format-anchored. The device-keyed source tiers still feed
+  // them -- which is what the USER_SUPPLIED origin below proves -- but the
+  // resolved fact is per image.
+  const CaptureImageFacts& i0 = bracket_member_0->resolved_image_facts.image;
+  const CaptureImageFacts& i1 = bracket_member_1->resolved_image_facts.image;
+  if (!a0.facing || !a0.nature || !a0.sensor_orientation || !i0.intrinsics ||
+      !i0.distortion || !a0.pose ||
       a0.facing->value != CameraFacing::FRONT ||
       a0.facing->origin != FactOrigin::USER_SUPPLIED ||
       a0.nature->value != CameraNature::VIRTUAL ||
       a0.nature->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
       a0.sensor_orientation->value != SensorOrientationDegrees::DEGREES_0 ||
       a0.sensor_orientation->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
-      a0.intrinsics->value.focal_length_x_px() != 901.0 ||
-      a0.intrinsics->origin != FactOrigin::USER_SUPPLIED ||
+      i0.intrinsics->value.focal_length_x_px() != 901.0 ||
+      i0.intrinsics->origin != FactOrigin::USER_SUPPLIED ||
       a0.pose->origin != FactOrigin::USER_SUPPLIED ||
       a0.pose->value.translation_m().x != 10.0 ||
-      a0.distortion->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
-      !std::holds_alternative<NoDistortion>(a0.distortion->value) ||
-      !a1.intrinsics || a1.intrinsics->value.focal_length_x_px() != 901.0 ||
-      !a1.distortion || a1.distortion->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
+      i0.distortion->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
+      !std::holds_alternative<NoDistortion>(i0.distortion->value) ||
+      !i1.intrinsics || i1.intrinsics->value.focal_length_x_px() != 901.0 ||
+      !i1.distortion || i1.distortion->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
       !a1.pose || a1.pose->value.translation_m().x != 10.0) {
     return fail_with_cleanup("FAIL core result fact resolution external/provider precedence failed");
   }
@@ -6170,11 +6850,11 @@ bool run_core_capture_result_fact_resolution_check() {
       absent_member->resolved_image_facts.camera.nature ||
       absent_member->resolved_image_facts.camera.sensor_orientation ||
       absent_member->resolved_image_facts.camera.pose ||
-      !absent_member->resolved_image_facts.camera.intrinsics ||
-      absent_member->resolved_image_facts.camera.intrinsics->origin !=
+      !absent_member->resolved_image_facts.image.intrinsics ||
+      absent_member->resolved_image_facts.image.intrinsics->origin !=
           FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
-      !absent_member->resolved_image_facts.camera.distortion ||
-      absent_member->resolved_image_facts.camera.distortion->origin !=
+      !absent_member->resolved_image_facts.image.distortion ||
+      absent_member->resolved_image_facts.image.distortion->origin !=
           FactOrigin::VIRTUAL_CAMERA_AUTHORED) {
     return fail_with_cleanup("FAIL core result fact resolution absence was not preserved");
   }
@@ -6240,8 +6920,8 @@ bool run_core_capture_result_fact_resolution_check() {
       !rig_b_member->resolved_image_facts.camera.nature ||
       rig_b_member->resolved_image_facts.camera.nature->value != CameraNature::HYBRID ||
       rig_b_member->resolved_image_facts.camera.nature->origin != FactOrigin::USER_SUPPLIED ||
-      !rig_b_member->resolved_image_facts.camera.intrinsics ||
-      rig_b_member->resolved_image_facts.camera.intrinsics->origin !=
+      !rig_b_member->resolved_image_facts.image.intrinsics ||
+      rig_b_member->resolved_image_facts.image.intrinsics->origin !=
           FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
       !rig_b_member->resolved_image_facts.camera.pose ||
       rig_b_member->resolved_image_facts.camera.pose->value.translation_m().x != 1.0 ||
@@ -11465,6 +12145,7 @@ int main(int argc, char** argv) {
       {"run_synthetic_parent_context_capability_downgrade_matrix_check", [] { return run_synthetic_parent_context_capability_downgrade_matrix_check(); }},
       {"run_synthetic_producer_output_form_mode_production_check", [] { return run_synthetic_producer_output_form_mode_production_check(); }},
       {"run_synthetic_live_gpu_backing_truth_check", [] { return run_synthetic_live_gpu_backing_truth_check(); }},
+      {"run_gpu_backing_descriptor_layout_contract_check", [] { return run_gpu_backing_descriptor_layout_contract_check(); }},
       {"run_synthetic_timeline_picture_appearance_check", [] { return run_synthetic_timeline_picture_appearance_check(); }},
       {"run_abandoned_capture_payload_attribution_check", [] { return run_abandoned_capture_payload_attribution_check(); }},
       {"run_core_per_device_capture_guard_check", [] { return run_core_per_device_capture_guard_check(); }},
@@ -11483,6 +12164,9 @@ int main(int argc, char** argv) {
       {"run_core_synthetic_multi_member_capture_admission_context_check", [] { return run_core_synthetic_multi_member_capture_admission_context_check(); }},
       {"run_provider_camera_fact_ingress_check", [] { return run_provider_camera_fact_ingress_check(); }},
       {"run_synthetic_provider_reference_camera_facts_check", [] { return run_synthetic_provider_reference_camera_facts_check(); }},
+      {"run_synthetic_stream_image_facts_check", [] { return run_synthetic_stream_image_facts_check(); }},
+      {"run_profile_catalog_check", [] { return run_profile_catalog_check(); }},
+      {"run_delivered_calibration_derivation_check", [] { return run_delivered_calibration_derivation_check(); }},
       {"run_core_capture_result_fact_resolution_check", [] { return run_core_capture_result_fact_resolution_check(); }},
       {"run_core_synthetic_three_member_realized_unknown_propagation_check", [] { return run_core_synthetic_three_member_realized_unknown_propagation_check(); }},
       {"run_synthetic_stream_plus_still_single_session_truth_check", [] { return run_synthetic_stream_plus_still_single_session_truth_check(); }},

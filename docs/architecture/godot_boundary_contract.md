@@ -42,15 +42,28 @@ Completed `CamBANGCaptureResult` objects expose resolved still-camera facts
 through optional `get_image_member(index).camera_facts`, and
 `CamBANGStreamResult` exposes stream-frame facts through `get_camera_facts()`.
 
-The asymmetry is deliberate and not a gap. Stream results carry only facts that
-ride free on the delivered frame — today, `acquisition_timing`. They are
-deliberately not burdened with facts that vary per frame and would require a
-per-frame query or resolution pass (realized exposure, sensitivity, aperture,
-focal length, focus state), for two reasons: the per-frame processing cost on a
-repeating path, and the absence of a real need, since streams are by design a
-second-class surface relative to capture operations and their results. Resolved
-camera facts belong to `CamBANGCaptureResult`. Do not migrate them onto the
-stream surface without an explicit maintainer decision reversing this.
+The asymmetry is one of available input, not of policy. Both result kinds store
+the same record, resolved by one chain and projected by one shared converter
+(`src/godot/camera_fact_convert.h`), unfiltered. A stream carries everything a
+device-keyed source can supply: the four fixed at device open,
+`acquisition_timing` from the frame, and any quantity an ingested description or
+an authored virtual camera asserts as constant.
+
+Per-image facts reach a stream too: `FrameView` carries the same record a
+capture publishes through `EvCaptureImageFacts`, so a value a provider reads
+per frame is available on either surface. Whether a given camera reports one is
+runtime capability, read and reported, never assumed.
+
+`realized_image_transform` is constrained by provenance rather than by surface:
+it describes what the provider did to those pixels, so no ingested description
+or other external source may assert it.
+
+Adding a fact to the stream surface remains a public-surface change requiring an
+explicit maintainer decision. The device-scoped four were added under one, on
+2026-08-27. An earlier revision of this section forbade exactly that migration;
+this paragraph records that the prohibition was lifted for those four, and for
+nothing else.
+
 These surfaces include optional `acquisition_timing` with direct Godot `int`
 values for `acquisition_mark`, `tick_period_numerator_ns`, and
 `tick_period_denominator`, plus `get_capture_datetime_unix_nanoseconds()`,
@@ -112,6 +125,109 @@ runtime-instance seam rather than endpoint-handle identity alone;
 
 Endpoint startup intent is also narrow and hardware-id scoped. During the pre-baseline startup window, endpoint-handle `engage()`, `set_still_capture_profile(...)`, and `set_warm_policy(...)` may be accepted as startup intent. Those calls do not execute core/provider runtime effects before baseline: the clean `state_published(gen, 0, 0)` snapshot is emitted and latch-visible first, and accepted endpoint intents are applied only afterward, so their observable device/profile/warm-policy effects appear in later snapshots (normally `version >= 1`). Multiple pre-baseline profile or warm-policy calls for the same endpoint/session are deterministic last-write-wins. Accepted endpoint startup intent either applies after baseline or fails visibly; it is not retained indefinitely. Stream creation, capture triggering, result lookup, rig capture, timeline advancement, and commands that depend on runtime instance lineage are not part of this exception.
 
+---
+
+# Supported Profile Catalogs
+
+`CamBANGServer` reports the configurations an endpoint advertises:
+
+```gdscript
+CamBANGServer.get_supported_stream_profiles(hardware_id) -> Dictionary
+CamBANGServer.get_supported_capture_profiles(hardware_id) -> Dictionary
+```
+
+`CamBANGDevice` carries the same pair without arguments, answering for the
+endpoint behind that device:
+
+```gdscript
+device.get_supported_stream_profiles() -> Dictionary
+device.get_supported_capture_profiles() -> Dictionary
+```
+
+Both routes return the same value for the same endpoint. The server pair is the
+discovery form -- a caller listing cameras to build a settings screen reads it
+straight after `enumerate_devices()`, without constructing a device object per
+camera to ask a question that needs none.
+
+## A catalog describes an endpoint, not a session
+
+A catalog is endpoint truth, readable through endpoint identity, in the same
+narrow startup-safe sense as `enumerate_devices()` above. It is therefore
+**readable before `engage()`**, and does not change when a device is engaged or
+disengaged. This is deliberate: a caller chooses a configuration before opening
+a camera, and requiring the camera to be open first would invert the order in
+which the decision is made.
+
+## Shape
+
+```gdscript
+{
+  "profiles": [                       # key ABSENT when the provider cannot enumerate
+    {
+      "profile": { "width": 1280, "height": 720, "format_fourcc": 842094158 },
+      "max_fps": 30.0                 # omitted when the provider cannot derive one
+    },
+  ],
+  "origin": "native_reported",
+}
+```
+
+The profile is **nested**, and carries exactly the keys `create_stream()` and
+`set_still_capture_profile()` accept, so an advertised entry is handed back
+without translation:
+
+```gdscript
+device.create_stream({ "intent": CamBANGStream.INTENT_PREVIEW,
+                       "profile": entry["profile"] })
+```
+
+`max_fps` sits beside the profile rather than inside it because it is a
+**capability, not a request**. It reports what the device can do; `target_fps`
+and `target_fps_max` in a stream profile ask for something. Those must not be
+confused, and the nesting is what keeps them apart.
+
+## Absence is not emptiness
+
+`profiles` is **absent** when the provider cannot enumerate configurations for
+that endpoint. It is **present and empty** when the endpoint genuinely offers
+none. These are different claims and a caller acts on the difference, so the
+test is:
+
+```gdscript
+if not caps.has("profiles"):
+    return   # cannot enumerate -- do not silently fall back to a guessed default
+```
+
+A provider legitimately cannot enumerate in some states: a backend that reads
+formats from an open camera reports nothing while that camera is closed. An
+unknown or unowned `hardware_id` likewise reports no catalog, so a catalog is
+never returned for hardware that is not present.
+
+## Identity of an entry
+
+`width`, `height` and `format_fourcc` identify a configuration. `max_fps` does
+not: it is derived on at least one backend and can move with a driver update
+while the geometry is unchanged. A caller matching a remembered choice matches
+on the three integers.
+
+Entries are per format, not per resolution: the same geometry appears once for
+each format that supports it, and the frame rate may differ between them.
+
+## Origin
+
+| Value | Meaning |
+|---|---|
+| `native_reported` | the provider enumerated it and nothing altered it |
+| `core_derived` | an ingested camera description narrowed the enumeration |
+| `user_supplied` | the provider could not enumerate; a description supplied it |
+
+A description **constrains** and never adds: a configuration it names that the
+device does not advertise is dropped. `core_derived` therefore says a catalog
+is shorter than the hardware allows, which is worth surfacing in a diagnostics
+view -- a missing resolution is then explained by the description rather than
+by the camera.
+
+---
 Synthetic timeline scenario staging is also a narrow exception because it is startup configuration intent, not a runtime-effect command: when synthetic timeline mode is active and provider storage exists, `select_builtin_scenario(...)` and `load_external_scenario(...)` may stage provider-owned scenario data during the pre-baseline window. If a valid scenario has been staged, `start_scenario()` may also be accepted during this window as pending playback intent. Actual scenario playback is not started until after the baseline `state_published(gen, 0, 0)` has been emitted and is latch-visible, so scenario effects must appear only after baseline (normally at `version >= 1`). These exceptions are not a general pre-baseline command queue; stream, rig, capture, result lookup, instance-id lookup, non-startup endpoint operations, and `advance_timeline(...)` runtime effects remain baseline-gated.
 
 The first observable publish of a generation will always be:

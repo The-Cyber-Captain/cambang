@@ -25,6 +25,13 @@ constexpr const char* kRouteStreamToImageGpuPrimaryCpuSidecarMaterializer = "str
 constexpr const char* kRouteStreamToImageGpuPrimaryNoCpuSidecarMaterializer = "stream_to_image.gpu_primary_no_cpu_sidecar_materializer";
 constexpr const char* kRouteStreamDisplayViewRetainedGpuBacking = "stream_display_view.retained_gpu_backing";
 constexpr const char* kRouteStreamDisplayViewCpuLiveDisplayView = "stream_display_view.cpu_live_display_view";
+// Compute-texture plane production. Split upload from cache hit because they
+// are different cost domains and folding them together would hide which one a
+// caller is actually paying at its polling rate.
+constexpr const char* kRouteStreamComputeTexturePlaneUpload =
+    "stream_compute_texture.plane_upload";
+constexpr const char* kRouteStreamComputeTexturePlaneCached =
+    "stream_compute_texture.plane_cached";
 constexpr const char* kRouteStreamAccessUnsupported = "stream_access.unsupported";
 constexpr const char* kRouteCaptureToImageCpuPacked = "capture_to_image.cpu_packed";
 constexpr const char* kRouteCaptureToImageGpuPrimaryCpuSidecar = "capture_to_image.gpu_primary_cpu_sidecar";

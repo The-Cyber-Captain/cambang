@@ -52,7 +52,12 @@ bool synthetic_rgba_to_planar_420(
     uint32_t src_stride,
     uint32_t w,
     uint32_t h,
+    ColorRange range,
     std::vector<uint8_t>& out) {
+  // Selected once, not per sample: the branch is loop-invariant and putting
+  // it inside the pixel loops costs the inlining that makes them fast (the
+  // same lesson core_result_store.h records for the decode direction).
+  const bool full_range = (range == ColorRange::FULL);
   const PixelFormatDescriptor desc = describe_pixel_format(fourcc);
   if (!desc.valid || !desc.is_yuv ||
       desc.layout_class == PixelLayoutClass::Packed) {
@@ -84,7 +89,8 @@ bool synthetic_rgba_to_planar_420(
       const uint8_t r = row[static_cast<size_t>(x) * 4u + 0u];
       const uint8_t g = row[static_cast<size_t>(x) * 4u + 1u];
       const uint8_t b = row[static_cast<size_t>(x) * 4u + 2u];
-      y_row[x] = rgb_to_yuv_bt601_limited(r, g, b).y;
+      y_row[x] = full_range ? rgb_to_yuv_bt601_full(r, g, b).y
+                            : rgb_to_yuv_bt601_limited(r, g, b).y;
     }
   }
 
@@ -98,7 +104,9 @@ bool synthetic_rgba_to_planar_420(
         : nullptr;
     for (uint32_t cx = 0; cx < chroma_cols; ++cx) {
       const size_t sx = static_cast<size_t>(cx) * 2u * 4u;
-      const YuvSample s = rgb_to_yuv_bt601_limited(row[sx + 0u], row[sx + 1u], row[sx + 2u]);
+      const YuvSample s = full_range
+          ? rgb_to_yuv_bt601_full(row[sx + 0u], row[sx + 1u], row[sx + 2u])
+          : rgb_to_yuv_bt601_limited(row[sx + 0u], row[sx + 1u], row[sx + 2u]);
       if (semi_planar) {
         const size_t first = static_cast<size_t>(cx) * 2u;
         uv_row[first + (desc.chroma_v_first ? 1u : 0u)] = s.u;
@@ -117,6 +125,7 @@ bool synthetic_rgba_to_planar_420(
 // synthetic_rgba_to_planar_420(). Shared by the stream and capture emitters so
 // the two cannot drift into describing the same bytes differently.
 void synthetic_fill_planar_420_layout(uint32_t fourcc,
+                                      ColorRange range,
                                       uint8_t* base,
                                       size_t size_bytes,
                                       uint32_t w,
@@ -127,8 +136,11 @@ void synthetic_fill_planar_420_layout(uint32_t fourcc,
   layout.width = w;
   layout.height = h;
   layout.plane_count = desc.plane_count;
-  // Must match the coefficients in rgb_to_yuv_bt601_limited().
-  layout.colorimetry.range = ColorRange::LIMITED;
+  // Must match the encoder synthetic_rgba_to_planar_420() actually ran. This
+  // is passed in rather than assumed precisely so the two cannot diverge: a
+  // declaration that does not describe the bytes is the defect measured on
+  // Camera2 (contract 6.3, BT.601-limited fallback) reproduced by hand.
+  layout.colorimetry.range = range;
   layout.colorimetry.matrix = ColorMatrix::BT601;
   layout.colorimetry.transfer = ColorTransfer::SRGB;
   layout.colorimetry.primaries = ColorPrimaries::BT709;
@@ -1084,6 +1096,13 @@ uint64_t SyntheticProvider::alloc_native_id_(NativeObjectType type) {
   return callbacks_->allocate_native_id(type);
 }
 
+// Provider-unique, never zero. Zero is reserved by the descriptor contract to
+// mean "no scalar identity supplied", so a minted identity must never collide
+// with it.
+uint64_t SyntheticProvider::mint_gpu_backing_identity_() {
+  return next_gpu_backing_identity_.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
 void SyntheticProvider::emit_native_create_device_(const DeviceState& d) {
   if (!callbacks_) {
     return;
@@ -1147,28 +1166,49 @@ void SyntheticProvider::emit_camera_static_facts_(const DeviceState& d) {
   strand_.post_camera_static_facts(d.device_instance_id, std::move(facts));
 }
 
-void SyntheticProvider::emit_capture_image_facts_(
-    const CaptureRequest& request,
-    uint32_t image_member_index,
-    int32_t applied_exposure_compensation_milli_ev) {
-  if (!callbacks_) return;
-  std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
-  const char* hardware_id = resolve_hardware_id_for_device_locked_(request.device_instance_id);
-  if (!hardware_id) return;
+// The one authored per-image fact set for this provider, used by BOTH delivery
+// paths. A stream frame and a capture image from the same virtual camera must
+// describe it identically; building them in two places is how they would stop.
+//
+// Caller holds provider_state_mutex_.
+ProviderCaptureImageFacts SyntheticProvider::authored_image_facts_locked_(
+    uint64_t device_instance_id,
+    uint32_t width,
+    uint32_t height,
+    int32_t applied_exposure_compensation_milli_ev) const {
+  ProviderCaptureImageFacts empty{};
+  const char* hardware_id = resolve_hardware_id_for_device_locked_(device_instance_id);
+  if (!hardware_id) return empty;
   const uint32_t device_index = static_cast<uint32_t>(
       std::strtoul(hardware_id + std::strlen(kHardwareIdPrefix), nullptr, 10));
   const auto intrinsics = Intrinsics::create(
-      static_cast<double>(request.width) * (1.0 + (0.01 * device_index)),
-      static_cast<double>(request.height) * (1.0 + (0.01 * device_index)),
-      static_cast<double>(request.width) / 2.0, static_cast<double>(request.height) / 2.0,
+      static_cast<double>(width) * (1.0 + (0.01 * device_index)),
+      static_cast<double>(height) * (1.0 + (0.01 * device_index)),
+      static_cast<double>(width) / 2.0, static_cast<double>(height) / 2.0,
       std::nullopt,
-      request.width,
-      request.height,
+      width,
+      height,
       CoordinateDomain{CoordinateDomainDeliveredImage{}});
-  if (!intrinsics) return;
+  if (!intrinsics) return empty;
   ProviderCaptureImageFacts facts{};
   facts.intrinsics = SourcedFact<Intrinsics>{
       *intrinsics, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  // This virtual camera calibrates in delivered-image coordinates, so the
+  // sensor-domain and delivered-image calibrations are the SAME values, and the
+  // delivered image covers its reference frame entirely.
+  //
+  // Stated rather than left absent, and stated as equal rather than approximately
+  // so: a caller must be able to move between the two surfaces without a special
+  // case for "no translation", and unity here is what makes that assertable
+  // without hardware.
+  facts.intrinsics_delivered = SourcedFact<Intrinsics>{
+      *intrinsics, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  if (const auto region = DeliveredImageRegion::create(
+          0u, 0u, width, height,
+          CoordinateDomain{CoordinateDomainDeliveredImage{}})) {
+    facts.delivered_image_region = SourcedFact<DeliveredImageRegion>{
+        *region, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  }
   facts.distortion = SourcedFact<Distortion>{
       Distortion{NoDistortion{DistortionImageState::RECTIFIED}},
       FactOrigin::VIRTUAL_CAMERA_AUTHORED};
@@ -1196,6 +1236,18 @@ void SyntheticProvider::emit_capture_image_facts_(
     facts.sensor_sensitivity_iso =
         SourcedFact<SensorSensitivityIso>{*iso, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
   }
+  return facts;
+}
+
+void SyntheticProvider::emit_capture_image_facts_(
+    const CaptureRequest& request,
+    uint32_t image_member_index,
+    int32_t applied_exposure_compensation_milli_ev) {
+  if (!callbacks_) return;
+  std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
+  ProviderCaptureImageFacts facts = authored_image_facts_locked_(
+      request.device_instance_id, request.width, request.height,
+      applied_exposure_compensation_milli_ev);
   strand_.post_capture_image_facts(
       request.capture_id, request.device_instance_id, image_member_index, std::move(facts));
 }
@@ -2572,8 +2624,11 @@ bool SyntheticProvider::generate_device_capture_payloads_(
       fv.primary_backing_kind = ProducerBackingKind::GPU;
       fv.primary_backing_artifact = gpu_backing;
       fv.retained_gpu_backing_descriptor.valid = true;
+      // A still capture belongs to no stream, so stream_id is genuinely 0.
+      // backing_id must still be a real provider-unique identity: it is the
+      // only thing that distinguishes this retained backing from any other.
       fv.retained_gpu_backing_descriptor.stream_id = 0;
-      fv.retained_gpu_backing_descriptor.backing_id = 0;
+      fv.retained_gpu_backing_descriptor.backing_id = mint_gpu_backing_identity_();
       fv.retained_gpu_backing_descriptor.width = req.width;
       fv.retained_gpu_backing_descriptor.height = req.height;
       fv.retained_gpu_backing_descriptor.stride_bytes = job.stride_bytes;
@@ -2599,6 +2654,7 @@ bool SyntheticProvider::generate_device_capture_payloads_(
       planar_bytes = std::make_shared<std::vector<std::uint8_t>>();
       synthetic_rgba_to_planar_420(job.format_fourcc, bytes->data(),
                                    job.stride_bytes, req.width, req.height,
+                                   req.picture.synthetic_output_range,
                                    *planar_bytes);
     }
     if (retain_cpu_payload) {
@@ -2606,6 +2662,7 @@ bool SyntheticProvider::generate_device_capture_payloads_(
         fv.data = planar_bytes->data();
         fv.size_bytes = planar_bytes->size();
         synthetic_fill_planar_420_layout(job.format_fourcc,
+                                         req.picture.synthetic_output_range,
                                          planar_bytes->data(),
                                          planar_bytes->size(), req.width,
                                          req.height, fv.payload_layout);
@@ -3664,7 +3721,7 @@ bool SyntheticProvider::ensure_stream_live_gpu_backing_(
     return false;
   }
   const uint64_t native_id = alloc_native_id_(NativeObjectType::GpuBacking);
-  ++s.live_gpu_backing_generation;
+  s.live_gpu_backing_identity = mint_gpu_backing_identity_();
   if (native_id != 0 && callbacks_) {
     const auto dit = devices_.find(s.req.device_instance_id);
     const uint64_t root_id = (dit != devices_.end()) ? dit->second.root_id : 0;
@@ -3980,7 +4037,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     fv.retained_gpu_backing_descriptor.valid = true;
     fv.retained_gpu_backing_descriptor.stream_id = s.req.stream_id;
     fv.retained_gpu_backing_descriptor.backing_id =
-        (s.live_gpu_backing_native_id != 0) ? s.live_gpu_backing_native_id : s.live_gpu_backing_generation;
+        (s.live_gpu_backing_native_id != 0) ? s.live_gpu_backing_native_id : s.live_gpu_backing_identity;
     fv.retained_gpu_backing_descriptor.width = w;
     fv.retained_gpu_backing_descriptor.height = h;
     fv.retained_gpu_backing_descriptor.stride_bytes = stride;
@@ -3998,6 +4055,12 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     fv.acquisition_timing =
         SourcedFact<ImageAcquisitionTiming>{*timing, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
   }
+  // Per-image facts for THIS frame, from the same authored source the
+  // capture path uses. A stream frame carries them because this provider
+  // knows them at delivery: nothing here is deferred or approximated, so
+  // absence in the result means a fact this virtual camera does not have.
+  fv.image_facts = authored_image_facts_locked_(
+      s.req.device_instance_id, w, h, 0);
   fv.retain_cpu_sidecar = publish_cpu_payload;
   fv.requested_retained_plan = s.req.requested_retained_plan;
   if (publish_cpu_payload && emit_planar) {
@@ -4009,11 +4072,13 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     // acquisition guard entirely.
     auto planar = std::make_shared<std::vector<uint8_t>>();
     synthetic_rgba_to_planar_420(stream_fourcc, slot->bytes.data(), stride, w, h,
-                                 *planar);
+                                 s.picture.synthetic_output_range, *planar);
 
     fv.data = planar->data();
     fv.size_bytes = planar->size();
-    synthetic_fill_planar_420_layout(stream_fourcc, planar->data(),
+    synthetic_fill_planar_420_layout(stream_fourcc,
+                                     s.picture.synthetic_output_range,
+                                     planar->data(),
                                      planar->size(), w, h, fv.payload_layout);
 
     fv.cpu_payload_owner = std::move(planar);

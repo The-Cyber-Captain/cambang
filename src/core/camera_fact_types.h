@@ -5,6 +5,7 @@
 #include <limits>
 #include <numeric>
 #include <optional>
+#include <vector>
 #include <string>
 #include <utility>
 #include <variant>
@@ -80,6 +81,71 @@ using CoordinateDomain = std::variant<
     CoordinateDomainDeliveredImage,
     CoordinateDomainPlatformDefined>;
 
+// Where a delivered image sits inside the reference domain that the
+// sensor-domain calibration is expressed in.
+//
+// This is what makes sensor-domain intrinsics usable against delivered pixels,
+// and what makes the delivered-image intrinsics auditable rather than opaque.
+// A delivered image is generally a CROP of the sensor reference frame, scaled
+// to the output resolution, so the reference frame's width is not the delivered
+// image's width and the naive per-axis rescale of a focal length is wrong
+// whenever the two aspects differ.
+//
+// Semantics, and the whole of them: the delivered image, at its full width and
+// height, covers exactly this rectangle of `coordinate_domain`.
+//
+//   reference_x = left + delivered_x * (width  / delivered_width)
+//   reference_y = top  + delivered_y * (height / delivered_height)
+//
+// A rectangle rather than a scale/offset pair because that is the shape the
+// platforms report, it validates against the reference array bounds, and naming
+// the fields avoids the (left, top, width, height) versus
+// (left, top, right, bottom) ambiguity that Android's own documentation uses
+// both of.
+//
+// It maps position only. It says nothing about rotation or mirroring -- that is
+// RealizedImageTransform -- and nothing about lens distortion.
+class DeliveredImageRegion {
+ public:
+  static std::optional<DeliveredImageRegion> create(
+      uint32_t left,
+      uint32_t top,
+      uint32_t width,
+      uint32_t height,
+      CoordinateDomain coordinate_domain) {
+    if (width == 0 || height == 0) {
+      return std::nullopt;
+    }
+    return DeliveredImageRegion(left, top, width, height,
+                                std::move(coordinate_domain));
+  }
+
+  uint32_t left() const noexcept { return left_; }
+  uint32_t top() const noexcept { return top_; }
+  uint32_t width() const noexcept { return width_; }
+  uint32_t height() const noexcept { return height_; }
+  const CoordinateDomain& coordinate_domain() const noexcept {
+    return coordinate_domain_;
+  }
+
+ private:
+  DeliveredImageRegion(uint32_t left,
+                       uint32_t top,
+                       uint32_t width,
+                       uint32_t height,
+                       CoordinateDomain coordinate_domain)
+      : left_(left),
+        top_(top),
+        width_(width),
+        height_(height),
+        coordinate_domain_(std::move(coordinate_domain)) {}
+
+  uint32_t left_ = 0;
+  uint32_t top_ = 0;
+  uint32_t width_ = 0;
+  uint32_t height_ = 0;
+  CoordinateDomain coordinate_domain_{};
+};
 class Intrinsics {
  public:
   static std::optional<Intrinsics> create(
@@ -685,8 +751,6 @@ struct CameraStaticFacts {
   std::optional<SourcedFact<CameraFacing>> facing;
   std::optional<SourcedFact<CameraNature>> nature;
   std::optional<SourcedFact<SensorOrientationDegrees>> sensor_orientation;
-  std::optional<SourcedFact<Intrinsics>> intrinsics;
-  std::optional<SourcedFact<Distortion>> distortion;
   std::optional<SourcedFact<CameraPose>> pose;
   // Device-constant assertions for otherwise per-capture quantities. A camera
   // whose hardware genuinely fixes these (fixed-focus lens, fixed iris, prime
@@ -698,6 +762,41 @@ struct CameraStaticFacts {
   std::optional<SourcedFact<SensorSensitivityIso>> sensor_sensitivity_iso;
   std::optional<SourcedFact<ApertureFNumber>> aperture_f_number;
   std::optional<SourcedFact<FocalLengthMm>> focal_length_mm;
+  // Intrinsics and distortion sit here, with the assertions, rather than with
+  // the device-scoped facts above. Both platform providers source them per
+  // image and anchored to a format, so there is no such thing as *the*
+  // intrinsics of a device: a device-scoped value carries no format and cannot
+  // be applied to a frame. What a device-keyed source can honestly say is that
+  // this camera holds them constant -- an authored virtual camera, or an
+  // ingested description standing in for hardware that exposes no API to read
+  // them. That is an assertion, and it resolves into CaptureImageFacts, never
+  // into a device-scoped fact.
+  std::optional<SourcedFact<Intrinsics>> intrinsics;
+  std::optional<SourcedFact<Distortion>> distortion;
+  // Overridable independently of each other and of the sensor-domain pair: a
+  // camera that misreports its principal point does so in whichever frame it
+  // reports, and a description correcting one must not silently correct or
+  // contradict the other.
+  std::optional<SourcedFact<Intrinsics>> intrinsics_delivered;
+  std::optional<SourcedFact<DeliveredImageRegion>> delivered_image_region;
+};
+
+// The RESOLVED device-scoped facts: what CamBANG concluded about the camera
+// itself, after applying source precedence. Deliberately a distinct type from
+// CameraStaticFacts, which is the device-keyed SOURCE carrier and also holds
+// device-constant assertions of per-image quantities (intrinsics, distortion,
+// exposure, focus). Those resolve into CaptureImageFacts and are never
+// device-scoped facts.
+//
+// One type served both roles until 2026-08-29. A reader could then ask a
+// resolved device record for intrinsics, compile clean, and receive nullopt
+// forever -- which is exactly what happened to provider_compliance_verify. The
+// split makes that a compile error instead.
+struct ResolvedCameraDeviceFacts {
+  std::optional<SourcedFact<CameraFacing>> facing;
+  std::optional<SourcedFact<CameraNature>> nature;
+  std::optional<SourcedFact<SensorOrientationDegrees>> sensor_orientation;
+  std::optional<SourcedFact<CameraPose>> pose;
 };
 
 struct CaptureAdmissionFacts {
@@ -707,6 +806,28 @@ struct CaptureAdmissionFacts {
 
 struct CaptureImageFacts {
   std::optional<SourcedFact<ImageAcquisitionTiming>> acquisition_timing;
+  // Image-scoped: the calibration that applies to THIS image, in the
+  // coordinate domain and reference frame it was measured in.
+  std::optional<SourcedFact<Intrinsics>> intrinsics;
+  std::optional<SourcedFact<Distortion>> distortion;
+
+  // The calibration expressed in DELIVERED-IMAGE pixels: what a caller needs to
+  // build a projection or a frustum for the image actually handed to them.
+  //
+  // Independent of `intrinsics` above rather than derived from it here, because
+  // providers differ in which one they can measure: a backend whose calibration
+  // is format-anchored reports this one natively and has no sensor-domain
+  // answer, while a sensor-anchored backend reports the other and derives this.
+  // Requiring either direction would shape the contract around one platform.
+  //
+  // Where the sensor-domain calibration is ALREADY in delivered-image
+  // coordinates, the two are the same values and must be reported as equal.
+  std::optional<SourcedFact<Intrinsics>> intrinsics_delivered;
+
+  // Where this delivered image sits inside the sensor reference frame. The
+  // derivation linking the two intrinsics above, and the route back to sensor
+  // space for a caller that needs it.
+  std::optional<SourcedFact<DeliveredImageRegion>> delivered_image_region;
   std::optional<SourcedFact<FocusState>> focus_state;
   std::optional<SourcedFact<ExposureTime>> exposure_time;
   std::optional<SourcedFact<SensorSensitivityIso>> sensor_sensitivity_iso;
@@ -721,9 +842,72 @@ struct ProviderCameraFacts {
   CameraStaticFacts static_facts;
 };
 
+// One configuration a device will accept, in the exact shape a caller hands
+// back to create_stream()/set_still_capture_profile(). Geometry and format
+// only: bracket capability is provider policy, not a device configuration.
+//
+// width/height/format_fourcc IDENTIFY the entry. max_fps is informational and
+// deliberately not part of that identity -- it is derived (from a minimum
+// frame duration on at least one backend), so it can move with a driver update
+// while the geometry is unchanged. A caller matching a remembered choice
+// matches on the three integers.
+struct ProviderProfileEntry {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t format_fourcc = 0;
+  // Absent when the provider cannot derive a frame rate for this entry.
+  std::optional<double> max_fps;
+};
+
+// A provider has three distinct things to say about an endpoint, and collapsing
+// any two of them loses information a caller acts on.
+//
+// The distinction that matters most is NOT_THIS_PROVIDER vs CANNOT_ENUMERATE.
+// An ingested description may supply a catalog for a camera the provider owns
+// but cannot enumerate -- a backend needing the camera open to list its formats,
+// for instance. It must NOT supply one for an endpoint that does not exist, or
+// the surface reports configurations for absent hardware. With a single boolean
+// those two cases were indistinguishable, and the second happened.
+enum class ProfileCatalogAvailability : uint8_t {
+  // Default. Not an endpoint this provider owns; no description may stand in for
+  // it. Also what a provider that has not implemented enumeration reports, which
+  // is the conservative direction: no catalog, rather than a catalog for
+  // something that may not be there.
+  NOT_THIS_PROVIDER = 0,
+  // The provider owns this endpoint but cannot list its configurations. A
+  // description may supply them.
+  CANNOT_ENUMERATE,
+  // The provider owns this endpoint and `entries` is what it advertises. An
+  // empty list here means it offers nothing, which is a real answer.
+  ENUMERATED,
+};
+
+// What a device advertises it will accept.
+struct ProviderProfileCatalog {
+  ProfileCatalogAvailability availability = ProfileCatalogAvailability::NOT_THIS_PROVIDER;
+  std::vector<ProviderProfileEntry> entries;
+};
+
+// A catalog after resolution: what the device advertises, narrowed by any
+// ingested description, with the provenance of that outcome.
+//
+// origin is native_reported when the provider's enumeration stands unchanged,
+// core_derived when a description narrowed it (neither source alone produced the
+// result), and user_supplied when the provider could not enumerate and the
+// description supplied the catalog outright.
+struct ResolvedProfileCatalog {
+  bool enumerated = false;
+  FactOrigin origin = FactOrigin::UNKNOWN;
+  std::vector<ProviderProfileEntry> entries;
+};
+
 struct ProviderCaptureImageFacts {
   std::optional<SourcedFact<Intrinsics>> intrinsics;
   std::optional<SourcedFact<Distortion>> distortion;
+  // A provider supplies whichever of these it can measure and omits the other;
+  // neither is required, and neither is derived from the other by Core.
+  std::optional<SourcedFact<Intrinsics>> intrinsics_delivered;
+  std::optional<SourcedFact<DeliveredImageRegion>> delivered_image_region;
   std::optional<SourcedFact<CameraPose>> pose;
   // Acquisition timing travels only on the accepted FrameView. These remaining
   // image facts are independently reported per capture member.

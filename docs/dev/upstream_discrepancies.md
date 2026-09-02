@@ -190,3 +190,85 @@ Long-term note:
 - Re-verify `call_on_render_thread()` ordering and `force_sync()` implementation
   when upgrading Godot. If that source guarantee changes, the stop-time fence
   and both teardown stresses must be revisited together.
+## Godot ExternalTexture Vulkan path is unimplemented (blocks GPU-resident camera buffers)
+
+Upstream:
+- https://github.com/godotengine/godot/pull/96982 (merged, 4.4 — GLES3 only)
+- https://github.com/godotengine/godot/pull/97163 (DRAFT, unmerged — the Vulkan half)
+- https://github.com/godotengine/godot/pull/114940 (open — `additional_device_extensions`)
+- https://github.com/godotengine/godot-proposals/issues/13969
+- https://docs.godotengine.org/en/4.5/classes/class_externaltexture.html
+
+Observation:
+- `ExternalTexture` documents itself as requiring "the OES_EGL_image_external
+  extension (OpenGL) or VK_ANDROID_external_memory_android_hardware_buffer
+  extension (Vulkan)". Only the OpenGL half exists. PR #96982 merged GLES3
+  support for 4.4; the Vulkan half was split into #97163, which is still a
+  draft. Its author states the blocker plainly: "this will only work with
+  Android API level 26 or higher. Presently, we have an API minimum of 21,
+  which prevents this code from compiling." Still unresolved as of Feb 2026.
+- Measured on a Quest 3 (Horizon OS v207, Android 14/API 34) under Godot 4.5.1,
+  mobile renderer:
+  - `vkEnumerateDeviceExtensionProperties` on Godot's own `VkPhysicalDevice`
+    reports 137 extensions, and
+    `VK_ANDROID_external_memory_android_hardware_buffer` IS among them. The
+    driver offers it.
+  - `vkGetDeviceProcAddr(vkGetAndroidHardwareBufferPropertiesANDROID)` returns
+    null, i.e. Godot does not enable it at device creation. Consistent with
+    master's `drivers/vulkan/rendering_device_driver_vulkan.cpp`, which
+    registers no such extension.
+  - `ExternalTexture.set_external_buffer_id()` given a valid
+    `AHARDWAREBUFFER_FORMAT_Y8Cb8Cr8_420` buffer is accepted silently. It then
+    fails soft: `get_external_texture_id()` stays 0,
+    `texture_get_native_handle()` returns 0, `texture_get_rd_texture()` is
+    invalid, and drawing the texture logs "Attempting to use an uninitialized
+    RID" once per frame rather than erroring at the call site.
+- The obstruction is Godot's minimum-SDK policy, not device capability. CamBANG
+  meets the same constraint from the same cause and simply raised its own floor:
+  `android_api_level` defaults to 26 in `SConstruct` because the Camera2
+  provider calls `AImageReader_newWithUsage`, which the NDK marks
+  `__INTRODUCED_IN(26)`.
+- Camera-side feasibility is NOT in doubt. The provider's pilot stream already
+  opens `AImageReader_newWithUsage(..., AIMAGE_FORMAT_PRIVATE,
+  AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE, ...)`, and every advertised size on
+  cameras 50/51 yields a GPU-only buffer (`CPU_READ_NEVER`/`CPU_WRITE_NEVER`,
+  `GPU_SAMPLED_IMAGE` set) in format `0x23`. What is missing is only the route
+  into a Godot texture.
+
+CamBANG workaround:
+- Do not pursue GPU-resident import while it depends on unmerged upstream work.
+  A custom Godot Android export template built at `ndk_platform=android-26`
+  carrying #97163 would work technically — the approach the #97163 discussion
+  itself proposes, citing `godot_arcore` — but owning an engine fork and its
+  template distribution is disproportionate to the remaining benefit here.
+- Reduce the CPU cost without importing anything: expose camera planes to the
+  GPU as separate R8 / R8G8 plane textures and let the caller's shader perform
+  the Y'CbCr maths, as the capture compute-texture path already does; and prefer
+  adopting provider-owned bytes over copying them where the reader pool allows.
+  This depends on nothing upstream.
+- On the stream side this is an ADDITIONAL, deliberately rawer public surface --
+  the conceptual analogue of `CamBANGCaptureResult.get_compute_texture_plane()`
+  -- and NOT a replacement for `CamBANGStreamResult.get_display_view()`. The two
+  answer different needs and would coexist: `get_display_view()` remains the
+  refined, ready-to-draw, live-updating RGBA view; the plane surface is
+  frame-frozen, plane-wise, and hands the caller raw Y'CbCr to do its own GPU
+  work on. A stream caller currently has no frame-frozen GPU-accessible surface
+  at all, which is a capability gap independent of any performance argument.
+- Note what this does and does not buy. It does NOT stop the bytes travelling
+  through CPU memory -- the provider still copies out of the AImage, and Core
+  still retains those bytes. What it removes is the full-frame CPU YUV-to-RGBA
+  conversion, and it cuts upload volume from 4 bpp to 1.5 bpp.
+- That is the larger share of the cost, measured in this repo rather than
+  assumed. Commit 4d12d67 timed a planar still at 1280x720 on the mobile
+  renderer: the upload is ~620 us regardless of payload, while the planar to
+  RGBA conversion is ~20 ms and runs on every call. "For a planar capture the
+  upload is ~3% of producing a compute texture; the CPU conversion is ~97%."
+  A GPU-resident buffer would have removed the 620 us and left the 20 ms;
+  uploading Y and CbCr as two single-plane textures removes the 20 ms instead.
+  The upstream blocker above therefore costs the small win, not the large one.
+
+Removal criteria:
+- #97163 (or equivalent Vulkan external-texture support) merges AND the Godot
+  version CamBANG targets ships an Android export template built at API >= 26;
+  or #114940 (or equivalent) lands so the AHB extension can be requested on
+  Godot's device, at which point the import can be performed directly.

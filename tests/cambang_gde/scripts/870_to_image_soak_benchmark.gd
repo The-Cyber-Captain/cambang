@@ -56,13 +56,12 @@ const EQUIPMENT := {
 				"label": "galaxy_s20_plus",
 				"model_match": "SM-G986U1",
 				"permissions": ["android.permission.CAMERA"],
-				# Stable Camera2 ids (maintainer-supplied): five cameras, with the
-				# device's real concurrent combinations. The rig drives one of them.
+				# Five Camera2 ids; two real concurrent combinations, of which
+				# the rig drives 0+1.
 				"cameras": ["0", "1", "2", "3", "4"],
 				"concurrent_combinations": [["0", "1"], ["0", "3"]],
 				"rig_pair": ["0", "1"],
 			},
-			# hammer_thermal, meta_quest_3: filled after the
 			{
 				# Label is identification only -- device matching keys on
 				# model_match, never on this. Kept short because it is
@@ -71,8 +70,15 @@ const EQUIPMENT := {
 				"label": "hammer_thermal",
 				"model_match": "Hammer_Construction_2_Thermal_5G",
 				"permissions": ["android.permission.CAMERA"],
-				# Stable Camera2 ids (maintainer-supplied): five cameras, with the
-				# device's real concurrent combinations. The rig drives one of them.
+				# Two Camera2 ids and NO concurrency. These empty fields are the
+				# device's verified truth (confirmed on the handset with
+				# Aide-De-Cam, 2026-08-26), NOT an unfilled row -- so do not
+				# populate them speculatively. 870 therefore skips the
+				# whole scene here by design -- the soak needs two cameras live at
+				# once -- and reports status=expected_unsupported with
+				# reason=no_concurrent_combinations:hammer_thermal.
+				# dumpsys media.camera lists five camera devices on this handset;
+				# only 0 and 1 are usable, so do not widen this list from dumpsys.
 				"cameras": ["0", "1"],
 				"concurrent_combinations": [],
 				"rig_pair": [],
@@ -90,13 +96,15 @@ const EQUIPMENT := {
 					"horizonos.permission.HEADSET_CAMERA",
 					"horizonos.permission.AVATAR_CAMERA",
 				],
-				# Stable Camera2 ids (maintainer-supplied): five cameras, with the
-				# device's real concurrent combinations. The rig drives one of them.
+				# Three Camera2 ids: the passthrough pair (50/51) plus the virtual
+				# camera (1), concurrent as a single combination. The rig drives
+				# the passthrough pair.
 				"cameras": ["1", "50", "51"],
 				"concurrent_combinations": [["1", "50", "51"]],
 				"rig_pair": ["50", "51"],
 			},
-			# galaxy_s20_plus proof of concept (each needs a physical plug/unplug).
+			# Further Android handsets are added as one more entry above,
+			# following the galaxy_s20_plus pattern.
 		],
 		"Windows": [
 			{
@@ -179,6 +187,13 @@ const SETTLEMENT_PROBE_SETTLE_TIMEOUT_US := 2500000
 # ~250ms per still measured on the slowest handset here, because expiring this
 # reintroduces the very race it exists to remove.
 const SETTLEMENT_PROBE_DRAIN_TIMEOUT_US := 10000000
+# A drained device can still refuse the next trigger: an empty outstanding set
+# is not a promise of admission, because ERR_BUSY is overloaded and cannot say
+# which condition refused. Measured on a Galaxy S20+ as roughly 1 run in 3
+# failing the whole scene at the last step. Retried within this bound instead.
+# Safe for the recorded benchmark statistics: _freeze_benchmark_metrics() runs
+# at the drain -> trigger transition, before any of this.
+const SETTLEMENT_PROBE_TRIGGER_TIMEOUT_US := 5000000
 const LOAD_PROFILE_HUMAN := "human"
 const LOAD_PROFILE_ELEVATED := "elevated"
 const LOAD_PROFILE_SUPERHUMAN := "superhuman"
@@ -231,6 +246,15 @@ var _warmup_started_us := 0
 var _phase_started_us := 0
 var _last_stats_update_us := 0
 var _last_stream_observation_us := 0
+var _last_displayed_sample_us := 0
+# Real elapsed sampling window, so the rate divides by measured time rather
+# than by an assumed interval that no longer exists.
+var _displayed_sample_first_us := 0
+# Ground truth for "is the picture moving": nothing else in this scene looks
+# at displayed pixels. Every other counter measures frame DELIVERY or refresh
+# CALLS, so a static image next to a healthy fps figure was unfalsifiable.
+# Sampled only during preflight, at DISPLAYED_SAMPLE_INTERVAL_US, so the
+# readback cost cannot reach the benchmark phases or shift a recorded figure.
 var _benchmark_metrics_frozen := false
 var _latest_device_snapshot_by_id := {}
 var _preflight_done := false
@@ -308,6 +332,7 @@ var _acq_probe_drain_deadline_us := 0
 # probe triggered anyway. Recorded rather than hidden: it means the probe's
 # result was taken under the conditions the drain exists to avoid.
 var _acq_probe_drain_expired := false
+var _acq_probe_trigger_deadline_us := 0
 var _acq_probe_settle_deadline_us := 0
 var _acq_probe_bundle_label := ""
 var _acq_probe_required_member_count := 0
@@ -417,11 +442,21 @@ func _bootstrap_from_known_ids(equip: Dictionary, synthetic: bool) -> void:
 	var cameras: Array = equip.get("cameras", [])
 	var combinations: Array = equip.get("concurrent_combinations", [])
 	var rig_pair: Array = equip.get("rig_pair", [])
-	# Fewer than two cameras means the two-device soak cannot run at all -- that
-	# stays a whole-run bail. An absent rig_pair is different: every device-scoped
+	# Two of these are whole-run bails because this scene is a TWO-DEVICE soak
+	# from setup onwards -- it engages both cameras and starts a stream on each
+	# before any phase runs. An absent rig_pair is different: every device-scoped
 	# phase is still valid, so run them and skip only the rig-scoped ones.
 	if cameras.size() < 2:
 		_finish(0, true, "equipment_incomplete:%s" % str(equip.get("label", _provider_arg)))
+		return
+	# No declared concurrency means no two of this device's cameras can be live
+	# at once, so the soak cannot start, let alone run. Skipping the rig is not
+	# enough: a Hammer Construction 2 Thermal gets as far as stream.start() on
+	# device_a and the HAL refuses it (ProviderRejected), which the scene could
+	# only report as status=fail -- indistinguishable from a CamBANG defect when
+	# it is really the hardware premise not holding. Bail as unsupported.
+	if combinations.is_empty():
+		_finish(0, true, "no_concurrent_combinations:%s" % str(equip.get("label", _provider_arg)))
 		return
 	if rig_pair.size() < 2:
 		_skip_rig = true
@@ -1115,11 +1150,52 @@ func _setup_ready() -> bool:
 	return true
 
 
+# Sampled EVERY TICK during preflight, deliberately ungated.
+#
+# A periodic sampler cannot measure a rate above its own frequency: changes
+# are counted at most once per sample, so changes/elapsed saturates at the
+# sample rate. Earlier versions gated at 2Hz and then 20Hz and reported
+# "displayed = 17.8fps" against 29.6 delivered -- which was the 20Hz ceiling
+# being hit, not a measurement. Both were incapable of telling 18fps from
+# 30fps, the only question being asked.
+#
+# Per-tick sampling puts the ceiling at the Godot frame rate, above any
+# camera source, so the figure is a rate rather than a bound. It costs a
+# full texture readback per tick and is therefore confined to preflight,
+# where it cannot reach the benchmark phases or move a recorded figure.
+
+# Cheap change-detector over a bound display texture. Reads the texture back
+# through RenderingServer -- LiveCpuDisplayTexture2D has no _get_image()
+# override, so Texture2D.get_image() is null on it -- then fingerprints a
+# strided subset rather than the whole buffer: enough to tell a moving image
+# from a still one, without hashing megabytes per sample.
+func _displayed_fingerprint(tex: Texture2D) -> int:
+	if tex == null:
+		return 0
+	var img: Image = RenderingServer.texture_2d_get(tex.get_rid())
+	if img == null or img.is_empty():
+		return 0
+	var raw := img.get_data()
+	var n := raw.size()
+	if n == 0:
+		return 0
+	var h := 1469598103
+	var i := 0
+	while i < n:
+		h = (h * 31 + int(raw[i])) & 0x7FFFFFFF
+		i += 997
+	return h
+
 func _update_stream_display_views(require_bind: bool) -> void:
 	var now_us := _now_us()
 	var observe_result_advancement := now_us - _last_stream_observation_us >= 10000
 	if observe_result_advancement:
 		_last_stream_observation_us = now_us
+	var _displayed_sample_due := _state == PHASE_PREFLIGHT
+	if _displayed_sample_due:
+		if _displayed_sample_first_us == 0:
+			_displayed_sample_first_us = now_us
+		_last_displayed_sample_us = now_us
 	for device_key in [DEV_A, DEV_B]:
 		var info: Dictionary = _devices[device_key]
 		var label = _stream_live_labels.get(device_key, null)
@@ -1129,6 +1205,33 @@ func _update_stream_display_views(require_bind: bool) -> void:
 		if not should_recheck and prior_path_kind != int(CamBANGStreamResult.DISPLAY_PATH_RETAINED_GPU_BACKING):
 			var last_recheck_us := int(info.get("live_display_last_recheck_us", 0))
 			should_recheck = (now_us - last_recheck_us) >= STREAM_DISPLAY_REBIND_INTERVAL_US
+		# Sampled from the TextureRect itself -- what is literally on screen --
+		# and BEFORE the early-continue below, which is the common path once a
+		# view is bound. Preflight only, so the benchmark window never pays
+		# for the readback and no recorded figure can shift.
+		if _state == PHASE_PREFLIGHT and _displayed_sample_due:
+			var shown_rect = _stream_live_rects.get(device_key, null)
+			var shown_tex = shown_rect.texture if shown_rect is TextureRect else null
+			if shown_tex != null:
+				var fp := _displayed_fingerprint(shown_tex)
+				if fp != 0:
+					info["displayed_samples"] = int(info.get("displayed_samples", 0)) + 1
+					var prior_fp := int(info.get("displayed_last_fingerprint", 0))
+					if prior_fp != 0 and fp != prior_fp:
+						info["displayed_changes"] = int(info.get("displayed_changes", 0)) + 1
+						var run_len := int(info.get("displayed_same_run", 0))
+						if run_len > int(info.get("displayed_longest_same_run", 0)):
+							info["displayed_longest_same_run"] = run_len
+						info["displayed_same_run"] = 0
+					elif prior_fp != 0:
+						# Consecutive identical samples. The longest such run is the visible
+						# stall, and it is what separates "slow but moving" from "stuck".
+						info["displayed_same_run"] = int(info.get("displayed_same_run", 0)) + 1
+					info["displayed_last_fingerprint"] = fp
+				else:
+					# Readback refused, which must not read as "unchanged".
+					info["displayed_readback_failures"] = int(info.get("displayed_readback_failures", 0)) + 1
+			_devices[device_key] = info
 		var stream_id := int(info.get("stream_id", 0))
 		if stream_id <= 0:
 			continue
@@ -1136,6 +1239,11 @@ func _update_stream_display_views(require_bind: bool) -> void:
 		if observe_result_advancement or should_recheck:
 			stream_result = CamBANGServer.get_stream_result_by_stream_id(stream_id)
 			if stream_result != null and observe_result_advancement:
+				# Labelled "frames_delivered"/"delivery_fps" on the panel, NOT
+				# "updates": this counts frames Core delivered and retained. It says
+				# nothing about the texture rendered beside it being refreshed, and
+				# the old caption sat next to a live image while implying it did --
+				# a static picture then read as the harness contradicting itself.
 				# Provider-agnostic stream-advancement: count distinct successive
 				# per-frame acquisition marks. The mark advances per delivered frame
 				# and repeats when no new frame arrived between polls, so each change
@@ -1153,7 +1261,7 @@ func _update_stream_display_views(require_bind: bool) -> void:
 						info["stream_observation_last_us"] = now_us
 					info["stream_last_observed_mark"] = mark
 		if not should_recheck and bound:
-			_set_label_text_if_changed(label, "%s\nstream_id=%d\nobserved_updates=%d\nobserved_update_fps=%.2f" % [
+			_set_label_text_if_changed(label, "%s\nstream_id=%d\nframes_delivered=%d\ndelivery_fps=%.2f" % [
 				str(info.get("label", device_key)),
 				stream_id,
 				int(info.get("stream_observed_changes", 0)),
@@ -1179,7 +1287,7 @@ func _update_stream_display_views(require_bind: bool) -> void:
 			if require_bind or not bound or current_texture != display_view:
 				_set_texture_if_changed(rect, display_view)
 				info["live_display_bound"] = true
-			_set_label_text_if_changed(label, "%s\nstream_id=%d\nobserved_updates=%d\nobserved_update_fps=%.2f" % [
+			_set_label_text_if_changed(label, "%s\nstream_id=%d\nframes_delivered=%d\ndelivery_fps=%.2f" % [
 				str(info.get("label", device_key)),
 				stream_id,
 				int(info.get("stream_observed_changes", 0)),
@@ -1346,9 +1454,47 @@ func _poll_acquisition_session_settlement_probe() -> void:
 		# Frozen here rather than at probe start: the drain is the tail of the
 		# last benchmark phase's own work and belongs in its metrics.
 		_freeze_benchmark_metrics()
+		_acq_probe_trigger_deadline_us = _now_us() + SETTLEMENT_PROBE_TRIGGER_TIMEOUT_US
+		_acq_probe_stage = "trigger"
+		return
+	if _acq_probe_stage == "trigger":
+		# Retried rather than accepted first time. A refusal here is a Busy
+		# that carries no attribution, so the only way to tell a device that
+		# is briefly unavailable from one that will never admit is to ask
+		# again until the bound expires.
+		var pending := []
 		for device_key in [DEV_A, DEV_B]:
-			_queue_settlement_probe_capture(device_key)
-		_acq_probe_stage = "capture"
+			var entry_v = _acq_probe_devices.get(device_key, {})
+			if typeof(entry_v) != TYPE_DICTIONARY:
+				continue
+			var entry: Dictionary = entry_v
+			if bool(entry.get("capture_failed", false)):
+				continue
+			if str(entry.get("trigger_status", "")) != "probe_not_attempted":
+				continue
+			if _queue_settlement_probe_capture(device_key):
+				continue
+			pending.append(device_key)
+		if pending.is_empty():
+			_acq_probe_stage = "capture"
+			return
+		if _now_us() >= _acq_probe_trigger_deadline_us:
+			for device_key in pending:
+				var refusals := int((_acq_probe_devices[device_key] as Dictionary).get("trigger_refusals", 0))
+				_acq_probe_mark_capture_failure(device_key, "trigger_refused")
+				# Read here and nowhere earlier: this is after the freeze, so it is
+				# diagnostic only and cannot move a recorded figure. It says whether
+				# the runtime still held captures or refused an idle device.
+				var outstanding: Dictionary = CamBANGServer.get_unfinished_captures()
+				_log("settlement probe trigger refused on %s after %.2fs (%d attempts): %s" % [
+					device_key,
+					float(SETTLEMENT_PROBE_TRIGGER_TIMEOUT_US) / 1000000.0,
+					refusals,
+					error_string(int((_acq_probe_devices[device_key] as Dictionary).get("capture_error", FAILED))),
+				])
+				_log("settlement probe outstanding at refusal: total=%d by_device=%s" % [
+					int(outstanding.get("total", 0)), str(outstanding.get("by_device", {}))])
+			_acq_probe_stage = "capture"
 		return
 	if _acq_probe_stage == "capture":
 		if not _acq_probe_all_captures_finished():
@@ -1402,6 +1548,14 @@ func _acq_probe_devices_missing_payload() -> Array:
 # probe. Reads the scene's own per-device counter, which is the same tally the
 # normal capture path gates on -- the probe previously bypassed it entirely.
 func _acq_probe_devices_still_capturing() -> Array:
+	# DELIBERATELY the scene's own tally, not CamBANGServer.get_unfinished_
+	# captures(). This gate closes the benchmark window -- _freeze_benchmark_
+	# metrics() fires the moment it clears, and the drain is charged to the
+	# last phase's metrics by design. Consulting the runtime's outstanding
+	# set here can hold the window open longer and shift every recorded
+	# figure, which would break comparison against the existing library of
+	# pre-change performance results. The authoritative check belongs after
+	# the freeze, in the trigger stage, where it costs the metrics nothing.
 	var busy := []
 	for device_key in [DEV_A, DEV_B]:
 		var info_v = _devices.get(device_key, {})
@@ -1461,25 +1615,28 @@ func _backing_plan_acquisition_session_report_for_device_id(reports: Array, devi
 	return {}
 
 
-func _queue_settlement_probe_capture(device_key: String) -> void:
+func _queue_settlement_probe_capture(device_key: String) -> bool:
 	var info: Dictionary = _devices[device_key]
 	var device = info.get("device", null)
 	if device == null:
 		_acq_probe_mark_capture_failure(device_key, "no_device_object")
-		return
+		return true  # Terminal: retrying cannot conjure a device handle.
 	var trigger_start := _now_us()
 	var capture: Dictionary = device.trigger_capture()
 	var err := int(capture.get("error", FAILED))
 	var trigger_end := _now_us()
 	if err != OK:
-		_acq_probe_mark_capture_failure(device_key, "trigger_refused")
+		# NOT a failure yet -- the caller retries within its bound and records
+		# the failure only when that expires. Logged on the first refusal per
+		# device so the run log still says a refusal happened, without a line
+		# per frame for the whole retry window.
+		var refusals := int(_acq_probe_devices[device_key].get("trigger_refusals", 0)) + 1
+		_acq_probe_devices[device_key]["trigger_refusals"] = refusals
 		_acq_probe_devices[device_key]["capture_error"] = err
-		# Logged as well as recorded: a probe failure whose reason lives only in
-		# the summary JSON is invisible to anyone reading the run log, and this
-		# is the line that says whether the probe was refused or the device was
-		# missing.
-		_log("settlement probe trigger refused on %s: %s" % [device_key, error_string(err)])
-		return
+		if refusals == 1:
+			_log("settlement probe trigger refused on %s: %s (retrying)" % [
+				device_key, error_string(err)])
+		return false
 	info["inflight_captures"] = int(info.get("inflight_captures", 0)) + 1
 	_devices[device_key] = info
 	_capture_jobs.append({
@@ -1505,6 +1662,11 @@ func _queue_settlement_probe_capture(device_key: String) -> void:
 		"visual_sequence": _current_phase_visual_sequence,
 		"is_settlement_probe": true,
 	})
+	# Distinguishes "triggered, awaiting completion" from "not yet
+	# triggered", which the retry loop above needs and which
+	# probe_not_attempted previously conflated.
+	_acq_probe_devices[device_key]["trigger_status"] = "triggered"
+	return true
 
 
 func _acq_probe_mark_capture_failure(device_key: String, status: String) -> void:
@@ -3017,6 +3179,10 @@ func _build_summary(exit_code: int, expected_unsupported: bool) -> Dictionary:
 		var synthetic_metrics_value = CamBANGServer.get_synthetic_metrics_snapshot()
 		if typeof(synthetic_metrics_value) == TYPE_DICTIONARY:
 			synthetic_metrics = synthetic_metrics_value
+	var access_evidence: Dictionary = {}
+	var access_evidence_value = CamBANGServer.get_result_access_timing_evidence()
+	if typeof(access_evidence_value) == TYPE_DICTIONARY:
+		access_evidence = access_evidence_value
 	var acquisition_session_settlement_probe := _acquisition_session_settlement_probe_summary(synthetic_metrics)
 	var load_model := _load_model_summary()
 	var load_delivery := _load_delivery_summary(_completed_phase_records)
@@ -3070,13 +3236,13 @@ func _build_summary(exit_code: int, expected_unsupported: bool) -> Dictionary:
 		"stream_display_observation": _stream_display_observation_summary(),
 		"capture_conditions": _capture_conditions_summary(),
 		"cpu_display_refresh_observation": _cpu_display_refresh_observation_summary(
-			synthetic_metrics
+			access_evidence
 		),
 		# Per-access cost, provider-neutral. Separates fresh_result_* (first access
 		# to a given retained result) from repeat_* (a later access to the same
 		# one), which is the only direct evidence of whether memoising the
 		# conversion would ever hit on a real access pattern.
-		"result_access_timing_evidence": CamBANGServer.get_result_access_timing_evidence(),
+		"result_access_timing_evidence": access_evidence,
 		"acquisition_session_settlement_probe": acquisition_session_settlement_probe,
 		"run_quality_warnings": _run_quality_warnings_summary(
 			acquisition_session_settlement_probe,
@@ -3361,11 +3527,15 @@ func _group_phase_records_by_bundle(records: Array) -> Array:
 	return grouped
 
 
+# Reports come from CamBANGServer.get_backing_plan_evaluation_diagnostics(),
+# which is provider-agnostic. They were previously read out of the synthetic
+# metrics snapshot, which is nil on any non-synthetic provider -- so every
+# platform-backed run reported an empty array that was indistinguishable
+# from "Core evaluated no backing plans". The reports are Core data
+# (CoreRuntime::backing_plan_evaluation_reports) and were always reachable.
 func _backing_plan_acquisition_session_reports_summary(synthetic_metrics: Variant) -> Array:
 	var summarized: Array = []
-	if typeof(synthetic_metrics) != TYPE_DICTIONARY:
-		return summarized
-	var reports_v = (synthetic_metrics as Dictionary).get("backing_plan_evaluation_reports", [])
+	var reports_v = CamBANGServer.get_backing_plan_evaluation_diagnostics()
 	if typeof(reports_v) != TYPE_ARRAY:
 		return summarized
 	for report_v in reports_v:
@@ -3412,7 +3582,15 @@ func _backing_plan_current_candidate_evidence_summary(report: Dictionary, candid
 
 
 func _acquisition_session_settlement_probe_summary(synthetic_metrics: Variant) -> Dictionary:
+	# Everything below is scene-side and always truthful. The snapshot argument
+	# only enriches the per-device rows, and is nil on non-synthetic providers,
+	# so record whether that enrichment was actually available rather than
+	# letting absent provider data read as measured absence.
+	var provider_enrichment_available := false
+	if typeof(synthetic_metrics) == TYPE_DICTIONARY:
+		provider_enrichment_available = not (synthetic_metrics as Dictionary).is_empty()
 	var summary := {
+		"provider_enrichment_available": provider_enrichment_available,
 		"enabled": true,
 		"attempted": _acq_probe_attempted,
 		"bundle_label": _acq_probe_bundle_label,
@@ -3669,12 +3847,24 @@ func _run_quality_warnings_summary(
 	return warnings
 
 
-func _cpu_display_refresh_observation_summary(synthetic_metrics: Variant) -> Dictionary:
-	if typeof(synthetic_metrics) != TYPE_DICTIONARY:
-		return {
-			"available": false,
-		}
-	var metrics: Dictionary = synthetic_metrics
+# Takes the ACCESS-EVIDENCE dictionary, not the synthetic metrics snapshot.
+# get_synthetic_metrics_snapshot() returns nil on any non-synthetic provider,
+# and the caller then passed the {} it had initialised -- which is still a
+# Dictionary, so "available" read true and every counter read a measured-
+# looking zero. That made an unproduced value indistinguishable from a real
+# one on every platform-backed run, and a display path that was working fine
+# looked dead for it.
+func _cpu_display_refresh_observation_summary(access_evidence: Variant) -> Dictionary:
+	if typeof(access_evidence) != TYPE_DICTIONARY:
+		return {"available": false, "unavailable_reason": "no_access_evidence"}
+	var evidence: Dictionary = access_evidence
+	var metrics_value = evidence.get("cpu_display_refresh", null)
+	if typeof(metrics_value) != TYPE_DICTIONARY:
+		return {"available": false, "unavailable_reason": "no_cpu_display_refresh_key"}
+	var metrics: Dictionary = metrics_value
+	# Presence of a real counter, not merely of a dictionary.
+	if not metrics.has("cpu_display_refresh_attempts"):
+		return {"available": false, "unavailable_reason": "counters_absent"}
 	return {
 		"available": true,
 		"aggregate_attempts": int(metrics.get("cpu_display_refresh_attempts", 0)),
@@ -3689,6 +3879,15 @@ func _cpu_display_refresh_observation_summary(synthetic_metrics: Variant) -> Dic
 		"ephemeral_updated": int(metrics.get("cpu_display_refresh_ephemeral_updated", 0)),
 		"ephemeral_total_ms": float(metrics.get("cpu_display_refresh_ephemeral_total_ms", 0.0)),
 		"ephemeral_update_ms": float(metrics.get("cpu_display_refresh_ephemeral_update_ms", 0.0)),
+		# Why a refresh did NOT happen. Computed in C++ and merged into this
+		# snapshot already, so recording them costs nothing and perturbs
+		# nothing -- but without them a zero attempt count is unattributable,
+		# which is exactly the state that let a never-refreshed display view
+		# sit behind an "observed_update_fps=30" label.
+		"skipped_unchanged": int(metrics.get("cpu_display_refresh_skipped_unchanged", 0)),
+		"skipped_due_budget": int(metrics.get("cpu_display_refresh_skipped_due_budget", 0)),
+		"skipped_due_no_demand": int(metrics.get("cpu_display_refresh_skipped_due_no_demand", 0)),
+		"removed": int(metrics.get("cpu_display_refresh_removed", 0)),
 	}
 
 
@@ -3890,6 +4089,15 @@ func _stream_display_observation_summary() -> Dictionary:
 			"stream_id": stream_id,
 			"device_id": int(info.get("device_id", 0)),
 			"observed_result_advancements": int(info.get("stream_observed_changes", 0)),
+			# Displayed-pixel ground truth, sampled in preflight only. Read these
+			# against observed_result_advancements: frames delivered with zero
+			# displayed_changes is a frozen picture, however healthy the fps looks.
+			"displayed_samples": int(info.get("displayed_samples", 0)),
+			"displayed_changes": int(info.get("displayed_changes", 0)),
+			"displayed_readback_failures": int(info.get("displayed_readback_failures", 0)),
+			"displayed_longest_same_run": int(info.get("displayed_longest_same_run", 0)),
+			"displayed_window_us": maxi(0, _last_displayed_sample_us - _displayed_sample_first_us),
+			"display_path_kind": int(info.get("live_display_path_kind", 0)),
 			"observed_result_update_fps": _stream_observed_fps(device_key),
 			"observed_update_count": int(info.get("stream_observed_changes", 0)),
 			"display_view_bound": bool(info.get("live_display_bound", false)),

@@ -257,6 +257,22 @@ ProducerFormatCapabilities ProviderBroker::stream_format_capabilities(
              : no_format_support();
 }
 
+ProviderProfileCatalog ProviderBroker::stream_profile_catalog(
+    const std::string& hardware_id) const {
+  ActiveProviderCall call;
+  return acquire_active_provider_call_(call).ok()
+             ? call.provider()->stream_profile_catalog(hardware_id)
+             : ProviderProfileCatalog{};
+}
+
+ProviderProfileCatalog ProviderBroker::capture_profile_catalog(
+    const std::string& hardware_id) const {
+  ActiveProviderCall call;
+  return acquire_active_provider_call_(call).ok()
+             ? call.provider()->capture_profile_catalog(hardware_id)
+             : ProviderProfileCatalog{};
+}
+
 ProducerFormatCapabilities ProviderBroker::capture_format_capabilities(
     const CaptureRequest& req) const noexcept {
   ActiveProviderCall call;

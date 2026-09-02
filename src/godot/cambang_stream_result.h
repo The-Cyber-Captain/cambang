@@ -2,6 +2,7 @@
 
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
+#include <vector>
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
@@ -46,6 +47,18 @@ public:
 
   godot::Dictionary get_image_properties_provenance() const;
 
+  // Stream Compute Texture -- an additional, deliberately rawer surface than
+  // get_display_view(), not a replacement for it. Frame-frozen and plane-wise;
+  // see stream_compute_texture.h.
+  int can_get_compute_texture() const;
+  int get_compute_texture_plane_count() const;
+  godot::Ref<godot::Texture2D> get_compute_texture_plane(int plane_index) const;
+
+  // Colour interpretation of the planes above, as the provider declared it.
+  // A caller doing its own Y'CbCr maths needs this, and "declared" tells it
+  // whether CamBANG was told or is simply unaware.
+  godot::Dictionary get_colorimetry() const;
+
   int can_get_display_view() const;
   int can_to_image() const;
 
@@ -66,6 +79,22 @@ public:
 
 private:
   SharedStreamResultData data_;
+  // Plane textures for THIS result, produced on first request and kept for as
+  // long as the caller keeps the result.
+  //
+  // Deliberately per-result rather than a module-global cache. The cache key
+  // a global map would need -- stream, device, retained frame -- IS this
+  // result's identity, so holding the textures here stores the same thing
+  // without an eviction policy, a fixed entry cap, or contention between
+  // streams. A previous global FIFO of 12 entries produced no hits at all in
+  // the ordinary access pattern (each frame's planes are requested once, and
+  // the frame id is part of the key), while holding up to 12 textures of
+  // mixed vintage alive -- ~75 MB at 4K -- and halving each stream's
+  // residency as soon as a second stream ran, which is the baseline case.
+  //
+  // Mutable because production is lazy behind const accessors. Not thread
+  // safe: like the rest of this surface it is main-thread only.
+  mutable std::vector<godot::Ref<godot::Texture2D>> compute_texture_planes_;
 };
 
 } // namespace cambang

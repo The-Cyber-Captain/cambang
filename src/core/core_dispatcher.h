@@ -96,6 +96,16 @@ public:
   void set_capture_assembly_registry(CoreCaptureAssemblyRegistry* capture_assembly_registry) noexcept {
     capture_assembly_registry_ = capture_assembly_registry;
   }
+  // Supplies device-scoped camera facts for a retained stream frame. Set by
+  // CoreRuntime, which owns the external camera-description state this
+  // dispatcher cannot see; the resolver is the SAME one the capture path uses,
+  // so a stream result and a capture result resolve identically.
+  void set_device_camera_facts_resolver(
+      std::function<CoreResolvedImageFacts(uint64_t, const ProviderCaptureImageFacts*)>
+          resolver) noexcept {
+    device_camera_facts_resolver_ = std::move(resolver);
+  }
+
   void set_provider_camera_fact_state(ProviderCameraFactState* provider_camera_fact_state) noexcept {
     provider_camera_fact_state_ = provider_camera_fact_state;
   }
@@ -118,6 +128,8 @@ private:
   CoreResultStore* result_store_ = nullptr; // non-owning; core-thread-only
   CoreCaptureAssemblyRegistry* capture_assembly_registry_ = nullptr; // non-owning; core-thread-only
   ProviderCameraFactState* provider_camera_fact_state_ = nullptr; // non-owning; core-thread-only
+  std::function<CoreResolvedImageFacts(uint64_t, const ProviderCaptureImageFacts*)>
+      device_camera_facts_resolver_;
   std::function<void(const CoreCaptureLifecycleIngressEvent&)>
       capture_lifecycle_ingress_sink_{};
   CoreDispatchStats stats_{};

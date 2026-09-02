@@ -453,13 +453,19 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
           // the same batch as the started fact.
           const bool stream_result_existed =
               sid != 0 && result_store_->get_latest_stream_result(sid) != nullptr;
+          CoreResolvedImageFacts stream_facts{};
+          if (device_camera_facts_resolver_ && p.frame.device_instance_id != 0) {
+            stream_facts = device_camera_facts_resolver_(
+                p.frame.device_instance_id, &p.frame.image_facts);
+          }
           retained_for_result = result_store_->retain_frame(
               p.frame,
               stream_intent,
               stream_access_posture_epoch,
               capture_access_posture_epoch,
               stream_requested_retained_plan,
-              capture_requested_retained_plan);
+              capture_requested_retained_plan,
+              stream_facts);
           if (retained_for_result && sid != 0 && !stream_result_existed) {
             relevant_state_changed_ = true;
           }

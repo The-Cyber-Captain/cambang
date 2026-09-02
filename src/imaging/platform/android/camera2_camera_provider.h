@@ -225,9 +225,14 @@ public:
   }
 
   // Camera2 delivers YUV_420_888, whose concrete member the device decides at
-  // runtime. Both the semi-planar and fully planar members are advertised
-  // because either may arrive and CamBANG converts both; the packed formats
-  // remain available via the provider's own conversion.
+  // runtime. NV12 and I420 name the semi-planar and fully planar FAMILIES
+  // here, not exact guarantees: a planar frame is passed through unconverted
+  // and copy_acquired_image_planar reports whichever member arrived, which on
+  // every handset measured is NV21. (An earlier version of this comment said
+  // CamBANG converts both -- it does not; only the packed formats below are
+  // produced by conversion, and those ARE exact guarantees.) See
+  // pixel_payload_and_result_contract.md 6.3.0, "What a pinned format means
+  // on a camera provider", including the NV21/YV12 asymmetry this leaves.
   ProducerFormatCapabilities stream_format_capabilities(
       const CaptureProfile& profile,
       const PictureConfig& picture) const noexcept override {
@@ -240,6 +245,21 @@ public:
     return caps;
   }
 
+  // Configurations this camera advertises, read straight from its static
+  // characteristics. Answerable with the camera CLOSED: Camera2 exposes
+  // ACameraManager_getCameraCharacteristics for any id in the id list, which is
+  // the same read enumerate_endpoints already performs.
+  //
+  // Sizes come from ACAMERA_SCALER_AVAILABLE_STREAM_CONFIGURATIONS for
+  // YUV_420_888. Each is paired with every format this provider advertises,
+  // because that is exactly the set a caller may pin: the 4:2:0 members name
+  // families rather than exact guarantees (see stream_format_capabilities),
+  // and the packed formats are produced by conversion from whatever the device
+  // delivered, so they are available at every size the device offers.
+  ProviderProfileCatalog stream_profile_catalog(
+      const std::string& hardware_id) const override;
+  ProviderProfileCatalog capture_profile_catalog(
+      const std::string& hardware_id) const override;
   // Still capture takes the same YUV_420_888 output as streams, so it can
   // deliver the planar family unconverted too.
   ProducerFormatCapabilities capture_format_capabilities(

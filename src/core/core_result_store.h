@@ -165,11 +165,16 @@ struct CoreImageFactBundle {
   ResultImagePropertiesProvenance image_properties_provenance{};
 };
 
-// Private completed-result fact view. These source-neutral facts deliberately
-// remain separate from the legacy flattened result facts above until a public
-// result surface is explicitly approved.
-struct CoreResolvedCaptureImageFacts {
-  CameraStaticFacts camera;
+// Completed-result fact view. These source-neutral facts remain separate from
+// the legacy flattened result facts above.
+//
+// The device-scoped subset (facing, nature, sensor orientation, pose) IS now a
+// public result surface, approved 2026-08-27 and projected on both
+// CamBANGCaptureResult and CamBANGStreamResult through one resolver, so the
+// two cannot describe the same camera differently. The remaining fields stay
+// private pending their own approval.
+struct CoreResolvedImageFacts {
+  ResolvedCameraDeviceFacts camera;
   CaptureImageFacts image;
 };
 
@@ -200,7 +205,19 @@ struct CoreStreamResultData {
   // retained stream result. Used to distinguish current CPU materialization
   // from unsupported GPU-only readback.
   uint64_t payload_retained_frame_id = 0;
-  CaptureImageFacts image_facts{};
+  // The same record, under the same name, as a capture image member holds. A
+  // stream frame and a capture image are both delivered images, so they carry
+  // one fact record rather than two shapes that have to be kept in agreement.
+  //
+  // Resolved once and frozen with this frame rather than looked up on access,
+  // so a held stream result reports the facts that were true when its pixels
+  // were taken, and a stream result and a capture result from the same moment
+  // cannot disagree.
+  //
+  // Today a provider delivers only acquisition_timing with a stream frame, so
+  // the rest of the image half stays empty here. That is absence of knowledge,
+  // not a suppressed field: nothing filters this record on the way out.
+  CoreResolvedImageFacts resolved_image_facts{};
   CoreImageFactBundle facts{};
 };
 
@@ -229,7 +246,7 @@ struct CoreCaptureResultData {
     SharedResultAccessClassificationRecord access_classification{};
     CoreResultAccessPostureKey access_posture{};
 
-    CoreResolvedCaptureImageFacts resolved_image_facts{};
+    CoreResolvedImageFacts resolved_image_facts{};
   };
 
   uint64_t capture_id = 0;
@@ -408,19 +425,54 @@ inline bool planar_payload_to_rgba8(const CoreResultPayloadCpu& payload, uint8_t
     return false;
   }
 
-  for (uint32_t y = 0; y < h; ++y) {
-    const uint8_t* y_row = y_plane + static_cast<size_t>(y_stride) * y;
-    const uint8_t* u_row = u_plane + static_cast<size_t>(u_stride) * (y / 2u);
-    const uint8_t* v_row = v_plane + static_cast<size_t>(v_stride) * (y / 2u);
-    uint8_t* out = dst + static_cast<size_t>(w) * 4u * y;
-    for (uint32_t x = 0; x < w; ++x) {
-      const size_t c = static_cast<size_t>(x / 2u) * chroma_sample_stride;
-      const RgbSample s = yuv_to_rgb_bt601_limited(
-          y_row[x], u_row[c + u_byte_offset], v_row[c + v_byte_offset]);
-      out[static_cast<size_t>(x) * 4u + 0u] = s.r;
-      out[static_cast<size_t>(x) * 4u + 1u] = s.g;
-      out[static_cast<size_t>(x) * 4u + 2u] = s.b;
-      out[static_cast<size_t>(x) * 4u + 3u] = 255u;
+  // Range decides which conversion is correct, and getting it wrong produces a
+  // plausible image rather than a failure. FULL is Camera2's declared answer on
+  // measured hardware (ADATASPACE_JFIF); UNSPECIFIED keeps the documented
+  // limited-range fallback, because absence is not evidence of full range.
+  const bool full_range = (payload.colorimetry.range == ColorRange::FULL);
+
+  // The two loops are written out rather than selecting a converter inside one.
+  //
+  // This is not style. A runtime choice between two converters in the innermost
+  // loop stops either being inlined, and it costs roughly 20% of the whole
+  // conversion -- measured against the pre-change build at -Og on a Galaxy S20+
+  // (+20.9% display view) and a Quest 3 (+9.0%), with the branch as the only
+  // difference. Two attempts to keep a single loop failed: a ternary costs the
+  // inlining, and a generic lambda taking the converter costs it again through
+  // its captures. Each loop below has exactly one callee, which is what lets it
+  // inline; that restored the S20+ to -7.4% and the Quest to +0.7% against
+  // baseline. Do not "simplify" this back into one loop without re-measuring.
+  if (full_range) {
+    for (uint32_t y = 0; y < h; ++y) {
+      const uint8_t* y_row = y_plane + static_cast<size_t>(y_stride) * y;
+      const uint8_t* u_row = u_plane + static_cast<size_t>(u_stride) * (y / 2u);
+      const uint8_t* v_row = v_plane + static_cast<size_t>(v_stride) * (y / 2u);
+      uint8_t* out = dst + static_cast<size_t>(w) * 4u * y;
+      for (uint32_t x = 0; x < w; ++x) {
+        const size_t c = static_cast<size_t>(x / 2u) * chroma_sample_stride;
+        const RgbSample s = yuv_to_rgb_bt601_full(
+            y_row[x], u_row[c + u_byte_offset], v_row[c + v_byte_offset]);
+        out[static_cast<size_t>(x) * 4u + 0u] = s.r;
+        out[static_cast<size_t>(x) * 4u + 1u] = s.g;
+        out[static_cast<size_t>(x) * 4u + 2u] = s.b;
+        out[static_cast<size_t>(x) * 4u + 3u] = 255u;
+      }
+    }
+  } else {
+    for (uint32_t y = 0; y < h; ++y) {
+      const uint8_t* y_row = y_plane + static_cast<size_t>(y_stride) * y;
+      const uint8_t* u_row = u_plane + static_cast<size_t>(u_stride) * (y / 2u);
+      const uint8_t* v_row = v_plane + static_cast<size_t>(v_stride) * (y / 2u);
+      uint8_t* out = dst + static_cast<size_t>(w) * 4u * y;
+      for (uint32_t x = 0; x < w; ++x) {
+        const size_t c = static_cast<size_t>(x / 2u) * chroma_sample_stride;
+        const RgbSample s = yuv_to_rgb_bt601_limited(
+            y_row[x], u_row[c + u_byte_offset], v_row[c + v_byte_offset]);
+        out[static_cast<size_t>(x) * 4u + 0u] = s.r;
+        out[static_cast<size_t>(x) * 4u + 1u] = s.g;
+        out[static_cast<size_t>(x) * 4u + 2u] = s.b;
+        out[static_cast<size_t>(x) * 4u + 3u] = 255u;
+      }
     }
   }
   return true;
@@ -443,7 +495,15 @@ inline CoreRetainedAccessTruth build_stream_retained_access_truth(const CoreStre
 
   if (result.payload_kind == ResultPayloadKind::GPU_SURFACE) {
     if (result.retained_gpu_backing) {
-      truth.display_view = ResultCapability::READY;
+      // READY means the display representation is already retained and needs
+      // no materialization work. That holds for a backing CamBANG already
+      // holds as a native texture. A backing that still has to be imported --
+      // an AHardwareBuffer into Vulkan, a shared D3D11 handle -- is supported
+      // but genuinely costs work on first display access, so it is EXPENSIVE
+      // and must not be imported eagerly to make this line read READY.
+      truth.display_view = result.retained_gpu_backing_descriptor.display_requires_import
+          ? ResultCapability::EXPENSIVE
+          : ResultCapability::READY;
     }
     if (has_current_cpu_payload) {
       truth.to_image = ResultCapability::CHEAP;
@@ -503,12 +563,17 @@ public:
   CoreResultStore() = default;
   ~CoreResultStore() = default;
 
+  // stream_facts is resolved by the caller because this store has no access to
+  // external camera-description state; see
+  // CoreDispatcher::set_device_camera_facts_resolver. Its acquisition_timing is
+  // filled here from the delivered frame, mirroring finalize_capture_facts.
   bool retain_frame(const FrameView& frame,
                     std::optional<StreamIntent> stream_intent,
                     uint64_t stream_applied_access_posture_epoch = 0,
                     uint64_t capture_applied_access_posture_epoch = 0,
                     CoreRetainedProductionPlan stream_requested_retained_plan = {},
-                    CoreRetainedProductionPlan capture_requested_retained_plan = {});
+                    CoreRetainedProductionPlan capture_requested_retained_plan = {},
+                    CoreResolvedImageFacts stream_facts = {});
   bool append_additional_capture_image(uint64_t capture_id,
                                        uint64_t device_instance_id,
                                        CoreCaptureResultData::ImageMemberData image_member,
@@ -518,7 +583,7 @@ public:
       uint64_t capture_id,
       uint64_t device_instance_id,
       std::optional<CaptureAdmissionContext> admission_context,
-      const std::function<CoreResolvedCaptureImageFacts(uint32_t image_member_index)>&
+      const std::function<CoreResolvedImageFacts(uint32_t image_member_index)>&
           resolve_image_facts);
   static bool try_build_capture_image_member_data_from_frame(
       const FrameView& frame,
@@ -528,6 +593,7 @@ public:
                                                               CoreResultPayloadCpu& out_payload);
 
   SharedStreamResultData get_latest_stream_result(uint64_t stream_id) const;
+
   // A Device Capture Id identifies one device capture on its own: the id
   // spaces were split (capture_identity_and_lifecycle.md 2.1) so nothing else
   // can share it, and the per-device nesting below survives only because

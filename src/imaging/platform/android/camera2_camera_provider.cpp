@@ -8,6 +8,8 @@
 
 #include "imaging/platform/android/camera2_camera_provider.h"
 
+#include "imaging/api/delivered_calibration.h"
+
 #include <camera/NdkCameraCaptureSession.h>
 #include <camera/NdkCameraDevice.h>
 #include <camera/NdkCameraManager.h>
@@ -15,13 +17,16 @@
 #include <camera/NdkCameraMetadataTags.h>
 #include <camera/NdkCaptureRequest.h>
 #include <media/NdkImage.h>
+#include <android/data_space.h>
 #include <android/hardware_buffer.h>
 #include <media/NdkImageReader.h>
 
 #include <android/log.h>
+#include <dlfcn.h>
 
 #include <algorithm>
 #include <chrono>
+#include <deque>
 #include <ctime>
 #include <cmath>
 #include <cstdarg>
@@ -638,6 +643,14 @@ struct ResultFacts {
   bool has_distortion_correction_mode = false;
   uint8_t distortion_correction_mode = 0;
 
+  // The region of the reference array that was read out for this capture, and
+  // the zoom ratio in force. Both bear on where the delivered pixels sit in the
+  // sensor frame; see the delivered-image region derivation below.
+  bool has_crop_region = false;
+  int32_t crop_region[4] = {0, 0, 0, 0};
+  bool has_zoom_ratio = false;
+  float zoom_ratio = 1.0f;
+
   // ACAMERA_SENSOR_TIMESTAMP. The only key that ties a result back to the
   // image it describes once a burst has several captures in flight at once.
   bool has_sensor_timestamp = false;
@@ -688,6 +701,15 @@ inline bool af_state_is_settled(uint8_t af_state) noexcept {
          af_state == ACAMERA_CONTROL_AF_STATE_NOT_FOCUSED_LOCKED;
 }
 
+struct StreamProduction;
+// Defined below, in the same anonymous namespace, beside the frame-release
+// helpers it uses. Declared inside namespace {} deliberately: a declaration at
+// namespace scope here would name a different entity from the definition, and
+// the library then links but fails to dlopen on an undefined symbol.
+namespace {
+void flush_pending_frames(StreamProduction& s, CBProviderStrand* strand);
+}  // namespace
+
 struct StreamProduction {
   uint64_t stream_id = 0;
   uint64_t device_instance_id = 0;
@@ -709,6 +731,34 @@ struct StreamProduction {
   // Guarded by DeviceBackend::m.
   bool producing = false;
   uint64_t pool_exhausted_drops = 0;
+
+  // Frames copied out of the reader but not yet published, waiting for the
+  // capture result that describes them. Camera2 hands us the buffer before
+  // onCaptureCompleted delivers that buffer's metadata (~7 ms on a Quest 3),
+  // so publishing on image arrival would mean a frame can never carry its own
+  // per-image facts.
+  //
+  // Each entry owns a pool slot and an unreleased FrameView, so nothing may
+  // drop one silently: it is either posted (the strand then owns the release)
+  // or released through discard_pending_frame(). Bounded to
+  // kMaxPendingFactFrames; the oldest is published factless when that is
+  // exceeded, so a device that stops reporting results costs latency and
+  // facts, never frames.
+  static constexpr size_t kMaxPendingFactFrames = 2;
+  struct PendingFactFrame {
+    int64_t timestamp_ns = -1;
+    FrameView frame{};
+  };
+  // Results that arrived before their image. Camera2 does not guarantee an
+  // order between the ImageReader callback and onCaptureCompleted, and a
+  // Quest 3 was measured delivering BOTH orders within one session, so
+  // matching has to work in either direction or the facts are lost in
+  // whichever direction is unhandled.
+  static constexpr size_t kMaxPendingFactRecords = 4;
+  std::deque<std::pair<int64_t, ProviderCaptureImageFacts>> pending_fact_records;
+
+  std::mutex pending_facts_m;
+  std::deque<PendingFactFrame> pending_fact_frames;
 };
 
 // Collector for one in-flight burst (a burst of one is the ordinary single
@@ -737,6 +787,9 @@ struct BurstCollector {
     // planes it collapsed to. Only meaningful for planar captures.
     uint32_t fourcc = 0;
     uint8_t plane_count = 0;
+    // Read at acquisition, because the AImage is gone by the time the
+    // FrameView is assembled.
+    PayloadColorimetry colorimetry{};
   };
   std::vector<Image> images;      // arrival order == capture order
   size_t failed_count = 0;        // onCaptureFailed, per member
@@ -794,6 +847,17 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
 
   std::mutex m;
 
+  // Reader-callback lifetime. AImageReader callbacks run on their OWN thread
+  // holding a raw reader pointer, and teardown deletes those readers.
+  // Nothing in a callback keeps its reader alive -- the weak_ptr it locks
+  // covers this backend, not the reader -- and backend.m does not help,
+  // because teardown deletes outside it. Deletion therefore waits for
+  // callbacks to leave: see ReaderCallbackGuard/Quiesce below.
+  std::mutex reader_cb_mutex;
+  std::condition_variable reader_cb_idle;
+  uint32_t reader_cb_inflight = 0;
+  bool readers_closing = false;
+
   ACameraDevice* device = nullptr;
   ACameraCaptureSession* session = nullptr;
   ACaptureSessionOutputContainer* output_container = nullptr;
@@ -804,6 +868,14 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   AImageReader* still_reader = nullptr;
   ANativeWindow* stream_window = nullptr;
   ANativeWindow* still_window = nullptr;
+
+  // Declared colour interpretation of each window's buffers, latched when
+  // the session is realized and read by the reader callbacks. Atomic because
+  // the callbacks read it without backend.m; ADATASPACE_UNKNOWN until set.
+  std::atomic<int32_t> stream_dataspace{0};
+  std::atomic<int32_t> still_dataspace{0};
+  std::atomic<uint32_t> stream_dataspace_attempts{0};
+  std::atomic<uint32_t> still_dataspace_attempts{0};
   ACameraOutputTarget* stream_target = nullptr;
   ACaptureRequest* repeating_request = nullptr;
 
@@ -847,6 +919,7 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   // waited on by the same capture worker.
   bool has_ae_state = false;
   uint8_t ae_state = 0;
+
 
 
   std::string hardware_id;
@@ -927,11 +1000,90 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
       strand->post_device_error(device_instance_id, error);
       if (stream && stream->producing) {
         stream->producing = false;
+        // Anything held for its metadata is published now, factless: the frame
+        // was copied out and is real, and facts that never arrived are absent.
+        flush_pending_frames(*stream, strand);
         strand->post_stream_error(stream->stream_id, error);
         strand->post_stream_stopped(stream->stream_id, error);
       }
     }
   }
+};
+
+// A reader callback does bounded per-frame work, so this only has to outlast
+// the slowest one -- it is not sized for any camera operation.
+constexpr int kReaderCallbackDrainMs = 500;
+
+// Marks one reader callback as in-flight for as long as it may touch its
+// AImageReader. entered() is false once teardown has begun, and a callback that
+// is not entered MUST return without calling anything on `reader`.
+//
+// This covers callbacks already RUNNING when teardown starts. It cannot cover
+// one still queued on the reader's looper, which arrives afterwards -- each
+// callback also checks reader identity under backend.m for that.
+class ReaderCallbackGuard {
+ public:
+  explicit ReaderCallbackGuard(DeviceBackend& backend) : backend_(&backend) {
+    std::lock_guard<std::mutex> lk(backend_->reader_cb_mutex);
+    if (backend_->readers_closing) {
+      return;
+    }
+    ++backend_->reader_cb_inflight;
+    entered_ = true;
+  }
+  ~ReaderCallbackGuard() {
+    if (!entered_) {
+      return;
+    }
+    bool idle = false;
+    {
+      std::lock_guard<std::mutex> lk(backend_->reader_cb_mutex);
+      idle = (--backend_->reader_cb_inflight == 0);
+    }
+    if (idle) {
+      backend_->reader_cb_idle.notify_all();
+    }
+  }
+  bool entered() const { return entered_; }
+
+  ReaderCallbackGuard(const ReaderCallbackGuard&) = delete;
+  ReaderCallbackGuard& operator=(const ReaderCallbackGuard&) = delete;
+
+ private:
+  DeviceBackend* backend_ = nullptr;
+  bool entered_ = false;
+};
+
+// Holds new reader callbacks out and waits for those already inside to leave,
+// so the readers can be deleted. Construct immediately before deleting them.
+//
+// drained() gates the delete instead of the wait being unbounded: a callback
+// that never returns would otherwise hang this control job forever. Leaking one
+// reader is recoverable and logged; aborting the process is neither.
+class ReaderCallbackQuiesce {
+ public:
+  explicit ReaderCallbackQuiesce(DeviceBackend& backend) : backend_(&backend) {
+    std::unique_lock<std::mutex> lk(backend_->reader_cb_mutex);
+    backend_->readers_closing = true;
+    drained_ = backend_->reader_cb_idle.wait_for(
+        lk, std::chrono::milliseconds(kReaderCallbackDrainMs),
+        [this] { return backend_->reader_cb_inflight == 0; });
+  }
+  ~ReaderCallbackQuiesce() {
+    {
+      std::lock_guard<std::mutex> lk(backend_->reader_cb_mutex);
+      backend_->readers_closing = false;
+    }
+    backend_->reader_cb_idle.notify_all();
+  }
+  bool drained() const { return drained_; }
+
+  ReaderCallbackQuiesce(const ReaderCallbackQuiesce&) = delete;
+  ReaderCallbackQuiesce& operator=(const ReaderCallbackQuiesce&) = delete;
+
+ private:
+  DeviceBackend* backend_ = nullptr;
+  bool drained_ = false;
 };
 
 // Frame release leases: FrameView.release must stay valid on any thread and
@@ -947,6 +1099,7 @@ struct CaptureFrameLease {
 
 namespace {
 
+
 void release_stream_frame(void* user, const FrameView* /*frame*/) {
   auto* lease = static_cast<StreamFrameLease*>(user);
   if (!lease) return;
@@ -956,6 +1109,34 @@ void release_stream_frame(void* user, const FrameView* /*frame*/) {
   delete lease;
 }
 
+// Releases a pending frame that will never be published -- the pool slot goes
+// back and the lease is deleted. Used only on teardown; the normal exits both
+// post, and posting transfers the release to the strand.
+void discard_pending_frame(FrameView& fv) {
+  if (fv.release) {
+    fv.release(fv.release_user, &fv);
+    fv.release = nullptr;
+    fv.release_user = nullptr;
+  }
+}
+
+// Publishes everything still waiting, without facts. Called when a stream stops
+// or a device fails: a frame already copied out is real and should reach Core,
+// and the facts that never arrived are honestly absent.
+void flush_pending_frames(StreamProduction& s, CBProviderStrand* strand) {
+  std::deque<StreamProduction::PendingFactFrame> drained;
+  {
+    std::lock_guard<std::mutex> pl(s.pending_facts_m);
+    drained.swap(s.pending_fact_frames);
+  }
+  for (auto& pending : drained) {
+    if (strand) {
+      strand->post_frame(pending.frame);
+    } else {
+      discard_pending_frame(pending.frame);
+    }
+  }
+}
 void release_capture_frame(void* user, const FrameView* /*frame*/) {
   delete static_cast<CaptureFrameLease*>(user);
 }
@@ -990,6 +1171,132 @@ std::optional<SourcedFact<ImageAcquisitionTiming>> make_acquisition_timing(
     return std::nullopt;
   }
   return SourcedFact<ImageAcquisitionTiming>{*timing, FactOrigin::NATIVE_REPORTED};
+}
+
+// Colour interpretation, read from the platform rather than assumed.
+//
+// Android declares this per buffer. CamBANG previously had no answer here and
+// consumers fell back to BT.601 limited, which is wrong on measured hardware:
+// a Quest 3 reports ADATASPACE_JFIF for every camera -- BT.601-625, SMPTE 170M,
+// FULL range -- and expanding full-range data as limited clamps a quarter of
+// the frame. See pixel_payload_and_result_contract.md 6.3.1.
+//
+// The colour interpretation the camera declares, read from an image ONCE per
+// session and cached.
+//
+// Two earlier shapes of this are worth not repeating. Reading it per image
+// aborted the process inside libc ("pthread_mutex_lock called on a destroyed
+// mutex", on the ImageReader thread) on every Quest 3 platform-provider run of
+// scene 870: the call consults the image's reader, and a capture-driven
+// reprovision deletes that reader. Reading the reader's WINDOW instead via
+// ANativeWindow_getBuffersDataSpace avoids that but answers nothing -- measured
+// 2026-08-26 as ADATASPACE_UNKNOWN (0) on all three test handsets (Quest 3,
+// Galaxy S20+, Hammer Construction 2 Thermal), at realize and with frames
+// flowing, because a consumer-side ImageReader window does not carry the
+// producer's dataspace.
+//
+// So the image read stays, and the reader is kept alive underneath it by
+// ReaderCallbackGuard/Quiesce plus the reader-identity check in each callback.
+// Note that backend.m alone does NOT make it safe: the original crashing call
+// was already under that lock, because teardown deletes readers outside it.
+// Once per session also means one exposure per session rather than one per
+// frame -- the dataspace is a property of the stream configuration anyway.
+//
+// AImage_getDataSpace is __INTRODUCED_IN(34) while this provider builds at 26,
+// and clang will not accept a __builtin_available guard for it at that floor,
+// so the symbol is resolved once at runtime. An absent symbol (pre-34 device)
+// or an absent answer both leave the record UNSPECIFIED, which is truthful
+// absence and lets the documented fallback apply rather than a guess here.
+int32_t read_image_dataspace(AImage* image) {
+  using GetDataSpaceFn = media_status_t (*)(const AImage*, int32_t*);
+  static GetDataSpaceFn get_data_space = reinterpret_cast<GetDataSpaceFn>(
+      dlsym(RTLD_DEFAULT, "AImage_getDataSpace"));
+  if (get_data_space == nullptr || image == nullptr) {
+    return 0;  // ADATASPACE_UNKNOWN
+  }
+  int32_t dataspace = 0;
+  if (get_data_space(image, &dataspace) != AMEDIA_OK) {
+    return 0;
+  }
+  return dataspace < 0 ? 0 : dataspace;
+}
+
+// How many frames a session will ask before it stops asking.
+//
+// The cap is the point. A device can have the symbol and still never declare a
+// value, and an uncapped retry would then call AImage_getDataSpace on EVERY
+// frame for the life of the session -- which is precisely the per-frame
+// exposure the once-per-session design removed. Both devices that do declare
+// (Quest 3, Hammer) latch on the first frame, so a handful is generous.
+constexpr uint32_t kDataspaceLatchAttempts = 8;
+
+// Latches a session's dataspace from an early image. Caller holds backend.m.
+void latch_image_dataspace_locked(std::atomic<int32_t>& cached,
+                                  std::atomic<uint32_t>& attempts, AImage* image,
+                                  uint64_t device_instance_id, const char* which) {
+  if (cached.load(std::memory_order_acquire) != 0 ||
+      attempts.load(std::memory_order_acquire) >= kDataspaceLatchAttempts) {
+    return;
+  }
+  const uint32_t attempt = attempts.fetch_add(1, std::memory_order_acq_rel) + 1;
+  const int32_t dataspace = read_image_dataspace(image);
+  if (dataspace == 0) {
+    if (attempt == kDataspaceLatchAttempts) {
+      log_line("dataspace device=%llu %s: not declared after %u frames; colour "
+               "interpretation stays UNSPECIFIED and the documented fallback applies",
+               static_cast<unsigned long long>(device_instance_id), which,
+               kDataspaceLatchAttempts);
+    }
+    return;  // No claim. Ask again next frame, until the cap.
+  }
+  cached.store(dataspace, std::memory_order_release);
+  log_line("dataspace device=%llu %s=0x%08x latched on frame %u",
+           static_cast<unsigned long long>(device_instance_id), which, dataspace,
+           attempt);
+}
+
+// Maps a declared ADataSpace onto the payload colour record. Pure arithmetic on
+// a value cached per session, so this is safe to call per frame.
+PayloadColorimetry colorimetry_from_dataspace(int32_t dataspace) {
+  PayloadColorimetry out{};
+  if (dataspace == 0) {  // ADATASPACE_UNKNOWN: no claim
+    return out;
+  }
+
+  switch (dataspace & ADATASPACE_RANGE_MASK) {
+    case ADATASPACE_RANGE_FULL: out.range = ColorRange::FULL; break;
+    case ADATASPACE_RANGE_LIMITED: out.range = ColorRange::LIMITED; break;
+    default: break;  // UNSPECIFIED / EXTENDED: no claim
+  }
+
+  switch (dataspace & ADATASPACE_STANDARD_MASK) {
+    case ADATASPACE_STANDARD_BT601_625:
+    case ADATASPACE_STANDARD_BT601_525:
+      out.matrix = ColorMatrix::BT601;
+      break;
+    case ADATASPACE_STANDARD_BT709:
+      out.matrix = ColorMatrix::BT709;
+      out.primaries = ColorPrimaries::BT709;
+      break;
+    case ADATASPACE_STANDARD_BT2020:
+    case ADATASPACE_STANDARD_BT2020_CONSTANT_LUMINANCE:
+      out.matrix = ColorMatrix::BT2020_NCL;
+      out.primaries = ColorPrimaries::BT2020;
+      break;
+    default: break;
+  }
+  // BT.601-625 primaries are EBU 3213, which ColorPrimaries cannot name, so
+  // they stay UNSPECIFIED rather than being rounded to BT.709.
+
+  switch (dataspace & ADATASPACE_TRANSFER_MASK) {
+    // SMPTE 170M and BT.709 are the same transfer function.
+    case ADATASPACE_TRANSFER_SMPTE_170M: out.transfer = ColorTransfer::BT709; break;
+    case ADATASPACE_TRANSFER_SRGB: out.transfer = ColorTransfer::SRGB; break;
+    case ADATASPACE_TRANSFER_ST2084: out.transfer = ColorTransfer::PQ; break;
+    case ADATASPACE_TRANSFER_HLG: out.transfer = ColorTransfer::HLG; break;
+    default: break;
+  }
+  return out;
 }
 
 // Routes one arrived stream image into the repeating stream pool. Caller
@@ -1065,6 +1372,10 @@ void deliver_stream_image_locked(DeviceBackend& backend, AImage* image) {
     fv.acquisition_timing =
         make_acquisition_timing(timestamp_ns, backend.chars.timestamp_source_realtime);
   }
+  // fv.image_facts is deliberately left empty: this device's per-image metadata
+  // does not exist yet when the buffer arrives (see
+  // on_repeating_capture_completed). Core completes this frame's facts when its
+  // result lands.
   fv.data = slot->bytes.data();
   fv.size_bytes = slot->bytes.size();
   fv.stride_bytes = stream_is_planar ? s->width : (s->width * 4u);
@@ -1073,6 +1384,11 @@ void deliver_stream_image_locked(DeviceBackend& backend, AImage* image) {
     layout.format_fourcc = delivered_fourcc;
     layout.width = s->width;
     layout.height = s->height;
+    latch_image_dataspace_locked(backend.stream_dataspace,
+                                 backend.stream_dataspace_attempts, image,
+                                 backend.device_instance_id, "stream");
+    layout.colorimetry = colorimetry_from_dataspace(
+        backend.stream_dataspace.load(std::memory_order_acquire));
     layout.plane_count = delivered_planes;
     // Camera2 does not surface the colour interpretation here, so this stays
     // UNSPECIFIED and the contract's documented fallback applies.
@@ -1109,7 +1425,49 @@ void deliver_stream_image_locked(DeviceBackend& backend, AImage* image) {
   fv.requested_retained_plan = s->plan;
   fv.release = &release_stream_frame;
   fv.release_user = new StreamFrameLease{slot};
-  backend.strand->post_frame(fv);
+
+  // Held, not posted: this frame's own metadata has not arrived yet (see
+  // on_repeating_capture_completed). A frame without a usable timestamp cannot
+  // be matched to a result, so it goes straight out rather than waiting for
+  // something that could never identify it.
+  if (timestamp_ns < 0) {
+    backend.strand->post_frame(fv);
+    return;
+  }
+  // If this frame's result already arrived, publish immediately with its
+  // facts: nothing is held and no latency is added in that direction.
+  bool publish_now = false;
+  FrameView overflow{};
+  bool has_overflow = false;
+  {
+    std::lock_guard<std::mutex> pl(s->pending_facts_m);
+    for (auto it = s->pending_fact_records.begin();
+         it != s->pending_fact_records.end(); ++it) {
+      if (it->first == timestamp_ns) {
+        fv.image_facts = std::move(it->second);
+        s->pending_fact_records.erase(it);
+        publish_now = true;
+        break;
+      }
+    }
+    if (!publish_now &&
+        s->pending_fact_frames.size() >= StreamProduction::kMaxPendingFactFrames) {
+      overflow = std::move(s->pending_fact_frames.front().frame);
+      s->pending_fact_frames.pop_front();
+      has_overflow = true;
+    }
+    if (!publish_now) {
+      s->pending_fact_frames.push_back(
+          StreamProduction::PendingFactFrame{timestamp_ns, std::move(fv)});
+    }
+  }
+  // Outside the lock: posting runs the strand's admission path.
+  if (publish_now) {
+    backend.strand->post_frame(fv);
+  }
+  if (has_overflow) {
+    backend.strand->post_frame(overflow);
+  }
 }
 
 // ---- NDK callbacks --------------------------------------------------------
@@ -1148,6 +1506,11 @@ void on_stream_image_available(void* context, AImageReader* reader) {
   if (!ctx || !reader) return;
   std::shared_ptr<DeviceBackend> backend = ctx->backend.lock();
   if (!backend) return;
+  // Registered before anything touches `reader`: teardown deletes readers on
+  // another thread. Not entered means teardown owns them now -- leave without
+  // calling into one.
+  ReaderCallbackGuard reader_guard(*backend);
+  if (!reader_guard.entered()) return;
   backend->image_arrived_count.fetch_add(1, std::memory_order_relaxed);
 
   // Frames reach this reader from two different things: a caller's stream, and
@@ -1159,10 +1522,18 @@ void on_stream_image_available(void* context, AImageReader* reader) {
   // line as "the stream traffic sharing this session"; letting pilot stream frames
   // into them would make a device with no stream report stream activity, in
   // exactly the traces used to tell those two cases apart.
+  bool reader_is_current = false;
   const bool has_stream_production = [&] {
     std::lock_guard<std::mutex> bl(backend->m);
+    reader_is_current = (reader == backend->stream_reader);
     return backend->stream != nullptr;
   }();
+  // A callback dispatched from a reader this session has already replaced. The
+  // guard above only covers callbacks already running when teardown began; one
+  // still queued on the old reader's looper arrives after it, and calling into
+  // that reader is a use-after-free. Identity under backend.m is what separates
+  // them, and teardown clears these pointers under the same lock.
+  if (!reader_is_current) return;
 
   // Latest-only: repeating frames are lossy by contract, and taking the
   // newest keeps the preview from lagging behind the sensor when Core is
@@ -1238,6 +1609,20 @@ void on_still_image_available(void* context, AImageReader* reader) {
   if (!ctx || !reader) return;
   std::shared_ptr<DeviceBackend> backend = ctx->backend.lock();
   if (!backend) return;
+  // Registered before anything touches `reader`: teardown deletes readers on
+  // another thread. Not entered means teardown owns them now -- leave without
+  // calling into one.
+  ReaderCallbackGuard reader_guard(*backend);
+  if (!reader_guard.entered()) return;
+  // A callback dispatched from a reader this session has already replaced. The
+  // guard above only covers callbacks already running when teardown began; one
+  // still queued on the old reader's looper arrives after it, and calling into
+  // that reader is a use-after-free. Identity under backend.m is what separates
+  // them, and teardown clears these pointers under the same lock.
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    if (reader != backend->still_reader) return;
+  }
 
   AImage* image = nullptr;
   if (AImageReader_acquireNextImage(reader, &image) != AMEDIA_OK || !image) {
@@ -1308,6 +1693,9 @@ void on_still_image_available(void* context, AImageReader* reader) {
   {
     std::lock_guard<std::mutex> bl(backend->m);
     burst = backend->burst;
+    latch_image_dataspace_locked(backend->still_dataspace,
+                                 backend->still_dataspace_attempts, image,
+                                 backend->device_instance_id, "still");
   }
   if (!burst) {
     // No capture is collecting (a late image from an abandoned burst, or from
@@ -1352,6 +1740,8 @@ void on_still_image_available(void* context, AImageReader* reader) {
       item.plane_count = member_planes;
       item.has_timestamp = (timestamp_ns >= 0);
       item.timestamp_ns = timestamp_ns;
+      item.colorimetry = colorimetry_from_dataspace(
+          backend->still_dataspace.load(std::memory_order_acquire));
       burst->images.push_back(std::move(item));
     } else {
       ++burst->failed_count;
@@ -1408,6 +1798,16 @@ void extract_result_facts(const ACameraMetadata* result, ResultFacts& out) {
     out.has_distortion_correction_mode = true;
     out.distortion_correction_mode = entry.data.u8[0];
   }
+  if (ACameraMetadata_getConstEntry(result, ACAMERA_SCALER_CROP_REGION, &entry) ==
+          ACAMERA_OK && entry.count >= 4) {
+    out.has_crop_region = true;
+    for (int i = 0; i < 4; ++i) out.crop_region[i] = entry.data.i32[i];
+  }
+  if (ACameraMetadata_getConstEntry(result, ACAMERA_CONTROL_ZOOM_RATIO, &entry) ==
+          ACAMERA_OK && entry.count >= 1) {
+    out.has_zoom_ratio = true;
+    out.zoom_ratio = entry.data.f[0];
+  }
   if (ACameraMetadata_getConstEntry(result, ACAMERA_SENSOR_TIMESTAMP, &entry) == ACAMERA_OK &&
       entry.count >= 1) {
     out.has_sensor_timestamp = true;
@@ -1460,6 +1860,236 @@ void extract_result_facts(const ACameraMetadata* result, ResultFacts& out) {
     out.capture_intent = entry.data.u8[0];
   }
 }
+
+// Camera2 result metadata -> the per-image fact record, for ONE delivered
+// image. Shared by the still-capture path and the repeating-stream path: both
+// receive the same ACameraMetadata result, so both must turn it into facts the
+// same way. Written once so a stream frame and a capture of the same moment
+// cannot describe the camera differently.
+ProviderCaptureImageFacts image_facts_from_result_facts(
+    const ResultFacts& facts,
+    const StaticCharacteristics& chars,
+    uint32_t delivered_width,
+    uint32_t delivered_height) {
+  ProviderCaptureImageFacts image_facts{};
+  if (facts.has_exposure_ns) {
+    if (const auto fact = ExposureTime::create(
+            static_cast<double>(facts.exposure_ns))) {
+      image_facts.exposure_time =
+          SourcedFact<ExposureTime>{*fact, FactOrigin::NATIVE_REPORTED};
+    }
+  }
+  if (facts.has_iso) {
+    if (const auto fact = SensorSensitivityIso::create(
+            static_cast<double>(facts.iso))) {
+      image_facts.sensor_sensitivity_iso =
+          SourcedFact<SensorSensitivityIso>{*fact, FactOrigin::NATIVE_REPORTED};
+    }
+  }
+  if (facts.has_aperture) {
+    if (const auto fact = ApertureFNumber::create(
+            static_cast<double>(facts.aperture))) {
+      image_facts.aperture_f_number =
+          SourcedFact<ApertureFNumber>{*fact, FactOrigin::NATIVE_REPORTED};
+    }
+  }
+  if (facts.has_focal_length_mm) {
+    if (const auto fact = FocalLengthMm::create(
+            static_cast<double>(facts.focal_length_mm))) {
+      image_facts.focal_length_mm =
+          SourcedFact<FocalLengthMm>{*fact, FactOrigin::NATIVE_REPORTED};
+    }
+  }
+  // Focus distance is reported in diopters, and only devices whose
+  // calibration is APPROXIMATE or CALIBRATED report it in real ones. An
+  // UNCALIBRATED reading is a hardware-dependent number with no unit, so
+  // converting it to metres would be exactly the unit fabrication the
+  // brief forbids -- it is omitted instead.
+  if (facts.has_focus_diopters && chars.focus_distance_is_metric) {
+    const float diopters = facts.focus_diopters;
+    if (diopters == 0.0f) {
+      image_facts.focus_state =
+          SourcedFact<FocusState>{FocusAtInfinity{}, FactOrigin::NATIVE_REPORTED};
+    } else if (diopters > 0.0f) {
+      if (const auto fact =
+              FocusAtDistance::create(1.0 / static_cast<double>(diopters))) {
+        image_facts.focus_state =
+            SourcedFact<FocusState>{*fact, FactOrigin::NATIVE_REPORTED};
+      }
+    }
+  }
+  // Intrinsics and distortion are per-image rather than static because whether
+  // the delivered pixels were geometrically corrected is decided per capture by
+  // ACAMERA_DISTORTION_CORRECTION_MODE, knowable only from that capture's own
+  // result metadata:
+  //   OFF      -> delivered pixels DISTORTED
+  //   FAST/HQ  -> delivered pixels RECTIFIED
+  //
+  // The correction mode decides that image state and NOTHING ELSE here. It does
+  // NOT move the coordinate system these values are expressed in. Camera2 states
+  // for LENS_INTRINSIC_CALIBRATION, in both CameraCharacteristics and
+  // CaptureResult and with no mode dependence, that "the coordinate system for
+  // this transform is the SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE system".
+  // DISTORTION_CORRECTION_MODE separately enumerates the metadata it rescales --
+  // AF/AE/AWB regions, SCALER_CROP_REGION and statistics.faces -- and neither
+  // LENS_INTRINSIC_CALIBRATION nor LENS_DISTORTION appears in that list.
+  //
+  // This branch previously selected the active array when correction was on,
+  // which labelled pre-correction values as active-array values and paired them
+  // with the wrong reference dimensions. It was invisible on all hardware
+  // measured here, where the two arrays are identical and no device reported a
+  // correction mode, so the branch happened to resolve correctly.
+  //
+  // Note the asymmetry this leaves, which is Camera2's and not ours: the crop
+  // region DOES follow the correction mode. On a device that corrects, the crop
+  // region is in active-array coordinates while these values are in
+  // pre-correction coordinates, and Camera2 documents the bridge between them as
+  // "only linear scaling ... not very precise". Anything composing the two must
+  // check their domains rather than assume they match.
+  // Both arrays are sensor rectangles, not the delivered image. The
+  // delivered frame is cropped and scaled from them, so these f/c values
+  // are NOT valid in delivered-image pixels. They are published in the
+  // sensor domain they were measured in and left there: rescaling them
+  // to the output size would be exactly the intrinsic rescaling and
+  // coordinate-domain conversion CamBANG does not do. A consumer that
+  // needs delivered-image intrinsics must do that conversion itself,
+  // knowing the crop it asked for.
+  //
+  // A result may omit the mode entirely -- real hardware does; the S20
+  // reports intrinsics and distortion on every capture but never the
+  // correction mode. That omission is only ambiguous for a device that
+  // *can* correct. Camera2 documents that a device not supporting the
+  // correction API "will always list only OFF", so for a device
+  // advertising no correction capability, OFF is derived from stated
+  // capability rather than assumed.
+  //
+  // When the device can correct but did not say whether it did, both facts are
+  // still withheld -- but note the reason has narrowed. It is no longer that the
+  // coordinate domain is unknowable (it is not: see below, it is always the
+  // pre-correction array). It is that DistortionImageState would have to be
+  // guessed, and a caller cannot tell rectified pixels from distorted ones by
+  // looking at them.
+  //
+  // That reason applies squarely to distortion and only incidentally to
+  // intrinsics, which no longer depend on the mode at all. Publishing intrinsics
+  // through this gap would be defensible and would widen coverage on such
+  // devices; it is deliberately NOT done here, because it changes when a fact
+  // appears rather than what it says, which is a separate decision from
+  // correcting the label.
+  const bool correction_mode_known =
+      facts.has_distortion_correction_mode ||
+      !chars.distortion_correction_supported;
+  if (correction_mode_known) {
+    const bool corrected =
+        facts.has_distortion_correction_mode &&
+        facts.distortion_correction_mode !=
+            ACAMERA_DISTORTION_CORRECTION_MODE_OFF;
+    // Always the pre-correction array: that is the system these values are
+    // defined in, whatever the correction mode did to the pixels.
+    const bool have_reference = chars.has_pre_correction_array;
+    const uint32_t ref_w = chars.pre_correction_array_w;
+    const uint32_t ref_h = chars.pre_correction_array_h;
+    const CoordinateDomain domain =
+        CoordinateDomain{CoordinateDomainAndroidSensorPreCorrectionActiveArray{}};
+
+    if (have_reference && facts.has_intrinsics) {
+      // [f_x, f_y, c_x, c_y, s] -- Camera2 reports skew, which the
+      // WinRT backend cannot, so it is carried rather than dropped.
+      if (const auto intrinsics_fact = Intrinsics::create(
+              static_cast<double>(facts.intrinsics[0]),
+              static_cast<double>(facts.intrinsics[1]),
+              static_cast<double>(facts.intrinsics[2]),
+              static_cast<double>(facts.intrinsics[3]),
+              static_cast<double>(facts.intrinsics[4]),
+              ref_w, ref_h, domain)) {
+        image_facts.intrinsics =
+            SourcedFact<Intrinsics>{*intrinsics_fact, FactOrigin::NATIVE_REPORTED};
+      }
+    }
+    if (have_reference && facts.has_distortion) {
+      // [kappa_1..kappa_3] radial, [kappa_4, kappa_5] tangential.
+      if (const auto distortion_fact = BrownConrady5Distortion::create(
+              static_cast<double>(facts.distortion[0]),
+              static_cast<double>(facts.distortion[1]),
+              static_cast<double>(facts.distortion[2]),
+              static_cast<double>(facts.distortion[3]),
+              static_cast<double>(facts.distortion[4]),
+              ref_w, ref_h, domain,
+              corrected ? DistortionImageState::RECTIFIED
+                        : DistortionImageState::DISTORTED)) {
+        image_facts.distortion = SourcedFact<Distortion>{
+            Distortion{*distortion_fact}, FactOrigin::NATIVE_REPORTED};
+      }
+    }
+  }
+
+  // Where these delivered pixels sit in the frame the calibration above is
+  // expressed in, and the calibration restated for those pixels -- the pair a
+  // caller needs to build a projection without knowing anything about sensor
+  // coordinate systems.
+  //
+  // Withheld in two cases, both of which would otherwise produce a plausible
+  // and wrong answer rather than an obvious failure:
+  //
+  //   Zoom. From API 30 the crop region moves to a POST-zoom coordinate system
+  //   while LENS_INTRINSIC_CALIBRATION explicitly does not follow it. Composing
+  //   the two would silently cross frames. An absent tag means the device
+  //   predates the control, where crop-region zoom is already reflected in the
+  //   region itself, so absence is fine and only a stated non-unity value is not.
+  //
+  //   Distortion correction. The crop region follows the correction mode
+  //   (active array when correcting, pre-correction when not) but the intrinsics
+  //   are always pre-correction. When they differ, Camera2 bridges them with
+  //   "only linear scaling ... not very precise", so CamBANG declines rather
+  //   than publishing an approximation as a fact.
+  const bool zoom_disturbs_frames = facts.has_zoom_ratio && facts.zoom_ratio != 1.0f;
+  const bool correcting = facts.has_distortion_correction_mode &&
+                          facts.distortion_correction_mode !=
+                              ACAMERA_DISTORTION_CORRECTION_MODE_OFF;
+  if (image_facts.intrinsics && facts.has_crop_region && !zoom_disturbs_frames &&
+      !correcting && facts.crop_region[2] > 0 && facts.crop_region[3] > 0) {
+    const auto readout = DeliveredImageRegion::create(
+        static_cast<uint32_t>(facts.crop_region[0]),
+        static_cast<uint32_t>(facts.crop_region[1]),
+        static_cast<uint32_t>(facts.crop_region[2]),
+        static_cast<uint32_t>(facts.crop_region[3]),
+        image_facts.intrinsics->value.coordinate_domain());
+    // The reported region is what the sensor read out; this stream may have
+    // received a further centred crop of it that the device does not report.
+    const auto region = readout
+        ? region_cropped_to_aspect(*readout, delivered_width, delivered_height)
+        : std::nullopt;
+    if (region) {
+      if (const auto delivered = delivered_intrinsics_from_region(
+              image_facts.intrinsics->value, *region, delivered_width,
+              delivered_height)) {
+        // Origin follows who made THIS assertion, not who supplied the inputs.
+        //
+        // The device asserted a crop region. Where the output shares its
+        // aspect, that is exactly the rectangle published and the camera stated
+        // it. Where it does not, the rectangle published is the narrowed one
+        // CamBANG computed -- the device never named it -- so claiming the
+        // camera reported it would overstate a value the camera cannot be held
+        // to.
+        const bool region_as_reported = region->left() == readout->left() &&
+                                        region->top() == readout->top() &&
+                                        region->width() == readout->width() &&
+                                        region->height() == readout->height();
+        image_facts.delivered_image_region = SourcedFact<DeliveredImageRegion>{
+            *region, region_as_reported ? FactOrigin::NATIVE_REPORTED
+                                        : FactOrigin::CORE_DERIVED};
+        // No Camera2 device states a calibration in the delivered image's own
+        // frame; this one is CamBANG's arithmetic on two native reports, and is
+        // labelled so even when the scale happens to be 1.
+        image_facts.intrinsics_delivered =
+            SourcedFact<Intrinsics>{*delivered, FactOrigin::CORE_DERIVED};
+      }
+    }
+  }
+
+  return image_facts;
+}
+
 
 void on_capture_completed(void* context,
                           ACameraCaptureSession* /*session*/,
@@ -1530,6 +2160,55 @@ void on_repeating_capture_completed(void* context,
   if (!ctx || !result) return;
   std::shared_ptr<DeviceBackend> backend = ctx->backend.lock();
   if (!backend) return;
+
+  // This frame's per-image facts. Camera2 delivers the same result metadata for
+  // a repeating request as for a still, so reading them costs only the parse of
+  // what has already arrived on a callback we already run.
+  //
+  // The image itself was copied out earlier and is being held for exactly this:
+  // matching on ACAMERA_SENSOR_TIMESTAMP, which the result and the image both
+  // carry for the same frame, binds the facts to the pixels they describe
+  // rather than to whichever frame happens to be current.
+  if (StreamProduction* s = backend->stream.get()) {
+    ResultFacts rf{};
+    extract_result_facts(result, rf);
+    if (rf.has_sensor_timestamp) {
+      FrameView matched{};
+      bool found = false;
+      {
+        std::lock_guard<std::mutex> pl(s->pending_facts_m);
+        for (auto it = s->pending_fact_frames.begin();
+             it != s->pending_fact_frames.end(); ++it) {
+          if (it->timestamp_ns == rf.sensor_timestamp_ns) {
+            matched = std::move(it->frame);
+            s->pending_fact_frames.erase(it);
+            found = true;
+            break;
+          }
+        }
+      }
+      ProviderCaptureImageFacts facts =
+          image_facts_from_result_facts(rf, backend->chars, s->width, s->height);
+      if (found) {
+        matched.image_facts = std::move(facts);
+        if (backend->strand) {
+          backend->strand->post_frame(matched);
+        } else {
+          discard_pending_frame(matched);
+        }
+      } else {
+        // The image has not surfaced yet. Hold the facts for it rather than
+        // dropping them: this is the other delivery order, and discarding
+        // here is what made the first implementation of this silently inert.
+        std::lock_guard<std::mutex> pl(s->pending_facts_m);
+        s->pending_fact_records.emplace_back(rf.sensor_timestamp_ns, std::move(facts));
+        while (s->pending_fact_records.size() >
+               StreamProduction::kMaxPendingFactRecords) {
+          s->pending_fact_records.pop_front();
+        }
+      }
+    }
+  }
 
   ACameraMetadata_const_entry entry{};
 
@@ -2021,6 +2700,9 @@ struct Camera2CameraProvider::CapturedMemberFrame {
   uint8_t plane_count = 0;
   bool has_timestamp = false;
   int64_t timestamp_ns = 0;
+  // Declared by the platform at acquisition, carried through because the
+  // AImage is released long before the FrameView is assembled.
+  PayloadColorimetry colorimetry{};
   bool has_facts = false;
   ResultFacts facts{};
 };
@@ -2827,13 +3509,32 @@ void Camera2CameraProvider::teardown_session_locked_(
         }
         if (stream_output) ACaptureSessionOutput_free(stream_output);
         if (still_output) ACaptureSessionOutput_free(still_output);
+        // Drain callbacks that are already inside before deleting the readers
+        // they hold a raw pointer to. Closing the session above stops NEW frames,
+        // but a callback that already entered will still call into `reader`.
+        // Deleting underneath it aborts the process inside libc with
+        // "pthread_mutex_lock called on a destroyed mutex" on the ImageReader
+        // thread -- observed on Quest 3 at every capture-driven reprovision. Callbacks that arrive
+        // LATER, queued on the old reader's looper, are turned away by the
+        // reader-identity check in each callback instead; the drain cannot see
+        // those, which is why both exist.
+        camera2_detail::ReaderCallbackQuiesce quiesce(*backend);
+        if (!quiesce.drained()) {
+          // Deliberate leak. A callback is still inside after the bound, and
+          // deleting now is exactly the abort this guard exists to prevent.
+          camera2_detail::log_line(
+              "device=%llu reader teardown: callback still in flight after %dms; "
+              "leaking readers rather than deleting underneath one",
+              static_cast<unsigned long long>(backend->device_instance_id),
+              camera2_detail::kReaderCallbackDrainMs);
+        }
         if (stream_reader) {
           AImageReader_setImageListener(stream_reader, nullptr);
-          AImageReader_delete(stream_reader);
+          if (quiesce.drained()) AImageReader_delete(stream_reader);
         }
         if (still_reader) {
           AImageReader_setImageListener(still_reader, nullptr);
-          AImageReader_delete(still_reader);
+          if (quiesce.drained()) AImageReader_delete(still_reader);
         }
       },
       token, kControlJobTimeoutMs);
@@ -3088,13 +3789,32 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
           if (container) ACaptureSessionOutputContainer_free(container);
           if (stream_output) ACaptureSessionOutput_free(stream_output);
           if (still_output) ACaptureSessionOutput_free(still_output);
+          // Drain callbacks that are already inside before deleting the readers
+          // they hold a raw pointer to. Closing the session above stops NEW frames,
+          // but a callback that already entered will still call into `reader`.
+          // Deleting underneath it aborts the process inside libc with
+          // "pthread_mutex_lock called on a destroyed mutex" on the ImageReader
+          // thread -- observed on Quest 3 at the same point, via this unwind. Callbacks that arrive
+          // LATER, queued on the old reader's looper, are turned away by the
+          // reader-identity check in each callback instead; the drain cannot see
+          // those, which is why both exist.
+          camera2_detail::ReaderCallbackQuiesce quiesce(*backend);
+          if (!quiesce.drained()) {
+            // Deliberate leak. A callback is still inside after the bound, and
+            // deleting now is exactly the abort this guard exists to prevent.
+            camera2_detail::log_line(
+                "device=%llu reader teardown: callback still in flight after %dms; "
+                "leaking readers rather than deleting underneath one",
+                static_cast<unsigned long long>(backend->device_instance_id),
+                camera2_detail::kReaderCallbackDrainMs);
+          }
           if (stream_reader) {
             AImageReader_setImageListener(stream_reader, nullptr);
-            AImageReader_delete(stream_reader);
+            if (quiesce.drained()) AImageReader_delete(stream_reader);
           }
           if (still_reader) {
             AImageReader_setImageListener(still_reader, nullptr);
-            AImageReader_delete(still_reader);
+            if (quiesce.drained()) AImageReader_delete(still_reader);
           }
         };
 
@@ -3243,6 +3963,14 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
           backend->still_reader = still_reader;
           backend->stream_window = stream_window;
           backend->still_window = still_window;
+          // Deliberately NOT read here. A window reports ADATASPACE_UNKNOWN
+          // until its producer has queued a buffer, so a realize-time read is
+          // always 0 (measured on Quest 3); the reader callbacks latch it on
+          // first frame instead. Reset so a rebuilt session re-latches.
+          backend->stream_dataspace.store(0, std::memory_order_release);
+          backend->still_dataspace.store(0, std::memory_order_release);
+          backend->stream_dataspace_attempts.store(0, std::memory_order_release);
+          backend->still_dataspace_attempts.store(0, std::memory_order_release);
           backend->stream_output = stream_output;
           backend->still_output = still_output;
           backend->output_container = container;
@@ -3304,6 +4032,9 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
         if (backend->stream) {
           dark_stream_id = backend->stream->stream_id;
           backend->stream->producing = false;
+          // Anything held for its metadata is published now, factless: the frame
+          // was copied out and is real, and facts that never arrived are absent.
+          camera2_detail::flush_pending_frames(*backend->stream, backend->strand);
         }
       }
       camera2_detail::log_line(
@@ -3391,6 +4122,56 @@ ProviderResult Camera2CameraProvider::close_device(uint64_t device_instance_id) 
   return ProviderResult::success();
 }
 
+ProviderProfileCatalog Camera2CameraProvider::stream_profile_catalog(
+    const std::string& hardware_id) const {
+  ProviderProfileCatalog catalog{};
+  if (hardware_id.empty()) {
+    return catalog;
+  }
+  ACameraManager* manager = as_manager(manager_);
+  if (!manager) {
+    return catalog;
+  }
+  ACameraMetadata* meta = nullptr;
+  if (ACameraManager_getCameraCharacteristics(manager, hardware_id.c_str(), &meta) !=
+          ACAMERA_OK ||
+      !meta) {
+    // No characteristics for this id: not a camera this provider owns. Left as
+    // NOT_THIS_PROVIDER so an ingested description cannot stand in for it.
+    return catalog;
+  }
+  camera2_detail::StaticCharacteristics chars{};
+  camera2_detail::read_static_characteristics(meta, chars);
+  ACameraMetadata_free(meta);
+
+  // The id exists. Whether it advertises anything is a separate question, and
+  // an empty list here is a real answer rather than an inability.
+  catalog.availability = ProfileCatalogAvailability::ENUMERATED;
+  for (const auto& size : chars.supported_yuv_sizes) {
+    const int64_t min_duration_ns =
+        chars.min_frame_duration_for(size.first, size.second);
+    for (const uint32_t fourcc : {FOURCC_NV12, FOURCC_I420, FOURCC_RGBA, FOURCC_BGRA}) {
+      ProviderProfileEntry entry{};
+      entry.width = size.first;
+      entry.height = size.second;
+      entry.format_fourcc = fourcc;
+      // Omitted when the device states no minimum duration for this geometry:
+      // a fabricated rate would read as a measurement.
+      if (min_duration_ns > 0) {
+        entry.max_fps = 1e9 / static_cast<double>(min_duration_ns);
+      }
+      catalog.entries.push_back(entry);
+    }
+  }
+  return catalog;
+}
+
+// Still capture takes the same YUV_420_888 outputs as streams on this backend,
+// so it advertises the same configurations.
+ProviderProfileCatalog Camera2CameraProvider::capture_profile_catalog(
+    const std::string& hardware_id) const {
+  return stream_profile_catalog(hardware_id);
+}
 ProviderResult Camera2CameraProvider::create_stream(const StreamRequest& req) {
   if (!initialized_.load(std::memory_order_acquire) ||
       shutting_down_.load(std::memory_order_acquire)) {
@@ -3709,6 +4490,9 @@ ProviderResult Camera2CameraProvider::stop_stream(uint64_t stream_id) {
       if (stream && stream->stream_id == stream_id) {
         already_stopped_by_error = !stream->producing;
         stream->producing = false;
+        // Anything held for its metadata is published now, factless: the frame
+        // was copied out and is real, and facts that never arrived are absent.
+        camera2_detail::flush_pending_frames(*backend->stream, backend->strand);
       }
     }
     // Stop the repeating flow for real; leaving it running would keep the
@@ -4341,6 +5125,7 @@ bool Camera2CameraProvider::capture_burst_(
     out_frames[i].plane_count = img.plane_count;
     out_frames[i].has_timestamp = img.has_timestamp;
     out_frames[i].timestamp_ns = img.timestamp_ns;
+    out_frames[i].colorimetry = img.colorimetry;
 
     // Pair by sensor timestamp. Positional pairing is only sound for a single
     // capture, where there is nothing to confuse it with; within a real burst
@@ -5228,6 +6013,7 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
         layout.width = job.request.width;
         layout.height = job.request.height;
         layout.plane_count = captured.plane_count;
+        layout.colorimetry = captured.colorimetry;
         const size_t luma_bytes =
             static_cast<size_t>(job.request.width) * job.request.height;
         const uint32_t chroma_rows = (job.request.height + 1u) / 2u;
@@ -5268,127 +6054,9 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
       // is a supply-side addition only: Core's precedence (external ADC
       // ingestion > provider per-image > provider static) is untouched.
       if (captured.has_facts) {
-        ProviderCaptureImageFacts image_facts{};
-        if (captured.facts.has_exposure_ns) {
-          if (const auto fact = ExposureTime::create(
-                  static_cast<double>(captured.facts.exposure_ns))) {
-            image_facts.exposure_time =
-                SourcedFact<ExposureTime>{*fact, FactOrigin::NATIVE_REPORTED};
-          }
-        }
-        if (captured.facts.has_iso) {
-          if (const auto fact = SensorSensitivityIso::create(
-                  static_cast<double>(captured.facts.iso))) {
-            image_facts.sensor_sensitivity_iso =
-                SourcedFact<SensorSensitivityIso>{*fact, FactOrigin::NATIVE_REPORTED};
-          }
-        }
-        if (captured.facts.has_aperture) {
-          if (const auto fact = ApertureFNumber::create(
-                  static_cast<double>(captured.facts.aperture))) {
-            image_facts.aperture_f_number =
-                SourcedFact<ApertureFNumber>{*fact, FactOrigin::NATIVE_REPORTED};
-          }
-        }
-        if (captured.facts.has_focal_length_mm) {
-          if (const auto fact = FocalLengthMm::create(
-                  static_cast<double>(captured.facts.focal_length_mm))) {
-            image_facts.focal_length_mm =
-                SourcedFact<FocalLengthMm>{*fact, FactOrigin::NATIVE_REPORTED};
-          }
-        }
-        // Focus distance is reported in diopters, and only devices whose
-        // calibration is APPROXIMATE or CALIBRATED report it in real ones. An
-        // UNCALIBRATED reading is a hardware-dependent number with no unit, so
-        // converting it to metres would be exactly the unit fabrication the
-        // brief forbids -- it is omitted instead.
-        if (captured.facts.has_focus_diopters && chars.focus_distance_is_metric) {
-          const float diopters = captured.facts.focus_diopters;
-          if (diopters == 0.0f) {
-            image_facts.focus_state =
-                SourcedFact<FocusState>{FocusAtInfinity{}, FactOrigin::NATIVE_REPORTED};
-          } else if (diopters > 0.0f) {
-            if (const auto fact =
-                    FocusAtDistance::create(1.0 / static_cast<double>(diopters))) {
-              image_facts.focus_state =
-                  SourcedFact<FocusState>{*fact, FactOrigin::NATIVE_REPORTED};
-            }
-          }
-        }
-        // Intrinsics and distortion are per-image rather than static because
-        // the coordinate system they are expressed in is decided per capture
-        // by ACAMERA_DISTORTION_CORRECTION_MODE, which is only knowable from
-        // that capture's own result metadata:
-        //   OFF      -> pre-correction active array, delivered pixels DISTORTED
-        //   FAST/HQ  -> active array, delivered pixels RECTIFIED
-        // Both arrays are sensor rectangles, not the delivered image. The
-        // delivered frame is cropped and scaled from them, so these f/c values
-        // are NOT valid in delivered-image pixels. They are published in the
-        // sensor domain they were measured in and left there: rescaling them
-        // to the output size would be exactly the intrinsic rescaling and
-        // coordinate-domain conversion CamBANG does not do. A consumer that
-        // needs delivered-image intrinsics must do that conversion itself,
-        // knowing the crop it asked for.
-        //
-        // A result may omit the mode entirely -- real hardware does; the S20
-        // reports intrinsics and distortion on every capture but never the
-        // correction mode. That omission is only ambiguous for a device that
-        // *can* correct. Camera2 documents that a device not supporting the
-        // correction API "will always list only OFF", so for a device
-        // advertising no correction capability, OFF is derived from stated
-        // capability rather than assumed. When the device can correct but did
-        // not say whether it did, the domain genuinely is unknowable and both
-        // facts are omitted rather than published against a guessed frame.
-        const bool correction_mode_known =
-            captured.facts.has_distortion_correction_mode ||
-            !chars.distortion_correction_supported;
-        if (correction_mode_known) {
-          const bool corrected =
-              captured.facts.has_distortion_correction_mode &&
-              captured.facts.distortion_correction_mode !=
-                  ACAMERA_DISTORTION_CORRECTION_MODE_OFF;
-          const bool have_reference =
-              corrected ? chars.has_active_array : chars.has_pre_correction_array;
-          const uint32_t ref_w =
-              corrected ? chars.active_array_w : chars.pre_correction_array_w;
-          const uint32_t ref_h =
-              corrected ? chars.active_array_h : chars.pre_correction_array_h;
-          const CoordinateDomain domain =
-              corrected ? CoordinateDomain{CoordinateDomainAndroidSensorActiveArray{}}
-                        : CoordinateDomain{
-                              CoordinateDomainAndroidSensorPreCorrectionActiveArray{}};
-
-          if (have_reference && captured.facts.has_intrinsics) {
-            // [f_x, f_y, c_x, c_y, s] -- Camera2 reports skew, which the
-            // WinRT backend cannot, so it is carried rather than dropped.
-            if (const auto intrinsics_fact = Intrinsics::create(
-                    static_cast<double>(captured.facts.intrinsics[0]),
-                    static_cast<double>(captured.facts.intrinsics[1]),
-                    static_cast<double>(captured.facts.intrinsics[2]),
-                    static_cast<double>(captured.facts.intrinsics[3]),
-                    static_cast<double>(captured.facts.intrinsics[4]),
-                    ref_w, ref_h, domain)) {
-              image_facts.intrinsics =
-                  SourcedFact<Intrinsics>{*intrinsics_fact, FactOrigin::NATIVE_REPORTED};
-            }
-          }
-          if (have_reference && captured.facts.has_distortion) {
-            // [kappa_1..kappa_3] radial, [kappa_4, kappa_5] tangential.
-            if (const auto distortion_fact = BrownConrady5Distortion::create(
-                    static_cast<double>(captured.facts.distortion[0]),
-                    static_cast<double>(captured.facts.distortion[1]),
-                    static_cast<double>(captured.facts.distortion[2]),
-                    static_cast<double>(captured.facts.distortion[3]),
-                    static_cast<double>(captured.facts.distortion[4]),
-                    ref_w, ref_h, domain,
-                    corrected ? DistortionImageState::RECTIFIED
-                              : DistortionImageState::DISTORTED)) {
-              image_facts.distortion = SourcedFact<Distortion>{
-                  Distortion{*distortion_fact}, FactOrigin::NATIVE_REPORTED};
-            }
-          }
-        }
-
+        ProviderCaptureImageFacts image_facts =
+            camera2_detail::image_facts_from_result_facts(
+                captured.facts, chars, job.request.width, job.request.height);
         // Reported after construction, not merely after the metadata read: the
         // create() validators reject non-finite or degenerately-referenced
         // values, so "device supplied it" and "we published it" are different
@@ -5941,6 +6609,10 @@ ProviderResult Camera2CameraProvider::shutdown() {
       std::lock_guard<std::mutex> bl(dev_it->second.backend->m);
       if (dev_it->second.backend->stream) {
         dev_it->second.backend->stream->producing = false;
+        // Anything held for its metadata is published now, factless: the frame
+        // was copied out and is real, and facts that never arrived are absent.
+        camera2_detail::flush_pending_frames(*dev_it->second.backend->stream,
+                             dev_it->second.backend->strand);
       }
     }
     st.started = false;

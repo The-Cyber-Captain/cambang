@@ -217,6 +217,38 @@ public:
     return ProducerFormatCapabilities::packed_rgb_only();
   }
 
+  // The configurations an ENDPOINT will accept.
+  //
+  // Keyed by hardware_id rather than device instance so it can be answered
+  // without opening the camera: a caller choosing a resolution has not opened
+  // anything yet, and making them open a device to find out what it supports
+  // would invert the order of the decision.
+  //
+  // Distinct from the format-capability calls above, which answer "given this
+  // profile, which formats can you emit". These answer "which profiles are
+  // there", a question with no profile to be conditioned on.
+  //
+  // The default is NOT_THIS_PROVIDER, so a provider that has not implemented
+  // enumeration yields no catalog rather than one for hardware that may not be
+  // there. Two obligations, and the difference between them is load-bearing:
+  //
+  //   - NOT_THIS_PROVIDER for a hardware_id you do not own. An ingested
+  //     description must not stand in for a camera that does not exist, and
+  //     this answer is what stops it.
+  //   - CANNOT_ENUMERATE for an endpoint you DO own but cannot list -- a
+  //     backend needing the camera open to read its formats, say. A description
+  //     may then supply the catalog, which is the point of that state.
+  virtual ProviderProfileCatalog stream_profile_catalog(
+      const std::string& hardware_id) const {
+    (void)hardware_id;
+    return ProviderProfileCatalog{};
+  }
+
+  virtual ProviderProfileCatalog capture_profile_catalog(
+      const std::string& hardware_id) const {
+    (void)hardware_id;
+    return ProviderProfileCatalog{};
+  }
   virtual ProducerFormatCapabilities capture_format_capabilities(
       const CaptureRequest& req) const noexcept {
     (void)req;

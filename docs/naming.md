@@ -115,6 +115,11 @@ Observable boundary contract:
 - `CamBANGServer.stop()`
 - `CamBANGServer.get_rig(rig_id)`
 - `CamBANGServer.get_state_snapshot()`
+- `CamBANGServer.get_supported_stream_profiles(hardware_id) -> Dictionary` and
+  `CamBANGServer.get_supported_capture_profiles(hardware_id) -> Dictionary`,
+  reporting the configurations an endpoint advertises. Endpoint-scoped and
+  readable before the camera is engaged; an absent `profiles` key means the
+  provider cannot enumerate, which is distinct from an empty list.
 - `CamBANGServer.ingest_camera_description(String json_text) -> Error` for
   stopped-time full replacement of caller-supplied ADC v2 camera-description
   JSON; it performs no filesystem access and leaves prior configured truth
@@ -169,6 +174,10 @@ Primary lifecycle controls:
 - `set_still_capture_profile(profile)`
 - `get_instance_id()`
 - `create_stream(definition := {})`
+- `get_supported_stream_profiles()` / `get_supported_capture_profiles()`,
+  answering for the endpoint behind this device. Convenience wrappers over the
+  `CamBANGServer` pair above; the answer describes the endpoint, not this
+  device, so it does not change with `engage()`.
 - `trigger_capture() -> Error`
 - `get_result()`
 
@@ -643,10 +652,14 @@ Public/runtime-visible image-bearing nouns remain:
 - **Capture Result**
 - **Capture Result Set**
 
-`Capture Result` is the sole current Godot result surface for rich still-camera
-facts and capture-admission context. It uses the existing member dictionary,
-not a `get_camera_facts()` method or a new fact-wrapper class; `Stream Result`
-remains metadata-light.
+`Capture Result` is the Godot result surface for the full still-camera fact set
+and capture-admission context. It uses the existing member dictionary, not a
+`get_camera_facts()` method or a new fact-wrapper class.
+
+`Stream Result` carries the same fact record, through its own
+`get_camera_facts()` method. It is lighter only because less is known about a
+stream frame: it holds every fact a device-keyed source can supply, and lacks
+only what a live provider reports for one delivered image.
 
 These are distinct from:
 

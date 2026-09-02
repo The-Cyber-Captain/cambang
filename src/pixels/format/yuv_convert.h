@@ -11,11 +11,13 @@
 // translation units cannot be kept in agreement by comment alone, and a
 // mismatch produces a plausible-looking image rather than an obvious failure.
 //
-// Currently only BT.601 limited range ("video" range) is implemented, which is
-// what Camera2's YUV_420_888 output uses and what SyntheticProvider emits. The
-// names say so explicitly: a caller holding content in another colour space
-// must not reach for these by default. Add a second pair, and a colorimetry
-// dispatcher, when a second colour space actually arrives -- not before.
+// BT.601 is implemented in both ranges. Limited ("video") range was first and
+// remains the default everywhere; full range (JFIF) was added once Camera2 was
+// measured declaring ADATASPACE_JFIF on real hardware, which is exactly the
+// "when a second colour space actually arrives" condition this file set for
+// itself. The names say the range explicitly: a caller holding content in one
+// range must not be able to reach for the other by default, and no function
+// here takes a range parameter for that reason.
 //
 // Fixed point at 1/256 so a full frame stays integer-only and therefore
 // bit-reproducible across platforms and between the CPU and GPU paths.
@@ -57,6 +59,31 @@ constexpr YuvSample rgb_to_yuv_bt601_limited(uint8_t r, uint8_t g, uint8_t b) no
   return out;
 }
 
+// RGB -> YUV, BT.601 FULL range (JFIF). Forward partner of
+// yuv_to_rgb_bt601_full() below, and the encoder SyntheticProvider uses when
+// asked to emit full-range output.
+//
+// Exists so that a full-range payload can be GENERATED, not merely decoded.
+// Without it the only full-range frames CamBANG ever sees come from an API-34
+// Camera2 device, so the range branch cannot be exercised off-device -- and a
+// consumer writing its own Y'CbCr maths has no way to test against anything
+// but limited range until it ships.
+//
+// Coefficients are the JFIF forward transform at 1/256. The luma triple sums
+// to exactly 256, so white maps to Y=255 and black to Y=0 -- the property that
+// makes this full range, and the one a test should assert against the pixels
+// rather than against the declaration.
+constexpr YuvSample rgb_to_yuv_bt601_full(uint8_t r, uint8_t g, uint8_t b) noexcept {
+  const int32_t ri = static_cast<int32_t>(r);
+  const int32_t gi = static_cast<int32_t>(g);
+  const int32_t bi = static_cast<int32_t>(b);
+  YuvSample out{};
+  out.y = yuv_detail::clamp_u8((77 * ri + 150 * gi + 29 * bi + 128) >> 8);
+  out.u = yuv_detail::clamp_u8((((-43 * ri - 85 * gi + 128 * bi + 128) >> 8) + 128));
+  out.v = yuv_detail::clamp_u8((((128 * ri - 107 * gi - 21 * bi + 128) >> 8) + 128));
+  return out;
+}
+
 // YUV -> RGB, BT.601 limited range. Inverse of the above.
 //
 // Not an exact inverse: both directions quantize to 8 bits and 4:2:0 chroma is
@@ -70,6 +97,33 @@ constexpr RgbSample yuv_to_rgb_bt601_limited(uint8_t y, uint8_t u, uint8_t v) no
   out.r = yuv_detail::clamp_u8((298 * c + 409 * e + 128) >> 8);
   out.g = yuv_detail::clamp_u8((298 * c - 100 * d - 208 * e + 128) >> 8);
   out.b = yuv_detail::clamp_u8((298 * c + 516 * d + 128) >> 8);
+  return out;
+}
+
+// YUV -> RGB, BT.601 FULL range (JFIF).
+//
+// Distinct from the limited-range function above, not a parameterisation of it,
+// for the reason this file already follows: a caller holding content in one
+// range must not be able to reach for the other by default.
+//
+// The difference is not cosmetic. Limited range maps Y 16..235 onto 0..255, so
+// applying it to full-range data clamps everything outside that window --
+// crushed blacks and blown highlights. Camera2 on measured hardware declares
+// ADATASPACE_JFIF, which is this function's domain, not the one above's; see
+// pixel_payload_and_result_contract.md 6.3.1.
+//
+// Full range needs no black-level offset and no 255/219 scaling: Y passes
+// through, and only the chroma terms are weighted. Fixed point at 1/256 to
+// match the limited-range path, so both stay integer-only and reproducible.
+constexpr RgbSample yuv_to_rgb_bt601_full(uint8_t y, uint8_t u, uint8_t v) noexcept {
+  const int32_t yi = static_cast<int32_t>(y);
+  const int32_t d = static_cast<int32_t>(u) - 128;
+  const int32_t e = static_cast<int32_t>(v) - 128;
+  RgbSample out{};
+  // 1.402, 0.344136, 0.714136, 1.772 at 1/256.
+  out.r = yuv_detail::clamp_u8(yi + ((359 * e + 128) >> 8));
+  out.g = yuv_detail::clamp_u8(yi + ((-88 * d - 183 * e + 128) >> 8));
+  out.b = yuv_detail::clamp_u8(yi + ((454 * d + 128) >> 8));
   return out;
 }
 

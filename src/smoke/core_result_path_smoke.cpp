@@ -410,7 +410,7 @@ int main() {
   assert(stream_result->access_posture.has_retained_cpu_payload);
   assert(!stream_result->access_posture.has_retained_gpu_backing);
   assert(stream_result->retained_frame_id != 0);
-  assert(!stream_result->image_facts.acquisition_timing);
+  assert(!stream_result->resolved_image_facts.image.acquisition_timing);
   const uint64_t cpu_stream_posture_id = stream_result->access_posture.posture_id;
 
   const auto integral_period = TickPeriod::create(5, 2);
@@ -443,17 +443,17 @@ int main() {
   assert(repeated_cpu_stream_result);
   assert(repeated_cpu_stream_result->access_posture.posture_id == cpu_stream_posture_id);
   assert(repeated_cpu_stream_result->retained_frame_id != stream_result->retained_frame_id);
-  assert(repeated_cpu_stream_result->image_facts.acquisition_timing);
-  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.acquisition_mark() == 0);
-  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.tick_period().numerator_ns() ==
+  assert(repeated_cpu_stream_result->resolved_image_facts.image.acquisition_timing);
+  assert(repeated_cpu_stream_result->resolved_image_facts.image.acquisition_timing->value.acquisition_mark() == 0);
+  assert(repeated_cpu_stream_result->resolved_image_facts.image.acquisition_timing->value.tick_period().numerator_ns() ==
          integral_period->numerator_ns());
-  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.tick_period().denominator() ==
+  assert(repeated_cpu_stream_result->resolved_image_facts.image.acquisition_timing->value.tick_period().denominator() ==
          integral_period->denominator());
-  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.clock_domain() ==
+  assert(repeated_cpu_stream_result->resolved_image_facts.image.acquisition_timing->value.clock_domain() ==
          ImageAcquisitionClockDomain::DOMAIN_OPAQUE);
-  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.reference_event() ==
+  assert(repeated_cpu_stream_result->resolved_image_facts.image.acquisition_timing->value.reference_event() ==
          ImageAcquisitionReferenceEvent::EXPOSURE_MIDPOINT);
-  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.comparability() ==
+  assert(repeated_cpu_stream_result->resolved_image_facts.image.acquisition_timing->value.comparability() ==
          ImageAcquisitionComparability::SAME_IMAGE_ONLY);
 
   store.retain_frame(stream_frame, StreamIntent::VIEWFINDER, kStreamEpochB, 0, requested_cpu);
@@ -722,14 +722,14 @@ int main() {
     assert(first->retained_frame_id != 0);
     assert(second->retained_frame_id != 0);
     assert(first->retained_frame_id != second->retained_frame_id);
-    assert(first->image_facts.acquisition_timing);
-    assert(second->image_facts.acquisition_timing);
-    assert(first->image_facts.acquisition_timing->value.acquisition_mark() ==
-           second->image_facts.acquisition_timing->value.acquisition_mark());
-    assert(first->image_facts.acquisition_timing->value.tick_period().numerator_ns() ==
-           second->image_facts.acquisition_timing->value.tick_period().numerator_ns());
-    assert(first->image_facts.acquisition_timing->value.tick_period().denominator() ==
-           second->image_facts.acquisition_timing->value.tick_period().denominator());
+    assert(first->resolved_image_facts.image.acquisition_timing);
+    assert(second->resolved_image_facts.image.acquisition_timing);
+    assert(first->resolved_image_facts.image.acquisition_timing->value.acquisition_mark() ==
+           second->resolved_image_facts.image.acquisition_timing->value.acquisition_mark());
+    assert(first->resolved_image_facts.image.acquisition_timing->value.tick_period().numerator_ns() ==
+           second->resolved_image_facts.image.acquisition_timing->value.tick_period().numerator_ns());
+    assert(first->resolved_image_facts.image.acquisition_timing->value.tick_period().denominator() ==
+           second->resolved_image_facts.image.acquisition_timing->value.tick_period().denominator());
   }
 
   {
@@ -1315,6 +1315,54 @@ int main() {
     CoreResultPayloadCpu bt709 = i420;
     bt709.colorimetry.matrix = ColorMatrix::BT709;
     assert(!planar_payload_to_rgba8(bt709, rgba.data()));
+  }
+
+  // --- BT.601 FULL range (JFIF) ---------------------------------------------
+  //
+  // Camera2 declares ADATASPACE_JFIF on measured hardware, so full range is a
+  // real payload shape rather than a hypothetical. Two separate things are
+  // asserted: the convertibility gate ADMITS full range -- a provider
+  // declaring the truth must not be what turns its frames UNSUPPORTED -- and
+  // the conversion dispatches to the full-range maths instead of silently
+  // using the limited-range one.
+  {
+    constexpr uint32_t kFW = 2;
+    constexpr uint32_t kFH = 2;
+    CoreResultPayloadCpu p{};
+    p.format_fourcc = FOURCC_NV12;
+    p.width = kFW;
+    p.height = kFH;
+    p.plane_count = 2;
+    p.stride_bytes = kFW;
+    p.colorimetry.range = ColorRange::FULL;
+    p.colorimetry.matrix = ColorMatrix::BT601;
+    const size_t luma = static_cast<size_t>(kFW) * kFH;
+    p.planes[0] = {0, kFW, kFH};
+    p.planes[1] = {luma, kFW, kFH / 2u};
+    p.bytes.assign(luma + static_cast<size_t>(kFW) * (kFH / 2u), 0u);
+
+    // Luma above 235 is the discriminating case: limited-range expansion
+    // clamps it to white, full range passes it through.
+    const uint8_t y = 250;
+    const uint8_t u = 128;
+    const uint8_t v = 128;
+    for (size_t i = 0; i < luma; ++i) {
+      p.bytes[i] = y;
+    }
+    p.bytes[luma + 0] = u;
+    p.bytes[luma + 1] = v;
+
+    const RgbSample full = yuv_to_rgb_bt601_full(y, u, v);
+    const RgbSample limited = yuv_to_rgb_bt601_limited(y, u, v);
+    // The assertion below only means anything if the two disagree here.
+    assert(full.r != limited.r || full.g != limited.g || full.b != limited.b);
+
+    std::vector<uint8_t> rgba(luma * 4u, 0u);
+    assert(planar_payload_to_rgba8(p, rgba.data()));
+    assert(rgba[0] == full.r);
+    assert(rgba[1] == full.g);
+    assert(rgba[2] == full.b);
+    assert(rgba[3] == 255u);
   }
 
   // --- NV21 / YV12 chroma order ---------------------------------------------

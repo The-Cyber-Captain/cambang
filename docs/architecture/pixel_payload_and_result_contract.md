@@ -263,6 +263,34 @@ image that is plausible and incorrect, which is worse than a failure.
 concrete value must choose its fallback explicitly; it must not silently treat
 `UNSPECIFIED` as any particular colour space.
 
+### Who applies colorimetry, and who must apply it themselves
+
+`to_image()` and the CPU display view apply it for you: `planar_payload_to_rgba8`
+selects full- or limited-range conversion from `payload.colorimetry.range`. A
+caller on those paths gets correct colour without doing anything.
+
+The compute-texture plane surface does not, and cannot. It hands over the frame's
+native planes precisely so the caller can convert in its own shader, which means
+the caller must make the same decision CamBANG makes internally -- branch on
+`get_colorimetry()["range"]`, and choose an explicit fallback when `declared` is
+false. The information needed is present; nothing enforces its use.
+
+A declaration is truthful for the source that made it and is NOT portable
+between sources. Measured 2026-08-27 on the same call:
+
+| Source | range | matrix | transfer | primaries | declared |
+|---|---|---|---|---|---|
+| SyntheticProvider | limited | bt601 | srgb | bt709 | true |
+| Camera2, Quest 3 / Hammer (API 34) | full | bt601 | bt709 | unspecified | true |
+| Camera2, Galaxy S20+ (API < 34) | unspecified | unspecified | unspecified | unspecified | false |
+
+All three are correct. Synthetic really does generate limited-range BT.601; the
+Quest camera really does deliver full range; the S20+ really cannot say. The
+hazard is not disagreement, it is **calibrating a shader against whichever source
+a developer happens to build against** -- typically Synthetic -- and shipping it
+to the others. Synthetic's declaration is representative of Synthetic and of no
+camera. Read colorimetry at runtime; do not bake it in.
+
 ## 6.3 Native format capability and selection
 
 Providers declare the formats they can emit **without converting**, in their own
@@ -315,6 +343,33 @@ pattern preset and seed, so it belongs in `PictureConfig` with the rest of the
 synthetic appearance controls rather than in a hardware-facing profile.
 Pinning a format is meaningful for Synthetic in a way it is not for a camera.
 
+#### What a pinned format means on a camera provider
+
+Naming a 4:2:0 member selects the **family**, not the member. Camera2 can only
+open an `AImageReader` as `AIMAGE_FORMAT_YUV_420_888`, whose concrete memory
+layout the device chooses at runtime -- there is no NDK format that pins NV12.
+The provider passes that layout through unconverted and reports what arrived, so
+a stream pinned to NV12 is delivered as NV21 on every handset measured (Quest 3,
+Galaxy S20+, Hammer Construction 2 Thermal, 2026-08-26).
+
+`CamBANGStreamResult.get_format()` is therefore authoritative for what a caller
+actually holds, and `CamBANGStream.get_requested_format()` returns what was
+asked for so the two can be compared at setup rather than discovered as a
+swapped chroma order inside someone's shader.
+
+Packed pins behave differently, and the difference is not arbitrary: a provider
+that converts honours them exactly. Camera2 converts YUV to RGBA/BGRA, so a
+packed pin IS a guarantee. `format_fourcc` thus means three things by context --
+an exact guarantee for packed formats, a family selection for 4:2:0 members, and
+an exact instruction to a generator per the Synthetic exception above.
+
+Known wart, recorded rather than fixed: the advertisement names each family by
+a single member. Camera2 advertises NV12 and I420 only, so a pin of NV21 or YV12
+is rejected at `create_stream` -- even though NV21 is precisely what these
+devices deliver. Widening the advertised set to all four members would make
+family pins symmetric and changes no selection behaviour, since selection takes
+the first usable entry.
+
 ### 6.3.1 Current implementation status
 
 Recorded so a declared-but-unimplemented kind stays distinguishable from a
@@ -356,6 +411,50 @@ One gap this table makes visible:
   order, and the retained payload carries the delivered FourCC, so payload
   truth is correct. The stream *profile* still records the requested tag, so
   profile and payload can name different formats for the same stream.
+- **The BT.601-*limited* conversion fallback was measured WRONG on at least one
+  Camera2 device, which then declared no colorimetry at all. RESOLVED for
+  API-34+ Camera2 devices; see the resolution note at the end of this bullet.**
+  `is_convertible_colorimetry` resolves absence to BT.601 limited, and its
+  source comment claimed that is "what both current targets deliver for 8-bit
+  4:2:0". For Camera2 that is false on the hardware measured.
+
+  Measured 2026-08-26, Quest 3 / Horizon OS v207 (Android 14, API 34), cameras
+  1, 50 and 51, all three identical: `AImage_getDataSpace` returns
+  `146931712` == `ADATASPACE_JFIF` -- decoding to BT.601-625 primaries,
+  SMPTE 170M transfer, and `ADATASPACE_RANGE_FULL`. Luma corroborates on the
+  two passthrough cameras: 640x480 frames spanning min 3 / max 255 and
+  min 5 / max 255, with 26.7% and 12.8% of pixels respectively outside the
+  16-235 window. Applying a limited-to-full expansion to full-range data clamps
+  every one of those pixels -- crushed blacks, blown highlights, and a contrast
+  boost. Precisely the "plausible image, which is worse than no image" this
+  contract warns about, and it is current shipped behaviour for every planar
+  frame converted on that device by `get_display_view()` or `to_image()`.
+
+  Scope, deliberately not generalised:
+  - One device family. This is NOT a statement that Camera2 delivers full range
+    everywhere; other devices are unmeasured, and treating one handset as a
+    platform specification is the error this project avoids elsewhere.
+  - The WinRT half of the original claim is untested and may well be correct;
+    NV12 from a MediaCapture video pipeline is conventionally limited range.
+  - The platform *declares* this per buffer. `AImage_getDataSpace` gives
+    standard, transfer and range directly, so this is a fact available to the
+    provider and simply not read -- a guess standing where an answer exists.
+    The principled fix is for the provider to populate `PayloadColorimetry`
+    from the dataspace, leaving the fallback for genuinely unknown cases.
+  - `AImage_getDataSpace` is `__INTRODUCED_IN(34)`. Devices below API 34 cannot
+    be queried this way, and what the fallback should be *there* remains open.
+
+  **Resolution (2026-08-27).** The Camera2 provider now populates
+  `PayloadColorimetry` from the dataspace, read ONCE per session from an early
+  image and cached, capped at 8 attempts so a device that has the symbol but
+  never declares cannot pull the call back onto every frame. The read is
+  guarded by the reader-callback drain and the reader-identity check, because
+  a per-frame version of it aborted the process during session rebuild.
+  Measured after the change: Quest 3 and Hammer latch `0x08c20000`
+  (`ADATASPACE_JFIF`) on the first frame; the Galaxy S20+ is below API 34, the
+  symbol is absent, and the record stays UNSPECIFIED with the documented
+  fallback applying. So colour fidelity is API-tier dependent, and
+  `declared` is the only signal a caller gets for which tier it is on.
 
 Pixel format is independent of pattern content. The synthetic stream render
 spec is packed RGBA8 regardless of the requested profile format, and format
@@ -1193,6 +1292,463 @@ For a capture member that retains both a current CPU sidecar and a GPU primary
 artifact, `to_image_member()` prefers the current CPU bytes. The GPU
 materializer is used only when no current CPU sidecar is available. Capability
 and access-cost evidence must describe the route actually selected.
+
+### 11.6.1 Capture Compute Texture
+
+A **Capture Compute Texture** is a GPU-resident, frozen texture of one plane of
+one completed capture image member, obtainable for as long as that
+`CaptureResult` is retained, so that a caller can run GPU compute over the
+captured image.
+
+Planes are exposed in the member's **native** format and are never converted. A
+packed member has one plane; NV12/NV21 have two, luma then interleaved chroma;
+I420/YV12 have three. The member's own format names what each plane holds.
+
+It is a capture-native concept. It is defined here, under the capture-result
+guardrail, because the guardrail above is the rule it must satisfy: this is not
+the stream display-view model extended to captures, and nothing in §11.4 or
+§11.4.1 applies to it.
+
+#### What it is not
+
+- **Not a display view.** Its purpose is compute, not presentation. It carries
+  no display-demand semantics, no freshness policy, no refresh, no staleness
+  question, and no live-view contract. A caller that only wants to show a
+  capture on screen does not need it.
+- **Not a replacement for `to_image_member()`.** CPU access is unchanged and
+  remains the path for saving, encoding, and pixel inspection. A Capture
+  Compute Texture is additive; asking for one never removes or degrades CPU
+  access to the same member.
+- **Not a per-frame or per-tick object.** A capture image member has one
+  Capture Compute Texture per plane for the life of the retained result.
+- **Not an RGB image.** Converting a planar member to RGBA to hand over a single
+  texture would cost far more than the upload it accompanies -- measured at
+  ~20 ms against ~475 us for a 1280x720 NV12 member -- and would discard the
+  representation the caller asked for. Many analyses want luma alone, which is
+  already a plane. A caller that wants RGB converts in its own shader, where it
+  also controls the colour handling.
+
+The distinction from stream display state is not a naming convention. A stream
+display view is deliberately buffer-like and explicitly disclaims frozen
+historical image identity (§11.4). A Capture Compute Texture asserts the
+opposite: it is exactly the pixels of that member, frozen, for as long as the
+result exists. Reasoning that transfers from one to the other is wrong in both
+directions.
+
+#### Why it exists
+
+Two reasons, and the second is the one that must not be forgotten when the
+first is unavailable:
+
+1. When the source already delivers the captured image in GPU-resident form,
+   handing that to a compute shader avoids a GPU-to-CPU-to-GPU round trip.
+   That round trip is expensive everywhere and disproportionately expensive on
+   mobile hardware.
+2. When the source does not, a caller still needs a compute-usable texture,
+   and should get one by the same route rather than reimplementing the upload
+   per application. The cost differs; the availability of the capability does
+   not.
+
+#### Identity, immutability, and caching
+
+A retained capture image member is immutable. Its Capture Compute Texture is
+therefore safe to produce once and retain alongside the member: the pixels
+cannot change underneath it, so a retained texture can never be stale.
+
+A repeat request for the same retained member must be served from the texture
+already produced, not materialized again. The source pixels are frozen, so a
+second production is necessarily identical to the first and is therefore pure
+waste -- and a caller polling for its result must be able to ask for the
+compute texture each time without paying a full-frame upload each time.
+
+CamBANG may bound how many produced textures it holds, and a request whose
+texture has already been released under that bound legitimately produces again.
+What this forbids is producing afresh on every request while the previous
+result was still held.
+
+This is the reverse of the stream case, where retained display state is updated
+in place while the stream flows and caching a materialized artifact would be
+wrong. The conclusion here is drawn from capture immutability, not imported
+from stream policy.
+
+#### Operation Support
+
+Capture Compute Texture availability is expressed as Operation Support
+(§6.x.3), using `ResultCapability`, per image member -- alongside
+`display_view`, `to_image`, and `encoded_bytes`, not folded into any of them.
+
+Provisional classification follows from Backing State:
+
+| Backing State for that member | Operation Support |
+| --- | --- |
+| A compute-usable GPU texture is already retained | `READY` |
+| No retained GPU texture; a CPU payload is retained; a GPU device exists | `EXPENSIVE` |
+| A GPU backing is retained but reaching a compute-usable texture requires a real import step | `EXPENSIVE` |
+| No GPU device is available to the runtime | `UNSUPPORTED` |
+| Neither a retained GPU backing nor a CPU payload | `UNSUPPORTED` |
+
+`EXPENSIVE` for the CPU-payload case is not a hedge. Producing the texture is a
+full-frame upload, which is the worked example of `EXPENSIVE` in §11.2.
+Reporting `UNSUPPORTED` there would be false -- the caller can have the
+texture, it simply costs -- and reporting `CHEAP` or `READY` would breach §11.3,
+because the method would be hiding a full-frame copy behind a cheap-sounding
+name.
+
+As with every other supported non-ready operation, bounded calibration may
+refine a supported non-ready classification to `CHEAP` from measured evidence.
+No path may be *declared* `CHEAP` without it.
+
+#### No eager materialization
+
+A Capture Compute Texture is produced on first request and not before.
+
+The reason is capture-specific. Capture results are retained per capture
+identity under a byte budget with eviction, so eager materialization scales GPU
+memory with retention depth: N retained results means N textures, most of which
+no caller ever samples. There is no comparable pressure where a single live
+artifact is retained. A caller that wants the cost paid earlier can ask
+earlier; CamBANG must not decide that on their behalf.
+
+Where a texture is produced, its footprint is counted in the same retained-byte
+accounting as the member's other backings, so eviction sees it.
+
+#### Obligations on the texture itself
+
+A Capture Compute Texture is only a Capture Compute Texture if a caller can
+actually compute over it:
+
+- The caller must be able to obtain a **RenderingDevice texture RID** by one
+  documented route that does not vary with which internal path produced the
+  texture. A capability whose access method depends on unstated internals is
+  not a capability.
+- The texture must have a pixel format the caller can reason about. A GPU
+  resource that can only be imported under a vendor-defined external format is
+  **not** a Capture Compute Texture: such an image is sampled-only, requires an
+  immutable sampler with a format conversion, and cannot be bound as a storage
+  image. If a native backing can only be reached that way, the honest answer
+  for that member is that the native path did not produce a Capture Compute
+  Texture -- fall back or report accordingly, rather than handing over
+  something the stated purpose cannot use.
+- Geometry and format must agree with the member's other truth. A Capture
+  Compute Texture that disagrees with `get_image_member()` about size, or with
+  the retained payload about colour interpretation, is a defect, not a variant.
+
+A **multi-planar** format is fine here, and must not be confused with the
+external-format case above. Each plane is exposed as its own single-plane
+texture in an ordinary format, which any sampler can read. What is unusable is a
+*single image* in a multi-planar format: Vulkan requires such an image be
+sampled through a `VkSamplerYcbcrConversion` bound as an immutable sampler, and
+Godot's RenderingDevice API exposes no Y'CbCr conversion at all --
+`RDSamplerState` has no such property and `RenderingDevice` has no such method
+(checked against godot-cpp 4.5-stable).
+
+That distinction decides what a native GPU-backed path on Android would take.
+Importing a YUV `AHardwareBuffer` yields one multi-planar `VkImage`, which
+cannot be sampled through the RD API. In raw Vulkan the fix is cheap -- create
+per-plane image views with `VK_IMAGE_ASPECT_PLANE_i_BIT`, each of which has an
+ordinary single-plane format -- but `texture_create_from_extension()` takes a
+`VkImage` and builds its own view, so a plane-aspect view cannot be supplied.
+Aliasing separate single-plane images over the imported memory does not work
+either: `AHardwareBuffer` imports require dedicated allocation, which binds that
+memory to exactly one image. So the obstacle is the shape of Godot's API, not
+conversion cost, and the CPU-plane path above is unaffected by it.
+
+#### Lifetime and release
+
+The texture's lifetime is bounded by the retained result. It is released when
+the last of the retained member and any caller-held reference is dropped, and
+never before either.
+
+RID release follows the existing render-thread discipline: creation and release
+of rendering resources are marshaled to the render thread, and `free_rid()` is
+never called from an arbitrary thread.
+
+A caller that binds a Capture Compute Texture into its own rendering or compute
+work is responsible for dropping that binding before CamBANG is stopped, on the
+same terms as any other runtime-backed display object.
+
+#### Current implementation status
+
+Recorded so a declared-but-unimplemented capability stays distinguishable from
+a working one. This section describes what is built, not what CamBANG intends;
+an absent entry means "not implemented yet", never "excluded by design".
+
+- **The CPU-plane path is implemented; the native GPU-resident path is not
+  reachable on real hardware.** `CamBANGCaptureResult` exposes
+  `can_get_compute_texture_member(i)`, `get_compute_texture_plane_count(i)` and
+  `get_compute_texture_plane(i, plane)`. Production is lazy and cached per
+  retained plane in the Godot layer (`src/godot/capture_compute_texture.cpp`).
+- There is deliberately **no** no-argument convenience accessor. An earlier
+  revision had `get_compute_texture()` returning member 0; it was removed
+  because a planar member has no single texture to return, so such an accessor
+  must either fail or silently pick a plane, and its existence encoded the
+  false premise that a member has exactly one compute texture.
+- Under a GPU-only producer output form, Synthetic's GPU backing is RGBA8-only,
+  so a planar still has no realization. `set_still_capture_profile()` returns OK
+  for an NV12 request and the profile then never becomes NV12. Scene 74 bounds
+  that wait and skips its planar phase with the reason stated rather than
+  hanging. Worth noting as provider behaviour: a request is accepted that can
+  never be applied, and nothing tells the caller so.
+- **Colour interpretation is reported with the planes.** `get_image_member(i)`
+  carries a `colorimetry` dictionary -- `range`, `matrix`, `transfer`,
+  `primaries`, and a `declared` flag -- whenever the member retains CPU bytes.
+  A caller writing its own Y'CbCr maths needs it, and CamBANG holds the answer:
+  §6.2's contract refuses to render one colour space with another's
+  coefficients internally, so leaving a caller to do exactly that would have
+  been inconsistent.
+
+  Values are reported verbatim. `unspecified` is truthful absence, not a value,
+  and nothing here substitutes a default -- a caller must be able to tell
+  whether the provider declared a colour space or CamBANG is simply unaware of
+  it. For reference, CamBANG's own CPU conversion resolves absence to BT.601
+  limited (`is_convertible_colorimetry`,
+  `src/imaging/api/provider_contract_datatypes.h`), and a caller wanting its
+  shader to agree with `to_image()` should do the same; that fallback is
+  deliberately not reported as though it had been declared. Note that agreeing
+  with `to_image()` is not the same as being correct: on the Camera2 hardware
+  measured in 6.3.1 that fallback is the wrong range, so a shader matching it
+  reproduces the same error rather than avoiding it.
+
+  Observed from Synthetic: a packed RGBA member reports all four as
+  `unspecified` with `declared=false`, which is correct -- packed RGB carries no
+  Y'CbCr interpretation. An NV12 member reports `limited` / `bt601` / `srgb` /
+  `bt709` with `declared=true`.
+
+  Note the plane *order* question is answered separately and was never a gap:
+  the member's format distinguishes NV12 from NV21, so U/V order is knowable
+  from `get_format()` alone.
+- The cache is bounded by entry count and deliberately has **no** coupling to
+  Core's capture eviction. It cannot be: the texture is a Godot-layer object,
+  and Core must not own Godot display adapters. Dropping an entry is safe
+  because a caller holding the returned reference keeps the texture alive
+  independently -- eviction costs a later re-upload, never a dangling texture.
+  This narrows the "footprint is counted in the same retained-byte accounting"
+  intent above: the upload's footprint is visible in the
+  `capture_compute_textures` diagnostic, and is **not** an input to Core's
+  capture byte budget.
+- Verified in scene 74 (`74_capture_compute_texture_verify`), which dispatches a
+  real compute shader over the texture and cross-checks the result against a
+  CPU sum of the same member. Both rows are exercised on both Windows and
+  Android (Quest 3, Vulkan, mobile renderer), and the Compatibility row on
+  both:
+
+  | Target | Config | Support | Class returned | Uploads | Content |
+  | --- | --- | --- | --- | --- | --- |
+  | Windows | mobile | EXPENSIVE | `ImageTexture` | 1 | exact |
+  | Windows | mobile, `gpu_only` | READY | `DeferredDisplayTexture2DRD` | 0 | exact |
+  | Windows | headless, Compatibility | UNSUPPORTED | none produced | 0 | n/a |
+  | Android | mobile | EXPENSIVE | `ImageTexture` | 1 | exact |
+  | Android | mobile, `gpu_only` | READY | `DeferredDisplayTexture2DRD` | 0 | exact |
+
+  Every run covered 921600 of 1280x720 pixels and matched its CPU reference
+  exactly. The Android default export launches `gl_compatibility`, so reaching
+  the GPU rows there requires `--rendering-method=mobile`; without it the
+  scene correctly verdicts `expected_unsupported` on device too.
+
+  The scene embeds its compute source as a string rather than loading a
+  `res://` `.glsl`. A `.glsl` has a Godot importer, so it is only present in an
+  exported APK once the editor import step has run and its `.import` file is
+  committed, and `include_filter` does not pick up a raw copy either. Embedding
+  removes that dependency and makes the scene behave identically on both
+  targets.
+- **Where the cost actually is, measured.** Scene 74 times a cold `to_image()`,
+  then the first `get_compute_texture()`, then a warm `to_image()`. Windows,
+  mobile renderer, 1280x720:
+
+  | Payload | cold `to_image()` | `get_compute_texture()` | implied upload |
+  | --- | --- | --- | --- |
+  | `CPU_PACKED` (RGBA) | 833 us | 1451 us | ~620 us |
+  | `CPU_PLANAR` (NV12) | 20024 us | 20646 us | ~620 us |
+
+  The GPU upload is ~620 us regardless of payload kind, because the uploaded
+  RGBA is the same size either way. The planar -> RGBA conversion is ~20 ms and
+  runs on every call, since no converted image is cached. So for a planar
+  capture the upload is about **3%** of producing a compute texture and the CPU
+  conversion is about **97%**.
+
+  Scene 74 runs both payload kinds in one pass with no command-line knob --
+  phase 1 on the default profile (packed), then phase 2 after switching the
+  device still profile to NV12 (planar) -- so both are covered wherever the
+  scene runs, including Android, whose ExtraArgs translator whitelists a fixed
+  set and rejects scene-specific flags.
+
+  Native-plane figures, plane 0 of a 1280x720 member:
+
+  | Target | payload | cold `to_image()` | plane 0 produced | planes |
+  | --- | --- | --- | --- | --- |
+  | Windows | packed | 846 us | 1317 us | 1 |
+  | Windows | NV12 | 19733 us | **467 us** | 2 |
+  | Android | packed | 2341 us | 3129 us | 1 |
+  | Android | NV12 | 5007 us | **350 us** | 2 |
+
+  Those figures are what an RGBA-converting implementation cost, and are kept
+  because they show where the cost actually sat: a GPU-resident camera buffer
+  would have removed the 620 us and left the 20 ms untouched. Exposing native
+  planes removes the 20 ms instead. Measured after that change, same capture and
+  renderer, plane 0 of a 1280x720 NV12 member is produced in **475 us** against
+  20646 us -- about 43x -- and the member reports 2 planes. A packed member is
+  unchanged at ~1334 us for its single plane, and a GPU-resident member wraps in
+  ~54 us with no upload at all.
+
+  A first attempt measured 102 ms for the planar `get_compute_texture()` call
+  when it was the first access to that member. Calling `to_image()` first makes
+  that figure collapse to ~20 ms, so the excess was first-touch cost on the
+  member -- retained-access calibration performing its own probe conversions --
+  and not attributable to this operation. Recorded because the raw first-call
+  number is misleading if quoted on its own.
+- The READY row is implemented and exercised, but only from Synthetic. Scene 74
+  run with `--cambang-synth-producer-output-form=gpu_only` under the mobile
+  renderer reports support READY, returns the GPU wrapper class rather than an
+  `ImageTexture`, and records **zero** uploads -- the already-GPU-resident
+  backing is wrapped and no pixels move. That is the zero-copy premise
+  demonstrated, on Synthetic only; both platform providers still declare
+  CPU-only capture backing, so no real device can reach this row.
+- What the content cross-check proves differs by row, and the scene does not
+  distinguish the two. On the EXPENSIVE row the compute texture and the
+  `to_image()` reference derive from the same retained CPU payload, so a match
+  proves the upload was faithful. On the READY row the compute texture is the
+  retained GPU backing while `to_image()` is satisfied from whatever CPU route
+  is available for that member, so a match proves those two agree. Which CPU
+  route served it there has not been checked.
+- Core already retains a per-member GPU backing handle and a neutral descriptor
+  for it (`CoreCaptureResultData::ImageMemberData::retained_gpu_backing` and
+  `retained_gpu_backing_descriptor`, `src/core/core_result_store.h`), and
+  already counts its footprint in the capture byte budget
+  (`effective_member_bytes`, `src/core/core_result_store.cpp`). Today that
+  backing's only use at the result seam is as a readback source for
+  `to_image_member()` when no CPU sidecar is current
+  (`src/godot/cambang_capture_result.cpp`).
+- A GPU-primary capture posture is reachable only from `SyntheticProvider`.
+  Both platform providers declare no GPU capture backing capability
+  (`capture_backing_capabilities` returns CPU-only in
+  `src/imaging/platform/android/camera2_camera_provider.cpp` and
+  `src/imaging/platform/windows/winrt_camera_provider.cpp`), so Core's capture
+  Backing Plan evaluation cannot select a GPU posture on real hardware. The
+  `EXPENSIVE` CPU-upload row of the table above is therefore the only row
+  reachable on any currently supported device.
+- **The same holds for streams, and no GPU-primary path has ever run against
+  real camera data.** `stream_backing_capabilities` also returns CPU-only from
+  both platform providers (`{true, false, false}` in
+  `src/imaging/platform/android/camera2_camera_provider.cpp` and
+  `src/imaging/platform/windows/winrt_camera_provider.cpp`), so
+  `SyntheticProvider` is the only producer in the tree that ever sets
+  `primary_backing_kind = ProducerBackingKind::GPU`, on either surface. The
+  consequence is worth stating plainly: the whole GPU-primary tier -- the
+  retained backing descriptor, the display bridge, and the `READY`
+  compute-texture row that wraps rather than uploads -- has only ever executed
+  against Synthetic frames. That `READY` row is the capture surface's (11.6.1);
+  the stream surface deliberately has none, for the reason given in 11.6.2. Scene 870's `gpu_only` producer output form is a
+  synthetic-only knob, and the matrix runner's `-ProviderOutputForms` axis
+  cannot drive a platform-backed provider into it.
+- **On Android the bytes arrive in GPU-capable memory and are copied out of
+  it.** Every AImageReader buffer is an AHardwareBuffer allocation, but the
+  caller's stream and the still both open the no-usage constructor
+  (`AImageReader_new(..., AIMAGE_FORMAT_YUV_420_888, ...)`) and are read
+  through `AImage_getPlaneData` and copied into provider heap slots.
+  `AImage_getHardwareBuffer` is never called, so no GPU-importable handle
+  leaves the provider. The machinery is not absent: the *pilot* stream already
+  opens `AImageReader_newWithUsage(..., AIMAGE_FORMAT_PRIVATE,
+  AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE, ...)` under an API-26 availability
+  guard, and those frames are counted and deleted without a plane being read
+  (`src/imaging/platform/android/camera2_camera_provider.cpp`). WinRT is
+  further from a GPU route: its pixels arrive as a `SoftwareBitmap` read via
+  `IMemoryBufferByteAccess`, and the provider references no D3D or DXGI
+  interface at all.
+- The descriptor can distinguish a linear backing from an opaque external one
+  and can declare that display or import costs real work
+  (`GpuBackingLayoutKind`, `display_requires_import`,
+  `src/imaging/api/provider_contract_datatypes.h`). No producer sets the opaque
+  form yet.
+- **The RD-RID route is settled.** `Texture2D.get_rid()` returns a
+  RenderingServer texture RID on every CamBANG-provided display object, and the
+  single route to the underlying RenderingDevice texture is
+  `RenderingServer.texture_get_rd_texture(tex.get_rid())`. A Capture Compute
+  Texture accessor is expected to satisfy the same route rather than introduce
+  a second one.
+
+  This previously did not hold. `DeferredDisplayTexture2DRD` returned the
+  RenderingDevice RID from `_get_rid()` -- a different RID space -- which
+  drawing never noticed, because its `_draw*` overrides delegate to the
+  `Texture2DRD` and never resolve a RID. It now returns the delegate's
+  RenderingServer RID (`src/godot/synthetic_gpu_backing_bridge.cpp`). The
+  CPU-backed wrapper was never affected: it creates its texture with
+  `RenderingServer::texture_2d_create()`, so its RID was already in the right
+  space (`src/godot/cambang_stream_result_internal.cpp`).
+
+  Verified in scene 70 (`_verify_display_view_rid_route`), which asserts the
+  route on whichever wrapper the run produces and reports the class it saw.
+  Observed: `DeferredDisplayTexture2DRD` and `LiveCpuDisplayTexture2D` both
+  resolve to distinct, valid RD RIDs under the mobile renderer, and under
+  Compatibility the absence of a RenderingDevice is reported rather than
+  treated as a failure. With the fix reverted the same assertion fails with
+  `rd_rid=0`.
+
+### 11.6.2 Stream Compute Texture
+
+The stream counterpart of 11.6.1. It is **additional to** `get_display_view()`,
+not a replacement: the two answer different needs and coexist on the same
+result.
+
+`CamBANGStreamResult.can_get_compute_texture()`,
+`get_compute_texture_plane_count()`, `get_compute_texture_plane(plane_index)`,
+`get_colorimetry()`.
+
+Planes are the frame's native planes and are never converted, for the reason
+measured in 4d12d67: for a planar frame the CPU conversion is ~97% of the cost
+of producing a texture and the upload ~3%. A caller wanting RGB converts in its
+own shader, where it also controls colour handling -- which is why the declared
+colorimetry is reported alongside, and why that caller carries an obligation
+the `to_image()` caller does not (6.2, "Who applies colorimetry, and who must
+apply it themselves").
+
+**Frozen, unlike the display view.** A plane belongs to one retained frame and
+never changes; the cache is keyed on `retained_frame_id`, so a newer frame
+yields distinct texture objects rather than the same object with new pixels.
+The live CPU display view is deliberately the opposite -- one texture per
+`stream_id`, refreshed in place. The freeze is what lets a caller pair pixels
+with that frame's acquisition mark; an aliased texture would give a mark from
+one frame against the pixels of another, with nothing in the API to reveal it.
+`get_result()` returns a fresh result per call, so polling still sees every
+frame: the freeze applies to a result a caller holds, not to the stream.
+
+**No READY row, unlike 11.6.1.** A stream's `retained_gpu_backing` is
+stream-owned live backing updated in place, not frozen per-frame GPU artifact
+identity, so wrapping it would return an aliased texture from a surface whose
+whole contract is that it is frozen. A GPU-only stream frame is therefore
+UNSUPPORTED here; a GPU-primary frame with a current CPU sidecar is served from
+the sidecar. This costs nothing today -- both platform providers advertise
+CPU-only -- and becomes a real gap when the GPU-fill payload path lands.
+
+**The renderer requirement is 11.6.1's, unchanged and for the same reason.**
+The surface needs a RenderingDevice, so under the Compatibility renderer it
+reports UNSUPPORTED -- the correct answer, not a failure, exactly as the
+capture matrix records for `Windows | headless, Compatibility` and as scene 70
+asserts for the display-view RID route. Compatibility is the reasonable default
+for a project to declare and the Android default export launches
+`gl_compatibility`, so exercising this surface requires
+`--rendering-method=mobile` just as the capture GPU rows do. A run without it
+verdicts `expected_unsupported`, which is why such a run verifies nothing about
+this surface and must not be read as covering it.
+
+**Measured 2026-08-27**, scene 572 under `--rendering-method=mobile`:
+
+| Target | Provider | Support | Planes | Delivered | Colorimetry |
+| --- | --- | --- | --- | --- | --- |
+| Quest 3 | platform | EXPENSIVE | 2 | NV21 | full / bt601 / bt709, declared |
+| Galaxy S20+ | platform | EXPENSIVE | 2 | NV21 | undeclared (pre-API-34) |
+| Hammer Construction 2 Thermal | platform | EXPENSIVE | 2 | NV21 | full / bt601 / bt709, declared |
+| Windows | synthetic | EXPENSIVE | 2 | NV12 | limited / bt601 / srgb, declared |
+
+Never CHEAP: producing a plane is a full-frame copy, and 11.2 gives that as the
+worked example of EXPENSIVE. Every platform row delivers NV21 while the
+synthetic row honours a pinned NV12 -- the family-selection behaviour of 6.3.0.
+
+Scene 572 is the verifier. It asserts capability honesty, plane count against
+the *delivered* format, plane materialisation and out-of-range refusal, the
+freeze in both directions (a held result keeps its textures; a newer frame
+produces distinct ones), requested-versus-delivered format, colorimetry
+stability across frames within a session, and -- on synthetic, which owns its
+own pixels -- that a declared range matches the actual luma statistics.
 
 ## 11.7 Access-cost evidence guardrail
 

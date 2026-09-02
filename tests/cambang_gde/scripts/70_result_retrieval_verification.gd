@@ -64,6 +64,7 @@ var _inspection_capture_poll_start_ms := 0
 
 var _device_instance_id := 0
 var _stream_id := 0
+var _display_view_rid_route_checked := false
 var _capture_device = null
 var _inspection_capture_device = null
 var _capture_profile_version_before_set := -1
@@ -675,7 +676,7 @@ func _try_verify_stream_result() -> void:
 		_step_ok("stream direct properties verified")
 
 		var stream_camera_facts: Dictionary = stream_result.get_camera_facts()
-		_require(_scene70_has_only_acquisition_timing(stream_camera_facts), "step %d FAIL: stream camera_facts must contain acquisition_timing only" % _step)
+		_require(_scene70_has_only_permitted_stream_camera_facts(stream_camera_facts), "step %d FAIL: stream camera_facts must carry acquisition_timing and no unexpected key; got %s" % [_step, str(stream_camera_facts.keys())])
 		_require(_scene70_has_canonical_acquisition_timing(stream_camera_facts.get("acquisition_timing", {})), "step %d FAIL: stream acquisition_timing shape invalid" % _step)
 		_step_ok("stream camera_facts acquisition_timing verified")
 
@@ -732,6 +733,14 @@ func _try_verify_stream_result() -> void:
 
 	var device = CamBANGServer.get_device(_device_instance_id)
 	_require(device != null, "step %d FAIL: CamBANGServer.get_device() returned null" % _step)
+	# _require() records the failure and returns; it does not halt _process, so
+	# the next line would dereference the null it just reported. Any earlier
+	# failure in this scene tears the server down, which is exactly when
+	# get_device() starts returning null -- so a genuine assertion failure was
+	# followed by a SCRIPT ERROR here, and the runner then classified the run
+	# script_parse_load_failure instead of reporting the assertion that fired.
+	if device == null:
+		return
 	_require(device.get_class() == "CamBANGDevice", "step %d FAIL: get_device() must return CamBANGDevice" % _step)
 	if not _device_seam_verified:
 		_step_ok("device seam verified")
@@ -1080,8 +1089,43 @@ func _format_fixed_fact_lines(lines: Array) -> String:
 	return "\n".join(normalized)
 
 
-func _scene70_has_only_acquisition_timing(facts: Dictionary) -> bool:
-	return facts.keys().size() == 1 and facts.has("acquisition_timing")
+# This asserted "acquisition_timing only" until the device-scoped four were
+# approved onto this surface (2026-08-27). Updated rather than removed: the
+# point was never the count, it was that no UNEXPECTED key appears, and that
+# still holds. acquisition_timing remains required; the four are permitted
+# and individually optional, since a provider that does not report one must
+# omit it rather than invent a value.
+func _scene70_has_only_permitted_stream_camera_facts(facts: Dictionary) -> bool:
+	# Widened 2026-08-29 when the device-keyed tiers began resolving for stream
+	# frames too, and again once FrameView carried the per-image record: a
+	# stream can now carry anything a capture can, so every fact name is
+	# permitted and this stays an unexpected-KEY test only.
+	#
+	# realized_image_transform was excluded here on the reasoning that it could
+	# never reach a stream. That was wrong -- a provider may set it on a
+	# delivered frame. What is actually invariant is its PROVENANCE: no
+	# external source may assert what a provider did to its own pixels, so that
+	# is what is checked instead of excluding the key.
+	const PERMITTED_DEVICE_SCOPED := ["facing", "camera_nature", "sensor_orientation_degrees", "pose",
+		"intrinsics", "distortion", "focus_state", "exposure_time",
+		"sensor_sensitivity_iso", "aperture_f_number", "focal_length_mm",
+		"realized_image_transform",
+		# Added 2026-08-30 with the delivered-image calibration surface: the
+		# calibration a caller builds a projection from, and the region linking
+		# it back to the sensor frame it was derived from.
+		"intrinsics_delivered", "delivered_image_region"]
+	if not facts.has("acquisition_timing"):
+		return false
+	for key in facts.keys():
+		var k := str(key)
+		if k == "acquisition_timing":
+			continue
+		if not PERMITTED_DEVICE_SCOPED.has(k):
+			return false
+	if facts.has("realized_image_transform"):
+		if str((facts["realized_image_transform"] as Dictionary).get("origin", "")) == "user_supplied":
+			return false
+	return true
 
 
 func _scene70_has_canonical_acquisition_timing(timing: Dictionary) -> bool:
@@ -1368,6 +1412,7 @@ func _ensure_stream_panel_display_view_bound(stream_result = null, force_rebind:
 	var stream_display_view = latest_stream_result.get_display_view()
 	if not (stream_display_view is Texture2D):
 		return
+	_verify_display_view_rid_route(stream_display_view)
 	var current_texture = _stream_texture_rect.texture
 	if force_rebind or current_texture == null or current_texture != stream_display_view:
 		_stream_texture_rect.texture = stream_display_view
@@ -1377,6 +1422,39 @@ func _ensure_stream_panel_display_view_bound(stream_result = null, force_rebind:
 		"stream_id=%d" % latest_stream_result.get_stream_id(),
 		"(live display view bound)",
 	])
+
+
+# Texture2D.get_rid() must be a RenderingServer texture RID, whichever internal
+# path produced the view. The GPU-backed wrapper used to return the
+# RenderingDevice RID from rd->texture_create() instead, which drawing never
+# noticed because the _draw* overrides bypass the RID entirely -- but a shader
+# parameter or a direct RenderingServer call would have received an identifier
+# from the wrong RID space.
+#
+# This also pins the one route a caller has to the underlying RD texture:
+# RenderingServer.texture_get_rd_texture(tex.get_rid()). It has to work the same
+# way for the GPU-backed wrapper and for a plain CPU-backed texture, because a
+# caller cannot see which one they were handed. Under Compatibility there is no
+# RenderingDevice at all, so an empty RD RID there is the correct answer rather
+# than a failure.
+func _verify_display_view_rid_route(display_view: Texture2D) -> void:
+	if _display_view_rid_route_checked:
+		return
+	_display_view_rid_route_checked = true
+	var rs_rid: RID = display_view.get_rid()
+	_require(rs_rid.is_valid(),
+		"display_view.get_rid() returned an invalid RID (class=%s)" % display_view.get_class())
+	if RenderingServer.get_rendering_device() == null:
+		_append_status("display_view RID route: rs_rid=%d (no RenderingDevice; RD route not applicable)"
+			% rs_rid.get_id())
+		return
+	var rd_rid: RID = RenderingServer.texture_get_rd_texture(rs_rid)
+	_require(rd_rid.is_valid(),
+		("display_view.get_rid() did not resolve to an RD texture "
+		+ "(class=%s rs_rid=%d) -- get_rid() is not a RenderingServer texture RID")
+			% [display_view.get_class(), rs_rid.get_id()])
+	_append_status("display_view RID route: class=%s rs_rid=%d rd_rid=%d"
+		% [display_view.get_class(), rs_rid.get_id(), rd_rid.get_id()])
 
 
 func _on_capture_again_pressed() -> void:

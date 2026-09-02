@@ -280,6 +280,111 @@ platform_defined
 
 ---
 
+## 8A. Delivered-Image Calibration Overrides
+
+`intrinsics` (section 8) is anchored to whatever frame the camera measured it
+in, which on most hardware is a sensor array rather than the picture you
+receive. The delivered image is typically a crop of that frame, scaled to the
+stream or capture geometry. A caller working in image pixels — projecting a
+point, building a frustum, matching two views — needs the calibration expressed
+in the frame the pixels are actually in.
+
+Two optional camera-entry members describe that frame:
+
+- `intrinsics_delivered` — the calibration in delivered-image pixels;
+- `delivered_image_region` — the rectangle of the section 8 reference frame
+  that the delivered image covers.
+
+They are independent members. Supplying one does not imply or synthesise the
+other, and supplying either does not replace `intrinsics`; a description may
+carry any combination of the three. Each overrides only the fact it names.
+
+### 8A.1 `intrinsics_delivered`
+
+An atomic record with the fields and rules of section 8, with one difference:
+
+- `coordinate_domain` is **optional**, and when present must be exactly
+  `delivered_image`;
+- `platform_defined_domain` is forbidden.
+
+The domain is fixed rather than stated because the key already names it. A
+delivered-image calibration labelled with a sensor array would be
+self-contradictory, so the document is not given the opportunity to say it; such
+a document is rejected rather than silently reinterpreted.
+
+`reference_width_px` and `reference_height_px` remain required, and here they
+are the delivered image's own dimensions. They are what makes the record
+checkable against a picture: a consumer can tell whether the calibration
+describes the image in hand or a differently sized one.
+
+### 8A.2 `delivered_image_region`
+
+An atomic record.
+
+Fields:
+
+- required `source`
+- required `left`
+- required `top`
+- required `width`
+- required `height`
+- required `coordinate_domain`
+- optional `platform_defined_domain`
+
+Units and rules:
+
+- all four geometry fields are pixels in the stated coordinate domain;
+- `left` and `top` are non-negative integers; `width` and `height` are positive
+  integers — a zero-extent region is rejected rather than accepted as empty;
+- `coordinate_domain` is required and takes any token from section 8, including
+  `platform_defined` with its accompanying `platform_defined_domain`;
+- the region is expressed in the frame it names, not in delivered-image pixels,
+  except in the degenerate case where a provider's calibration is already
+  anchored to the delivered image and the region is the whole of it.
+
+The region is required rather than optional because a rectangle without a frame
+of reference cannot be used for anything. It is what turns two calibrations into
+a relationship instead of two unrelated numbers.
+
+### 8A.3 Resulting provenance
+
+Both records carry `source` and are surfaced with the corresponding `origin`,
+exactly as every other fact is. A described value replaces the provider's
+report, so `origin` becomes `user_supplied` for the member described and stays
+whatever the provider gave for the members that were not.
+
+This is the practical use: where a camera reports a plainly wrong calibration —
+a principal point of exactly `(0, 0)` alongside credible focal lengths has been
+observed on shipping hardware — a description corrects the delivered-image
+calibration without falsifying the sensor-domain record the device reported.
+
+### 8A.4 Example
+
+```json
+{
+  "camera_id": "0",
+  "intrinsics_delivered": {
+    "source": "user_supplied",
+    "focal_length_x_px": 433.66,
+    "focal_length_y_px": 433.66,
+    "principal_point_x_px": 318.57,
+    "principal_point_y_px": 240.11,
+    "reference_width_px": 640,
+    "reference_height_px": 480
+  },
+  "delivered_image_region": {
+    "source": "user_supplied",
+    "left": 0,
+    "top": 160,
+    "width": 1280,
+    "height": 960,
+    "coordinate_domain": "android_sensor_pre_correction_active_array"
+  }
+}
+```
+
+---
+
 ## 9. Atomic Distortion Record
 
 `distortion` is an atomic record.
@@ -450,6 +555,80 @@ Rules:
 
 ---
 
+## 11A. Supported Profile Constraints
+
+`supported_stream_profiles` and `supported_capture_profiles` restrict the
+configurations a camera is permitted to advertise. Each is a record of a
+`source` and a `profiles` array, and each profile carries `width`, `height` and
+`format` -- the four-character FourCC, which is the vocabulary the rest of the
+surface already uses.
+
+```json
+"supported_stream_profiles": {
+  "source": "user_supplied",
+  "profiles": [
+    { "width": 1280, "height": 720, "format": "NV12" }
+  ]
+}
+```
+
+These records differ from every other record in this document, and the
+difference is the whole of their meaning.
+
+### 11A.1 A constraint narrows; it never adds
+
+Every other ADC record SUPPLIES a fact: it stands in where the provider is
+silent, or overrides what the provider said. A profile constraint does neither.
+Core intersects it with what the provider enumerates:
+
+- a configuration named here AND advertised by the device is kept;
+- a configuration named here but NOT advertised by the device is **dropped**;
+- a configuration advertised by the device but not named here is **removed**.
+
+A description therefore cannot invent a configuration the hardware will refuse.
+That asymmetry is deliberate: an incorrect fact misdescribes a camera, but an
+invented configuration produces a request the device rejects at the moment a
+caller tries to use it, far from the document that caused it.
+
+### 11A.2 A constraint may not describe absent hardware
+
+A provider answers one of three things for an endpoint: it is not mine, it is
+mine but I cannot enumerate it, or it is mine and here are its configurations.
+
+A constraint applies only to the second and third. For an endpoint the provider
+does not own, the constraint is ignored entirely and no catalog is reported --
+a description naming `camera_id` values that no provider owns does not bring
+those cameras into existence.
+
+Where the provider owns the camera but cannot enumerate it -- a backend that
+needs the camera open before it can list formats, for example -- the constraint
+stands on its own, and the resulting catalog is reported as `user_supplied`.
+That is the case these records exist to serve.
+
+### 11A.3 Resulting provenance
+
+The catalog a caller reads carries the origin of how it was produced, not the
+`source` written in this document:
+
+| Provider answer | Constraint | Reported origin |
+|---|---|---|
+| enumerated | absent | `native_reported` |
+| enumerated | present | `core_derived` |
+| cannot enumerate | present | `user_supplied` |
+| cannot enumerate | absent | no catalog reported |
+| not this provider | either | no catalog reported |
+
+`core_derived` is the honest answer when a constraint applies to a real
+enumeration: neither the device nor the document produced that list alone.
+
+### 11A.4 No frame rate
+
+A profile entry carries no rate. A description constrains WHICH configurations
+exist; a frame rate is something the device measures. Callers read `max_fps`
+from the catalog, where it is reported per configuration and omitted when the
+device states none.
+
+---
 ## 12. Absence Semantics
 
 ADC v2 uses omission for absence.

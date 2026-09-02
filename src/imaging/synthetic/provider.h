@@ -88,7 +88,41 @@ public:
     return synthetic_420_format_capabilities();
   }
 
+  // An authored catalog, identical for every synthetic endpoint. This is the
+  // reference answer: fixed, known, and therefore assertable without hardware.
+  ProviderProfileCatalog stream_profile_catalog(
+      const std::string& hardware_id) const override {
+    return is_known_hardware_id_(hardware_id) ? synthetic_profile_catalog()
+                                              : ProviderProfileCatalog{};
+  }
+
+  ProviderProfileCatalog capture_profile_catalog(
+      const std::string& hardware_id) const override {
+    return is_known_hardware_id_(hardware_id) ? synthetic_profile_catalog()
+                                              : ProviderProfileCatalog{};
+  }
+
  private:
+  // Geometries the synthetic renderer actually produces, paired with the two
+  // formats it advertises. max_fps is stated because virtual time makes it
+  // exact rather than derived.
+  static ProviderProfileCatalog synthetic_profile_catalog() {
+    ProviderProfileCatalog catalog{};
+    catalog.availability = ProfileCatalogAvailability::ENUMERATED;
+    for (const auto& wh : {std::pair<uint32_t, uint32_t>{640u, 480u},
+                           std::pair<uint32_t, uint32_t>{1280u, 720u}}) {
+      for (const uint32_t fourcc : {FOURCC_RGBA, FOURCC_NV12}) {
+        ProviderProfileEntry entry{};
+        entry.width = wh.first;
+        entry.height = wh.second;
+        entry.format_fourcc = fourcc;
+        entry.max_fps = 30.0;
+        catalog.entries.push_back(entry);
+      }
+    }
+    return catalog;
+  }
+
   static ProducerFormatCapabilities synthetic_420_format_capabilities() noexcept {
     ProducerFormatCapabilities caps{};
     caps.add(FOURCC_RGBA);
@@ -431,7 +465,12 @@ private:
     std::vector<std::uint8_t> gpu_staging;
     std::shared_ptr<void> live_gpu_backing{};
     uint64_t live_gpu_backing_native_id = 0;
-    uint64_t live_gpu_backing_generation = 0;
+    // Provider-unique identity for the currently allocated live backing,
+    // minted fresh on every (re)create. Used as the descriptor's backing_id
+    // when no native id exists. It must not be a per-stream counter: the
+    // descriptor's identity contract is provider-scoped, and two streams each
+    // counting from one would collide in any descriptor-keyed cache.
+    uint64_t live_gpu_backing_identity = 0;
     uint32_t live_gpu_width = 0;
     uint32_t live_gpu_height = 0;
     uint32_t live_gpu_stride_bytes = 0;
@@ -466,9 +505,19 @@ private:
   uint32_t effective_endpoint_count_() const noexcept;
 
   uint64_t alloc_native_id_(NativeObjectType type);
+  uint64_t mint_gpu_backing_identity_();
   void emit_native_create_device_(const DeviceState& d);
   void emit_native_destroy_(uint64_t native_id);
   void emit_camera_static_facts_(const DeviceState& d);
+  // The authored per-image facts for one delivered image, shared by the
+  // capture path and the stream path so the two cannot describe the same
+  // virtual camera differently. Caller holds provider_state_mutex_.
+  ProviderCaptureImageFacts authored_image_facts_locked_(
+      uint64_t device_instance_id,
+      uint32_t width,
+      uint32_t height,
+      int32_t applied_exposure_compensation_milli_ev) const;
+
   void emit_capture_image_facts_(const CaptureRequest& request,
                                  uint32_t image_member_index,
                                  int32_t applied_exposure_compensation_milli_ev);
@@ -741,6 +790,10 @@ private:
   bool triage_nominal_path_banner_emitted_ = false;
 
   std::atomic<uint64_t> invalid_preset_requests_{0};
+  // Monotonic source of provider-unique GPU backing identities, shared by the
+  // stream and still-capture paths. Atomic because a capture job and a stream
+  // tick can mint concurrently on different threads.
+  std::atomic<uint64_t> next_gpu_backing_identity_{0};
 };
 
 } // namespace cambang

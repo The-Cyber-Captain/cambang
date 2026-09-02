@@ -1,5 +1,7 @@
 #include "core/adc_camera_description.h"
 
+#include "pixels/format/pixel_format_descriptor.h"
+
 #include <algorithm>
 #include <charconv>
 #include <cctype>
@@ -660,6 +662,146 @@ bool require_absent(const JsonValue& object, std::string_view name, LoadResult& 
   return true;
 }
 
+// A catalog constraint: the configurations a description permits this camera to
+// advertise. Format is the four-character CamBANG FourCC ("NV12", "RGBA"),
+// which is the vocabulary the rest of the surface already uses -- no separate
+// token table to keep in step with the format descriptors.
+//
+// max_fps is deliberately not accepted: it is informational, not part of a
+// profile's identity, and a description constrains WHICH configurations exist
+// rather than restating what the device measures.
+// The delivered-image calibration. Same shape as intrinsics, with the
+// coordinate domain fixed rather than stated: a delivered-image calibration
+// labelled with a sensor array would be self-contradictory, so the document is
+// not given the chance to say it.
+bool parse_intrinsics_delivered(const JsonValue& object,
+                                std::optional<SourcedFact<Intrinsics>>& result,
+                                LoadResult& out) {
+  if (const JsonValue* domain = field(object, "coordinate_domain")) {
+    if (domain->type != JsonValue::Type::String ||
+        domain->string_value != "delivered_image") {
+      set_error(out, LoadErrorKind::Validation,
+                "intrinsics_delivered.coordinate_domain must be delivered_image");
+      return false;
+    }
+  }
+  std::optional<SourcedFact<Intrinsics>> parsed;
+  {
+    // parse_intrinsics requires a coordinate_domain; supply the fixed one so a
+    // document need not restate what the key already means.
+    JsonValue with_domain = object;
+    bool has_domain = false;
+    for (auto& kv : with_domain.object_value) {
+      if (kv.first == "coordinate_domain") has_domain = true;
+    }
+    if (!has_domain) {
+      JsonValue domain_value;
+      domain_value.type = JsonValue::Type::String;
+      domain_value.string_value = "delivered_image";
+      with_domain.object_value.emplace_back("coordinate_domain", std::move(domain_value));
+    }
+    if (!parse_intrinsics(with_domain, parsed, out)) return false;
+  }
+  result = std::move(parsed);
+  return true;
+}
+
+// The region of the sensor frame a delivered image covers.
+bool parse_delivered_image_region(
+    const JsonValue& object,
+    std::optional<SourcedFact<DeliveredImageRegion>>& result,
+    LoadResult& out) {
+  const JsonValue* source = field(object, "source");
+  const JsonValue* left = field(object, "left");
+  const JsonValue* top = field(object, "top");
+  const JsonValue* width = field(object, "width");
+  const JsonValue* height = field(object, "height");
+  if (!require_type(source, JsonValue::Type::String, "delivered_image_region.source", out) ||
+      !require_type(left, JsonValue::Type::Number, "delivered_image_region.left", out) ||
+      !require_type(top, JsonValue::Type::Number, "delivered_image_region.top", out) ||
+      !require_type(width, JsonValue::Type::Number, "delivered_image_region.width", out) ||
+      !require_type(height, JsonValue::Type::Number, "delivered_image_region.height", out)) {
+    return false;
+  }
+  FactOrigin origin = FactOrigin::UNKNOWN;
+  uint32_t l = 0, t = 0, w = 0, h = 0;
+  if (!parse_origin(*source, "delivered_image_region.source", origin, out) ||
+      !parse_uint32(*left, "delivered_image_region.left", l, out) ||
+      !parse_uint32(*top, "delivered_image_region.top", t, out) ||
+      !parse_uint32(*width, "delivered_image_region.width", w, out) ||
+      !parse_uint32(*height, "delivered_image_region.height", h, out)) {
+    return false;
+  }
+  CoordinateDomain domain;
+  if (!parse_coordinate_domain(object, domain, out)) return false;
+  const auto checked = DeliveredImageRegion::create(l, t, w, h, std::move(domain));
+  if (!checked) {
+    set_error(out, LoadErrorKind::Validation, "delivered_image_region is invalid");
+    return false;
+  }
+  result = SourcedFact<DeliveredImageRegion>{*checked, origin};
+  return true;
+}
+bool parse_profile_catalog(const JsonValue& object,
+                           const char* field_name,
+                           std::optional<ProviderProfileCatalog>& result,
+                           LoadResult& out) {
+  const JsonValue* source = field(object, "source");
+  const JsonValue* profiles = field(object, "profiles");
+  std::string prefix(field_name);
+  if (!require_type(source, JsonValue::Type::String, (prefix + ".source").c_str(), out) ||
+      !require_type(profiles, JsonValue::Type::Array, (prefix + ".profiles").c_str(), out)) {
+    return false;
+  }
+  FactOrigin origin = FactOrigin::UNKNOWN;
+  if (!parse_origin(*source, (prefix + ".source").c_str(), origin, out)) return false;
+
+  ProviderProfileCatalog catalog{};
+  catalog.availability = ProfileCatalogAvailability::ENUMERATED;
+  for (const JsonValue& item : profiles->array_value) {
+    if (item.type != JsonValue::Type::Object) {
+      set_error(out, LoadErrorKind::Validation, prefix + ".profiles entry is not an object");
+      return false;
+    }
+    const JsonValue* w = field(item, "width");
+    const JsonValue* h = field(item, "height");
+    const JsonValue* f = field(item, "format");
+    if (!require_type(w, JsonValue::Type::Number, (prefix + ".profiles[].width").c_str(), out) ||
+        !require_type(h, JsonValue::Type::Number, (prefix + ".profiles[].height").c_str(), out) ||
+        !require_type(f, JsonValue::Type::String, (prefix + ".profiles[].format").c_str(), out)) {
+      return false;
+    }
+    if (f->string_value.size() != 4) {
+      set_error(out, LoadErrorKind::Validation,
+                prefix + ".profiles[].format must be a four-character FourCC");
+      return false;
+    }
+    ProviderProfileEntry entry{};
+    if (!parse_uint32(*w, prefix + ".profiles[].width", entry.width, out) ||
+        !parse_uint32(*h, prefix + ".profiles[].height", entry.height, out)) {
+      return false;
+    }
+    entry.format_fourcc = make_fourcc(f->string_value[0], f->string_value[1],
+                                      f->string_value[2], f->string_value[3]);
+    if (entry.width == 0 || entry.height == 0) {
+      set_error(out, LoadErrorKind::Validation,
+                prefix + ".profiles[] width and height must be non-zero");
+      return false;
+    }
+    // Rejected rather than carried: a format CamBANG cannot name could never
+    // match a provider entry, so it would silently narrow the catalog to
+    // nothing instead of failing where the mistake is.
+    if (!is_known_pixel_format(entry.format_fourcc)) {
+      set_error(out, LoadErrorKind::Validation,
+                prefix + ".profiles[].format names no CamBANG pixel format");
+      return false;
+    }
+    catalog.entries.push_back(entry);
+  }
+  (void)origin;  // provenance of the RESULT is decided by Core, not by the input
+  result = std::move(catalog);
+  return true;
+}
 bool parse_pose(const JsonValue& object, const std::string& camera_id, std::optional<SourcedFact<CameraPose>>& result, LoadResult& out) {
   const JsonValue* source = field(object, "source");
   const JsonValue* reference_kind = field(object, "reference_kind");
@@ -845,8 +987,24 @@ bool parse_camera(const JsonValue& value, ExternalCameraDescriptionEntry& entry,
   if (const JsonValue* intrinsics = field(value, "intrinsics")) {
     if (intrinsics->type != JsonValue::Type::Object || !parse_intrinsics(*intrinsics, entry.facts.intrinsics, out)) return false;
   }
+  if (const JsonValue* id = field(value, "intrinsics_delivered")) {
+    if (id->type != JsonValue::Type::Object ||
+        !parse_intrinsics_delivered(*id, entry.facts.intrinsics_delivered, out)) return false;
+  }
+  if (const JsonValue* dir = field(value, "delivered_image_region")) {
+    if (dir->type != JsonValue::Type::Object ||
+        !parse_delivered_image_region(*dir, entry.facts.delivered_image_region, out)) return false;
+  }
   if (const JsonValue* distortion = field(value, "distortion")) {
     if (distortion->type != JsonValue::Type::Object || !parse_distortion(*distortion, entry.facts.distortion, out)) return false;
+  }
+  if (const JsonValue* sp = field(value, "supported_stream_profiles")) {
+    if (sp->type != JsonValue::Type::Object ||
+        !parse_profile_catalog(*sp, "supported_stream_profiles", entry.stream_profiles, out)) return false;
+  }
+  if (const JsonValue* cp = field(value, "supported_capture_profiles")) {
+    if (cp->type != JsonValue::Type::Object ||
+        !parse_profile_catalog(*cp, "supported_capture_profiles", entry.capture_profiles, out)) return false;
   }
   if (const JsonValue* pose = field(value, "pose")) {
     if (pose->type != JsonValue::Type::Object || !parse_pose(*pose, entry.camera_id, entry.facts.pose, out)) return false;

@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/74_capture_compute_texture_verify.gd" id="1_script"]
+
+[node name="74_CaptureComputeTextureVerify" type="Node"]
+script = ExtResource("1_script")

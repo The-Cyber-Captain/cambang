@@ -298,6 +298,15 @@ public:
   godot::Error set_device_warm_hold_ms(uint64_t device_instance_id, uint32_t warm_hold_ms);
   godot::Error set_endpoint_warm_hold_ms_startup_intent(const godot::String& hardware_id, uint32_t warm_hold_ms);
   godot::Dictionary get_device_still_capture_profile(uint64_t device_instance_id) const;
+  // Endpoint-scoped, for discovery: a caller building a settings screen reads
+  // these straight after enumerate_devices(), without instantiating a device
+  // per camera to ask a question that needs none. CamBANGDevice carries the
+  // same pair as a convenience for a caller that already holds one.
+  godot::Dictionary get_supported_stream_profiles(const godot::String& hardware_id) const;
+  godot::Dictionary get_supported_capture_profiles(const godot::String& hardware_id) const;
+
+  godot::Dictionary get_device_profile_catalog(const godot::String& hardware_id,
+                                               bool want_capture) const;
   bool get_endpoint_capture_template_profile(const godot::String& hardware_id, CaptureProfile& out_profile) const;
   godot::Error engage_endpoint_handle(const godot::String& hardware_id, const godot::String& display_name);
   godot::Error disengage_endpoint_handle(const godot::String& hardware_id);
@@ -382,7 +391,12 @@ private:
   godot::Ref<CamBANGRig> _canonical_rig_for_id_(uint64_t rig_id) const;
   void register_tracked_device_wrapper_(uint64_t wrapper_object_id);
   void register_tracked_rig_wrapper_(uint64_t wrapper_object_id);
-  void register_tracked_stream_wrapper_(uint64_t wrapper_object_id);
+  void register_tracked_stream_wrapper_(uint64_t wrapper_object_id, uint64_t stream_id);
+  // Stops and destroys a stream whose Godot handle was collected without
+  // destroy() being called. Without this the Core stream keeps running and
+  // holding camera resources until the runtime stops, because
+  // try_destroy_stream() has no other caller at this boundary.
+  void reap_orphaned_stream_(uint64_t stream_id);
 
   static CamBANGServer* singleton_;
 
@@ -559,7 +573,10 @@ private:
   std::unordered_map<uint64_t, godot::String> direct_stream_hardware_id_by_stream_id_;
   std::unordered_map<uint64_t, uint64_t> latest_capture_id_by_device_instance_id_;
   std::unordered_set<uint64_t> tracked_device_wrapper_object_ids_;
-  std::unordered_set<uint64_t> tracked_stream_wrapper_object_ids_;
+  // wrapper object id -> stream id. A map rather than a set because when
+  // the wrapper is collected the object is already gone, so its stream id
+  // has to have been recorded beforehand to reap the stream it owned.
+  std::unordered_map<uint64_t, uint64_t> tracked_stream_wrapper_object_ids_;
   std::unordered_set<uint64_t> tracked_rig_wrapper_object_ids_;
 
   // Public capture ids (2.2). Minted at the boundary at trigger time; Core

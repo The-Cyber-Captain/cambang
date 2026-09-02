@@ -23,6 +23,16 @@ param(
     "Failed to load script",
     "(?im)^\s*FAIL(?:ED)?\b"
 ),
+    # Native aborts, matched against the RAW device logcat rather than
+    # $sceneFailureText. That text is filtered to godot-tag lines only, so
+    # F/libc and F/DEBUG never reach $HardFailurePatterns -- which is why a
+    # SIGABRT inside the provider classified only as "missing_harness_verdict"
+    # and read as harness noise. Scoped to F/libc so another process crashing
+    # during the run does not fail ours.
+    [string[]]$NativeCrashPatterns = @(
+    "(?m)^.*F/libc.*Fatal signal \d+ \(SIG",
+    "(?m)^.*F/libc.*FORTIFY:"
+),
     [int]$TimeoutSec = 0,
     [string]$AndroidSdkRoot = "",
     [string]$AdbExe = "",
@@ -2521,6 +2531,10 @@ else {
 }
 $scriptParseLoadFailureObserved = Test-PatternMatch -Text $sceneFailureText -Patterns $scriptParseLoadFailurePatterns
 $hardFailureObserved = Test-PatternMatch -Text $sceneFailureText -Patterns $HardFailurePatterns
+$nativeCrashObserved = $false
+if ($TargetOs -eq "android" -and -not [string]::IsNullOrWhiteSpace($deviceLogcatText)) {
+    $nativeCrashObserved = Test-PatternMatch -Text $deviceLogcatText -Patterns $NativeCrashPatterns
+}
 
 if ($null -eq $processExitCode -or [string]::IsNullOrWhiteSpace([string]$processExitCode)) {
     $processExitCode = $null
@@ -2550,6 +2564,14 @@ elseif ($hardFailureObserved) {
     $verdictReasons.Add("hard_failure_pattern")
 }
 
+# Recorded BEFORE the harness switch on purpose: both the "ok" and
+# "expected_unsupported" branches below require an empty reason list, so a
+# process that crashed cannot be classified as either, whatever verdict line it
+# managed to print before dying.
+if ($nativeCrashObserved) {
+    $verdictReasons.Add("native_crash")
+}
+
 if (-not $harnessVerdictObserved) {
     $verdictReasons.Add("missing_harness_verdict")
     $bucket = "error"
@@ -2577,6 +2599,11 @@ else {
             if ($verdictReasons.Count -eq 0) {
                 $bucket = "expected_unsupported"
                 $finalVerdict = "EXPECTED_UNSUPPORTED"
+                # Added AFTER the count test above, which is what selects this
+                # bucket. Without it REASONS prints empty and an unsupported run
+                # is indistinguishable from a passing one -- which is how 572
+                # reported "no_phase_verified" while looking green.
+                $verdictReasons.Add("harness_reason=$harnessReason")
             }
             else {
                 $bucket = "error"

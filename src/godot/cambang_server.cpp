@@ -1,5 +1,8 @@
 #include "godot/cambang_server.h"
+#include "godot/camera_fact_convert.h"
 #include "godot/cambang_capture_result.h"
+#include "godot/capture_compute_texture.h"
+#include "godot/stream_compute_texture.h"
 #include "godot/cambang_device.h"
 #include "godot/cambang_stream.h"
 #include "godot/cambang_stream_result.h"
@@ -249,7 +252,8 @@ static bool parse_picture_definition(const godot::Variant& value,
   if (!stream_definition_has_only_keys(
           picture, {"preset", "seed", "generator_fps_num", "generator_fps_den",
                     "overlay_frame_index_offsets", "overlay_moving_bar",
-                    "solid_r", "solid_g", "solid_b", "solid_a", "checker_size_px"})) {
+                    "solid_r", "solid_g", "solid_b", "solid_a", "checker_size_px",
+                    "output_range"})) {
     return false;
   }
   out_picture = template_picture;
@@ -264,6 +268,24 @@ static bool parse_picture_definition(const godot::Variant& value,
       return false;  // unknown preset token
     }
     out_picture.preset = info->preset;
+  }
+  // Range of the YUV a generator emits, and therefore what it declares. Token
+  // spelling matches what get_colorimetry() reports back ("limited"/"full"),
+  // so a caller sets and reads the same vocabulary. Platform providers ignore
+  // this: a camera reports the range its hardware produced.
+  if (picture.has("output_range")) {
+    const godot::Variant rv = picture.get("output_range", godot::Variant());
+    if (rv.get_type() != godot::Variant::STRING) {
+      return false;
+    }
+    const godot::String token = rv;
+    if (token == godot::String("limited")) {
+      out_picture.synthetic_output_range = ColorRange::LIMITED;
+    } else if (token == godot::String("full")) {
+      out_picture.synthetic_output_range = ColorRange::FULL;
+    } else {
+      return false;  // UNSPECIFIED is not selectable: a generator always knows
+    }
   }
   if (picture.has("seed") &&
       !parse_stream_definition_u32_field(picture, "seed", out_picture.seed, false)) {
@@ -1459,6 +1481,16 @@ static const char* try_destroy_stream_status_name(TryDestroyStreamStatus s) noex
   return "Unknown";
 }
 
+static const char* try_create_stream_status_name(TryCreateStreamStatus s) noexcept {
+  switch (s) {
+    case TryCreateStreamStatus::OK: return "OK";
+    case TryCreateStreamStatus::Busy: return "Busy";
+    case TryCreateStreamStatus::InvalidArgument: return "InvalidArgument";
+    case TryCreateStreamStatus::ProviderRejected: return "ProviderRejected";
+  }
+  return "Unknown";
+}
+
 static const char* try_start_stream_status_name(TryStartStreamStatus s) noexcept {
   switch (s) {
     case TryStartStreamStatus::OK: return "OK";
@@ -1663,6 +1695,8 @@ godot::Error CamBANGServer::_start_with_provider_config(
   has_latest_export_ = false;
   has_godot_counters_ = false;
   CamBANGStreamResult::clear_live_stream_cpu_display_views();
+  clear_capture_compute_texture_cache();
+  clear_stream_compute_texture_cache();
   result_access_cost_evidence::clear();
   _clear_live_retained_result_access_calibration_state_();
 
@@ -1701,6 +1735,8 @@ godot::Error CamBANGServer::_start_with_provider_config(
     direct_stream_hardware_id_by_stream_id_.clear();
     latest_capture_id_by_device_instance_id_.clear();
     CamBANGStreamResult::clear_live_stream_cpu_display_views();
+  clear_capture_compute_texture_cache();
+  clear_stream_compute_texture_cache();
     result_access_cost_evidence::clear();
     _clear_live_retained_result_access_calibration_state_();
 
@@ -1781,6 +1817,8 @@ void CamBANGServer::stop() {
     provider_.reset();
   }
   CamBANGStreamResult::clear_live_stream_cpu_display_views();
+  clear_capture_compute_texture_cache();
+  clear_stream_compute_texture_cache();
   synthetic_gpu_backing_drain_render_releases_before_stop();
   drain_live_cpu_display_bridge_before_stop();
   result_access_cost_evidence::clear();
@@ -2117,15 +2155,22 @@ godot::Error CamBANGServer::disengage_endpoint_handle(const godot::String& hardw
 godot::Ref<CamBANGStream> CamBANGServer::create_stream_for_endpoint_hardware_id(
     const godot::String& hardware_id,
     const godot::Variant& definition) {
+  // Every refusal below names itself. This returns a Ref rather than an
+  // Error, so a bare null is the caller's only signal; without these the
+  // seven distinct reasons are indistinguishable and none is logged. The
+  // sibling start_direct_stream_handle() already reports this way.
   if (hardware_id.is_empty() || !is_public_boundary_ready_() || !provider_) {
+    ERR_PRINT("CamBANGServer: create_stream refused -- runtime is not started, or this handle has no hardware id.");
     return godot::Ref<CamBANGStream>();
   }
   const auto state_it = endpoint_lifecycle_by_hardware_id_.find(std::string(hardware_id.utf8().get_data()));
   if (state_it == endpoint_lifecycle_by_hardware_id_.end()) {
+    ERR_PRINT("CamBANGServer: create_stream refused -- no engaged endpoint for this hardware id; call engage() first.");
     return godot::Ref<CamBANGStream>();
   }
   const EndpointLifecycleState& state = state_it->second;
   if (state.device_instance_id == 0) {
+    ERR_PRINT("CamBANGServer: create_stream refused -- endpoint not engaged yet -- engage() can return ERR_BUSY and needs retrying across frames.");
     return godot::Ref<CamBANGStream>();
   }
 
@@ -2143,11 +2188,13 @@ godot::Ref<CamBANGStream> CamBANGServer::create_stream_for_endpoint_hardware_id(
           has_stream_profile,
           stream_picture,
           has_stream_picture)) {
+    ERR_PRINT("CamBANGServer: create_stream refused -- the stream definition could not be parsed: an unknown key, a wrong value type, or an unrecognised preset/output_range token.");
     return godot::Ref<CamBANGStream>();
   }
   // Reject a picture request the active provider cannot honour, rather than
   // silently ignoring it (per supports_stream_picture_updates()).
   if (has_stream_picture && !provider_->supports_stream_picture_updates()) {
+    ERR_PRINT("CamBANGServer: create_stream refused -- this provider does not accept a picture config; it reports what its hardware produced rather than being told.");
     return godot::Ref<CamBANGStream>();
   }
 
@@ -2163,12 +2210,20 @@ godot::Ref<CamBANGStream> CamBANGServer::create_stream_for_endpoint_hardware_id(
       has_stream_picture ? &stream_picture : nullptr,
       0);
   if (cs != TryCreateStreamStatus::OK) {
+    // ProviderRejected here is most often an unadvertised pixel format;
+    // Core rejects it deterministically rather than at the provider start
+    // gate. Busy means the core thread could not take the command.
+    ERR_PRINT(godot::vformat(
+        "CamBANGServer: create_stream refused by Core (%s) for hardware_id=%s.",
+        godot::String(try_create_stream_status_name(cs)), hardware_id));
     return godot::Ref<CamBANGStream>();
   }
   direct_stream_hardware_id_by_stream_id_[stream_id] = hardware_id;
   godot::Ref<CamBANGStream> out;
   out.instantiate();
   out->set_identity(const_cast<CamBANGServer*>(this), hardware_id, state.device_instance_id, stream_id);
+  // Zero when the caller pinned nothing; see CamBANGStream::get_requested_format.
+  out->set_requested_format(has_stream_profile ? stream_profile.format_fourcc : 0u);
   return out;
 }
 
@@ -2321,11 +2376,37 @@ void CamBANGServer::register_tracked_rig_wrapper_(uint64_t wrapper_object_id) {
   tracked_rig_wrapper_object_ids_.insert(wrapper_object_id);
 }
 
-void CamBANGServer::register_tracked_stream_wrapper_(uint64_t wrapper_object_id) {
+void CamBANGServer::reap_orphaned_stream_(uint64_t stream_id) {
+  if (stream_id == 0 || !is_public_boundary_ready_()) {
+    return;
+  }
+  const auto it = direct_stream_hardware_id_by_stream_id_.find(stream_id);
+  if (it == direct_stream_hardware_id_by_stream_id_.end()) {
+    return;  // Already destroyed through the normal path.
+  }
+  // Stop before destroy: try_destroy_stream() refuses a started stream, and
+  // that refusal is what would otherwise leave this stream running forever.
+  (void)runtime_.try_stop_stream(stream_id);
+  const TryDestroyStreamStatus status = runtime_.try_destroy_stream(stream_id);
+  if (status == TryDestroyStreamStatus::OK) {
+    CamBANGStreamResult::remove_live_stream_cpu_display_view(stream_id);
+    direct_stream_hardware_id_by_stream_id_.erase(it);
+  }
+  // Reported rather than silent: a caller reaching here dropped its handle
+  // without stop()/destroy(), which works but is not the intended contract.
+  WARN_PRINT(godot::vformat(
+      "CamBANGServer: stream %d was reaped because its handle was released "
+      "without destroy(); call stop() then destroy(). Reap status: %s.",
+      static_cast<int64_t>(stream_id),
+      godot::String(try_destroy_stream_status_name(status))));
+}
+
+void CamBANGServer::register_tracked_stream_wrapper_(uint64_t wrapper_object_id,
+                                                    uint64_t stream_id) {
   if (wrapper_object_id == 0) {
     return;
   }
-  tracked_stream_wrapper_object_ids_.insert(wrapper_object_id);
+  tracked_stream_wrapper_object_ids_[wrapper_object_id] = stream_id;
   godot::Object* object = godot::ObjectDB::get_instance(wrapper_object_id);
   CamBANGStream* stream = godot::Object::cast_to<CamBANGStream>(object);
   if (!stream) {
@@ -2518,10 +2599,12 @@ void CamBANGServer::_refresh_tracked_wrapper_live_states_from_snapshot_() {
 
   for (auto it = tracked_stream_wrapper_object_ids_.begin();
        it != tracked_stream_wrapper_object_ids_.end();) {
-    godot::Object* object = godot::ObjectDB::get_instance(*it);
+    godot::Object* object = godot::ObjectDB::get_instance(it->first);
     CamBANGStream* stream = godot::Object::cast_to<CamBANGStream>(object);
     if (!stream) {
+      const uint64_t orphaned_stream_id = it->second;
       it = tracked_stream_wrapper_object_ids_.erase(it);
+      reap_orphaned_stream_(orphaned_stream_id);
       continue;
     }
     stream->_set_result_live_from_server_(
@@ -2545,7 +2628,7 @@ void CamBANGServer::_set_all_tracked_wrapper_live_states_false_() {
 
   for (auto it = tracked_stream_wrapper_object_ids_.begin();
        it != tracked_stream_wrapper_object_ids_.end();) {
-    godot::Object* object = godot::ObjectDB::get_instance(*it);
+    godot::Object* object = godot::ObjectDB::get_instance(it->first);
     CamBANGStream* stream = godot::Object::cast_to<CamBANGStream>(object);
     if (!stream) {
       it = tracked_stream_wrapper_object_ids_.erase(it);
@@ -3011,6 +3094,58 @@ bool CamBANGServer::get_endpoint_capture_template_profile(const godot::String& h
     out_profile.format_fourcc = FOURCC_RGBA;
   }
   return out_profile.width > 0 && out_profile.height > 0 && out_profile.format_fourcc != 0;
+}
+
+godot::Dictionary CamBANGServer::get_supported_stream_profiles(
+    const godot::String& hardware_id) const {
+  return get_device_profile_catalog(hardware_id, false);
+}
+
+godot::Dictionary CamBANGServer::get_supported_capture_profiles(
+    const godot::String& hardware_id) const {
+  return get_device_profile_catalog(hardware_id, true);
+}
+
+godot::Dictionary CamBANGServer::get_device_profile_catalog(const godot::String& hardware_id,
+                                                            bool want_capture) const {
+  godot::Dictionary out;
+  if (hardware_id.is_empty() || !is_public_boundary_ready_()) {
+    return out;
+  }
+  ResolvedProfileCatalog catalog{};
+  if (!runtime_.profile_catalog_for_server(
+          std::string(hardware_id.utf8().get_data()), want_capture, catalog)) {
+    return out;
+  }
+  // "profiles" is present only when the provider could enumerate. An empty
+  // array then means the device offers nothing, which is a different answer
+  // from this key being absent, and a caller acts on the difference.
+  if (!catalog.enumerated) {
+    return out;
+  }
+  godot::Array profiles;
+  for (const auto& entry : catalog.entries) {
+    // The profile is NESTED, and uses exactly the keys create_stream() accepts,
+    // so a caller hands entry["profile"] straight back with no translation.
+    // Flattening max_fps in beside them would either break that parser (its key
+    // list is deliberately strict) or blur a capability into a request:
+    // max_fps is what the device can do, target_fps_max is what you ask for,
+    // and those must not be confused.
+    godot::Dictionary profile;
+    profile["width"] = static_cast<int64_t>(entry.width);
+    profile["height"] = static_cast<int64_t>(entry.height);
+    profile["format_fourcc"] = static_cast<int64_t>(entry.format_fourcc);
+
+    godot::Dictionary p;
+    p["profile"] = profile;
+    // Omitted rather than zeroed when the provider cannot derive it: a zero
+    // frame rate would read as a measurement.
+    if (entry.max_fps) p["max_fps"] = *entry.max_fps;
+    profiles.push_back(p);
+  }
+  out["profiles"] = profiles;
+  out["origin"] = godot::String(camera_fact_convert::fact_origin_name(catalog.origin));
+  return out;
 }
 
 godot::Dictionary CamBANGServer::get_device_still_capture_profile(uint64_t device_instance_id) const {
@@ -4210,6 +4345,16 @@ godot::Variant CamBANGServer::get_backing_plan_evaluation_diagnostics() const {
 godot::Dictionary CamBANGServer::get_result_access_timing_evidence() const {
   godot::Dictionary d = result_access_cost_evidence::snapshot();
   d["capture_materializations"] = capture_materialization_stats();
+  d["capture_compute_textures"] = capture_compute_texture_metrics();
+  d["stream_compute_textures"] = stream_compute_texture_metrics();
+  // Live CPU display-view refresh counters. Sourced here rather than through
+  // get_synthetic_metrics_snapshot(), which returns nil on any non-synthetic
+  // provider -- a caller then reads an empty dictionary and every counter
+  // looks like a measured zero. These counters describe the shared display
+  // path and are meaningful on every provider, so they belong on the
+  // provider-agnostic evidence surface.
+  d["cpu_display_refresh"] =
+      CamBANGStreamResult::get_live_stream_cpu_display_metrics_snapshot();
   return d;
 }
 
@@ -4806,6 +4951,8 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_backing_plan_evaluation_diagnostics"), &CamBANGServer::get_backing_plan_evaluation_diagnostics);
   godot::ClassDB::bind_method(godot::D_METHOD("enumerate_devices"), &CamBANGServer::enumerate_devices);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device_for_hardware_id", "hardware_id"), &CamBANGServer::get_device_for_hardware_id);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_supported_stream_profiles", "hardware_id"), &CamBANGServer::get_supported_stream_profiles);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_supported_capture_profiles", "hardware_id"), &CamBANGServer::get_supported_capture_profiles);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device", "device_instance_id"), &CamBANGServer::get_device);
   godot::ClassDB::bind_method(godot::D_METHOD("get_rig", "rig_id"), &CamBANGServer::get_rig);
   godot::ClassDB::bind_method(godot::D_METHOD("create_rig", "devices"), &CamBANGServer::create_rig);

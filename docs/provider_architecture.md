@@ -174,6 +174,12 @@ A provider must support, where applicable:
 - create / destroy repeating stream
 - start / stop repeating stream
 - still-capture trigger where the provider advertises that capability
+- configurations that are actually accepted, where the provider advertises a
+  profile catalog: an advertised configuration is handed straight back by a
+  caller, so a provider that lists geometries it then refuses is worse than one
+  that lists none. Advertising a catalog at all is optional; see
+  `provider_implementation_brief.md` section 9A for the three answers a provider
+  may give and why the distinction between them is load-bearing.
 - patch / spec application through Core-validated flows
 - clean provider shutdown
 

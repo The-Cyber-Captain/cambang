@@ -101,6 +101,14 @@ public:
   ProducerFormatCapabilities capture_format_capabilities(
       const CaptureRequest& req) const noexcept override;
 
+  // Forwarded like every other contract call. Without this the broker's
+  // inherited default answers "cannot enumerate" for every provider behind it,
+  // which reads as device truth rather than as a missing forward.
+  ProviderProfileCatalog stream_profile_catalog(
+      const std::string& hardware_id) const override;
+  ProviderProfileCatalog capture_profile_catalog(
+      const std::string& hardware_id) const override;
+
   ProducerFormatCapabilities stream_parent_context_format_capabilities(
       uint64_t device_instance_id,
       uint64_t stream_id,
