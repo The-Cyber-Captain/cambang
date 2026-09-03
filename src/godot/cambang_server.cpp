@@ -2534,12 +2534,26 @@ void CamBANGServer::_emit_capture_completion_signals_() {
     // this matches at most one; the loop is over the tracked set because that
     // set is also where dead wrapper ids get reaped, and because a wrapper
     // constructed directly by a caller is not in the canonical maps.
-    for (auto it = tracked_device_wrapper_object_ids_.begin();
-         it != tracked_device_wrapper_object_ids_.end();) {
-      godot::Object* object = godot::ObjectDB::get_instance(*it);
+    //
+    // ITERATE A SNAPSHOT, NEVER THE CONTAINER. emit_signal() below runs
+    // arbitrary GDScript synchronously, and a handler that obtains a wrapper
+    // -- get_device(), get_endpoint(), create_stream(), a rig -- registers it
+    // into one of these tracked containers. They are unordered_set/map, where
+    // an insert may rehash and invalidate EVERY iterator, so walking the
+    // container across a signal emission is undefined behaviour. Copy the ids
+    // first, walk the copy, and apply removals afterwards. A wrapper
+    // registered during the pass is picked up by the next one, which costs
+    // nothing: register_tracked_*_wrapper_() already sets its live state at
+    // registration. Same precaution, same reason, as
+    // CamBANGStreamResult::refresh_live_stream_cpu_display_views().
+    const std::vector<uint64_t> device_wrapper_ids(
+        tracked_device_wrapper_object_ids_.begin(),
+        tracked_device_wrapper_object_ids_.end());
+    for (const uint64_t wrapper_object_id : device_wrapper_ids) {
+      godot::Object* object = godot::ObjectDB::get_instance(wrapper_object_id);
       CamBANGDevice* device = godot::Object::cast_to<CamBANGDevice>(object);
       if (!device) {
-        it = tracked_device_wrapper_object_ids_.erase(it);
+        tracked_device_wrapper_object_ids_.erase(wrapper_object_id);
         continue;
       }
       if (device->get_instance_id() == settled.device_instance_id) {
@@ -2548,7 +2562,6 @@ void CamBANGServer::_emit_capture_completion_signals_() {
                             disposition,
                             error_code);
       }
-      ++it;
     }
   }
 
@@ -2565,12 +2578,15 @@ void CamBANGServer::_emit_capture_completion_signals_() {
     emit_signal("capture_finished",
                 rig_capture_public_id(closed.rig_capture_id),
                 info);
-    for (auto it = tracked_rig_wrapper_object_ids_.begin();
-         it != tracked_rig_wrapper_object_ids_.end();) {
-      godot::Object* object = godot::ObjectDB::get_instance(*it);
+    // Snapshot before emitting; see the device loop above for why.
+    const std::vector<uint64_t> rig_wrapper_ids(
+        tracked_rig_wrapper_object_ids_.begin(),
+        tracked_rig_wrapper_object_ids_.end());
+    for (const uint64_t wrapper_object_id : rig_wrapper_ids) {
+      godot::Object* object = godot::ObjectDB::get_instance(wrapper_object_id);
       CamBANGRig* rig = godot::Object::cast_to<CamBANGRig>(object);
       if (!rig) {
-        it = tracked_rig_wrapper_object_ids_.erase(it);
+        tracked_rig_wrapper_object_ids_.erase(wrapper_object_id);
         continue;
       }
       if (rig->get_id() == closed.rig_id) {
@@ -2578,64 +2594,93 @@ void CamBANGServer::_emit_capture_completion_signals_() {
                          rig_capture_public_id(closed.rig_capture_id),
                          reason);
       }
-      ++it;
     }
   }
 }
 
 void CamBANGServer::_refresh_tracked_wrapper_live_states_from_snapshot_() {
-  for (auto it = tracked_device_wrapper_object_ids_.begin();
-       it != tracked_device_wrapper_object_ids_.end();) {
-    godot::Object* object = godot::ObjectDB::get_instance(*it);
+  // Both loops iterate a SNAPSHOT of the tracked ids, never the container
+  // itself: _set_live_from_server_() and _set_result_live_from_server_() emit
+  // Godot signals, which run arbitrary GDScript synchronously, and a handler
+  // that obtains a wrapper registers it into the container being walked. See
+  // the full reasoning above the device loop in
+  // _emit_capture_completion_signals_().
+  const std::vector<uint64_t> device_wrapper_ids(
+      tracked_device_wrapper_object_ids_.begin(),
+      tracked_device_wrapper_object_ids_.end());
+  for (const uint64_t wrapper_object_id : device_wrapper_ids) {
+    godot::Object* object = godot::ObjectDB::get_instance(wrapper_object_id);
     CamBANGDevice* device = godot::Object::cast_to<CamBANGDevice>(object);
     if (!device) {
-      it = tracked_device_wrapper_object_ids_.erase(it);
+      tracked_device_wrapper_object_ids_.erase(wrapper_object_id);
       continue;
     }
     device->_set_live_from_server_(
         _is_device_live_by_identity_(device->get_hardware_id(), device->get_instance_id()));
-    ++it;
   }
 
-  for (auto it = tracked_stream_wrapper_object_ids_.begin();
-       it != tracked_stream_wrapper_object_ids_.end();) {
-    godot::Object* object = godot::ObjectDB::get_instance(it->first);
+  struct TrackedStreamWrapper final {
+    uint64_t wrapper_object_id = 0;
+    uint64_t stream_id = 0;
+  };
+  std::vector<TrackedStreamWrapper> stream_wrappers;
+  stream_wrappers.reserve(tracked_stream_wrapper_object_ids_.size());
+  for (const auto& kv : tracked_stream_wrapper_object_ids_) {
+    stream_wrappers.push_back(TrackedStreamWrapper{kv.first, kv.second});
+  }
+
+  // Reaping is deferred to after the pass rather than run inline. It issues
+  // synchronous core commands, so doing it mid-pass would interleave blocking
+  // work with the signal emissions above; collecting first keeps each concern
+  // in one place. The orphan is already gone either way -- a tick's delay in
+  // reclaiming it changes nothing a caller can observe.
+  std::vector<uint64_t> orphaned_stream_ids;
+  for (const TrackedStreamWrapper& tracked : stream_wrappers) {
+    godot::Object* object = godot::ObjectDB::get_instance(tracked.wrapper_object_id);
     CamBANGStream* stream = godot::Object::cast_to<CamBANGStream>(object);
     if (!stream) {
-      const uint64_t orphaned_stream_id = it->second;
-      it = tracked_stream_wrapper_object_ids_.erase(it);
-      reap_orphaned_stream_(orphaned_stream_id);
+      tracked_stream_wrapper_object_ids_.erase(tracked.wrapper_object_id);
+      orphaned_stream_ids.push_back(tracked.stream_id);
       continue;
     }
     stream->_set_result_live_from_server_(
         _is_stream_result_live_by_identity_(stream->get_stream_id()));
-    ++it;
+  }
+  for (const uint64_t orphaned_stream_id : orphaned_stream_ids) {
+    reap_orphaned_stream_(orphaned_stream_id);
   }
 }
 
 void CamBANGServer::_set_all_tracked_wrapper_live_states_false_() {
-  for (auto it = tracked_device_wrapper_object_ids_.begin();
-       it != tracked_device_wrapper_object_ids_.end();) {
-    godot::Object* object = godot::ObjectDB::get_instance(*it);
+  // Snapshot before emitting, exactly as the refresh path above does: these
+  // setters emit live_changed / result_live_changed, and a handler obtaining a
+  // wrapper would otherwise rehash the container being walked.
+  const std::vector<uint64_t> device_wrapper_ids(
+      tracked_device_wrapper_object_ids_.begin(),
+      tracked_device_wrapper_object_ids_.end());
+  for (const uint64_t wrapper_object_id : device_wrapper_ids) {
+    godot::Object* object = godot::ObjectDB::get_instance(wrapper_object_id);
     CamBANGDevice* device = godot::Object::cast_to<CamBANGDevice>(object);
     if (!device) {
-      it = tracked_device_wrapper_object_ids_.erase(it);
+      tracked_device_wrapper_object_ids_.erase(wrapper_object_id);
       continue;
     }
     device->_set_live_from_server_(false);
-    ++it;
   }
 
-  for (auto it = tracked_stream_wrapper_object_ids_.begin();
-       it != tracked_stream_wrapper_object_ids_.end();) {
-    godot::Object* object = godot::ObjectDB::get_instance(it->first);
+  std::vector<uint64_t> stream_wrapper_ids;
+  stream_wrapper_ids.reserve(tracked_stream_wrapper_object_ids_.size());
+  for (const auto& kv : tracked_stream_wrapper_object_ids_) {
+    stream_wrapper_ids.push_back(kv.first);
+  }
+  for (const uint64_t wrapper_object_id : stream_wrapper_ids) {
+    godot::Object* object = godot::ObjectDB::get_instance(wrapper_object_id);
     CamBANGStream* stream = godot::Object::cast_to<CamBANGStream>(object);
     if (!stream) {
-      it = tracked_stream_wrapper_object_ids_.erase(it);
+      tracked_stream_wrapper_object_ids_.erase(wrapper_object_id);
       continue;
     }
     stream->_set_result_live_from_server_(false);
-    ++it;
   }
 }
 
