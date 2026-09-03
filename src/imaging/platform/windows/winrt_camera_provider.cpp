@@ -2097,7 +2097,15 @@ ProviderResult WinrtCameraProvider::destroy_stream(uint64_t stream_id) {
   if (dev_it != devices_.end()) {
     if (dev_it->second.backend) {
       std::lock_guard<std::mutex> bl(dev_it->second.backend->m);
-      dev_it->second.backend->stream.reset();
+      // Only THIS stream's production, matching stop_stream's identity check
+      // and the same guard in Camera2's destroy_stream. Unconditional reset is
+      // safe only while create_stream refuses a second stream per device, which
+      // is provider-local and not required by the contract (see
+      // icamera_provider.h on create_stream).
+      auto& production = dev_it->second.backend->stream;
+      if (production && production->stream_id == stream_id) {
+        production.reset();
+      }
     }
     if (dev_it->second.stream_id == stream_id) {
       dev_it->second.stream_id = 0;

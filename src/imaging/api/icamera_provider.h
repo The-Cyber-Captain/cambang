@@ -401,7 +401,22 @@ public:
   virtual ProviderResult close_device(uint64_t device_instance_id) = 0;
 
   // Create/destroy a repeating stream object for a device instance.
-  // Core maintains the "one repeating stream per device instance" invariant.
+  //
+  // Core maintains the invariant that at most one stream per device instance is
+  // ACTIVE (lifecycle_model.md 13). It does not limit how many stream RECORDS
+  // exist: several may be created on one device, and only the transition to
+  // started is arbitrated. An earlier wording here -- "one repeating stream per
+  // device instance" -- did not say which of the two it meant, and both
+  // platform providers read it as the object rather than the flow and refuse a
+  // second create_stream() with ERR_BUSY, while SyntheticProvider permits it.
+  // That divergence is provider-local and NOT sanctioned by this contract:
+  // caller code that creates two streams on one device behaves differently
+  // under synthetic and platform backing.
+  //
+  // A provider MAY still refuse a create its backend genuinely cannot hold,
+  // which is a capability answer and belongs with the rest of them
+  // (acquisition_coexistence.h) rather than being asserted here as a rule Core
+  // is supposed to be keeping.
   virtual ProviderResult create_stream(const StreamRequest& req) = 0;
   virtual ProviderResult destroy_stream(uint64_t stream_id) = 0;
 

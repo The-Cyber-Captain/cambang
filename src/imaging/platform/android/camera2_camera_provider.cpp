@@ -4233,7 +4233,19 @@ ProviderResult Camera2CameraProvider::destroy_stream(uint64_t stream_id) {
   if (dev_it != devices_.end()) {
     if (dev_it->second.backend) {
       std::lock_guard<std::mutex> bl(dev_it->second.backend->m);
-      dev_it->second.backend->stream.reset();
+      // Only THIS stream's production, matching stop_stream's identity check.
+      // The reset was unconditional, which is safe solely because create_stream
+      // refuses a second stream on an occupied device -- a provider-local
+      // restriction the contract does not require (see icamera_provider.h on
+      // create_stream). Were that latch relaxed to match Core's actual
+      // invariant, destroying one stream would silently reset another's
+      // production, giving a stream that starts, reports started, and never
+      // delivers a frame. Guarding here costs nothing and removes the
+      // dependency on an unrelated restriction staying put.
+      auto& production = dev_it->second.backend->stream;
+      if (production && production->stream_id == stream_id) {
+        production.reset();
+      }
     }
     if (dev_it->second.stream_id == stream_id) {
       dev_it->second.stream_id = 0;
