@@ -11,10 +11,19 @@ extends Node
 ## for a rate at all.
 ##
 ## WHAT THIS ASSERTS HERE. That a rate-carrying definition is accepted, starts,
-## and produces frames -- the boundary and lifecycle half. It deliberately does
+## and SUSTAINS delivery -- the boundary and lifecycle half. It deliberately does
 ## NOT assert a measured rate: the realized measurement lives in Core, whose
 ## diagnostics are not visible on Android, and asserting a sensor's exact
 ## cadence would be asserting hardware behaviour rather than CamBANG's.
+##
+## Delivery is observed for a DURATION rather than a result count. get_result()
+## returns whatever is retained, so it is non-null on every tick once a stream is
+## live -- counting those counts Godot frames, not camera frames, and at 60fps a
+## count of five elapses in under a tenth of a second. A fixed window also
+## guarantees the provider emits at least two of its 30-frame diagnostics, which
+## is what makes a realized rate computable from the log afterwards. Measured at
+## five results, the S20+ run exited before the second one and no rate could be
+## derived at all.
 ##
 ## WHERE THE REAL EVIDENCE IS. The provider's own log lines, which do reach
 ## logcat:
@@ -33,6 +42,11 @@ const TOTAL_TIMEOUT_MS := 90000
 # [1-15],[1-30],[30-30] -- so `exact` is reachable on hardware we own rather
 # than being a rate we hope someone supports.
 const WANTED_FPS := 15
+# Long enough at any plausible rate for the provider's every-30-frames frame
+# diagnostic to appear twice: two marks are the minimum from which an interval,
+# and so a realized rate, can be derived. Three seconds covers 15fps with room
+# to spare and still costs nothing next to the ~50s Android export.
+const OBSERVE_MS := 3000
 # Overridable so the scene can run as an A/B on one device: --cambang-wanted-fps=0
 # omits target_fps entirely, which is the pre-change behaviour (no rate asked of
 # the backend). Without that control, "no frames arrived" cannot be attributed --
@@ -50,6 +64,7 @@ var _stream = null
 var _hardware_id := ""
 var _chosen_profile: Dictionary = {}
 var _frames := 0
+var _first_result_ms := 0
 
 
 func _ready() -> void:
@@ -161,15 +176,22 @@ func _phase_create() -> void:
 
 
 func _phase_observe() -> void:
-	# Frames prove the rate request did not break acquisition. How FAST they
-	# arrive is the sensor's business and is not asserted here; see the header.
+	# Sustained delivery proves the rate request did not break acquisition. How
+	# FAST frames arrive is the sensor's business and is not asserted here; see
+	# the header. A stream that stops delivering mid-window simply never
+	# satisfies the condition and the scene times out, which is correct.
 	var result = _stream.get_result()
 	if result == null:
 		return
 	_frames += 1
-	if _frames < 5:
+	if _first_result_ms == 0:
+		_first_result_ms = Time.get_ticks_msec()
 		return
-	print("STEP OK: %d results retrieved with a rate-carrying profile" % _frames)
+	var observed_ms := Time.get_ticks_msec() - _first_result_ms
+	if observed_ms < OBSERVE_MS:
+		return
+	print("STEP OK: delivery sustained %d ms (%d retrievals) with a rate-carrying profile"
+		% [observed_ms, _frames])
 	_pass("pass_fps_%d" % _wanted_fps)
 
 
