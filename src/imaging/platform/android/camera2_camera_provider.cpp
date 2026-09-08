@@ -894,6 +894,12 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
 
   // Currently realized session output set.
   bool cfg_has_stream = false;
+  // Whether the realized stream output is the PILOT's, which is what decided
+  // its reader FORMAT: a pilot reader is AIMAGE_FORMAT_PRIVATE, a caller
+  // stream's is YUV_420_888. Geometry alone cannot answer "does the existing
+  // session serve this consumer", because a PRIVATE image carries no
+  // CPU-accessible plane at all.
+  bool cfg_flow_is_pilot = false;
   uint32_t cfg_stream_w = 0;
   uint32_t cfg_stream_h = 0;
   bool cfg_has_still = false;
@@ -1360,9 +1366,31 @@ void deliver_stream_image_locked(DeviceBackend& backend, AImage* image) {
     slot->in_use.store(false, std::memory_order_release);
     ++s->convert_failures;
     if ((s->convert_failures & (s->convert_failures - 1)) == 0) {
-      log_line("stream=%llu frame convert failed (expected %ux%u, failures=%llu)",
-               static_cast<unsigned long long>(s->stream_id), s->width, s->height,
-               static_cast<unsigned long long>(s->convert_failures));
+      // Report what ARRIVED beside what was expected. Naming only the
+      // expectation makes the failure unattributable: a geometry mismatch, a
+      // reader of the wrong format and an unreadable plane layout all print the
+      // same line, and the one thing that tells them apart -- the image itself
+      // -- is in hand right here. This is what identified the PRIVATE-reader
+      // reuse above: aimage_format=34 (PRIVATE) where 35 (YUV_420_888) was
+      // required, with every plane stride -1 because a PRIVATE image has none.
+      // Queried only on the power-of-two occasions this already logs, so a
+      // permanently failing stream stays quiet.
+      int32_t got_w = -1, got_h = -1, got_fmt = -1;
+      int32_t y_stride = -1, uv_row = -1, uv_pix = -1;
+      (void)AImage_getWidth(image, &got_w);
+      (void)AImage_getHeight(image, &got_h);
+      (void)AImage_getFormat(image, &got_fmt);
+      (void)AImage_getPlaneRowStride(image, 0, &y_stride);
+      (void)AImage_getPlaneRowStride(image, 1, &uv_row);
+      (void)AImage_getPlanePixelStride(image, 1, &uv_pix);
+      log_line(
+          "stream=%llu frame convert failed (expected %ux%u fourcc=%u planar=%s; "
+          "got %dx%d aimage_format=%d (yuv420_888=%d) y_row=%d uv_row=%d uv_pix=%d) "
+          "failures=%llu",
+          static_cast<unsigned long long>(s->stream_id), s->width, s->height, s->fourcc,
+          stream_is_planar ? "yes" : "no", got_w, got_h, got_fmt,
+          static_cast<int>(AIMAGE_FORMAT_YUV_420_888), y_stride, uv_row, uv_pix,
+          static_cast<unsigned long long>(s->convert_failures));
     }
     return;
   }
@@ -3475,6 +3503,7 @@ void Camera2CameraProvider::teardown_session_locked_(
     backend->acquisition_session_id = 0;
     backend->repeating_active = false;
     backend->cfg_has_stream = false;
+    backend->cfg_flow_is_pilot = false;
     backend->cfg_has_still = false;
   }
 
@@ -3640,18 +3669,39 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
     if (backend->closed || backend->failed || !backend->device) {
       return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
     }
+    // A session whose reader cannot serve the new consumer is NOT a match, even
+    // at identical geometry. The pilot's reader is AIMAGE_FORMAT_PRIVATE and a
+    // caller stream's is YUV_420_888, decided by flow_is_pilot at creation --
+    // so comparing geometry alone reused a PRIVATE reader for a caller that
+    // needs CPU planes. Every frame then failed conversion for the life of the
+    // stream while create_stream, start_stream and the published snapshot all
+    // reported success: measured on Quest 3, whose pilot geometry 320x240 is
+    // also an advertised stream size, so the two coincided and the session was
+    // reused. Any device hits this wherever a caller asks for exactly the pilot
+    // geometry.
+    //
+    // The test is deliberately one-directional. A YUV reader serves a pilot
+    // perfectly well -- the pilot counts frames and deletes them without
+    // reading a plane -- so only the PRIVATE-then-caller order forces a
+    // rebuild. Making it a plain equality would tear down and rebuild a working
+    // session every time a stream stopped and the pilot took over, which costs
+    // a reprovision to gain nothing.
+    const bool reader_serves_requester =
+        !backend->cfg_flow_is_pilot || flow_is_pilot;
     const bool matches = backend->session != nullptr &&
                          backend->cfg_has_stream == want_stream &&
                          backend->cfg_has_still == want_still &&
+                         (!want_stream || reader_serves_requester) &&
                          (!want_stream || (backend->cfg_stream_w == stream_width &&
                                            backend->cfg_stream_h == stream_height)) &&
                          (!want_still || (backend->cfg_still_w == still_width &&
                                           backend->cfg_still_h == still_height));
     if (matches) {
       camera2_detail::log_line(
-          "diag device=%llu session reused (stream=%s still=%s) age_ms=%.2f",
+          "diag device=%llu session reused (stream=%s still=%s flow=%s) age_ms=%.2f",
           static_cast<unsigned long long>(backend->device_instance_id),
           want_stream ? "yes" : "no", want_still ? "yes" : "no",
+          backend->cfg_flow_is_pilot ? "pilot" : "caller_stream",
           camera2_detail::diag_ms_since(
               backend->diag_session_configured_ns.load(std::memory_order_acquire)));
       return ProviderResult::success();
@@ -3989,6 +4039,7 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
           backend->output_container = container;
           backend->session = session;
           backend->cfg_has_stream = want_stream;
+          backend->cfg_flow_is_pilot = flow_is_pilot;
           backend->cfg_stream_w = stream_width;
           backend->cfg_stream_h = stream_height;
           backend->cfg_has_still = want_still;
