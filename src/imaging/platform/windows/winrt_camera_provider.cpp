@@ -9,6 +9,7 @@
 #include "imaging/platform/windows/winrt_camera_provider.h"
 
 #include "imaging/api/delivered_calibration.h"
+#include "imaging/api/frame_rate_selection.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -526,6 +527,13 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   // this request" is answerable; conflating them made the wanted value read as
   // a description of a reader that did not have it.
   uint32_t realized_reader_fourcc = 0;
+  // Frame rate a caller WANTS, stated before format selection for the same
+  // reason reader_fourcc is: on this backend the rate is a property of the
+  // MediaFrameFormat, so it has to be known while choosing one. Zero/zero means
+  // no preference. Stream-stated; cleared when that stream stops, so a capture
+  // reformatting the source afterwards is not steered by a dead stream's rate.
+  uint32_t requested_fps_min = 0;
+  uint32_t requested_fps_max = 0;
   // Same for the still-photo pipeline: the pixel format is fixed at
   // PrepareLowLagPhotoCaptureAsync, so it has to be known before preparing.
   uint32_t photo_fourcc = 0;
@@ -1816,12 +1824,73 @@ ProviderResult WinrtCameraProvider::ensure_reader_geometry_(
           if (!source) {
             local.error = ProviderError::ERR_BAD_STATE;
           } else {
-            wmcf::MediaFrameFormat chosen{nullptr};
+            // Geometry is the hard constraint; the frame rate is a preference
+            // AMONG the formats that satisfy it, never a second constraint that
+            // can refuse. On this backend the rate is a property of the format
+            // rather than a control, so the only way to honour a requested rate
+            // is to pick a different format of the same size -- and the only
+            // honest thing to do when no such format exists is to keep the
+            // stream and not honour the rate. Refusing a viable stream over a
+            // preference would serve nobody.
+            //
+            // Previously this took the FIRST geometry match and broke, so a
+            // device advertising 1920x1080 at both 30 and 15 handed over
+            // whichever WinRT happened to enumerate first, with the caller's
+            // requested rate never consulted at all.
+            std::vector<wmcf::MediaFrameFormat> geometry_matches;
             for (const wmcf::MediaFrameFormat& candidate : source.SupportedFormats()) {
               const auto vf = candidate.VideoFormat();
               if (vf && vf.Width() == width && vf.Height() == height) {
-                chosen = candidate;
-                break;
+                geometry_matches.push_back(candidate);
+              }
+            }
+
+            wmcf::MediaFrameFormat chosen{nullptr};
+            if (!geometry_matches.empty()) {
+              chosen = geometry_matches.front();
+
+              uint32_t want_min = 0;
+              uint32_t want_max = 0;
+              {
+                std::lock_guard<std::mutex> bl(backend->m);
+                want_min = backend->requested_fps_min;
+                want_max = backend->requested_fps_max;
+              }
+              const FrameRateRequest want{want_min, want_max};
+              if (want.expressed()) {
+                // A MediaFrameFormat names one rate, so every candidate is a
+                // fixed [n,n] -- the discrete shape frame_rate_selection.h
+                // expects. Rounded to whole frames because 29.97 is 30 to a
+                // caller and the request is stated in whole fps.
+                std::vector<FrameRateRange> rates;
+                rates.reserve(geometry_matches.size());
+                for (const wmcf::MediaFrameFormat& f : geometry_matches) {
+                  uint32_t fps = 0;
+                  const auto rate = f.FrameRate();
+                  if (rate && rate.Denominator() != 0) {
+                    fps = static_cast<uint32_t>(
+                        (static_cast<double>(rate.Numerator()) /
+                         static_cast<double>(rate.Denominator())) + 0.5);
+                  }
+                  rates.push_back(FrameRateRange{fps, fps});
+                }
+                const FrameRateSelection sel =
+                    select_frame_rate(want, rates.data(), rates.size());
+                if (sel.outcome != FrameRateSelectionOutcome::NotRequested &&
+                    sel.outcome != FrameRateSelectionOutcome::Unavailable) {
+                  for (size_t i = 0; i < rates.size(); ++i) {
+                    if (rates[i].min_fps == sel.chosen.min_fps) {
+                      chosen = geometry_matches[i];
+                      break;
+                    }
+                  }
+                }
+                winrt_detail::log_line(
+                    "fpssel requested=[%u-%u] outcome=%s chosen_fps=%u "
+                    "geometry_matches=%zu (%ux%u)",
+                    want.min_fps, want.max_fps,
+                    frame_rate_selection_outcome_name(sel.outcome),
+                    sel.chosen.min_fps, geometry_matches.size(), width, height);
               }
             }
             if (!chosen) {
@@ -2151,6 +2220,8 @@ ProviderResult WinrtCameraProvider::start_stream(
   if (dev.backend) {
     std::lock_guard<std::mutex> bl(dev.backend->m);
     dev.backend->reader_fourcc = profile.format_fourcc;
+    dev.backend->requested_fps_min = profile.target_fps_min;
+    dev.backend->requested_fps_max = profile.target_fps_max;
   }
   ProviderResult pr = ensure_reader_realized_(SeamClaimant::Stream, dev.backend);
   if (!pr.ok()) {
@@ -2235,6 +2306,13 @@ ProviderResult WinrtCameraProvider::stop_stream(uint64_t stream_id) {
   }
 
   st_it->second.started = false;
+
+  // The rate belonged to this stream, not the device; see the field's comment.
+  if (dev_it != devices_.end() && dev_it->second.backend) {
+    std::lock_guard<std::mutex> bl(dev_it->second.backend->m);
+    dev_it->second.backend->requested_fps_min = 0;
+    dev_it->second.backend->requested_fps_max = 0;
+  }
 
   // Drop the claim taken at start_stream. Taken whenever started became true,
   // so released here whether the stream is stopping cleanly or was already

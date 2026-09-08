@@ -243,9 +243,43 @@ std::vector<uint64_t> CoreStreamRegistry::take_expired_frame_resumptions(uint64_
 bool CoreStreamRegistry::on_frame_received(uint64_t stream_id, uint64_t integrated_ts_ns) {
   auto it = streams_.find(stream_id);
   if (it == streams_.end()) return false;
-  it->second.frames_received++;
-  it->second.last_frame_ts_ns = integrated_ts_ns;
-  it->second.frame_resume_deadline_ns = 0;
+  StreamRecord& rec = it->second;
+  const uint64_t prior_ts_ns = rec.last_frame_ts_ns;
+  rec.frames_received++;
+  rec.last_frame_ts_ns = integrated_ts_ns;
+  rec.frame_resume_deadline_ns = 0;
+
+  // Realized rate. Measured here because this is the one place every frame path
+  // reaches, for the same reason the disarm above lives here rather than at the
+  // three call sites.
+  //
+  // A non-advancing mark restarts the window instead of contributing to it: a
+  // provider that reports zero, repeats a timestamp, or hands back a mark that
+  // moved backwards would otherwise produce an arbitrary rate rather than no
+  // rate, and no rate is the truthful answer.
+  if (integrated_ts_ns == 0 || integrated_ts_ns <= prior_ts_ns) {
+    rec.realized_window_first_ts_ns = integrated_ts_ns;
+    rec.realized_window_frames = integrated_ts_ns != 0 ? 1u : 0u;
+    return true;
+  }
+  if (rec.realized_window_frames == 0) {
+    rec.realized_window_first_ts_ns = integrated_ts_ns;
+    rec.realized_window_frames = 1;
+    return true;
+  }
+  rec.realized_window_frames++;
+  if (rec.realized_window_frames >= kRealizedFpsWindowFrames) {
+    const uint64_t span_ns = integrated_ts_ns - rec.realized_window_first_ts_ns;
+    // (frames - 1) intervals span the window, not `frames`; counting the fence
+    // posts instead of the gaps overstates the rate by a whole frame.
+    const uint64_t intervals = rec.realized_window_frames - 1u;
+    if (span_ns > 0 && intervals > 0) {
+      rec.realized_fps_milli = static_cast<uint32_t>(
+          (intervals * 1'000'000'000'000ull) / span_ns);
+    }
+    rec.realized_window_first_ts_ns = integrated_ts_ns;
+    rec.realized_window_frames = 1;
+  }
   return true;
 }
 

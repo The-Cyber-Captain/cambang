@@ -794,6 +794,7 @@ maintainer_tools_clean_outputs = [
     _program_path("outstanding_payload_ledger_verify"),
     _program_path("capture_sequence_settlement_verify"),
     _program_path("acquisition_seam_claims_verify"),
+    _program_path("frame_rate_selection_verify"),
     _program_path("core_capture_assembly_registry_smoke"),
     _program_path("core_dispatcher_bracket_routing_smoke"),
     _program_path("godot_result_convert_smoke"),
@@ -897,6 +898,12 @@ if build_maintainer_tools:
     acquisition_seam_claims_verify_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "acquisition_seam_claims_verify"),
         source=["src/smoke/acquisition_seam_claims_verify.cpp"],
+    )
+    # Header-only on the same grounds: the rate a provider asks its backend for
+    # is decided purely, so it is testable here rather than only on a handset.
+    frame_rate_selection_verify_prog = maintainer_tools_env.Program(
+        target=os.path.join(out_dir, "frame_rate_selection_verify"),
+        source=["src/smoke/frame_rate_selection_verify.cpp"],
     )
     core_capture_assembly_registry_smoke_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "core_capture_assembly_registry_smoke"),
@@ -1025,6 +1032,7 @@ if build_maintainer_tools:
             outstanding_payload_ledger_verify_prog,
             capture_sequence_settlement_verify_prog,
             acquisition_seam_claims_verify_prog,
+            frame_rate_selection_verify_prog,
             core_capture_assembly_registry_smoke_prog,
             core_dispatcher_bracket_routing_smoke_prog,
             godot_result_convert_smoke_prog,

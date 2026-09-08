@@ -74,6 +74,29 @@ public:
     uint64_t frames_dropped = 0;
     uint64_t last_frame_ts_ns = 0;
 
+    // REALIZED frame rate, measured from arriving frames -- never the requested
+    // rate echoed back. profile.target_fps_min/max is what was ASKED FOR, and
+    // until this measurement existed nothing anywhere observed what the sensor
+    // actually did, so a request that no provider applied looked identical to
+    // one that worked.
+    //
+    // Measured over a fixed frame window rather than continuously: a window
+    // closes on its own cadence (once a second at 30fps, every two at 15), which
+    // is frequent enough to notice a wrong rate and rare enough to cost nothing.
+    // Held in milli-fps so the record carries no floating point.
+    //
+    // Timestamps are the integrated acquisition marks, not arrival times, so
+    // queueing jitter does not show up as a rate change. Zero means not yet
+    // measured -- a stream that has produced fewer frames than one window has no
+    // honest answer, and must not be given a made-up one.
+    uint64_t realized_window_first_ts_ns = 0;
+    uint32_t realized_window_frames = 0;
+    uint32_t realized_fps_milli = 0;
+    // Set once a measured window has been reported as materially different from
+    // what was requested, so the report is a fact stated once per divergence and
+    // not a line per window.
+    bool realized_fps_divergence_reported = false;
+
     uint64_t visibility_frames_presented = 0;
     uint64_t visibility_frames_rejected_unsupported = 0;
     uint64_t visibility_frames_rejected_invalid = 0;
@@ -81,6 +104,11 @@ public:
 
     uint32_t last_error_code = 0;
   };
+
+  // Frames per realized-rate window. Thirty is one second at 30fps and two at
+  // 15 -- often enough to notice a wrong rate promptly, rare enough that the
+  // measurement costs nothing and the divergence report cannot become spam.
+  static constexpr uint32_t kRealizedFpsWindowFrames = 30;
 
   CoreStreamRegistry() = default;
   ~CoreStreamRegistry() = default;

@@ -9,6 +9,7 @@
 #include "imaging/platform/android/camera2_camera_provider.h"
 
 #include "imaging/api/delivered_calibration.h"
+#include "imaging/api/frame_rate_selection.h"
 
 #include <camera/NdkCameraCaptureSession.h>
 #include <camera/NdkCameraDevice.h>
@@ -878,6 +879,18 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   std::atomic<uint32_t> still_dataspace_attempts{0};
   ACameraOutputTarget* stream_target = nullptr;
   ACaptureRequest* repeating_request = nullptr;
+
+  // The AE target fps range the live stream asked us to request, chosen from
+  // chars.ae_fps_ranges at start_stream and applied to every repeating request
+  // built afterwards. Zero/zero means the caller expressed no rate preference
+  // and the template's own default stands -- we must not invent one.
+  //
+  // Stored on the backend rather than passed down because the repeating request
+  // is rebuilt without the stream's profile in hand: a capture reprovision
+  // resubmits it (submit_repeating_request_ from the capture path), and a rate
+  // that only survived the first submission would silently revert.
+  uint32_t requested_ae_fps_min = 0;
+  uint32_t requested_ae_fps_max = 0;
 
   // Currently realized session output set.
   bool cfg_has_stream = false;
@@ -4333,6 +4346,42 @@ ProviderResult Camera2CameraProvider::start_stream(
   StreamState& st = st_it->second;
   st.req.profile = profile;
 
+  // Frame rate. Chosen here, from what this device advertises, and applied by
+  // every repeating request built afterwards.
+  //
+  // The outcome is logged in full because only one of its values promises the
+  // caller a rate: Exact pins AE to a single value, whereas Satisfied hands AE
+  // a span it may sit anywhere inside, and Clamped means the request could not
+  // be served at all. Reporting those three as one success would put a
+  // set-point where realized truth belongs.
+  {
+    std::vector<FrameRateRange> candidates;
+    candidates.reserve(dev.backend->chars.ae_fps_ranges.size());
+    for (const auto& r : dev.backend->chars.ae_fps_ranges) {
+      if (r.first > 0 && r.second > 0) {
+        candidates.push_back(FrameRateRange{static_cast<uint32_t>(r.first),
+                                            static_cast<uint32_t>(r.second)});
+      }
+    }
+    const FrameRateRequest want{profile.target_fps_min, profile.target_fps_max};
+    const FrameRateSelection sel =
+        select_frame_rate(want, candidates.data(), candidates.size());
+    {
+      std::lock_guard<std::mutex> bl(dev.backend->m);
+      dev.backend->requested_ae_fps_min = sel.chosen.min_fps;
+      dev.backend->requested_ae_fps_max = sel.chosen.max_fps;
+    }
+    if (want.expressed()) {
+      camera2_detail::log_line(
+          "fpssel device=%llu stream_id=%llu requested=[%u-%u] outcome=%s chosen=[%u-%u] "
+          "advertised=%zu",
+          static_cast<unsigned long long>(dev.device_instance_id),
+          static_cast<unsigned long long>(stream_id), want.min_fps, want.max_fps,
+          frame_rate_selection_outcome_name(sel.outcome), sel.chosen.min_fps,
+          sel.chosen.max_fps, candidates.size());
+    }
+  }
+
   uint64_t session_native_id = 0;
   {
     std::lock_guard<std::mutex> bl(dev.backend->m);
@@ -4431,6 +4480,34 @@ ProviderResult Camera2CameraProvider::submit_repeating_request_(
           return;
         }
 
+        // The caller's frame rate, if it asked for one. Chosen at start_stream
+        // from what this device advertises, so by here it is already known to be
+        // an advertised range and needs no re-validation.
+        //
+        // A failure to set it is NOT fatal to the stream. The rate is a
+        // preference over a stream that is otherwise viable, and tearing down a
+        // working preview because AE would not take a range serves nobody; it is
+        // logged instead, and the realized rate observed downstream is what the
+        // caller is ultimately told.
+        uint32_t ae_fps_min = 0;
+        uint32_t ae_fps_max = 0;
+        {
+          std::lock_guard<std::mutex> bl(backend->m);
+          ae_fps_min = backend->requested_ae_fps_min;
+          ae_fps_max = backend->requested_ae_fps_max;
+        }
+        if (ae_fps_min != 0 && ae_fps_max != 0) {
+          const int32_t fps_range[2] = {static_cast<int32_t>(ae_fps_min),
+                                        static_cast<int32_t>(ae_fps_max)};
+          const camera_status_t fps_cs = ACaptureRequest_setEntry_i32(
+              request, ACAMERA_CONTROL_AE_TARGET_FPS_RANGE, 2, fps_range);
+          camera2_detail::log_line(
+              "fpsapply device=%llu ae_target_fps_range=[%u-%u] status=%s",
+              static_cast<unsigned long long>(backend->device_instance_id),
+              ae_fps_min, ae_fps_max,
+              fps_cs == ACAMERA_OK ? "set" : "refused_by_request");
+        }
+
         // Result callbacks on the repeating request exist to observe AF state.
         // Without them a focus lock has no way to tell a settled lens from a
         // scanning one, and would pin the bracket to whatever mid-scan
@@ -4527,6 +4604,15 @@ ProviderResult Camera2CameraProvider::stop_stream(uint64_t stream_id) {
   }
 
   st_it->second.started = false;
+  // The rate belonged to the stream that is stopping, not to the device. Left
+  // set, it would be applied to a repeating request submitted for something
+  // else -- the capture path resubmits one -- and a later stream that asked for
+  // no rate at all would silently inherit this one.
+  if (backend) {
+    std::lock_guard<std::mutex> bl(backend->m);
+    backend->requested_ae_fps_min = 0;
+    backend->requested_ae_fps_max = 0;
+  }
   // The stream no longer needs the seam. This is the only release point for a
   // stream claim: destroy_stream refuses while started, so a started stream
   // can only reach destruction through here, exactly once per start.
