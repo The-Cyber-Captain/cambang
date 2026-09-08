@@ -6,10 +6,12 @@
 // the same arrangement as acquisition_seam_claims_verify and
 // capture_sequence_settlement_verify.
 //
-// The case this exists to hold down: for two years a requested frame rate was
-// parsed, stored, published in the state snapshot, and never asked of any
-// backend. A caller asking for 15fps got the sensor's own choice, and CamBANG
-// reported 15 regardless. The distinction the tests below defend is the one
+// The case this exists to hold down: a requested frame rate was parsed, stored,
+// published in the state snapshot, and never asked of any backend. It reached
+// CaptureProfile on 2026-03-01 and the boundary parser on 2026-07-19, and was
+// never applied by either platform provider until 2026-09-08. A caller asking
+// for 15fps got the sensor's own choice, and CamBANG reported 15 regardless.
+// The distinction the tests below defend is the one
 // that failure had no way to express -- Exact PROMISES a rate, Satisfied only
 // promises a span the backend may sit anywhere inside, and Clamped means the
 // request could not be served at all. Collapsing those three into "ok" is how a
