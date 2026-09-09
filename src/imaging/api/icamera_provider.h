@@ -217,6 +217,32 @@ public:
     return ProducerFormatCapabilities::packed_rgb_only();
   }
 
+  // The frame rates this backend will accept for a stream, as the device
+  // reports them. Same seam and same purpose as the format capabilities above:
+  // Core materializes effective configuration from what you advertise, and you
+  // execute what you are given.
+  //
+  // Report only what the device states. Camera2's
+  // CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES and WinRT's per-format FrameRate are
+  // both read at open and cached, so answering costs no I/O -- which section 2
+  // requires, since Core consults this on its own thread during create_stream.
+  // Do NOT derive a rate from a minimum frame duration, intersect two sources,
+  // or infer one from a geometry: an unreported capability is reported as
+  // absent, exactly as an underivable max_fps is omitted from a catalog entry
+  // rather than fabricated.
+  //
+  // The default reports nothing, which is the honest answer for a provider that
+  // has not implemented this. Core then leaves the caller's request untouched
+  // and start_stream decides, so an unimplemented seam behaves exactly as it
+  // does today rather than having every rate request refused on its behalf.
+  virtual ProducerRateCapabilities stream_rate_capabilities(
+      const CaptureProfile& profile,
+      const PictureConfig& picture) const noexcept {
+    (void)profile;
+    (void)picture;
+    return ProducerRateCapabilities{};
+  }
+
   // The configurations an ENDPOINT will accept.
   //
   // Keyed by hardware_id rather than device instance so it can be answered
@@ -276,6 +302,27 @@ public:
     (void)stream_id;
     (void)intent;
     return stream_format_capabilities(profile, picture);
+  }
+
+  // Device-scoped rate capability, for the same reason format has one: the rates
+  // a camera offers are a per-device fact. Camera2 reads them from that camera's
+  // characteristics and two cameras behind one provider routinely differ -- the
+  // Quest advertises [1-15],[15-15],[1-30],[30-30] while an S20+ camera
+  // advertises [15-15],[7-24],[24-24],[7-30],[30-30] -- so there is no correct
+  // provider-wide answer for a heterogeneous provider.
+  //
+  // Defaults to the provider-wide answer, so a homogeneous provider need not
+  // override it, and to nothing at all if neither is overridden.
+  virtual ProducerRateCapabilities stream_parent_context_rate_capabilities(
+      uint64_t device_instance_id,
+      uint64_t stream_id,
+      StreamIntent intent,
+      const CaptureProfile& profile,
+      const PictureConfig& picture) noexcept {
+    (void)device_instance_id;
+    (void)stream_id;
+    (void)intent;
+    return stream_rate_capabilities(profile, picture);
   }
 
   virtual ProducerFormatCapabilities capture_parent_context_format_capabilities(

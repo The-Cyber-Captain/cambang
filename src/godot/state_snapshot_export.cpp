@@ -373,6 +373,12 @@ static godot::Dictionary export_stream(const StreamState& s) {
   d["format"] = static_cast<uint32_t>(s.format);
   d["target_fps_min"] = static_cast<uint32_t>(s.target_fps_min);
   d["target_fps_max"] = static_cast<uint32_t>(s.target_fps_max);
+  // OMITTED when unmeasured rather than published as zero. A consumer must be
+  // able to tell "not measured yet" from "measured at nothing", and a stated
+  // zero reads as the latter.
+  if (s.realized_fps_milli != 0) {
+    d["realized_fps_milli"] = static_cast<uint32_t>(s.realized_fps_milli);
+  }
   d["frames_received"] = static_cast<uint64_t>(s.frames_received);
   d["frames_delivered"] = static_cast<uint64_t>(s.frames_delivered);
   d["frames_dropped"] = static_cast<uint64_t>(s.frames_dropped);

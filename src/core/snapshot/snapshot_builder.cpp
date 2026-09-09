@@ -284,8 +284,15 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             s.width = rec.profile.width;
             s.height = rec.profile.height;
             s.format = rec.profile.format_fourcc;
+            // The EFFECTIVE rate Core materialized, consistent with width,
+            // height and format above, which are effective too. Until Core
+            // materialized rates this pair alone was a verbatim passthrough of
+            // the caller's request -- the only member of an effective profile
+            // that was not effective.
             s.target_fps_min = rec.profile.target_fps_min;
             s.target_fps_max = rec.profile.target_fps_max;
+            // Measured, not asked for. Zero until a window closes.
+            s.realized_fps_milli = rec.realized_fps_milli;
 
             s.frames_received = rec.frames_received;
             s.frames_delivered = rec.frames_released; // in this slice, release == delivered to sink

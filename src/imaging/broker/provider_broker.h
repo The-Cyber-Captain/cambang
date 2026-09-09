@@ -119,6 +119,23 @@ public:
       uint64_t device_instance_id,
       const CaptureRequest& req) noexcept override;
 
+  // Rate capability, forwarded for the same reason the catalog calls above are:
+  // the inherited default reports NOTHING, and "this provider does not report
+  // rates" is a real answer Core acts on -- it leaves the caller's request
+  // unvalidated. A missing forward here is therefore indistinguishable from a
+  // backend that genuinely cannot enumerate its rates, and every rate request
+  // behind the broker would go unmaterialized. Measured exactly that way on an
+  // S20+ before this existed.
+  ProducerRateCapabilities stream_rate_capabilities(
+      const CaptureProfile& profile,
+      const PictureConfig& picture) const noexcept override;
+  ProducerRateCapabilities stream_parent_context_rate_capabilities(
+      uint64_t device_instance_id,
+      uint64_t stream_id,
+      StreamIntent intent,
+      const CaptureProfile& profile,
+      const PictureConfig& picture) noexcept override;
+
   ProducerBackingCapabilities stream_backing_capabilities(
       const CaptureProfile& profile,
       const PictureConfig& picture) const noexcept override;

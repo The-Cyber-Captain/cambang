@@ -9,6 +9,7 @@
 #include "imaging/platform/android/camera2_camera_provider.h"
 
 #include "imaging/api/delivered_calibration.h"
+#include "imaging/api/frame_rate_selection.h"
 
 #include <camera/NdkCameraCaptureSession.h>
 #include <camera/NdkCameraDevice.h>
@@ -879,8 +880,26 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   ACameraOutputTarget* stream_target = nullptr;
   ACaptureRequest* repeating_request = nullptr;
 
+  // The AE target fps range the live stream asked us to request, chosen from
+  // chars.ae_fps_ranges at start_stream and applied to every repeating request
+  // built afterwards. Zero/zero means the caller expressed no rate preference
+  // and the template's own default stands -- we must not invent one.
+  //
+  // Stored on the backend rather than passed down because the repeating request
+  // is rebuilt without the stream's profile in hand: a capture reprovision
+  // resubmits it (submit_repeating_request_ from the capture path), and a rate
+  // that only survived the first submission would silently revert.
+  uint32_t requested_ae_fps_min = 0;
+  uint32_t requested_ae_fps_max = 0;
+
   // Currently realized session output set.
   bool cfg_has_stream = false;
+  // Whether the realized stream output is the PILOT's, which is what decided
+  // its reader FORMAT: a pilot reader is AIMAGE_FORMAT_PRIVATE, a caller
+  // stream's is YUV_420_888. Geometry alone cannot answer "does the existing
+  // session serve this consumer", because a PRIVATE image carries no
+  // CPU-accessible plane at all.
+  bool cfg_flow_is_pilot = false;
   uint32_t cfg_stream_w = 0;
   uint32_t cfg_stream_h = 0;
   bool cfg_has_still = false;
@@ -1347,9 +1366,31 @@ void deliver_stream_image_locked(DeviceBackend& backend, AImage* image) {
     slot->in_use.store(false, std::memory_order_release);
     ++s->convert_failures;
     if ((s->convert_failures & (s->convert_failures - 1)) == 0) {
-      log_line("stream=%llu frame convert failed (expected %ux%u, failures=%llu)",
-               static_cast<unsigned long long>(s->stream_id), s->width, s->height,
-               static_cast<unsigned long long>(s->convert_failures));
+      // Report what ARRIVED beside what was expected. Naming only the
+      // expectation makes the failure unattributable: a geometry mismatch, a
+      // reader of the wrong format and an unreadable plane layout all print the
+      // same line, and the one thing that tells them apart -- the image itself
+      // -- is in hand right here. This is what identified the PRIVATE-reader
+      // reuse above: aimage_format=34 (PRIVATE) where 35 (YUV_420_888) was
+      // required, with every plane stride -1 because a PRIVATE image has none.
+      // Queried only on the power-of-two occasions this already logs, so a
+      // permanently failing stream stays quiet.
+      int32_t got_w = -1, got_h = -1, got_fmt = -1;
+      int32_t y_stride = -1, uv_row = -1, uv_pix = -1;
+      (void)AImage_getWidth(image, &got_w);
+      (void)AImage_getHeight(image, &got_h);
+      (void)AImage_getFormat(image, &got_fmt);
+      (void)AImage_getPlaneRowStride(image, 0, &y_stride);
+      (void)AImage_getPlaneRowStride(image, 1, &uv_row);
+      (void)AImage_getPlanePixelStride(image, 1, &uv_pix);
+      log_line(
+          "stream=%llu frame convert failed (expected %ux%u fourcc=%u planar=%s; "
+          "got %dx%d aimage_format=%d (yuv420_888=%d) y_row=%d uv_row=%d uv_pix=%d) "
+          "failures=%llu",
+          static_cast<unsigned long long>(s->stream_id), s->width, s->height, s->fourcc,
+          stream_is_planar ? "yes" : "no", got_w, got_h, got_fmt,
+          static_cast<int>(AIMAGE_FORMAT_YUV_420_888), y_stride, uv_row, uv_pix,
+          static_cast<unsigned long long>(s->convert_failures));
     }
     return;
   }
@@ -3462,6 +3503,7 @@ void Camera2CameraProvider::teardown_session_locked_(
     backend->acquisition_session_id = 0;
     backend->repeating_active = false;
     backend->cfg_has_stream = false;
+    backend->cfg_flow_is_pilot = false;
     backend->cfg_has_still = false;
   }
 
@@ -3627,18 +3669,39 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
     if (backend->closed || backend->failed || !backend->device) {
       return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
     }
+    // A session whose reader cannot serve the new consumer is NOT a match, even
+    // at identical geometry. The pilot's reader is AIMAGE_FORMAT_PRIVATE and a
+    // caller stream's is YUV_420_888, decided by flow_is_pilot at creation --
+    // so comparing geometry alone reused a PRIVATE reader for a caller that
+    // needs CPU planes. Every frame then failed conversion for the life of the
+    // stream while create_stream, start_stream and the published snapshot all
+    // reported success: measured on Quest 3, whose pilot geometry 320x240 is
+    // also an advertised stream size, so the two coincided and the session was
+    // reused. Any device hits this wherever a caller asks for exactly the pilot
+    // geometry.
+    //
+    // The test is deliberately one-directional. A YUV reader serves a pilot
+    // perfectly well -- the pilot counts frames and deletes them without
+    // reading a plane -- so only the PRIVATE-then-caller order forces a
+    // rebuild. Making it a plain equality would tear down and rebuild a working
+    // session every time a stream stopped and the pilot took over, which costs
+    // a reprovision to gain nothing.
+    const bool reader_serves_requester =
+        !backend->cfg_flow_is_pilot || flow_is_pilot;
     const bool matches = backend->session != nullptr &&
                          backend->cfg_has_stream == want_stream &&
                          backend->cfg_has_still == want_still &&
+                         (!want_stream || reader_serves_requester) &&
                          (!want_stream || (backend->cfg_stream_w == stream_width &&
                                            backend->cfg_stream_h == stream_height)) &&
                          (!want_still || (backend->cfg_still_w == still_width &&
                                           backend->cfg_still_h == still_height));
     if (matches) {
       camera2_detail::log_line(
-          "diag device=%llu session reused (stream=%s still=%s) age_ms=%.2f",
+          "diag device=%llu session reused (stream=%s still=%s flow=%s) age_ms=%.2f",
           static_cast<unsigned long long>(backend->device_instance_id),
           want_stream ? "yes" : "no", want_still ? "yes" : "no",
+          backend->cfg_flow_is_pilot ? "pilot" : "caller_stream",
           camera2_detail::diag_ms_since(
               backend->diag_session_configured_ns.load(std::memory_order_acquire)));
       return ProviderResult::success();
@@ -3976,6 +4039,7 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
           backend->output_container = container;
           backend->session = session;
           backend->cfg_has_stream = want_stream;
+          backend->cfg_flow_is_pilot = flow_is_pilot;
           backend->cfg_stream_w = stream_width;
           backend->cfg_stream_h = stream_height;
           backend->cfg_has_still = want_still;
@@ -4263,6 +4327,37 @@ ProviderResult Camera2CameraProvider::destroy_stream(uint64_t stream_id) {
   return ProviderResult::success();
 }
 
+ProducerRateCapabilities Camera2CameraProvider::stream_parent_context_rate_capabilities(
+    uint64_t device_instance_id,
+    uint64_t /*stream_id*/,
+    StreamIntent /*intent*/,
+    const CaptureProfile& /*profile*/,
+    const PictureConfig& /*picture*/) noexcept {
+  ProducerRateCapabilities caps{};
+  std::lock_guard<std::mutex> state_lock(state_mutex_);
+  auto dev_it = devices_.find(device_instance_id);
+  if (dev_it == devices_.end() || !dev_it->second.backend) {
+    return caps;  // Nothing known about this device; report nothing.
+  }
+  for (const auto& r : dev_it->second.backend->chars.ae_fps_ranges) {
+    if (r.first <= 0 || r.second <= 0) {
+      continue;
+    }
+    // add() refuses a malformed or duplicate entry and returns false when the
+    // table is full; a device advertising more than kMaxRanges loses the tail
+    // rather than silently reporting a truncated set as complete.
+    if (!caps.add(static_cast<uint32_t>(r.first), static_cast<uint32_t>(r.second))) {
+      camera2_detail::log_line(
+          "ratecaps device=%llu advertised more ranges than the contract carries; "
+          "reporting the first %u",
+          static_cast<unsigned long long>(device_instance_id),
+          static_cast<unsigned>(ProducerRateCapabilities::kMaxRanges));
+      break;
+    }
+  }
+  return caps;
+}
+
 ProviderResult Camera2CameraProvider::start_stream(
     uint64_t stream_id,
     const CaptureProfile& profile,
@@ -4332,6 +4427,51 @@ ProviderResult Camera2CameraProvider::start_stream(
 
   StreamState& st = st_it->second;
   st.req.profile = profile;
+
+  // Frame rate. Core has already materialized the effective range from what this
+  // device advertises (core_runtime.cpp, beside format selection), so there is no
+  // choosing to do here -- only executing what we were given, or refusing it.
+  //
+  // Camera2 will not take an arbitrary interval: CONTROL_AE_TARGET_FPS_RANGE must
+  // be one of the advertised ranges. So an effective range that is not advertised
+  // is an invalid effective configuration and fails deterministically, exactly as
+  // an unadvertised width does a few lines above. That is the case where Core had
+  // no capability to select from, or the caller asked for a rate this device does
+  // not offer; substituting the nearest is not ours to do.
+  {
+    const FrameRateRequest effective_rate{profile.target_fps_min, profile.target_fps_max};
+    uint32_t apply_min = 0;
+    uint32_t apply_max = 0;
+    if (effective_rate.expressed()) {
+      bool advertised = false;
+      for (const auto& r : dev.backend->chars.ae_fps_ranges) {
+        if (static_cast<uint32_t>(r.first) == effective_rate.min_fps &&
+            static_cast<uint32_t>(r.second) == effective_rate.max_fps) {
+          advertised = true;
+          break;
+        }
+      }
+      if (!advertised) {
+        camera2_detail::log_line(
+            "fpsreject device=%llu stream_id=%llu effective=[%u-%u] is not an "
+            "advertised AE target range; refusing rather than substituting",
+            static_cast<unsigned long long>(dev.device_instance_id),
+            static_cast<unsigned long long>(stream_id), effective_rate.min_fps,
+            effective_rate.max_fps);
+        release_acquisition_seam_for_stream_(dev.backend);
+        return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
+      }
+      apply_min = effective_rate.min_fps;
+      apply_max = effective_rate.max_fps;
+      camera2_detail::log_line(
+          "fpsapply device=%llu stream_id=%llu ae_target_fps_range=[%u-%u]",
+          static_cast<unsigned long long>(dev.device_instance_id),
+          static_cast<unsigned long long>(stream_id), apply_min, apply_max);
+    }
+    std::lock_guard<std::mutex> bl(dev.backend->m);
+    dev.backend->requested_ae_fps_min = apply_min;
+    dev.backend->requested_ae_fps_max = apply_max;
+  }
 
   uint64_t session_native_id = 0;
   {
@@ -4431,6 +4571,34 @@ ProviderResult Camera2CameraProvider::submit_repeating_request_(
           return;
         }
 
+        // The caller's frame rate, if it asked for one. Chosen at start_stream
+        // from what this device advertises, so by here it is already known to be
+        // an advertised range and needs no re-validation.
+        //
+        // A failure to set it is NOT fatal to the stream. The rate is a
+        // preference over a stream that is otherwise viable, and tearing down a
+        // working preview because AE would not take a range serves nobody; it is
+        // logged instead, and the realized rate observed downstream is what the
+        // caller is ultimately told.
+        uint32_t ae_fps_min = 0;
+        uint32_t ae_fps_max = 0;
+        {
+          std::lock_guard<std::mutex> bl(backend->m);
+          ae_fps_min = backend->requested_ae_fps_min;
+          ae_fps_max = backend->requested_ae_fps_max;
+        }
+        if (ae_fps_min != 0 && ae_fps_max != 0) {
+          const int32_t fps_range[2] = {static_cast<int32_t>(ae_fps_min),
+                                        static_cast<int32_t>(ae_fps_max)};
+          const camera_status_t fps_cs = ACaptureRequest_setEntry_i32(
+              request, ACAMERA_CONTROL_AE_TARGET_FPS_RANGE, 2, fps_range);
+          camera2_detail::log_line(
+              "fpsset device=%llu ae_target_fps_range=[%u-%u] status=%s",
+              static_cast<unsigned long long>(backend->device_instance_id),
+              ae_fps_min, ae_fps_max,
+              fps_cs == ACAMERA_OK ? "set" : "refused_by_request");
+        }
+
         // Result callbacks on the repeating request exist to observe AF state.
         // Without them a focus lock has no way to tell a settled lens from a
         // scanning one, and would pin the bracket to whatever mid-scan
@@ -4527,6 +4695,15 @@ ProviderResult Camera2CameraProvider::stop_stream(uint64_t stream_id) {
   }
 
   st_it->second.started = false;
+  // The rate belonged to the stream that is stopping, not to the device. Left
+  // set, it would be applied to a repeating request submitted for something
+  // else -- the capture path resubmits one -- and a later stream that asked for
+  // no rate at all would silently inherit this one.
+  if (backend) {
+    std::lock_guard<std::mutex> bl(backend->m);
+    backend->requested_ae_fps_min = 0;
+    backend->requested_ae_fps_max = 0;
+  }
   // The stream no longer needs the seam. This is the only release point for a
   // stream claim: destroy_stream refuses while started, so a started stream
   // can only reach destruction through here, exactly once per start.

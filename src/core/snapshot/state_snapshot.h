@@ -269,6 +269,23 @@ struct StreamState {
     uint32_t target_fps_min = 0;
     uint32_t target_fps_max = 0;
 
+    // MEASURED delivery rate, in milli-fps. Distinct in kind from the two
+    // fields above, which are the EFFECTIVE configuration Core asked the
+    // backend for -- what was requested of the device, not what it did.
+    //
+    // Zero means NOT MEASURED and must publish as absent, never as "0 fps": a
+    // stated zero reads as a measurement, which is the same reason a catalog
+    // entry omits max_fps rather than fabricating one, and the same reason a
+    // capture member lacking exposure metadata reports no realized value at
+    // all. A stream reports nothing here until its first measurement window
+    // has closed.
+    //
+    // Averaged over a fixed frame window rather than instantaneous, so it is a
+    // health signal and not a cadence probe. It exists because a rate cannot be
+    // derived from a single snapshot row: frames_received is cumulative, so
+    // 8fps and 15fps look identical in any one sample.
+    uint32_t realized_fps_milli = 0;
+
     uint64_t frames_received = 0;
     uint64_t frames_delivered = 0;
     uint64_t frames_dropped = 0;

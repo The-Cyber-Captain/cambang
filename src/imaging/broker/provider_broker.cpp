@@ -281,6 +281,28 @@ ProducerFormatCapabilities ProviderBroker::capture_format_capabilities(
              : no_format_support();
 }
 
+ProducerRateCapabilities ProviderBroker::stream_rate_capabilities(
+    const CaptureProfile& profile,
+    const PictureConfig& picture) const noexcept {
+  ActiveProviderCall call;
+  return acquire_active_provider_call_(call).ok()
+             ? call.provider()->stream_rate_capabilities(profile, picture)
+             : ProducerRateCapabilities{};
+}
+
+ProducerRateCapabilities ProviderBroker::stream_parent_context_rate_capabilities(
+    uint64_t device_instance_id,
+    uint64_t stream_id,
+    StreamIntent intent,
+    const CaptureProfile& profile,
+    const PictureConfig& picture) noexcept {
+  ActiveProviderCall call;
+  return acquire_active_provider_call_(call).ok()
+             ? call.provider()->stream_parent_context_rate_capabilities(
+                   device_instance_id, stream_id, intent, profile, picture)
+             : ProducerRateCapabilities{};
+}
+
 ProducerFormatCapabilities ProviderBroker::stream_parent_context_format_capabilities(
     uint64_t device_instance_id,
     uint64_t stream_id,

@@ -233,6 +233,19 @@ public:
   // produced by conversion, and those ARE exact guarantees.) See
   // pixel_payload_and_result_contract.md 6.3.0, "What a pinned format means
   // on a camera provider", including the NV21/YV12 asymmetry this leaves.
+  // Rates this camera advertises, read straight from
+  // CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES, which is cached at device open --
+  // so answering costs no I/O, as section 2 requires of a capability query.
+  // Nothing here derives, intersects or infers: an unopened or unknown device
+  // reports nothing, which Core reads as "no basis to select", not as "no rate
+  // is supported".
+  ProducerRateCapabilities stream_parent_context_rate_capabilities(
+      uint64_t device_instance_id,
+      uint64_t stream_id,
+      StreamIntent intent,
+      const CaptureProfile& profile,
+      const PictureConfig& picture) noexcept override;
+
   ProducerFormatCapabilities stream_format_capabilities(
       const CaptureProfile& profile,
       const PictureConfig& picture) const noexcept override {

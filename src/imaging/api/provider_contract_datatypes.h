@@ -271,6 +271,58 @@ inline bool validate_payload_layout(const PayloadLayout& layout) noexcept {
 // `can_emit_packed_rgb` records whether the provider will convert to a packed
 // RGBA/BGRA buffer on request. The default advertisement below describes every
 // provider in the tree today: RGBA/BGRA native, conversion available.
+// The frame rates a producer's backend will accept for a stream, exactly as the
+// device reports them -- never derived, never probed, never a guess.
+//
+// Why the shape is a list of RANGES rather than a list of rates: neither
+// implemented backend accepts an arbitrary number. Camera2 takes one of
+// CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES, which are genuine intervals; WinRT
+// takes a MediaFrameFormat whose rate is a single value. A single value is the
+// degenerate interval min == max, so one shape carries both and Core does not
+// have to know which kind of backend it is talking to.
+//
+// EMPTY IS A REAL ANSWER, AND IT IS NOT "NO RATES". It means this provider does
+// not report rate capability -- the default, and what the unimplemented seams
+// will report until they are written. Core must then materialize nothing and
+// leave the caller's request untouched, so the provider decides at start_stream
+// under brief section 6. Treating empty as "nothing is supported" would refuse
+// every rate request on every provider that has not implemented this yet.
+struct ProducerRateCapabilities {
+  static constexpr uint8_t kMaxRanges = 16;
+
+  struct Range {
+    uint32_t min_fps = 0;
+    uint32_t max_fps = 0;
+  };
+
+  Range ranges[kMaxRanges]{};
+  uint8_t count = 0;
+
+  constexpr bool reported() const noexcept { return count != 0; }
+
+  // Appends a range if there is room and it is not already advertised. Returns
+  // false when the entry was dropped, so a device advertising more than
+  // kMaxRanges fails visibly rather than silently truncating -- the same
+  // contract as ProducerFormatCapabilities::add.
+  constexpr bool add(uint32_t min_fps, uint32_t max_fps) noexcept {
+    if (min_fps == 0 || max_fps == 0 || min_fps > max_fps) {
+      return false;  // Not a usable advertisement; refuse it rather than store it.
+    }
+    for (uint8_t i = 0; i < count; ++i) {
+      if (ranges[i].min_fps == min_fps && ranges[i].max_fps == max_fps) {
+        return true;
+      }
+    }
+    if (count >= kMaxRanges) {
+      return false;
+    }
+    ranges[count].min_fps = min_fps;
+    ranges[count].max_fps = max_fps;
+    ++count;
+    return true;
+  }
+};
+
 struct ProducerFormatCapabilities {
   static constexpr uint8_t kMaxFormats = 8;
 

@@ -1566,6 +1566,29 @@ ProviderResult SyntheticProvider::start_stream(
     return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
   }
 
+  // The effective frame rate must be one this timeline can actually produce.
+  // Synthetic runs at a single nominal rate, so anything else is refused here
+  // exactly as the platform providers refuse a rate their device does not
+  // advertise -- and for a reason that matters more than the check itself: a
+  // rate request has to MEAN THE SAME THING under synthetic backing as under a
+  // camera. Accepting silently is what the whole change exists to end, and a
+  // provider that reports capability but never validates it would reintroduce
+  // the defect in exactly the place the create_stream latch divergence lived.
+  {
+    const uint32_t den = cfg_.nominal.fps_den ? cfg_.nominal.fps_den : 1u;
+    const uint32_t nominal_fps = cfg_.nominal.fps_num / den;
+    const bool rate_requested =
+        profile.target_fps_min != 0 || profile.target_fps_max != 0;
+    if (rate_requested && nominal_fps != 0) {
+      const uint32_t lo = profile.target_fps_min != 0 ? profile.target_fps_min : 1u;
+      const uint32_t hi = profile.target_fps_max != 0 ? profile.target_fps_max
+                                                      : UINT32_MAX;
+      if (nominal_fps < lo || nominal_fps > hi) {
+        return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+      }
+    }
+  }
+
   constexpr size_t kPoolSize = 8;
   const uint32_t stride = w * 4u;
   const size_t size_bytes = static_cast<size_t>(stride) * static_cast<size_t>(h);

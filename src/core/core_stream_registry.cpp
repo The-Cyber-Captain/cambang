@@ -240,13 +240,62 @@ std::vector<uint64_t> CoreStreamRegistry::take_expired_frame_resumptions(uint64_
 // at the call sites. There are three of them today -- the dispatcher's normal
 // path and two suppression paths -- and a fourth added later would silently miss
 // a disarm placed anywhere else, leaving a healthy stream to be reported failed.
-bool CoreStreamRegistry::on_frame_received(uint64_t stream_id, uint64_t integrated_ts_ns) {
+CoreStreamRegistry::FrameReceipt CoreStreamRegistry::on_frame_received(
+    uint64_t stream_id, uint64_t integrated_ts_ns) {
+  FrameReceipt receipt{};
   auto it = streams_.find(stream_id);
-  if (it == streams_.end()) return false;
-  it->second.frames_received++;
-  it->second.last_frame_ts_ns = integrated_ts_ns;
-  it->second.frame_resume_deadline_ns = 0;
-  return true;
+  if (it == streams_.end()) return receipt;
+  receipt.known = true;
+  StreamRecord& rec = it->second;
+  const uint64_t prior_ts_ns = rec.last_frame_ts_ns;
+  rec.frames_received++;
+  rec.last_frame_ts_ns = integrated_ts_ns;
+  rec.frame_resume_deadline_ns = 0;
+
+  // Realized rate. Measured here because this is the one place every frame path
+  // reaches, for the same reason the disarm above lives here rather than at the
+  // three call sites.
+  //
+  // A non-advancing mark restarts the window instead of contributing to it: a
+  // provider that reports zero, repeats a timestamp, or hands back a mark that
+  // moved backwards would otherwise produce an arbitrary rate rather than no
+  // rate, and no rate is the truthful answer.
+  if (integrated_ts_ns == 0 || integrated_ts_ns <= prior_ts_ns) {
+    rec.realized_window_first_ts_ns = integrated_ts_ns;
+    rec.realized_window_frames = integrated_ts_ns != 0 ? 1u : 0u;
+    return receipt;
+  }
+  if (rec.realized_window_frames == 0) {
+    rec.realized_window_first_ts_ns = integrated_ts_ns;
+    rec.realized_window_frames = 1;
+    return receipt;
+  }
+  rec.realized_window_frames++;
+
+  // A window closes on ELAPSED TIME, with a minimum frame count as a floor.
+  // Both conditions, not either: the duration is what keeps the publish
+  // schedule independent of frame rate, and the floor is what stops a rate
+  // being derived from too few intervals to mean anything.
+  const uint64_t span_ns = integrated_ts_ns - rec.realized_window_first_ts_ns;
+  const uint64_t window_ns =
+      static_cast<uint64_t>(kRealizedFpsWindowMs) * 1'000'000ull;
+  if (span_ns < window_ns || rec.realized_window_frames < kRealizedFpsWindowMinFrames) {
+    return receipt;
+  }
+
+  // (frames - 1) intervals span the window, not `frames`; counting the fence
+  // posts instead of the gaps overstates the rate by a whole frame.
+  const uint64_t intervals = rec.realized_window_frames - 1u;
+  if (span_ns > 0 && intervals > 0) {
+    rec.realized_fps_milli = static_cast<uint32_t>(
+        (intervals * 1'000'000'000'000ull) / span_ns);
+    // Only a window that actually produced a figure is a window worth
+    // publishing for.
+    receipt.realized_window_closed = true;
+  }
+  rec.realized_window_first_ts_ns = integrated_ts_ns;
+  rec.realized_window_frames = 1;
+  return receipt;
 }
 
 bool CoreStreamRegistry::on_frame_released(uint64_t stream_id) {

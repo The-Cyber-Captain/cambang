@@ -356,8 +356,17 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
     CoreRetainedProductionPlan capture_requested_retained_plan{};
     if (streams_) {
       integrated_ts_ns = now_ns_ ? now_ns_() : dispatcher_monotonic_now_ns();
-      if (!streams_->on_frame_received(sid, integrated_ts_ns)) {
+      const CoreStreamRegistry::FrameReceipt receipt =
+          streams_->on_frame_received(sid, integrated_ts_ns);
+      if (!receipt.known) {
         stats_.frames_unknown_stream++;
+      }
+      // A closed rate window is the ONLY event on the normal delivery path that
+      // makes a realized rate observable. Without this, the measurement is
+      // correct in the registry and never reaches a snapshot, because delivering
+      // a frame is otherwise not a publishable state change.
+      if (receipt.realized_window_closed) {
+        relevant_state_changed_ = true;
       }
       if (const CoreStreamRegistry::StreamRecord* stream_rec = streams_->find(sid); stream_rec != nullptr) {
         stream_intent = stream_rec->intent;

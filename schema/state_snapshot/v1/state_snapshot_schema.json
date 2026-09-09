@@ -447,6 +447,9 @@
         "target_fps_max": {
           "$ref": "#/$defs/uint32"
         },
+        "realized_fps_milli": {
+          "$ref": "#/$defs/uint32"
+        },
         "frames_received": {
           "$ref": "#/$defs/uint64"
         },
