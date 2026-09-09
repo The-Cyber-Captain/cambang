@@ -10,48 +10,48 @@ extends Node
 ## and was told it had 15. Nothing in the suite noticed, because nothing asked
 ## for a rate at all.
 ##
-## WHAT THIS ASSERTS HERE. That a rate-carrying definition is accepted, starts,
-## and SUSTAINS delivery -- the boundary and lifecycle half. It deliberately does
-## NOT assert a measured rate: the realized measurement lives in Core, whose
-## diagnostics are not visible on Android, and asserting a sensor's exact
-## cadence would be asserting hardware behaviour rather than CamBANG's.
+## TWO PHASES, AND THE FIRST IS WHAT MAKES THE SECOND READABLE.
 ##
-## Delivery is observed for a DURATION rather than a result count. get_result()
-## returns whatever is retained, so it is non-null on every tick once a stream is
-## live -- counting those counts Godot frames, not camera frames, and at 60fps a
-## count of five elapses in under a tenth of a second. A fixed window also
-## guarantees the provider emits at least two of its 30-frame diagnostics, which
-## is what makes a realized rate computable from the log afterwards. Measured at
-## five results, the S20+ run exited before the second one and no rate could be
-## derived at all.
+##   A. No rate requested. Core selects one from what the provider reports, the
+##      same way it selects a pixel format the caller did not name. This must
+##      start and deliver on any working device, so a failure here is a real
+##      failure and never a capability answer.
+##   B. A fixed rate requested. A frame rate is specified configuration, not a
+##      preference: a device that does not offer it REFUSES, exactly as it
+##      refuses an unobtainable width, and nothing is substituted. So a refusal
+##      in phase B is expected_unsupported -- a fact about the camera -- while
+##      the same refusal in phase A would be a defect.
 ##
-## WHERE THE REAL EVIDENCE IS. The provider's own log lines, which do reach
-## logcat:
-##   fpssel  ... requested=[15-15] outcome=exact chosen=[15-15]   (the decision)
-##   fpsapply ... ae_target_fps_range=[15-15] status=set          (the API call)
-## outcome names come from imaging/api/frame_rate_selection.h. `exact` is the
-## only one that promises a rate; `satisfied` means the backend was handed a
-## span it may sit anywhere inside, and `clamped` means the request could not be
-## served. A run whose log shows none of these lines is a run in which the rate
-## was never asked for -- which is precisely the regression this guards.
+## Without phase A a refusal is unattributable, because the catalog advertises
+## geometry and format but deliberately not selectable rates: max_fps there is a
+## capability and explicitly not a request (brief 9A). A caller cannot know in
+## advance whether a rate is on offer, which is exactly why omitting the rate is
+## the portable choice and asking for one states a requirement.
+##
+## WHAT IS NOT ASSERTED. A measured cadence. That is hardware behaviour, not
+## CamBANG's. Delivery is observed for a duration so the provider logs at least
+## two of its 30-frame diagnostics, which is what makes a realized rate
+## computable from the log afterwards.
+##
+## WHERE THE EVIDENCE IS. Provider log lines, which reach logcat on Android and
+## stderr on Windows:
+##   fpsapply  ... the effective rate was set on the backend
+##   fpsreject ... the effective rate is not one this backend offers
+## A run showing neither, with a rate requested, is a run in which the rate was
+## never asked for -- the regression this scene guards.
 
 const SCENE_LABEL := "76_stream_frame_rate_verify"
-const TOTAL_TIMEOUT_MS := 90000
-# Chosen because both curated handsets advertise it as a FIXED range -- S20+
-# [15-15] among [7-24],[24-24],[7-30],[30-30]; Quest 3 [15-15] among
-# [1-15],[1-30],[30-30] -- so `exact` is reachable on hardware we own rather
-# than being a rate we hope someone supports.
+const TOTAL_TIMEOUT_MS := 120000
+# Both curated handsets advertise 15 as a FIXED range -- S20+ [15-15] among
+# [7-24],[24-24],[7-30],[30-30]; Quest 3 [15-15] among [1-15],[1-30],[30-30] --
+# so this is reachable on hardware we own rather than a rate we hope exists. The
+# WinRT host camera offers no 15 at its advertised geometries, which is the
+# expected_unsupported path and worth exercising rather than avoiding.
 const WANTED_FPS := 15
 # Long enough at any plausible rate for the provider's every-30-frames frame
 # diagnostic to appear twice: two marks are the minimum from which an interval,
-# and so a realized rate, can be derived. Three seconds covers 15fps with room
-# to spare and still costs nothing next to the ~50s Android export.
+# and so a realized rate, can be derived.
 const OBSERVE_MS := 3000
-# Overridable so the scene can run as an A/B on one device: --cambang-wanted-fps=0
-# omits target_fps entirely, which is the pre-change behaviour (no rate asked of
-# the backend). Without that control, "no frames arrived" cannot be attributed --
-# a silent camera and a rate request that broke acquisition look identical.
-var _wanted_fps := WANTED_FPS
 
 var _done := false
 var _terminal_verdict_emitted := false
@@ -62,9 +62,10 @@ var _phase := "start"
 var _device = null
 var _stream = null
 var _hardware_id := ""
-var _chosen_profile: Dictionary = {}
+var _base_profile: Dictionary = {}
 var _frames := 0
 var _first_result_ms := 0
+var _rate_requested := false
 
 
 func _ready() -> void:
@@ -77,9 +78,7 @@ func _ready() -> void:
 	for arg in args:
 		if arg.begins_with("--cambang-bench-provider="):
 			_provider_arg = arg.substr("--cambang-bench-provider=".length()).strip_edges().to_lower()
-		if arg.begins_with("--cambang-wanted-fps="):
-			_wanted_fps = int(arg.substr("--cambang-wanted-fps=".length()).strip_edges())
-	print("RUN: %s provider=%s wanted_fps=%d" % [SCENE_LABEL, _provider_arg, _wanted_fps])
+	print("RUN: %s provider=%s wanted_fps=%d" % [SCENE_LABEL, _provider_arg, WANTED_FPS])
 
 	var err := 0
 	if _provider_arg == "synthetic":
@@ -98,16 +97,21 @@ func _process(_delta: float) -> void:
 	if Time.get_ticks_msec() - _started_ms > TOTAL_TIMEOUT_MS:
 		_error("timed out in phase %s" % _phase, "timeout")
 		return
-	if _phase == "start":
-		_phase = "discover"
-	elif _phase == "discover":
-		_phase_discover()
-	elif _phase == "engage":
-		_phase_engage()
-	elif _phase == "create":
-		_phase_create()
-	elif _phase == "observe":
-		_phase_observe()
+	match _phase:
+		"start":
+			_phase = "discover"
+		"discover":
+			_phase_discover()
+		"engage":
+			_phase_engage()
+		"open_unrated":
+			_phase_open(false)
+		"observe_unrated":
+			_phase_observe()
+		"open_rated":
+			_phase_open(true)
+		"observe_rated":
+			_phase_observe()
 
 
 func _phase_discover() -> void:
@@ -128,58 +132,75 @@ func _phase_discover() -> void:
 func _phase_engage() -> void:
 	var err := int(_device.engage())
 	if err == OK:
-		_phase = "create"
+		# Geometry comes from the catalog, never invented: an unadvertised size is
+		# refused by the provider and would fail this scene for a reason that has
+		# nothing to do with frame rate.
+		var caps: Dictionary = CamBANGServer.get_supported_stream_profiles(_hardware_id)
+		if not caps.has("profiles"):
+			_expected_unsupported("provider cannot enumerate stream profiles for %s" % _hardware_id,
+				"catalog_not_enumerable")
+			return
+		var profiles: Array = caps["profiles"]
+		if profiles.is_empty():
+			_expected_unsupported("endpoint advertises no stream profiles", "catalog_empty")
+			return
+		_base_profile = ((profiles[0] as Dictionary)["profile"] as Dictionary).duplicate()
+		_phase = "open_unrated"
 		return
 	if err != ERR_BUSY:
 		_fail("engage() failed (%d)" % err, "engage_failed")
 
 
-func _phase_create() -> void:
-	# Geometry comes from the catalog, never invented: an unadvertised size is
-	# refused by the provider and would fail this scene for a reason that has
-	# nothing to do with frame rate.
-	var caps: Dictionary = CamBANGServer.get_supported_stream_profiles(_hardware_id)
-	if not caps.has("profiles"):
-		_expected_unsupported("provider cannot enumerate stream profiles for %s" % _hardware_id,
-			"catalog_not_enumerable")
-		return
-	var profiles: Array = caps["profiles"]
-	if profiles.is_empty():
-		_expected_unsupported("endpoint advertises no stream profiles", "catalog_empty")
-		return
-
-	_chosen_profile = ((profiles[0] as Dictionary)["profile"] as Dictionary).duplicate()
-	# Whole ints only: the boundary parser requires Variant::INT exactly, and a
-	# float here rejects the ENTIRE definition, not just this key.
-	if _wanted_fps > 0:
-		_chosen_profile["target_fps"] = int(_wanted_fps)
+func _phase_open(with_rate: bool) -> void:
+	_rate_requested = with_rate
+	var profile: Dictionary = _base_profile.duplicate()
+	if with_rate:
+		# Whole ints only: the boundary parser requires Variant::INT exactly, and
+		# a float rejects the ENTIRE definition, not just this key.
+		profile["target_fps"] = int(WANTED_FPS)
 
 	_stream = _device.create_stream({
 		"intent": CamBANGStream.INTENT_PREVIEW,
-		"profile": _chosen_profile,
+		"profile": profile,
 	})
 	if _stream == null:
-		_fail("create_stream refused a catalog profile carrying target_fps=%d: %s"
-			% [_wanted_fps, JSON.stringify(_chosen_profile)], "create_stream_null")
+		if with_rate:
+			_expected_unsupported("create_stream refused target_fps=%d on this device: %s"
+				% [WANTED_FPS, JSON.stringify(profile)], "rate_refused_at_create")
+		else:
+			_fail("create_stream refused a catalog profile carrying no rate: %s"
+				% JSON.stringify(profile), "create_stream_null")
 		return
-	print("STEP OK: create_stream accepted %s" % JSON.stringify(_chosen_profile))
 
 	var err := int(_stream.start())
 	if err != OK:
-		_fail("stream.start() failed (%d) for %s" % [err, JSON.stringify(_chosen_profile)],
-			"stream_start_failed")
+		# Phase A proved this device can start an unrated stream at this geometry,
+		# so a refusal HERE is the device declining the rate, not a broken stream.
+		if with_rate:
+			_stream.destroy()
+			_stream = null
+			_expected_unsupported("device does not offer %dfps at %dx%d (start rc=%d)"
+				% [WANTED_FPS, int(profile.get("width", 0)), int(profile.get("height", 0)), err],
+				"rate_not_offered")
+		else:
+			_fail("stream.start() failed (%d) with no rate requested: %s"
+				% [err, JSON.stringify(profile)], "unrated_start_failed")
 		return
-	print("STEP OK: stream started at %dx%d target_fps=%d" % [
-		int(_chosen_profile.get("width", 0)), int(_chosen_profile.get("height", 0)), _wanted_fps,
+
+	print("STEP OK: stream started at %dx%d %s" % [
+		int(profile.get("width", 0)), int(profile.get("height", 0)),
+		("target_fps=%d" % WANTED_FPS) if with_rate else "no rate requested",
 	])
-	_phase = "observe"
+	_frames = 0
+	_first_result_ms = 0
+	_phase = "observe_rated" if with_rate else "observe_unrated"
 
 
 func _phase_observe() -> void:
-	# Sustained delivery proves the rate request did not break acquisition. How
-	# FAST frames arrive is the sensor's business and is not asserted here; see
-	# the header. A stream that stops delivering mid-window simply never
-	# satisfies the condition and the scene times out, which is correct.
+	# Sustained delivery proves the configuration did not break acquisition. How
+	# FAST frames arrive is the sensor's business and is not asserted here. A
+	# stream that stops delivering mid-window never satisfies this and the scene
+	# times out, which is correct.
 	var result = _stream.get_result()
 	if result == null:
 		return
@@ -190,9 +211,17 @@ func _phase_observe() -> void:
 	var observed_ms := Time.get_ticks_msec() - _first_result_ms
 	if observed_ms < OBSERVE_MS:
 		return
-	print("STEP OK: delivery sustained %d ms (%d retrievals) with a rate-carrying profile"
-		% [observed_ms, _frames])
-	_pass("pass_fps_%d" % _wanted_fps)
+	print("STEP OK: delivery sustained %d ms (%d retrievals) %s" % [
+		observed_ms, _frames,
+		"with a rate-carrying profile" if _rate_requested else "with no rate requested",
+	])
+	_stream.stop()
+	_stream.destroy()
+	_stream = null
+	if _rate_requested:
+		_pass("pass_fps_%d" % WANTED_FPS)
+	else:
+		_phase = "open_rated"
 
 
 func _pass(reason: String) -> void:

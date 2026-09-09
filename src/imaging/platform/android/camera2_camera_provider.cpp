@@ -4327,6 +4327,37 @@ ProviderResult Camera2CameraProvider::destroy_stream(uint64_t stream_id) {
   return ProviderResult::success();
 }
 
+ProducerRateCapabilities Camera2CameraProvider::stream_parent_context_rate_capabilities(
+    uint64_t device_instance_id,
+    uint64_t /*stream_id*/,
+    StreamIntent /*intent*/,
+    const CaptureProfile& /*profile*/,
+    const PictureConfig& /*picture*/) noexcept {
+  ProducerRateCapabilities caps{};
+  std::lock_guard<std::mutex> state_lock(state_mutex_);
+  auto dev_it = devices_.find(device_instance_id);
+  if (dev_it == devices_.end() || !dev_it->second.backend) {
+    return caps;  // Nothing known about this device; report nothing.
+  }
+  for (const auto& r : dev_it->second.backend->chars.ae_fps_ranges) {
+    if (r.first <= 0 || r.second <= 0) {
+      continue;
+    }
+    // add() refuses a malformed or duplicate entry and returns false when the
+    // table is full; a device advertising more than kMaxRanges loses the tail
+    // rather than silently reporting a truncated set as complete.
+    if (!caps.add(static_cast<uint32_t>(r.first), static_cast<uint32_t>(r.second))) {
+      camera2_detail::log_line(
+          "ratecaps device=%llu advertised more ranges than the contract carries; "
+          "reporting the first %u",
+          static_cast<unsigned long long>(device_instance_id),
+          static_cast<unsigned>(ProducerRateCapabilities::kMaxRanges));
+      break;
+    }
+  }
+  return caps;
+}
+
 ProviderResult Camera2CameraProvider::start_stream(
     uint64_t stream_id,
     const CaptureProfile& profile,
@@ -4397,40 +4428,49 @@ ProviderResult Camera2CameraProvider::start_stream(
   StreamState& st = st_it->second;
   st.req.profile = profile;
 
-  // Frame rate. Chosen here, from what this device advertises, and applied by
-  // every repeating request built afterwards.
+  // Frame rate. Core has already materialized the effective range from what this
+  // device advertises (core_runtime.cpp, beside format selection), so there is no
+  // choosing to do here -- only executing what we were given, or refusing it.
   //
-  // The outcome is logged in full because only one of its values promises the
-  // caller a rate: Exact pins AE to a single value, whereas Satisfied hands AE
-  // a span it may sit anywhere inside, and Clamped means the request could not
-  // be served at all. Reporting those three as one success would put a
-  // set-point where realized truth belongs.
+  // Camera2 will not take an arbitrary interval: CONTROL_AE_TARGET_FPS_RANGE must
+  // be one of the advertised ranges. So an effective range that is not advertised
+  // is an invalid effective configuration and fails deterministically, exactly as
+  // an unadvertised width does a few lines above. That is the case where Core had
+  // no capability to select from, or the caller asked for a rate this device does
+  // not offer; substituting the nearest is not ours to do.
   {
-    std::vector<FrameRateRange> candidates;
-    candidates.reserve(dev.backend->chars.ae_fps_ranges.size());
-    for (const auto& r : dev.backend->chars.ae_fps_ranges) {
-      if (r.first > 0 && r.second > 0) {
-        candidates.push_back(FrameRateRange{static_cast<uint32_t>(r.first),
-                                            static_cast<uint32_t>(r.second)});
+    const FrameRateRequest effective_rate{profile.target_fps_min, profile.target_fps_max};
+    uint32_t apply_min = 0;
+    uint32_t apply_max = 0;
+    if (effective_rate.expressed()) {
+      bool advertised = false;
+      for (const auto& r : dev.backend->chars.ae_fps_ranges) {
+        if (static_cast<uint32_t>(r.first) == effective_rate.min_fps &&
+            static_cast<uint32_t>(r.second) == effective_rate.max_fps) {
+          advertised = true;
+          break;
+        }
       }
-    }
-    const FrameRateRequest want{profile.target_fps_min, profile.target_fps_max};
-    const FrameRateSelection sel =
-        select_frame_rate(want, candidates.data(), candidates.size());
-    {
-      std::lock_guard<std::mutex> bl(dev.backend->m);
-      dev.backend->requested_ae_fps_min = sel.chosen.min_fps;
-      dev.backend->requested_ae_fps_max = sel.chosen.max_fps;
-    }
-    if (want.expressed()) {
+      if (!advertised) {
+        camera2_detail::log_line(
+            "fpsreject device=%llu stream_id=%llu effective=[%u-%u] is not an "
+            "advertised AE target range; refusing rather than substituting",
+            static_cast<unsigned long long>(dev.device_instance_id),
+            static_cast<unsigned long long>(stream_id), effective_rate.min_fps,
+            effective_rate.max_fps);
+        release_acquisition_seam_for_stream_(dev.backend);
+        return ProviderResult::failure(ProviderError::ERR_PLATFORM_CONSTRAINT);
+      }
+      apply_min = effective_rate.min_fps;
+      apply_max = effective_rate.max_fps;
       camera2_detail::log_line(
-          "fpssel device=%llu stream_id=%llu requested=[%u-%u] outcome=%s chosen=[%u-%u] "
-          "advertised=%zu",
+          "fpsapply device=%llu stream_id=%llu ae_target_fps_range=[%u-%u]",
           static_cast<unsigned long long>(dev.device_instance_id),
-          static_cast<unsigned long long>(stream_id), want.min_fps, want.max_fps,
-          frame_rate_selection_outcome_name(sel.outcome), sel.chosen.min_fps,
-          sel.chosen.max_fps, candidates.size());
+          static_cast<unsigned long long>(stream_id), apply_min, apply_max);
     }
+    std::lock_guard<std::mutex> bl(dev.backend->m);
+    dev.backend->requested_ae_fps_min = apply_min;
+    dev.backend->requested_ae_fps_max = apply_max;
   }
 
   uint64_t session_native_id = 0;
@@ -4553,7 +4593,7 @@ ProviderResult Camera2CameraProvider::submit_repeating_request_(
           const camera_status_t fps_cs = ACaptureRequest_setEntry_i32(
               request, ACAMERA_CONTROL_AE_TARGET_FPS_RANGE, 2, fps_range);
           camera2_detail::log_line(
-              "fpsapply device=%llu ae_target_fps_range=[%u-%u] status=%s",
+              "fpsset device=%llu ae_target_fps_range=[%u-%u] status=%s",
               static_cast<unsigned long long>(backend->device_instance_id),
               ae_fps_min, ae_fps_max,
               fps_cs == ACAMERA_OK ? "set" : "refused_by_request");

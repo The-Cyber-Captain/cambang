@@ -21,6 +21,7 @@
 
 #include "imaging/broker/banner_info.h"
 #include "core/resource_aggregate_telemetry.h"
+#include "imaging/api/frame_rate_selection.h"
 #include "imaging/api/timeline_teardown_trace.h"
 
 namespace cambang {
@@ -5822,6 +5823,59 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
       // caller who named no format still gets a working stream.
       if (effective.profile.format_fourcc == 0) {
         effective.profile.format_fourcc = tmpl.profile.format_fourcc;
+      }
+    }
+
+    // Frame rate, materialized on exactly the same seam and for the same reason
+    // as the format above: the provider reports what the device offers, Core
+    // decides, the provider executes. Deciding this per provider is what produced
+    // the create_stream latch divergence -- a rule enforced provider-locally that
+    // Core never sanctioned and SyntheticProvider never applied.
+    //
+    // Unlike format, this runs whether or not the caller named a rate, because
+    // both cases need it: an unnamed rate is selected from capability, and a
+    // named one is mapped onto a concrete advertised candidate. Neither backend
+    // accepts an arbitrary interval -- Camera2 requires one of the advertised AE
+    // ranges and WinRT carries the rate on the format you select -- so passing a
+    // caller's numbers straight through would leave the provider to choose, which
+    // is precisely what this seam exists to prevent.
+    //
+    // Three outcomes, and the difference between the last two is load-bearing:
+    //
+    //   * a candidate satisfies the request, or none was made and one is selected
+    //     -- the effective profile carries a concrete advertised range;
+    //   * capability IS reported and nothing satisfies the request -- the request
+    //     STANDS UNALTERED. Nothing is substituted, exactly as an unobtainable
+    //     width is never substituted, and start_stream refuses it deterministically
+    //     (brief section 6). Core does not refuse here: the provider is the
+    //     authority on what it can execute, and geometry already refuses at start
+    //     for that reason;
+    //   * no capability reported at all -- the contract default, and every
+    //     unimplemented seam. Also stands unaltered, but says nothing about the
+    //     request. Reading this as "unsupported" would refuse every rate request
+    //     on every provider that has not implemented the query yet.
+    if (ICameraProvider* rate_prov = provider_.load(std::memory_order_acquire)) {
+      const ProducerRateCapabilities rate_caps =
+          rate_prov->stream_parent_context_rate_capabilities(
+              effective.device_instance_id,
+              effective.stream_id,
+              effective.intent,
+              effective.profile,
+              effective.picture);
+      FrameRateRange candidates[ProducerRateCapabilities::kMaxRanges]{};
+      for (uint8_t i = 0; i < rate_caps.count; ++i) {
+        candidates[i].min_fps = rate_caps.ranges[i].min_fps;
+        candidates[i].max_fps = rate_caps.ranges[i].max_fps;
+      }
+      const FrameRateRequest want{effective.profile.target_fps_min,
+                                  effective.profile.target_fps_max};
+      const FrameRateSelection sel =
+          select_frame_rate(want, candidates, rate_caps.count);
+      if (sel.outcome == FrameRateSelectionOutcome::NotRequested ||
+          sel.outcome == FrameRateSelectionOutcome::Exact ||
+          sel.outcome == FrameRateSelectionOutcome::Satisfied) {
+        effective.profile.target_fps_min = sel.chosen.min_fps;
+        effective.profile.target_fps_max = sel.chosen.max_fps;
       }
     }
 

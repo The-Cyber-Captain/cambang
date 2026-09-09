@@ -74,6 +74,25 @@ public:
   // deterministically without hardware. NV21 and YV12 are here specifically so
   // chroma-order handling is covered by a test rather than only by whichever
   // family member a given handset happens to deliver.
+  // The synthetic timeline runs at one nominal rate, so that is the single
+  // fixed range this provider offers. Reporting it matters as much as the
+  // platform providers reporting theirs: a rate request must mean the same
+  // thing under synthetic backing as under a camera, and the create_stream
+  // latch divergence is what happens when only some providers participate.
+  ProducerRateCapabilities stream_rate_capabilities(
+      const CaptureProfile& profile,
+      const PictureConfig& picture) const noexcept override {
+    (void)profile;
+    (void)picture;
+    ProducerRateCapabilities caps{};
+    const uint32_t den = cfg_.nominal.fps_den ? cfg_.nominal.fps_den : 1u;
+    const uint32_t fps = cfg_.nominal.fps_num / den;
+    if (fps != 0) {
+      caps.add(fps, fps);
+    }
+    return caps;
+  }
+
   ProducerFormatCapabilities stream_format_capabilities(
       const CaptureProfile& profile,
       const PictureConfig& picture) const noexcept override {

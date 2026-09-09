@@ -37,8 +37,8 @@ namespace cambang {
 // advertised range [7,30] is not a satisfied request: 15 is inside it, but
 // nothing makes AE sit there, and reporting that as success would republish a
 // set-point as though it were truth. Exact and Satisfied are therefore distinct
-// from each other and from Clamped, and a provider is expected to log which one
-// it got rather than to assume it asked successfully.
+// from each other and from Unserviceable, and the caller is told which it got
+// rather than left to assume the request was honoured.
 //
 // WHAT THIS DOES NOT DO. It does not measure. A selection says what was asked
 // of the backend, never what the sensor delivered -- realized rate is observed
@@ -63,39 +63,43 @@ struct FrameRateRequest final {
 };
 
 enum class FrameRateSelectionOutcome : uint8_t {
-  // The caller asked for nothing. The provider keeps whatever default it would
-  // have used, and must not synthesise a request on the caller's behalf.
+  // The caller asked for nothing. Core selects from what the backend reports,
+  // exactly as it selects a pixel format the caller did not name.
   NotRequested = 0,
 
-  // The chosen candidate is a single fixed rate inside the request. The backend
-  // has nowhere else to go, so this is the only outcome that promises a rate.
+  // The chosen candidate is a single fixed rate satisfying the request. The
+  // backend has nowhere else to go, so this is the only outcome that promises
+  // a rate rather than a bound.
   Exact = 1,
 
-  // The chosen candidate lies entirely within the request, but spans more than
-  // one rate. Every rate the backend may pick honours the request; which one it
+  // The chosen candidate lies wholly within the request but spans more than one
+  // rate. Every rate the backend may pick honours what was asked; which one it
   // picks is the backend's business.
   Satisfied = 2,
 
-  // Nothing advertised fits the request. The nearest was chosen, and the caller
-  // is getting a rate it did not ask for -- permitted, because clamping is
-  // honest so long as the realized rate is reported correctly, but never silent.
+  // The backend reports rate capability and NOTHING it advertises satisfies the
+  // request. The effective configuration is invalid, and it is left as the
+  // caller stated it: nothing is substituted, exactly as an unavailable width is
+  // never substituted. start_stream then fails deterministically (brief 6).
   //
-  // KNOWN CONFLATION. This covers two cases a caller might want told apart: a
-  // candidate that OVERLAPS the request and may yet yield it (asking 2 of a
-  // device advertising [1-15]), and one that cannot possibly (asking 120 of a
-  // device topping out at 30). `chosen` distinguishes them and the outcome does
-  // not. Left as one value deliberately -- a fourth outcome earns its place only
-  // when a caller acts on the difference, and none does today.
-  Clamped = 3,
+  // This replaced a Clamped outcome that chose the nearest unsatisfying
+  // candidate. A frame rate is specified configuration, not a preference -- we
+  // would not serve 1024 pixels wide to a caller that asked for 1080 -- and
+  // clamping put the provider in the business of inventing a value Core had not
+  // materialized.
+  Unserviceable = 3,
 
-  // The backend advertised nothing to choose from. Distinct from NotRequested:
-  // the caller asked and could not be served.
-  Unavailable = 4,
+  // The backend reports NO rate capability at all. Distinct from Unserviceable
+  // in the way NOT_THIS_PROVIDER is distinct from CANNOT_ENUMERATE: nothing has
+  // been refused, we simply have no basis to select or validate. Core leaves the
+  // request untouched and the provider decides at start.
+  NotReported = 4,
 };
 
 struct FrameRateSelection final {
   FrameRateSelectionOutcome outcome = FrameRateSelectionOutcome::NotRequested;
-  // Meaningful only for Exact, Satisfied and Clamped.
+  // Meaningful only for NotRequested, Exact and Satisfied. Unserviceable and
+  // NotReported select nothing, and leave the caller's request to stand.
   FrameRateRange chosen{};
 };
 
@@ -105,8 +109,8 @@ constexpr const char* frame_rate_selection_outcome_name(
     case FrameRateSelectionOutcome::NotRequested: return "not_requested";
     case FrameRateSelectionOutcome::Exact:        return "exact";
     case FrameRateSelectionOutcome::Satisfied:    return "satisfied";
-    case FrameRateSelectionOutcome::Clamped:      return "clamped";
-    case FrameRateSelectionOutcome::Unavailable:  return "unavailable";
+    case FrameRateSelectionOutcome::Unserviceable: return "unserviceable";
+    case FrameRateSelectionOutcome::NotReported:  return "not_reported";
   }
   return "unknown";
 }
@@ -122,95 +126,75 @@ constexpr FrameRateRange normalized_request(const FrameRateRequest& req) noexcep
   return lo <= hi ? FrameRateRange{lo, hi} : FrameRateRange{hi, lo};
 }
 
-// How far a candidate sits outside the request, zero when it overlaps at all.
-constexpr uint32_t distance_outside(const FrameRateRange& c,
-                                    const FrameRateRange& want) noexcept {
-  if (c.max_fps < want.min_fps) return want.min_fps - c.max_fps;
-  if (c.min_fps > want.max_fps) return c.min_fps - want.max_fps;
-  return 0u;
-}
-
 }  // namespace detail
 
-// Pick the advertised candidate that best serves the request.
+// Pick the advertised candidate that satisfies the request.
 //
-// Preference order, and the reasoning for each:
-//   1. A candidate lying WHOLLY INSIDE the request, because only then does every
-//      rate the backend may choose honour what was asked. Among those, the
-//      highest ceiling wins -- a caller asking for a range wants frames, not the
-//      slowest option that technically qualifies -- and a fixed candidate breaks
-//      a tie, being the only kind that promises anything.
-//   2. Failing that, the nearest candidate, measured as distance outside the
-//      requested interval. This is the Clamped case and the caller is owed a
-//      log line saying so.
+// A candidate satisfies the request only when it lies WHOLLY INSIDE it, because
+// only then does every rate the backend may choose honour what was asked. A
+// range merely CONTAINING the request does not: handing Camera2 [7-30] when 15
+// was asked for leaves auto-exposure free to sit anywhere in that span.
+//
+// Among satisfying candidates the highest ceiling wins -- a caller asking for a
+// range wants frames, not the slowest option that technically qualifies -- and a
+// fixed candidate breaks a tie, being the only kind that promises anything. That
+// tie-break is uncontroversial precisely because every option it chooses between
+// already honours the request.
+//
+// There is deliberately no nearest-candidate fallback. When nothing satisfies
+// the request the answer is Unserviceable and the caller's request stands
+// unaltered; substituting a rate the caller did not ask for is the clamp this
+// header used to perform and no longer does.
 //
 // `candidates` may be null when `count` is zero. Nothing here allocates, throws,
-// or touches a backend: brief 2 forbids I/O in a capability decision, and this
-// is consulted at stream start on the core thread's call path.
+// or touches a backend: brief section 2 forbids I/O in a capability decision,
+// and Core consults this during create_stream on its own thread.
 inline FrameRateSelection select_frame_rate(const FrameRateRequest& req,
                                             const FrameRateRange* candidates,
                                             size_t count) noexcept {
   FrameRateSelection out{};
-  if (!req.expressed()) {
-    out.outcome = FrameRateSelectionOutcome::NotRequested;
-    return out;
-  }
   if (candidates == nullptr || count == 0) {
-    out.outcome = FrameRateSelectionOutcome::Unavailable;
+    // No basis to choose or to refuse. Says nothing about the request.
+    out.outcome = FrameRateSelectionOutcome::NotReported;
     return out;
   }
 
-  const FrameRateRange want = detail::normalized_request(req);
+  const FrameRateRange want = req.expressed()
+      ? detail::normalized_request(req)
+      : FrameRateRange{1u, UINT32_MAX};
 
-  const FrameRateRange* best_inside = nullptr;
-  const FrameRateRange* best_near = nullptr;
-  uint32_t best_near_distance = UINT32_MAX;
-
+  const FrameRateRange* best = nullptr;
   for (size_t i = 0; i < count; ++i) {
     const FrameRateRange& c = candidates[i];
     if (c.min_fps == 0 || c.max_fps == 0 || c.min_fps > c.max_fps) {
       continue;  // Not a usable advertisement; ignore rather than reason about it.
     }
-    if (c.min_fps >= want.min_fps && c.max_fps <= want.max_fps) {
-      if (best_inside == nullptr || c.max_fps > best_inside->max_fps ||
-          (c.max_fps == best_inside->max_fps &&
-           (c.max_fps - c.min_fps) < (best_inside->max_fps - best_inside->min_fps))) {
-        best_inside = &c;
-      }
-      continue;
+    if (c.min_fps < want.min_fps || c.max_fps > want.max_fps) {
+      continue;  // Does not lie wholly inside the request.
     }
-    const uint32_t d = detail::distance_outside(c, want);
-    // Equal distance is broken by the TIGHTER span, not the higher ceiling.
-    // Both matter and they disagree: asking 2 of a device advertising [1-15]
-    // and [1-30], the ceiling rule takes [1-30], which is the looser promise
-    // and the one less likely to yield 2. The tighter range is nearer the
-    // request in every sense that matters to a caller. A higher ceiling still
-    // breaks a tie between equally tight candidates, where it means more frames
-    // at no cost to the promise.
-    const uint32_t span = c.max_fps - c.min_fps;
-    const uint32_t best_span =
-        best_near != nullptr ? (best_near->max_fps - best_near->min_fps) : 0u;
-    if (best_near == nullptr || d < best_near_distance ||
-        (d == best_near_distance &&
-         (span < best_span || (span == best_span && c.max_fps > best_near->max_fps)))) {
-      best_near = &c;
-      best_near_distance = d;
+    if (best == nullptr || c.max_fps > best->max_fps ||
+        (c.max_fps == best->max_fps &&
+         (c.max_fps - c.min_fps) < (best->max_fps - best->min_fps))) {
+      best = &c;
     }
   }
 
-  if (best_inside != nullptr) {
-    out.chosen = *best_inside;
-    out.outcome = (best_inside->min_fps == best_inside->max_fps)
-                      ? FrameRateSelectionOutcome::Exact
-                      : FrameRateSelectionOutcome::Satisfied;
+  if (best == nullptr) {
+    // An unexpressed request cannot be unserviceable -- it asked for nothing --
+    // but a backend advertising only malformed ranges leaves nothing to select.
+    out.outcome = req.expressed() ? FrameRateSelectionOutcome::Unserviceable
+                                  : FrameRateSelectionOutcome::NotReported;
     return out;
   }
-  if (best_near != nullptr) {
-    out.chosen = *best_near;
-    out.outcome = FrameRateSelectionOutcome::Clamped;
+
+  out.chosen = *best;
+  if (!req.expressed()) {
+    out.outcome = FrameRateSelectionOutcome::NotRequested;
     return out;
   }
-  out.outcome = FrameRateSelectionOutcome::Unavailable;
+  out.outcome = (best->min_fps == best->max_fps)
+                    ? FrameRateSelectionOutcome::Exact
+                    : FrameRateSelectionOutcome::Satisfied;
   return out;
 }
 

@@ -190,13 +190,20 @@ func _ready() -> void:
 	if int(CamBANGStream.INTENT_VIEWFINDER) != 1:
 		_fail("FAIL: CamBANGStream.INTENT_VIEWFINDER constant must be 1")
 		return
+	# No target_fps. This scene verifies lifecycle -- handles, identity, start,
+	# stop, destroy -- and the rate was incidental to that. It asked for 15fps
+	# against a synthetic timeline whose nominal rate is 30, which used to be
+	# accepted silently because no provider applied the request at all. A rate a
+	# backend cannot serve is now refused, like an unobtainable width, so keeping
+	# 15 here would assert the defect rather than the lifecycle. Omitting it is
+	# also the portable form: Core then selects from what the provider reports.
+	# Frame-rate behaviour itself is covered by 76_stream_frame_rate_verify.
 	_stream = _handle_a.create_stream({
 		"intent": CamBANGStream.INTENT_VIEWFINDER,
 		"profile": {
 			"width": 640,
 			"height": 360,
 			"format_fourcc": CamBANGServer.PIXEL_FORMAT_RGBA,
-			"target_fps": 15,
 		},
 	})
 	if _stream == null:
@@ -230,8 +237,19 @@ func _ready() -> void:
 	if int(stream_state.get("format", -1)) != CamBANGServer.PIXEL_FORMAT_RGBA:
 		_fail("FAIL: Stream Definition format_fourcc must apply")
 		return
-	if int(stream_state.get("target_fps_min", -1)) != 15 or int(stream_state.get("target_fps_max", -1)) != 15:
-		_fail("FAIL: Stream Definition target_fps must apply to min/max")
+	# The snapshot carries the EFFECTIVE rate Core materialized from what the
+	# provider reports, consistent with width/height/format above, which are
+	# effective too. This used to assert the fields echoed the caller's request
+	# verbatim -- which they did, because nothing consumed them: a request of 15
+	# was published as 15 while the timeline ran at 30. Asserting a specific
+	# number here would either restate that defect or hardcode one provider's
+	# nominal rate, so what is checked is that a concrete rate was materialized
+	# at all. The value itself is covered against real advertisements in
+	# 76_stream_frame_rate_verify.
+	var eff_min := int(stream_state.get("target_fps_min", -1))
+	var eff_max := int(stream_state.get("target_fps_max", -1))
+	if eff_min <= 0 or eff_max <= 0 or eff_min > eff_max:
+		_fail("FAIL: snapshot must carry a materialized effective rate; got [%d-%d]" % [eff_min, eff_max])
 		return
 	if _stream.start() != OK:
 		_fail("FAIL: CamBANGStream.start() must return OK")

@@ -527,6 +527,12 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   // this request" is answerable; conflating them made the wanted value read as
   // a description of a reader that did not have it.
   uint32_t realized_reader_fourcc = 0;
+  // Rate the currently selected MediaFrameFormat carries, in whole fps. Kept
+  // beside the realized fourcc and for the same reason: "does the existing
+  // configuration serve this request" is not answerable from geometry alone,
+  // because on this backend the rate is a property of the format. Zero means no
+  // format has been selected yet.
+  uint32_t realized_fps = 0;
   // Frame rate a caller WANTS, stated before format selection for the same
   // reason reader_fourcc is: on this backend the rate is a property of the
   // MediaFrameFormat, so it has to be known while choosing one. Zero/zero means
@@ -1757,6 +1763,20 @@ ProviderResult WinrtCameraProvider::ensure_reader_realized_(
   return ProviderResult::success();
 }
 
+namespace winrt_detail {
+// Whole frames per second for a format, rounded, because 29.97 is 30 to a
+// caller and requests are stated in whole fps. Zero when the format states no
+// usable rate -- contributing nothing rather than a fabricated number.
+inline uint32_t format_fps(const wmcf::MediaFrameFormat& f) noexcept {
+  const auto rate = f.FrameRate();
+  if (!rate || rate.Denominator() == 0) {
+    return 0;
+  }
+  return static_cast<uint32_t>((static_cast<double>(rate.Numerator()) /
+                                static_cast<double>(rate.Denominator())) + 0.5);
+}
+}  // namespace winrt_detail
+
 ProviderResult WinrtCameraProvider::ensure_reader_geometry_(
     SeamClaimant requester,
     const std::shared_ptr<DeviceBackend>& backend,
@@ -1779,7 +1799,33 @@ ProviderResult WinrtCameraProvider::ensure_reader_geometry_(
     if (backend->closed || !backend->reader || backend->failed) {
       return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
     }
-    if (backend->configured_w == width && backend->configured_h == height) {
+    // Geometry alone does not decide whether the existing configuration serves
+    // this request. On this backend the rate is a property of the selected
+    // MediaFrameFormat, so a caller asking for a different rate AT THE SAME SIZE
+    // needs a different format -- and returning success here would leave its
+    // request silently unapplied, which is the whole defect this path was
+    // changed to fix. Measured: a stream started with no rate and then one asked
+    // for 15fps at the same geometry produced a single format selection and the
+    // second request was never evaluated.
+    //
+    // Mirrors the reader_fourcc test below and the flow-kind test in Camera2's
+    // session reuse: every input that decided the realized configuration has to
+    // appear in the predicate that decides whether to reuse it.
+    uint32_t want_fps_min = 0;
+    uint32_t want_fps_max = 0;
+    {
+      want_fps_min = backend->requested_fps_min;
+      want_fps_max = backend->requested_fps_max;
+    }
+    const FrameRateRequest want_rate{want_fps_min, want_fps_max};
+    bool rate_satisfied = true;
+    if (want_rate.expressed()) {
+      const FrameRateRange r = detail::normalized_request(want_rate);
+      rate_satisfied = backend->realized_fps >= r.min_fps &&
+                       backend->realized_fps <= r.max_fps;
+    }
+    if (backend->configured_w == width && backend->configured_h == height &&
+        rate_satisfied) {
       return ProviderResult::success();
     }
     // Anything relying on the current geometry pins it: reconfiguring the
@@ -1824,19 +1870,16 @@ ProviderResult WinrtCameraProvider::ensure_reader_geometry_(
           if (!source) {
             local.error = ProviderError::ERR_BAD_STATE;
           } else {
-            // Geometry is the hard constraint; the frame rate is a preference
-            // AMONG the formats that satisfy it, never a second constraint that
-            // can refuse. On this backend the rate is a property of the format
-            // rather than a control, so the only way to honour a requested rate
-            // is to pick a different format of the same size -- and the only
-            // honest thing to do when no such format exists is to keep the
-            // stream and not honour the rate. Refusing a viable stream over a
-            // preference would serve nobody.
+            // Both geometry and rate are constraints here, and both refuse.
+            // On this backend the rate is a property of the MediaFrameFormat
+            // rather than a control, so serving a rate means selecting a
+            // different format of the same size -- and when no such format
+            // exists the configuration is one this source cannot produce.
             //
             // Previously this took the FIRST geometry match and broke, so a
             // device advertising 1920x1080 at both 30 and 15 handed over
             // whichever WinRT happened to enumerate first, with the caller's
-            // requested rate never consulted at all.
+            // rate never consulted at all.
             std::vector<wmcf::MediaFrameFormat> geometry_matches;
             for (const wmcf::MediaFrameFormat& candidate : source.SupportedFormats()) {
               const auto vf = candidate.VideoFormat();
@@ -1846,8 +1889,10 @@ ProviderResult WinrtCameraProvider::ensure_reader_geometry_(
             }
 
             wmcf::MediaFrameFormat chosen{nullptr};
+            uint32_t chosen_fps = 0;
             if (!geometry_matches.empty()) {
               chosen = geometry_matches.front();
+              chosen_fps = winrt_detail::format_fps(chosen);
 
               uint32_t want_min = 0;
               uint32_t want_max = 0;
@@ -1856,41 +1901,41 @@ ProviderResult WinrtCameraProvider::ensure_reader_geometry_(
                 want_min = backend->requested_fps_min;
                 want_max = backend->requested_fps_max;
               }
-              const FrameRateRequest want{want_min, want_max};
-              if (want.expressed()) {
-                // A MediaFrameFormat names one rate, so every candidate is a
-                // fixed [n,n] -- the discrete shape frame_rate_selection.h
-                // expects. Rounded to whole frames because 29.97 is 30 to a
-                // caller and the request is stated in whole fps.
-                std::vector<FrameRateRange> rates;
-                rates.reserve(geometry_matches.size());
+              const FrameRateRequest want_raw{want_min, want_max};
+              if (want_raw.expressed()) {
+                // Core has already materialized the effective rate from what
+                // this source advertises, so there is nothing to choose here:
+                // find the format carrying it, or refuse. A MediaFrameFormat
+                // names one rate, and it is rounded to whole frames because
+                // 29.97 is 30 to a caller and the request is stated in whole fps.
+                const FrameRateRange want = detail::normalized_request(want_raw);
+                const wmcf::MediaFrameFormat* matched = nullptr;
+                uint32_t matched_fps = 0;
                 for (const wmcf::MediaFrameFormat& f : geometry_matches) {
-                  uint32_t fps = 0;
-                  const auto rate = f.FrameRate();
-                  if (rate && rate.Denominator() != 0) {
-                    fps = static_cast<uint32_t>(
-                        (static_cast<double>(rate.Numerator()) /
-                         static_cast<double>(rate.Denominator())) + 0.5);
-                  }
-                  rates.push_back(FrameRateRange{fps, fps});
-                }
-                const FrameRateSelection sel =
-                    select_frame_rate(want, rates.data(), rates.size());
-                if (sel.outcome != FrameRateSelectionOutcome::NotRequested &&
-                    sel.outcome != FrameRateSelectionOutcome::Unavailable) {
-                  for (size_t i = 0; i < rates.size(); ++i) {
-                    if (rates[i].min_fps == sel.chosen.min_fps) {
-                      chosen = geometry_matches[i];
-                      break;
-                    }
+                  const uint32_t fps = winrt_detail::format_fps(f);
+                  if (fps >= want.min_fps && fps <= want.max_fps) {
+                    matched = &f;
+                    matched_fps = fps;
+                    break;
                   }
                 }
+                if (matched == nullptr) {
+                  winrt_detail::log_line(
+                      "fpsreject effective=[%u-%u] matches none of %zu formats at "
+                      "%ux%u; refusing rather than substituting",
+                      want.min_fps, want.max_fps, geometry_matches.size(), width,
+                      height);
+                  local.error = ProviderError::ERR_PLATFORM_CONSTRAINT;
+                  if (!t.abandoned.load(std::memory_order_acquire)) *result = local;
+                  return;
+                }
+                chosen = *matched;
+                chosen_fps = matched_fps;
                 winrt_detail::log_line(
-                    "fpssel requested=[%u-%u] outcome=%s chosen_fps=%u "
-                    "geometry_matches=%zu (%ux%u)",
-                    want.min_fps, want.max_fps,
-                    frame_rate_selection_outcome_name(sel.outcome),
-                    sel.chosen.min_fps, geometry_matches.size(), width, height);
+                    "fpsapply effective=[%u-%u] realized=%ufps at %ux%u "
+                    "(%zu formats at this geometry)",
+                    want.min_fps, want.max_fps, matched_fps, width, height,
+                    geometry_matches.size());
               }
             }
             if (!chosen) {
@@ -1906,6 +1951,13 @@ ProviderResult WinrtCameraProvider::ensure_reader_geometry_(
                 local.error = ProviderError::ERR_TIMEOUT;
               } else {
                 op.GetResults();
+                // Record what the selected format actually carries, so the reuse
+                // predicate above can answer "does the existing configuration
+                // serve this request" for the rate as well as the geometry.
+                {
+                  std::lock_guard<std::mutex> bl(backend->m);
+                  backend->realized_fps = chosen_fps;
+                }
                 local.ok = true;
               }
             }
@@ -2102,6 +2154,59 @@ ProviderResult WinrtCameraProvider::close_device(uint64_t device_instance_id) {
   emit_native_destroyed_(dev.native_id);
   dev.native_id = 0;
   return ProviderResult::success();
+}
+
+ProducerRateCapabilities WinrtCameraProvider::stream_parent_context_rate_capabilities(
+    uint64_t device_instance_id,
+    uint64_t /*stream_id*/,
+    StreamIntent /*intent*/,
+    const CaptureProfile& profile,
+    const PictureConfig& /*picture*/) noexcept {
+  ProducerRateCapabilities caps{};
+  if (profile.width == 0 || profile.height == 0) {
+    return caps;  // No geometry, so no meaningful rate on this backend.
+  }
+  std::shared_ptr<DeviceBackend> backend;
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    auto it = devices_.find(device_instance_id);
+    if (it == devices_.end() || !it->second.open || !it->second.backend) {
+      return caps;
+    }
+    backend = it->second.backend;
+  }
+  wmcf::MediaFrameSource source{nullptr};
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    source = backend->frame_source;
+  }
+  if (!source) {
+    return caps;  // Not open; report nothing rather than guessing.
+  }
+  try {
+    for (const wmcf::MediaFrameFormat& f : source.SupportedFormats()) {
+      const auto vf = f.VideoFormat();
+      if (!vf || vf.Width() != profile.width || vf.Height() != profile.height) {
+        continue;
+      }
+      const uint32_t fps = winrt_detail::format_fps(f);
+      if (fps == 0) {
+        continue;  // No stated rate; contribute nothing rather than fabricate one.
+      }
+      // A discrete option is the degenerate range min == max.
+      if (!caps.add(fps, fps)) {
+        winrt_detail::log_line(
+            "ratecaps %ux%u advertises more rates than the contract carries; "
+            "reporting the first %u",
+            profile.width, profile.height,
+            static_cast<unsigned>(ProducerRateCapabilities::kMaxRanges));
+        break;
+      }
+    }
+  } catch (const winrt::hresult_error&) {
+    return ProducerRateCapabilities{};  // Report nothing rather than a partial set.
+  }
+  return caps;
 }
 
 ProviderResult WinrtCameraProvider::create_stream(const StreamRequest& req) {

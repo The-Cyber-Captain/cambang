@@ -11,11 +11,15 @@
 // CaptureProfile on 2026-03-01 and the boundary parser on 2026-07-19, and was
 // never applied by either platform provider until 2026-09-08. A caller asking
 // for 15fps got the sensor's own choice, and CamBANG reported 15 regardless.
-// The distinction the tests below defend is the one
-// that failure had no way to express -- Exact PROMISES a rate, Satisfied only
-// promises a span the backend may sit anywhere inside, and Clamped means the
-// request could not be served at all. Collapsing those three into "ok" is how a
-// set-point ends up published as realized truth.
+//
+// The distinctions the tests below defend are the ones that failure had no way
+// to express. Exact PROMISES a rate; Satisfied only promises a span the backend
+// may sit anywhere inside; Unserviceable means nothing advertised honours the
+// request, so nothing is substituted and start_stream refuses; NotReported means
+// the backend said nothing about rates at all, which refuses nothing. Collapsing
+// any of those into "ok" is how a set-point ends up published as realized truth,
+// and collapsing the last two would refuse every rate request on every provider
+// that has not implemented the capability yet.
 
 #include "imaging/api/frame_rate_selection.h"
 
@@ -53,26 +57,59 @@ const std::vector<FrameRateRange> kGalaxyS20Plus = {
 const std::vector<FrameRateRange> kQuest3 = {{1, 15}, {15, 15}, {1, 30}, {30, 30}};
 
 void run_no_request_checks() {
+  // No request, but the backend reported capability: Core SELECTS, exactly as it
+  // selects a pixel format the caller did not name. The outcome says the caller
+  // asked for nothing; `chosen` says what it will get.
   const FrameRateSelection s = select(0, 0, kGalaxyS20Plus);
   check(s.outcome == FrameRateSelectionOutcome::NotRequested,
-        "no request must be NotRequested, never a rate invented for the caller");
+        "no request must report NotRequested");
+  check(s.chosen.max_fps == 30,
+        "no request must still select from capability, taking the highest ceiling");
 
-  // Zero is not a request for zero frames; a provider must keep its own default.
+  // Zero is not a request for zero frames, and with nothing advertised there is
+  // nothing to select from either.
   const FrameRateSelection empty = select(0, 0, {});
-  check(empty.outcome == FrameRateSelectionOutcome::NotRequested,
-        "no request outranks an empty advertisement");
+  check(empty.outcome == FrameRateSelectionOutcome::NotReported,
+        "no request and no capability is NotReported, not a refusal");
 }
 
-void run_unavailable_checks() {
+void run_not_reported_checks() {
+  // THE DISTINCTION THAT MATTERS. A provider that has not implemented rate
+  // capability -- the default, and every unimplemented seam -- reports nothing.
+  // That must not read as "no rate is supported", or every rate request would be
+  // refused on behalf of a backend that never objected.
   const FrameRateSelection s = select(15, 15, {});
-  check(s.outcome == FrameRateSelectionOutcome::Unavailable,
-        "asked but nothing advertised must be Unavailable, distinct from NotRequested");
+  check(s.outcome == FrameRateSelectionOutcome::NotReported,
+        "an unreported capability refuses nothing");
+  check(s.chosen.min_fps == 0 && s.chosen.max_fps == 0,
+        "NotReported selects nothing, so the caller's request stands");
+}
 
-  // An advertisement that cannot be honoured is ignored rather than reasoned
-  // about; a zero or inverted range is a broken advertisement, not an option.
+void run_unserviceable_checks() {
+  // Capability IS reported and nothing in it honours the request. This is the
+  // geometry rule: an unobtainable rate is refused, never substituted.
+  const FrameRateSelection fast = select(120, 120, kGalaxyS20Plus);
+  check(fast.outcome == FrameRateSelectionOutcome::Unserviceable,
+        "a rate above anything advertised must be Unserviceable");
+  check(fast.chosen.min_fps == 0 && fast.chosen.max_fps == 0,
+        "Unserviceable must substitute nothing -- the old clamp chose 30 here");
+
+  const FrameRateSelection slow = select(2, 2, kGalaxyS20Plus);
+  check(slow.outcome == FrameRateSelectionOutcome::Unserviceable,
+        "a rate below anything advertised must be Unserviceable");
+
+  // 2fps on the Quest, which advertises [1-15]. The range CONTAINS 2 and the old
+  // clamp chose it. It still does not PROMISE 2, so under the geometry rule it
+  // is refused rather than served -- the same reasoning as the [7-30] case below.
+  const FrameRateSelection quest_slow = select(2, 2, kQuest3);
+  check(quest_slow.outcome == FrameRateSelectionOutcome::Unserviceable,
+        "a range containing the request still does not honour it");
+
+  // Advertisements that cannot be honoured are ignored rather than reasoned
+  // about, and ignoring all of them leaves nothing that satisfies the request.
   const FrameRateSelection junk = select(15, 15, {{0, 0}, {30, 10}});
-  check(junk.outcome == FrameRateSelectionOutcome::Unavailable,
-        "malformed advertisements must not be selectable");
+  check(junk.outcome == FrameRateSelectionOutcome::Unserviceable,
+        "malformed advertisements are not selectable");
 }
 
 void run_exact_checks() {
@@ -90,12 +127,11 @@ void run_exact_checks() {
 void run_satisfied_is_not_exact_check() {
   // THE REGRESSION THIS FILE EXISTS FOR. [7-30] contains 15, and choosing it
   // when 15 was asked for would let AE sit anywhere in 7..30 while the caller
-  // believed it had been given 15. A containing range must never satisfy a
-  // fixed request.
+  // believed it had been given 15.
   const std::vector<FrameRateRange> spans_only = {{7, 30}, {1, 60}};
   const FrameRateSelection s = select(15, 15, spans_only);
-  check(s.outcome == FrameRateSelectionOutcome::Clamped,
-        "a span merely CONTAINING the fixed request must not read as satisfying it");
+  check(s.outcome == FrameRateSelectionOutcome::Unserviceable,
+        "a span merely CONTAINING a fixed request does not satisfy it");
 
   // A caller that genuinely asked for a span gets one, and is told it is a span.
   const FrameRateSelection span = select(7, 30, spans_only);
@@ -106,9 +142,8 @@ void run_satisfied_is_not_exact_check() {
 }
 
 void run_range_request_checks() {
-  // Asked for anything up to 30. Several candidates qualify; the caller wants
-  // frames, so the highest ceiling wins, and a fixed candidate breaks the tie
-  // because it is the only kind that promises anything.
+  // Several candidates qualify; the caller wants frames, so the highest ceiling
+  // wins, and a fixed candidate breaks the tie because it alone promises a rate.
   const FrameRateSelection s = select(1, 30, kQuest3);
   check(s.outcome == FrameRateSelectionOutcome::Exact,
         "a wide request served by a fixed candidate is Exact");
@@ -126,54 +161,24 @@ void run_range_request_checks() {
   check(ceil_only.outcome == FrameRateSelectionOutcome::Exact,
         "an omitted floor is not a floor");
   check(ceil_only.chosen.max_fps == 15, "at-most-15 must not choose 24 or 30");
-}
 
-void run_clamped_checks() {
-  // 120fps on a device topping out at 30. The caller is getting something it did
-  // not ask for, which is permitted only because it is reported as Clamped.
-  const FrameRateSelection fast = select(120, 120, kGalaxyS20Plus);
-  check(fast.outcome == FrameRateSelectionOutcome::Clamped,
-        "an unreachable rate must be Clamped, never silently Satisfied");
-  check(fast.chosen.max_fps == 30, "clamping high picks the nearest, which is 30");
-
-  // 2fps on the S20+, whose slowest floor is 7.
-  const FrameRateSelection slow = select(2, 2, kGalaxyS20Plus);
-  check(slow.outcome == FrameRateSelectionOutcome::Clamped,
-        "a rate below anything advertised must be Clamped");
-  check(slow.chosen.min_fps == 7,
-        "clamping low picks the nearest floor");
-
-  // 2fps on the Quest, which advertises [1-15]. The range CONTAINS 2, and it is
-  // tempting to call that served -- but it promises 2 no more than [7-30]
-  // promises 15, so it is Clamped for exactly the reason asserted in
-  // run_satisfied_is_not_exact_check. What the overlap does buy the caller is
-  // the choice itself: [1-15] is nearest, so that is what gets asked for, and 2
-  // is at least reachable within it.
-  const FrameRateSelection quest_slow = select(2, 2, kQuest3);
-  check(quest_slow.outcome == FrameRateSelectionOutcome::Clamped,
-        "a range containing the request still cannot promise it");
-  check(quest_slow.chosen.min_fps == 1 && quest_slow.chosen.max_fps == 15,
-        "the overlapping range is nearest and must be the one chosen");
-
-  // KNOWN CONFLATION, asserted so it is a decision rather than an accident.
-  // Both of these are Clamped, though they differ for a caller: the first
-  // overlaps the request and might yield it, the second cannot possibly. The
-  // outcome does not currently separate them, and the chosen range is what
-  // distinguishes them. Splitting Clamped would be the change if that stops
-  // being enough.
-  check(select(2, 2, kQuest3).outcome == select(120, 120, kQuest3).outcome,
-        "overlapping and unreachable both report Clamped today");
+  // A range that lands between advertised options is refused like any other
+  // unobtainable configuration. Asking for a range widens the odds of being
+  // served; it does not confer portability.
+  const FrameRateSelection between = select(10, 12, kGalaxyS20Plus);
+  check(between.outcome == FrameRateSelectionOutcome::Unserviceable,
+        "a range containing no advertised candidate is refused");
 }
 
 }  // namespace
 
 int main() {
   run_no_request_checks();
-  run_unavailable_checks();
+  run_not_reported_checks();
+  run_unserviceable_checks();
   run_exact_checks();
   run_satisfied_is_not_exact_check();
   run_range_request_checks();
-  run_clamped_checks();
 
   if (g_failed != 0) {
     std::cout << "FAIL frame_rate_selection_verify run=" << g_run

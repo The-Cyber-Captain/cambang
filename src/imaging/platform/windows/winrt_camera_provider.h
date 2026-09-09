@@ -224,6 +224,18 @@ public:
       uint64_t root_id) override;
   ProviderResult close_device(uint64_t device_instance_id) override;
 
+  // Rates this source advertises AT THE REQUESTED GEOMETRY, read from the
+  // MediaFrameFormat list already cached for the catalog. Per-geometry because
+  // on this backend the rate IS a property of the format, so a rate is only
+  // meaningful alongside the size it belongs to. Nothing is derived: a format
+  // without a usable FrameRate contributes nothing rather than a guess.
+  ProducerRateCapabilities stream_parent_context_rate_capabilities(
+      uint64_t device_instance_id,
+      uint64_t stream_id,
+      StreamIntent intent,
+      const CaptureProfile& profile,
+      const PictureConfig& picture) noexcept override;
+
   ProviderResult create_stream(const StreamRequest& req) override;
   ProviderResult destroy_stream(uint64_t stream_id) override;
 
