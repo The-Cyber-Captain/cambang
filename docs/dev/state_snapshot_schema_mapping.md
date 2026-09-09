@@ -85,6 +85,11 @@ Verifier-level assertions are where semantic/runtime rules are enforced.
 - `NativeObjectRecord` requires `owner_acquisition_session_id` (uint64; `0` for
   none/unknown).
 - Field scalar types are fixed (`uint32`/`uint64`/`int32`/`boolean`/`string`).
+- `StreamState.realized_fps_milli` is `uint32` and is the one OPTIONAL field in
+  an otherwise frozen required set: it is deliberately absent from `required`
+  while `target_fps_min`/`target_fps_max` beside it are required. The schema can
+  express that it may be missing; it cannot express what missing MEANS, which is
+  the semantic entry below.
 - Enum domains are fixed as string-token domains in the schema/export contract:
   - lifecycle `phase`
   - rig/device/stream `mode`
@@ -109,6 +114,17 @@ Verifier-level assertions are where semantic/runtime rules are enforced.
 - Truth model constraints:
   - no fabricated values,
   - unknown remains zero/empty/NIL until runtime truth exists.
+- `realized_fps_milli` absence semantics, and the reason its absence is not the
+  general "unknown remains zero" rule above. For a measured quantity a stated
+  zero is not "unknown" -- it reads as "measured at nothing" -- so the field is
+  OMITTED entirely until a measurement window has closed. The schema permits the
+  omission; only this rule says a consumer must test key presence rather than
+  read the field with a zero default. Three further properties are likewise
+  semantic, not schema-expressible: units are milli-fps (`15035` is 15.035 fps);
+  the value refreshes at most once per measurement window per stream, because a
+  closed window is what makes a new measurement observable; and it measures the
+  rate frames REACH CORE, from core's own integration-time marks, not sensor
+  cadence. Full contract: `state_snapshot.md`, stream-entry field semantics.
 - Cross-record/cross-field logic:
   - top-level `acquisition_sessions[]` is authoritative for current/live
     `AcquisitionSession` truth,

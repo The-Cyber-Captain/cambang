@@ -658,6 +658,8 @@ StreamState {
   target_fps_min: uint32                 // 0 if unspecified/not applicable
   target_fps_max: uint32                 // 0 if unspecified/not applicable
 
+  realized_fps_milli: uint32             // OPTIONAL; ABSENT until measured
+
   frames_received: uint64
   frames_delivered: uint64
   frames_dropped: uint64
@@ -674,7 +676,45 @@ StreamState {
 **Field semantics (v1):**
 
 - `width`, `height`, `format`, `target_fps_min`, and `target_fps_max` form part of
-  the applied capture profile for this stream.
+  the applied capture profile for this stream. They are EFFECTIVE values -- what
+  core materialized and handed the backend -- not a passthrough of what the
+  caller requested.
+- `realized_fps_milli` is the MEASURED rate, as distinct from the requested or
+  effective rate above. Comparing it against `target_fps_min`/`target_fps_max`
+  is its intended use: it is how a consumer detects a backend that accepted a
+  rate and did not deliver it, whether through thermal throttling, load, or a
+  provider that ignored the request. Four properties govern its use:
+
+  - **Units are milli-fps.** `15035` means 15.035 fps. The field is an integer
+    so the record carries no floating point; a consumer treating it as whole
+    fps is wrong by three orders of magnitude.
+  - **It is OMITTED, not zero, until a measurement exists.** The key is absent
+    from the stream entry until a measurement window has closed, and it is
+    correspondingly optional rather than `required` in the v1 schema while the
+    fields beside it are required. A consumer must test for the key's presence;
+    reading it with a zero default silently converts "not measured yet" into
+    "measured at nothing", which is the distinction the omission exists to
+    preserve. This follows the same rule that omits an underivable value rather
+    than fabricating one.
+  - **It refreshes at most once per measurement window per stream.** A closed
+    window is what makes a new measurement observable, so the window duration
+    also bounds how often this field can change. Streams slower than the
+    window's minimum frame count extend the window, making updates rarer and
+    never more frequent. A consumer must not poll faster and expect new values,
+    and must not read an unchanged value across publishes as a fresh
+    measurement.
+  - **It measures arrival at core, not sensor cadence.** The timestamps are
+    core's own monotonic marks taken at frame integration, so the figure
+    includes transport and queueing jitter and is the rate at which frames
+    REACH CORE. It must not be reported to a user as a sensor-level cadence.
+
+  Two consequences worth stating for anyone building an indicator on it. The
+  value is always the last COMPLETED window, so it lags current behaviour by up
+  to one window. And because publication is state-change driven, a stream that
+  goes silent stops producing new measurements rather than reporting a falling
+  rate: a stalled stream shows a stale healthy figure, not zero. "This stream
+  has gone quiet" is `frames_received` against `last_frame_ts_ns`, not this
+  field.
 - `profile_version` is change lineage metadata for that applied profile and must
   not be used to infer configuration contents.
 - `frames_received` counts frames reported by the provider and integrated by core.
