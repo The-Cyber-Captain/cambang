@@ -80,22 +80,28 @@ public:
     // actually did, so a request that no provider applied looked identical to
     // one that worked.
     //
-    // Measured over a fixed frame window rather than continuously: a window
-    // closes on its own cadence (once a second at 30fps, every two at 15), which
-    // is frequent enough to notice a wrong rate and rare enough to cost nothing.
+    // Measured over a bounded WINDOW OF TIME rather than continuously, and
+    // rather than over a fixed frame count. A frame count was tried first and
+    // is wrong here: its duration is a function of the very quantity being
+    // measured, so thirty frames is a quarter-second at 120fps and six seconds
+    // at 5. Since closing a window is what makes a new measurement observable
+    // (see kRealizedFpsWindowMs), that would have made the publish schedule
+    // scale with frame rate, which is the one thing it must not do.
+    //
     // Held in milli-fps so the record carries no floating point.
     //
-    // Timestamps are the integrated acquisition marks, not arrival times, so
-    // queueing jitter does not show up as a rate change. Zero means not yet
-    // measured -- a stream that has produced fewer frames than one window has no
-    // honest answer, and must not be given a made-up one.
+    // Timestamps are Core's own monotonic ingest marks, NOT sensor acquisition
+    // marks -- the frame paths stamp these with steady_clock at integration
+    // time. So this measures the rate at which frames REACH CORE, which is the
+    // rate that matters to a consumer, but it does include transport and
+    // queueing jitter. It is not a sensor-level cadence measurement and must
+    // not be described as one.
+    //
+    // Zero means not yet measured -- a stream that has not completed a window
+    // has no honest answer, and must not be given a made-up one.
     uint64_t realized_window_first_ts_ns = 0;
     uint32_t realized_window_frames = 0;
     uint32_t realized_fps_milli = 0;
-    // Set once a measured window has been reported as materially different from
-    // what was requested, so the report is a fact stated once per divergence and
-    // not a line per window.
-    bool realized_fps_divergence_reported = false;
 
     uint64_t visibility_frames_presented = 0;
     uint64_t visibility_frames_rejected_unsupported = 0;
@@ -105,10 +111,29 @@ public:
     uint32_t last_error_code = 0;
   };
 
-  // Frames per realized-rate window. Thirty is one second at 30fps and two at
-  // 15 -- often enough to notice a wrong rate promptly, rare enough that the
-  // measurement costs nothing and the divergence report cannot become spam.
-  static constexpr uint32_t kRealizedFpsWindowFrames = 30;
+  // Nominal duration of one realized-rate window.
+  //
+  // This constant governs TWO things, and the second is the reason it is a
+  // duration at all. It sets how promptly a wrong rate becomes visible, and --
+  // because a closed window is the only event that makes a new realized rate
+  // observable -- it also sets the CEILING ON SNAPSHOT PUBLISH FREQUENCY
+  // attributable to rate measurement: at most one publish per window per
+  // stream. Do not change it without accounting for both.
+  //
+  // One second: prompt enough to notice a rate fault, and a publish rate that
+  // sits far below the tick-bounded ceiling even with many streams running.
+  static constexpr uint32_t kRealizedFpsWindowMs = 1000;
+
+  // Frames a window must contain before it may close, regardless of elapsed
+  // time. Two is the arithmetic floor -- one interval -- but a rate derived
+  // from a single interval is that interval's jitter, not a rate. Four keeps
+  // one late frame from dominating the answer.
+  //
+  // For streams slower than kRealizedFpsWindowMinFrames per
+  // kRealizedFpsWindowMs (under 4fps), this stretches the window PAST the
+  // nominal duration. That direction is safe: it only ever makes measurement
+  // and publication rarer, never more frequent.
+  static constexpr uint32_t kRealizedFpsWindowMinFrames = 4;
 
   CoreStreamRegistry() = default;
   ~CoreStreamRegistry() = default;
@@ -146,8 +171,22 @@ public:
   // noticed if something else happened to wake the core thread first.
   std::optional<uint64_t> next_frame_resumption_delay_ns(uint64_t now_ns) const noexcept;
 
+  // What a frame arrival changed. Deliberately NOT convertible to bool: the
+  // caller must name the field it means. Normal frame delivery publishes
+  // nothing, so a call site that silently ignored realized_window_closed would
+  // leave the measured rate correct in this registry and permanently invisible
+  // to every consumer -- which is exactly the defect this struct replaced.
+  struct FrameReceipt final {
+    // The stream id named a live record. False means the frame arrived for a
+    // stream this registry does not know.
+    bool known = false;
+    // This frame closed a realized-rate window, so realized_fps_milli now
+    // holds a NEW measurement. Callers must request a snapshot publish.
+    bool realized_window_closed = false;
+  };
+
   // Frame accounting (stream must exist).
-  bool on_frame_received(uint64_t stream_id, uint64_t integrated_ts_ns);
+  FrameReceipt on_frame_received(uint64_t stream_id, uint64_t integrated_ts_ns);
   bool on_frame_released(uint64_t stream_id);
   bool on_frame_dropped(uint64_t stream_id);
   bool on_visibility_path(uint64_t stream_id, CoreVisibilityPath path);

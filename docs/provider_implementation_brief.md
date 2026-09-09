@@ -307,6 +307,55 @@ state; you execute what you are given. Never invent width/height/format/
 picture defaults inside `create_stream`/`start_stream`/`trigger_capture`;
 if the effective config is invalid, fail deterministically.
 
+### 6.1 Effective is what you were handed, not what you can produce
+
+"Effective" names the configuration Core hands you. It does **not** promise the
+configuration is achievable, and for one field pair the difference is
+load-bearing.
+
+Core narrows `target_fps_min`/`target_fps_max` against what you advertise from
+`stream_rate_capabilities` (or its device-scoped variant), the same way it
+narrows `format_fourcc` against `stream_format_capabilities`. That narrowing has
+four outcomes, and only two of them validate anything:
+
+| What you advertised | Effective rate you receive |
+|---|---|
+| a range satisfying the caller's request | that advertised range |
+| ranges, none satisfying the request | **the caller's request, verbatim** |
+| ranges, and the caller asked for no rate | a range Core selected from yours |
+| nothing at all | **the caller's request, verbatim** |
+
+The two verbatim rows are deliberate: an unobtainable rate is refused, never
+substituted, exactly as an unadvertised width is. Core does not refuse them
+itself, because you are the authority on what you can execute — which is why
+geometry is refused at `start_stream` rather than at create, and why a rate is
+too.
+
+**Two obligations follow, and a provider that meets neither reintroduces a
+defect that stood in this repository for six months.**
+
+1. **Advertise your rates if you can read them.** Report what the device states
+   and nothing else -- Camera2's `CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES`,
+   WinRT's per-format `FrameRate`. Do not derive a rate from a minimum frame
+   duration, intersect two sources, or infer one from a geometry. Reporting
+   nothing is honest and supported; reporting a guess is not.
+2. **Validate the effective rate at `start_stream` and fail deterministically
+   if you cannot execute it.** This is not optional because you advertised.
+   Advertising narrows what Core hands you; it does not guarantee it, since the
+   two verbatim rows above hand you the raw request.
+
+Skipping (2) does not merely lose a preference. The state snapshot publishes the
+effective rate beside width, height and format, so a provider that silently
+accepts a rate it cannot produce causes CamBANG to report a frame rate the
+sensor is not running at -- a control set-point published as truth, which is the
+failure `realized_*` facts exist to prevent. That is precisely what happened
+before this seam existed: `target_fps` was parsed, stored, published, and asked
+of no backend, so a caller requesting 15fps was told it had 15 while the sensor
+ran at 30.
+
+`realized_fps_milli`, published separately and only once measured, is the only
+field that states what the sensor actually did.
+
 ## 7. Lifecycle and native-object truthfulness
 
 * `close_device` fails while child streams exist; `destroy_stream` fails

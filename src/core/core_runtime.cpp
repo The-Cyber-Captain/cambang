@@ -1042,7 +1042,8 @@ StreamFrameCoalesceResult coalesce_front_repeating_stream_frame_if_superseded(
   provider_facts.pop_front();
   auto& frame = std::get<CmdProviderFrame>(cmd.payload).frame;
   const uint64_t integrated_ts_ns = frame_integration_now_ns();
-  const bool received_counted = streams.on_frame_received(frame.stream_id, integrated_ts_ns);
+  const CoreStreamRegistry::FrameReceipt receipt =
+      streams.on_frame_received(frame.stream_id, integrated_ts_ns);
   const bool dropped_counted = streams.on_frame_dropped(frame.stream_id);
   frame.release_now();
   global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
@@ -1052,7 +1053,8 @@ StreamFrameCoalesceResult coalesce_front_repeating_stream_frame_if_superseded(
   frame.release_user = nullptr;
 
   out.coalesced = true;
-  out.stream_counters_changed = received_counted || dropped_counted;
+  out.stream_counters_changed =
+      receipt.known || dropped_counted || receipt.realized_window_closed;
   return out;
 }
 
@@ -4448,7 +4450,8 @@ bool CoreRuntime::suppress_repeating_stream_frame_for_capture_(ProviderToCoreCom
 
   auto& frame = std::get<CmdProviderFrame>(cmd.payload).frame;
   const uint64_t integrated_ts_ns = frame_integration_now_ns();
-  const bool received_counted = streams_.on_frame_received(frame.stream_id, integrated_ts_ns);
+  const CoreStreamRegistry::FrameReceipt receipt =
+      streams_.on_frame_received(frame.stream_id, integrated_ts_ns);
   const bool dropped_counted = streams_.on_frame_dropped(frame.stream_id);
   frame.release_now();
   global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
@@ -4457,7 +4460,7 @@ bool CoreRuntime::suppress_repeating_stream_frame_for_capture_(ProviderToCoreCom
   frame.release = nullptr;
   frame.release_user = nullptr;
 
-  if (received_counted || dropped_counted) {
+  if (receipt.known || dropped_counted || receipt.realized_window_closed) {
     request_publish_from_core_unchecked();
   }
   return true;

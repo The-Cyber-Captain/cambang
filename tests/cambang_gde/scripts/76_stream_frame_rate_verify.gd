@@ -28,10 +28,19 @@ extends Node
 ## advance whether a rate is on offer, which is exactly why omitting the rate is
 ## the portable choice and asking for one states a requirement.
 ##
-## WHAT IS NOT ASSERTED. A measured cadence. That is hardware behaviour, not
-## CamBANG's. Delivery is observed for a duration so the provider logs at least
-## two of its 30-frame diagnostics, which is what makes a realized rate
-## computable from the log afterwards.
+## REALIZED RATE. The snapshot publishes realized_fps_milli -- what the sensor
+## actually did, measured over a 30-frame window, as distinct from the effective
+## rate Core asked the backend for. This scene covers the FIELD, not the sensor:
+##   - it must be ABSENT before a window has closed, because a stated zero reads
+##     as a measurement;
+##   - it must be PRESENT once the observation window has elapsed;
+##   - its value must be plausible against the effective rate the same row
+##     publishes -- a generous band, wide enough that no real camera trips it and
+##     narrow enough to catch a unit error, which is a live risk in a milli-fps
+##     integer.
+## What is deliberately NOT asserted is a precise cadence. A sensor's exact rate
+## is hardware behaviour, and pinning it here would make the scene fail on
+## hardware that is merely different.
 ##
 ## WHERE THE EVIDENCE IS. Provider log lines, which reach logcat on Android and
 ## stderr on Windows:
@@ -48,10 +57,16 @@ const TOTAL_TIMEOUT_MS := 120000
 # WinRT host camera offers no 15 at its advertised geometries, which is the
 # expected_unsupported path and worth exercising rather than avoiding.
 const WANTED_FPS := 15
-# Long enough at any plausible rate for the provider's every-30-frames frame
-# diagnostic to appear twice: two marks are the minimum from which an interval,
-# and so a realized rate, can be derived.
+# Several realized-rate windows wide, so a measurement has closed and been
+# published with margin to spare even if the first tick or two are slow.
 const OBSERVE_MS := 3000
+# Mirrors CoreStreamRegistry::kRealizedFpsWindowMs and
+# kRealizedFpsWindowMinFrames. Stated here because the absence assertion below
+# depends on both: Core closes a realized-rate window on elapsed time WITH a
+# minimum frame count, so a value cannot exist until at least one window
+# duration has passed AND that many frames have arrived.
+const REALIZED_WINDOW_MS := 1000
+const REALIZED_WINDOW_MIN_FRAMES := 4
 
 var _done := false
 var _terminal_verdict_emitted := false
@@ -66,6 +81,8 @@ var _base_profile: Dictionary = {}
 var _frames := 0
 var _first_result_ms := 0
 var _rate_requested := false
+var _stream_id := 0
+var _absent_before_window_checked := false
 
 
 func _ready() -> void:
@@ -191,8 +208,10 @@ func _phase_open(with_rate: bool) -> void:
 		int(profile.get("width", 0)), int(profile.get("height", 0)),
 		("target_fps=%d" % WANTED_FPS) if with_rate else "no rate requested",
 	])
+	_stream_id = int(_stream.get_stream_id())
 	_frames = 0
 	_first_result_ms = 0
+	_absent_before_window_checked = false
 	_phase = "observe_rated" if with_rate else "observe_unrated"
 
 
@@ -209,8 +228,71 @@ func _phase_observe() -> void:
 		_first_result_ms = Time.get_ticks_msec()
 		return
 	var observed_ms := Time.get_ticks_msec() - _first_result_ms
+
+	# Absence, tied to whichever precondition can be PROVEN from here. A window
+	# needs both a duration and a frame count, so either being short of its
+	# threshold makes a closed window impossible; the scene asserts only when it
+	# can establish one of them, and says so plainly when it cannot, rather than
+	# asserting on timing it did not observe.
+	if not _absent_before_window_checked:
+		var early := _stream_row(_stream_id)
+		if not early.is_empty():
+			var received := int(early.get("frames_received", 0))
+			var too_few := received < REALIZED_WINDOW_MIN_FRAMES
+			var too_soon := observed_ms < REALIZED_WINDOW_MS
+			if too_few or too_soon:
+				_absent_before_window_checked = true
+				if early.has("realized_fps_milli"):
+					_fail("realized_fps_milli present after %d frames in %d ms (%s); no window can have closed (needs >=%d frames and >=%d ms)"
+						% [received, observed_ms, str(early.get("realized_fps_milli")),
+						   REALIZED_WINDOW_MIN_FRAMES, REALIZED_WINDOW_MS],
+						"realized_published_too_early")
+					return
+			else:
+				# Already past a window before this scene could look. Nothing to
+				# assert, and saying so beats asserting on stale timing.
+				_absent_before_window_checked = true
+				print("NOTE: %d frames in %d ms; absence-before-window not observable this run"
+					% [received, observed_ms])
+
 	if observed_ms < OBSERVE_MS:
 		return
+
+	var row := _stream_row(_stream_id)
+	if row.is_empty():
+		_fail("no snapshot row for stream_id=%d after %d ms of delivery" % [_stream_id, observed_ms],
+			"no_stream_row")
+		return
+	if not row.has("realized_fps_milli"):
+		# Carry the evidence needed to attribute this: whether frames reached Core
+		# at all, and what the row does contain.
+		_fail("realized_fps_milli absent after %d ms of delivery (frames_received=%d, delivered=%d, %s)"
+			% [observed_ms, int(row.get("frames_received", -1)),
+			   int(row.get("frames_delivered", -1)),
+			   "dropped=%d queue=%d last_ts=%d retrievals=%d" % [
+				   int(row.get("frames_dropped", -1)), int(row.get("queue_depth", -1)),
+				   int(row.get("last_frame_ts_ns", -1)), _frames]],
+			"realized_never_published")
+		return
+	var realized_milli := int(row["realized_fps_milli"])
+	var eff_min := int(row.get("target_fps_min", 0))
+	var eff_max := int(row.get("target_fps_max", 0))
+	if realized_milli <= 0:
+		_fail("realized_fps_milli must be positive once published; got %d" % realized_milli,
+			"realized_not_positive")
+		return
+	# Generous band against the effective rate the same row carries. Half the
+	# floor to double the ceiling: no real sensor trips that, while a milli/whole
+	# unit confusion misses it by three orders of magnitude.
+	if eff_min > 0 and eff_max > 0:
+		var lo := (eff_min * 1000) / 2
+		var hi := eff_max * 1000 * 2
+		if realized_milli < lo or realized_milli > hi:
+			_fail("realized_fps_milli=%d implausible against effective [%d-%d] (band %d..%d)"
+				% [realized_milli, eff_min, eff_max, lo, hi], "realized_implausible")
+			return
+	print("STEP OK: realized_fps_milli=%d published against effective [%d-%d]"
+		% [realized_milli, eff_min, eff_max])
 	print("STEP OK: delivery sustained %d ms (%d retrievals) %s" % [
 		observed_ms, _frames,
 		"with a rate-carrying profile" if _rate_requested else "with no rate requested",
@@ -222,6 +304,19 @@ func _phase_observe() -> void:
 		_pass("pass_fps_%d" % WANTED_FPS)
 	else:
 		_phase = "open_rated"
+
+
+func _stream_row(stream_id: int) -> Dictionary:
+	var snap = CamBANGServer.get_state_snapshot()
+	if typeof(snap) != TYPE_DICTIONARY:
+		return {}
+	var streams = snap.get("streams", [])
+	if typeof(streams) != TYPE_ARRAY:
+		return {}
+	for row in streams:
+		if typeof(row) == TYPE_DICTIONARY and int(row.get("stream_id", -1)) == stream_id:
+			return row
+	return {}
 
 
 func _pass(reason: String) -> void:
