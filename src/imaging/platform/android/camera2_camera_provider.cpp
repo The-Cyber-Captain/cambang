@@ -2210,7 +2210,31 @@ void on_repeating_capture_completed(void* context,
   // matching on ACAMERA_SENSOR_TIMESTAMP, which the result and the image both
   // carry for the same frame, binds the facts to the pixels they describe
   // rather than to whichever frame happens to be current.
-  if (StreamProduction* s = backend->stream.get()) {
+  // Take a SHARE of the production, not a pointer to it, and take it under
+  // backend->m.
+  //
+  // ctx->backend.lock() above pins the DeviceBackend, which is why this looked
+  // safe for as long as it did -- but the production is separately owned INSIDE
+  // that backend, and destroy_stream resets it under backend->m, a lock this
+  // callback did not take. A raw .get() here dropped the one thing that would
+  // have kept the object alive, and a queued callback then locked a destroyed
+  // pending_facts_m; Android aborts on that rather than permitting it
+  // (FORTIFY: pthread_mutex_lock called on a destroyed mutex).
+  //
+  // The image-arrival path already guards the same hazard the same way, under
+  // the same lock; this is the sibling callback that was missed.
+  //
+  // backend->m is released before the body runs. Order across the provider is
+  // backend->m before pending_facts_m -- flush_pending_frames is called with
+  // backend->m held -- so the body must not nest pending_facts_m inside it.
+  // Holding only the share is enough: the production cannot die while it lives,
+  // whether or not destroy_stream drops the backend's own reference meanwhile.
+  std::shared_ptr<StreamProduction> s;
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    s = backend->stream;
+  }
+  if (s) {
     ResultFacts rf{};
     extract_result_facts(result, rf);
     if (rf.has_sensor_timestamp) {
