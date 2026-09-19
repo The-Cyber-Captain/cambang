@@ -1626,13 +1626,6 @@ private:
 
   static constexpr uint64_t kDestroyedNativeObjectRetentionWindowNs = 5ull * 1000ull * 1000ull * 1000ull;
 
-  // Retention window for capture_cohort_registry_ entries (ledger #52).
-  // Deliberately generous and comfortably longer than the default capture-
-  // admission watchdog timeout (30s) so a cohort is never retired while a
-  // participant could still legitimately be resolving.
-  static constexpr uint64_t kCaptureCohortRetentionWindowNs =
-      300ull * 1000ull * 1000ull * 1000ull; // 5 minutes
-
   // Rig capture simultaneity window (capture_identity_and_lifecycle.md 4.4).
   // NOT the retention window above, and not an impatience threshold: a member
   // settling outside it is not part of the same moment, and excluding it is
@@ -1660,8 +1653,8 @@ private:
   // for why "a newer capture exists for this device" is not a safe signal
   // that an older one is unused (Core's own result-access-cost calibration
   // feedback loop can legitimately reference an old capture well after a
-  // newer one on the same device). Deliberately the same generous window as
-  // kCaptureCohortRetentionWindowNs.
+  // newer one on the same device). Rig cohorts have no window of their own:
+  // a cohort is retired when the last of its members is.
   static constexpr uint64_t kCaptureResultRetentionWindowNs =
       300ull * 1000ull * 1000ull * 1000ull; // 5 minutes
 

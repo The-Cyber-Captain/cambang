@@ -1868,7 +1868,21 @@ void CamBANGServer::stop() {
   device_capture_internal_by_public_.clear();
   rig_capture_public_by_internal_.clear();
   rig_capture_internal_by_public_.clear();
-  canonical_device_by_hardware_id_.clear();
+  // Endpoint handles are KEPT: hardware_id survives the session, so the handle
+  // a caller holds must be the one get_device_for_hardware_id() returns after
+  // the next start(). Clearing this map minted a second wrapper for the same
+  // camera while the caller's original stayed tracked and resolved by
+  // hardware_id -- both then emitted every capture_finished and live_changed,
+  // and `old == new` was false for one camera. Only the session state goes;
+  // liveness was already cleared above.
+  for (auto& [hardware_id, device] : canonical_device_by_hardware_id_) {
+    (void)hardware_id;
+    if (device.is_valid()) {
+      device->_reset_session_state_();
+    }
+  }
+  // Instance ids and rig ids do not survive the session, so neither do their
+  // handles: a restarted session never reissues those ids.
   canonical_device_by_instance_id_.clear();
   canonical_rig_by_id_.clear();
 }
@@ -2717,6 +2731,10 @@ godot::Ref<CamBANGDevice> CamBANGServer::_canonical_device_for_hardware_id_(
         const_cast<CamBANGServer*>(this),
         godot::String(hardware_id.c_str()),
         display_name);
+  } else if (!display_name.is_empty()) {
+    // The handle outlives sessions, and the next session's provider may name
+    // the same camera differently.
+    slot->display_name_ = display_name;
   }
   return slot;
 }

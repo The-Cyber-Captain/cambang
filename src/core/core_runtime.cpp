@@ -5,6 +5,7 @@
 #include "core/camera_concurrency_adc.h"
 #include "core/adc_camera_description.h"
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
@@ -4494,11 +4495,31 @@ std::vector<SharedCaptureResultData> CoreRuntime::get_capture_result_set(uint64_
     if (cohort->state == CoreCaptureCohortRegistry::CohortState::FAILED) {
       return {};
     }
+    // A CLOSED cohort's set is decided at closure: the members recorded
+    // DELIVERED then, and no others. Assembly success alone was re-evaluated on
+    // every read, so a member the window gave up on (NEVER_ARRIVED, later
+    // LATE_EXCLUDED) joined the set as soon as its own capture finished --
+    // after capture_finished had already reported the cohort closed. Â§4.4
+    // treats that exclusion as the correct outcome, and the set must agree with
+    // the outcomes a caller reads beside it. An OPEN cohort still reports work
+    // in progress, as before.
+    const bool closed = cohort->state == CoreCaptureCohortRegistry::CohortState::CLOSED;
     std::vector<SharedCaptureResultData> cohort_results;
     cohort_results.reserve(cohort->expected_participants.size());
     for (const auto& participant : cohort->expected_participants) {
       const uint64_t device_instance_id = participant.device_instance_id;
       const uint64_t device_capture_id = participant.device_capture_id;
+      if (closed) {
+        const auto outcome = std::find_if(
+            cohort->member_outcomes.begin(), cohort->member_outcomes.end(),
+            [device_instance_id](const CoreCaptureCohortRegistry::MemberOutcome& o) {
+              return o.device_instance_id == device_instance_id;
+            });
+        if (outcome == cohort->member_outcomes.end() ||
+            outcome->disposition != CoreCaptureAssemblyRegistry::TerminalState::DELIVERED) {
+          continue;
+        }
+      }
       // Skip, don't discard the whole cohort: a still-pending or failed
       // sibling must not hide the genuinely-completed results of the rest.
       if (!capture_assembly_registry_.is_assembly_successful(device_capture_id, device_instance_id)) {
@@ -5147,12 +5168,6 @@ void CoreRuntime::on_core_timer_tick() {
     // cohort would be discarded having never reported one.
     sweep_capture_cohort_closure_(now_ns);
 
-    // Cohort metadata retention (ledger #52): see
-    // CoreCaptureCohortRegistry::retire_expired_cohorts()'s doc comment for
-    // why a flat time-since-creation window is sufficient here.
-    const size_t retired_cohort_count =
-        capture_cohort_registry_.retire_expired_cohorts(now_ns, kCaptureCohortRetentionWindowNs);
-
     // Capture assembly/result retention (ledger #52): time-based, not
     // supersession-based -- see CoreCaptureAssemblyRegistry::
     // retire_terminal_older_than()'s doc comment.
@@ -5193,6 +5208,24 @@ void CoreRuntime::on_core_timer_tick() {
         capture_assembly_registry_.remove_assembly(evicted.capture_id, evicted.device_instance_id);
       }
       byte_budget_evicted_count = byte_budget_evicted.size();
+    }
+
+    // Cohort retention follows its members, and so runs after BOTH ways a
+    // member leaves (age, byte budget) have run this tick. A settled cohort is
+    // retired once none of its members has an assembly record left -- which is
+    // exactly when none of their results can be looked up any more. See
+    // CoreCaptureCohortRegistry::settled_cohorts() for why the cohort no longer
+    // keeps a clock of its own.
+    //
+    // The two registries are consulted in sequence, never nested: the
+    // candidates are copied out of the cohort registry first.
+    size_t retired_cohort_count = 0;
+    {
+      const std::vector<uint64_t> gone = CoreCaptureCohortRegistry::cohorts_without_members(
+          capture_cohort_registry_.settled_cohorts(), capture_assembly_registry_);
+      if (!gone.empty()) {
+        retired_cohort_count = capture_cohort_registry_.retire_cohorts(gone);
+      }
     }
 
     if (retired_count > 0 || retired_capture_orphan_count > 0 ||
@@ -5250,16 +5283,10 @@ void CoreRuntime::on_core_timer_tick() {
         }
       }
     }
-    if (const auto next_cohort_expiry_delay_ns =
-            capture_cohort_registry_.next_cohort_expiry_delay_ns(
-                now_ns, kCaptureCohortRetentionWindowNs);
-        next_cohort_expiry_delay_ns.has_value()) {
-      if (!has_next_deadline_delay || *next_cohort_expiry_delay_ns < next_deadline_delay_ns) {
-        has_next_deadline_delay = true;
-        next_deadline_delay_ns = *next_cohort_expiry_delay_ns;
-      }
-    }
-    // Simultaneity-window expiry, distinct from the retention expiry above.
+    // No cohort-retention deadline: a cohort retires in the same tick as its
+    // last member, and member retirement schedules its own wake below.
+    //
+    // Simultaneity-window expiry.
     // Without this the core thread has no reason to wake for a cohort whose
     // last member never reports, and closure would wait on unrelated traffic
     // -- which on a quiet runtime could be indefinitely.
@@ -5345,7 +5372,7 @@ void CoreRuntime::on_core_timer_tick() {
     shutdown_requested_ = true;
   }
 
-  // 5) Shutdown choreography (§10).
+  // 5) Shutdown choreography (Â§10).
   if (shutdown_requested_) {
     auto set_phase = [this](ShutdownPhase p) {
       if (shutdown_phase_ != p) {

@@ -74,6 +74,10 @@ private:
   friend class CamBANGServer;
   void _register_with_server_();
   void _set_live_from_server_(bool live);
+  // An endpoint handle outlives its session (it is keyed by hardware_id, which
+  // does); what it remembers about that session must not. The capture id it
+  // last triggered names a capture the next session has never heard of.
+  void _reset_session_state_() { current_capture_id_ = 0; }
 
   CamBANGServer* server_ = nullptr;
   uint64_t device_instance_id_ = 0;
