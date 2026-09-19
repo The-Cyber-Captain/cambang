@@ -92,8 +92,8 @@ public:
     uint32_t failure_error_code = 0;
     bool has_failure_error_code = false;
     // Core-monotonic creation timestamp (CoreRuntime::ns_since_epoch_()),
-    // set by the caller before insert(); drives retire_expired_cohorts()
-    // (ledger #52). Not reset by insert().
+    // set by the caller before insert(). Not reset by insert(). It no longer
+    // governs retention; see settled_cohorts().
     uint64_t created_ns = 0;
 
     // Closure (section 4.4). admitted_ns is the simultaneity window's origin
@@ -173,9 +173,8 @@ public:
                                  uint64_t device_instance_id) noexcept;
 
   // Delay until the next OPEN cohort's window expires, for CoreThread's timer
-  // deadline scheduling. Mirrors next_cohort_expiry_delay_ns(), which governs
-  // retention rather than closure -- the two are separate windows and must not
-  // be conflated.
+  // deadline scheduling. Governs closure only; retention follows the members
+  // (settled_cohorts()) and has no window of its own.
   std::optional<uint64_t> next_window_expiry_delay_ns(uint64_t now_ns,
                                                       uint64_t window_ns) const;
 
@@ -196,17 +195,40 @@ public:
   std::optional<CohortRecord> find_by_device_capture_id(
       uint64_t device_capture_id) const noexcept;
 
-  // Retention (ledger #52): this registry holds no payload/image data (see
-  // class doc comment), so unlike CoreCaptureAssemblyRegistry/CoreResultStore
-  // it doesn't need supersession/close-driven retirement -- a flat, generous
-  // time-since-creation window is sufficient and simpler. Safe even for a
-  // cohort whose participants are still resolving: get_capture_result_set()'s
-  // non-cohort fallback path independently recovers any already-completed
-  // participant's result directly from CoreResultStore/CoreCaptureAssemblyRegistry
-  // once the cohort record itself is gone.
-  size_t retire_expired_cohorts(uint64_t now_ns, uint64_t retention_window_ns);
-  std::optional<uint64_t> next_cohort_expiry_delay_ns(
-      uint64_t now_ns, uint64_t retention_window_ns) const;
+  // Retention. A cohort has no lifetime of its own: it is the index from a Rig
+  // Capture Id to its members' results, so it lives exactly as long as any of
+  // those members can still be looked up, and is retired when the last one is.
+  //
+  // It used to be retired on its own clock, five minutes after creation,
+  // independent of its members -- whose results retire five minutes after
+  // reaching a terminal state, or earlier under the byte budget. The two
+  // drifted in both directions, and when the cohort went first the rig's
+  // result set read as empty while every member result was still stored.
+  // The fallback that was supposed to cover that looked the Rig Capture Id up
+  // in the result store, where nothing has been keyed by it since the id
+  // spaces were split.
+  //
+  // Two steps, so the caller can consult the assembly registry between them
+  // without nesting the two registries' locks. Only a cohort that is no longer
+  // OPEN is ever offered: an OPEN one is still deciding its outcome.
+  struct RetirementCandidate {
+    uint64_t rig_capture_id = 0;
+    // (device_capture_id, device_instance_id) per expected participant.
+    std::vector<std::pair<uint64_t, uint64_t>> members;
+  };
+  std::vector<RetirementCandidate> settled_cohorts() const;
+  // Retires the named cohorts, skipping any that has since become unknown or
+  // is OPEN. Returns how many were retired.
+  size_t retire_cohorts(const std::vector<uint64_t>& rig_capture_ids);
+
+  // The retention decision itself: the candidates none of whose members still
+  // has an assembly record. Static and lock-free on this registry -- it reads
+  // only the copied candidates and the assembly registry -- so CoreRuntime can
+  // call it between settled_cohorts() and retire_cohorts() without nesting
+  // locks, and a verifier can exercise the exact rule CoreRuntime runs.
+  static std::vector<uint64_t> cohorts_without_members(
+      const std::vector<RetirementCandidate>& candidates,
+      const CoreCaptureAssemblyRegistry& assemblies);
 
 private:
   // Callers must already hold mutex_.

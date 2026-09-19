@@ -5356,6 +5356,23 @@ static int test_capture_cohort_window_expiry_sweep_smoke() {
     return 1;
   }
 
+  // The late member's own capture delivered and is retrievable by its Device
+  // Capture Id -- that is what made it eligible under the old read-time rule.
+  // It must still not join the rig's result set: the set was decided when the
+  // cohort closed, and the caller has already been told the cohort is final.
+  if (!wait_until([&]() { return rt.get_capture_result(member_capture_id) != nullptr; },
+                  4000, 5)) {
+    std::cerr << "Window expiry: late member's own result never retained, so the "
+                 "result-set check below would prove nothing\n";
+    rt.stop();
+    return 1;
+  }
+  if (!rt.get_capture_result_set(9701).empty()) {
+    std::cerr << "Window expiry: a LATE_EXCLUDED member joined the closed cohort's result set\n";
+    rt.stop();
+    return 1;
+  }
+
   rt.stop();
   return 0;
 }

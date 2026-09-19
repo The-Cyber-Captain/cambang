@@ -107,6 +107,13 @@ public:
   MemberDisposition disposition_for(uint64_t capture_id,
                                     uint64_t device_instance_id) const;
 
+  // Whether this (capture_id, device) still has an assembly record at all.
+  // Distinct from disposition_for(), which cannot tell a retired capture from
+  // one still in flight -- both read NONE. A record is removed only by
+  // retention (retire_terminal_older_than / remove_assembly), and its result
+  // goes with it, so this is also "is this capture's result still reachable".
+  bool has_assembly(uint64_t capture_id, uint64_t device_instance_id) const;
+
   // Captures that reached a terminal disposition since the last drain
   // (capture_identity_and_lifecycle.md 4.2). Queued at every transition site
   // rather than discovered by scanning: the boundary drains this once per tick
