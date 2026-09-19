@@ -530,6 +530,104 @@ static int test_capture_cohort_registry_basics() {
   return 0;
 }
 
+// Cohort retention follows its members. A cohort is the index from a Rig
+// Capture Id to its members' results, so it must outlive none of them and be
+// outlived by none of them: retired exactly when the last member's assembly
+// record is gone, never on a clock of its own, and never while OPEN.
+//
+// Exercises CoreCaptureCohortRegistry::cohorts_without_members, the rule
+// CoreRuntime's retention sweep runs, against a real assembly registry.
+static int test_capture_cohort_retention_follows_members() {
+  using Assembly = CoreCaptureAssemblyRegistry;
+  using Reason = CoreCaptureCohortRegistry::CohortClosedReason;
+
+  constexpr uint64_t kRig = 4000;
+  constexpr uint64_t kMemberA = 4101;  // Device Capture Ids
+  constexpr uint64_t kMemberB = 4102;
+  constexpr uint64_t kDeviceA = 1001;
+  constexpr uint64_t kDeviceB = 1002;
+
+  CoreCaptureCohortRegistry cohorts;
+  Assembly assemblies;
+
+  CoreCaptureCohortRegistry::CohortRecord rec{};
+  rec.rig_capture_id = kRig;
+  rec.rig_id = 9;
+  rec.created_ns = 1;
+  rec.admitted_ns = 1;
+  rec.expected_participants.push_back({kDeviceA, "hw:a", kMemberA});
+  rec.expected_participants.push_back({kDeviceB, "hw:b", kMemberB});
+  if (!cohorts.insert(rec)) {
+    std::cerr << "FAIL: retention fixture cohort rejected\n";
+    return 1;
+  }
+  assemblies.mark_capture_completed(kMemberA, kDeviceA);
+  assemblies.mark_capture_completed(kMemberB, kDeviceB);
+
+  auto sweep = [&]() {
+    return cohorts.retire_cohorts(
+        CoreCaptureCohortRegistry::cohorts_without_members(cohorts.settled_cohorts(), assemblies));
+  };
+
+  // OPEN is never a candidate, even with no members left: it is still
+  // deciding its outcome.
+  assemblies.remove_assembly(kMemberA, kDeviceA);
+  assemblies.remove_assembly(kMemberB, kDeviceB);
+  if (!cohorts.settled_cohorts().empty() || sweep() != 0 || !cohorts.contains(kRig)) {
+    std::cerr << "FAIL: an OPEN cohort was offered for, or lost to, retention\n";
+    return 1;
+  }
+  assemblies.mark_capture_completed(kMemberA, kDeviceA);
+  assemblies.mark_capture_completed(kMemberB, kDeviceB);
+
+  std::vector<CoreCaptureCohortRegistry::MemberOutcome> outcomes(2);
+  outcomes[0].device_instance_id = kDeviceA;
+  outcomes[0].device_capture_id = kMemberA;
+  outcomes[0].disposition = Assembly::TerminalState::DELIVERED;
+  outcomes[1].device_instance_id = kDeviceB;
+  outcomes[1].device_capture_id = kMemberB;
+  outcomes[1].disposition = Assembly::TerminalState::DELIVERED;
+  if (!cohorts.close(kRig, Reason::ALL_MEMBERS_TERMINAL, 2, outcomes)) {
+    std::cerr << "FAIL: retention fixture cohort would not close\n";
+    return 1;
+  }
+
+  // Closed, both members retrievable: kept. There is no age at which this
+  // changes -- the old rule retired it five minutes after creation regardless.
+  if (sweep() != 0 || !cohorts.contains(kRig)) {
+    std::cerr << "FAIL: a cohort was retired while both members were retrievable\n";
+    return 1;
+  }
+
+  // One member gone (aged out, or byte-budget evicted): still kept, because
+  // the other member's result can still be reached through it.
+  assemblies.remove_assembly(kMemberA, kDeviceA);
+  if (sweep() != 0 || !cohorts.contains(kRig) ||
+      cohorts.rig_capture_id_for_device_capture(kMemberB) != kRig) {
+    std::cerr << "FAIL: a cohort was retired while one member was still retrievable\n";
+    return 1;
+  }
+
+  // Last member gone: retired, reverse index with it.
+  assemblies.remove_assembly(kMemberB, kDeviceB);
+  if (sweep() != 1 || cohorts.contains(kRig) ||
+      cohorts.rig_capture_id_for_device_capture(kMemberA) != 0 ||
+      cohorts.rig_capture_id_for_device_capture(kMemberB) != 0) {
+    std::cerr << "FAIL: a cohort outlived its last member\n";
+    return 1;
+  }
+
+  // retire_cohorts refuses an OPEN cohort even when named directly.
+  rec.rig_capture_id = kRig + 1;
+  rec.expected_participants = {{kDeviceA, "hw:a", kMemberA + 10}};
+  if (!cohorts.insert(rec) || cohorts.retire_cohorts({kRig + 1}) != 0 ||
+      !cohorts.contains(kRig + 1)) {
+    std::cerr << "FAIL: retire_cohorts retired an OPEN cohort\n";
+    return 1;
+  }
+  return 0;
+}
+
 // Cohort closure (capture_identity_and_lifecycle.md 4.4). Registry-level: the
 // window arithmetic and the closed-outcome rules, independent of any provider.
 static int test_capture_cohort_closure() {
@@ -1903,6 +2001,7 @@ static int test_scoped_resource_telemetry_runtime_framebuffer_lease_integration(
 int main() {
   if (int r = test_capture_cohort_registry_basics()) return r;
   if (int r = test_capture_cohort_closure()) return r;
+  if (int r = test_capture_cohort_retention_follows_members()) return r;
   if (int r = test_per_device_admitted_capture_predicate()) return r;
   if (int r = test_rig_membership_versioning()) return r;
   if (int r = test_rig_membership_mutation()) return r;

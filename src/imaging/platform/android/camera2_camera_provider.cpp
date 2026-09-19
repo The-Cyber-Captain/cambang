@@ -819,6 +819,7 @@ struct BurstCollector {
     p.expected = expected;
     p.arrived = images.size();
     p.failed = failed_count;
+    p.results = results_by_time.size() + results_in_order.size();
     p.sequence_ended = sequence_ended;
     p.in_flight_grace_elapsed = in_flight_grace_elapsed;
     return p;
@@ -2145,7 +2146,18 @@ void on_capture_completed(void* context,
     std::lock_guard<std::mutex> bl(backend->m);
     burst = backend->burst;
   }
-  if (!burst) return;
+  if (!burst) {
+    // A capture result with no collector waiting for it. Logged because this
+    // path used to return silently, which made a result that arrived after its
+    // capture had stopped waiting indistinguishable from one that never came.
+    ResultFacts late{};
+    extract_result_facts(result, late);
+    camera2_detail::log_line(
+        "diag device=%llu capture result with no collector installed: sensor_ts=%lld",
+        static_cast<unsigned long long>(backend->device_instance_id),
+        static_cast<long long>(late.has_sensor_timestamp ? late.sensor_timestamp_ns : -1));
+    return;
+  }
   ResultFacts facts{};
   extract_result_facts(result, facts);
   // 3A convergence at the moment this result was produced. AE_STATE values:
@@ -5212,9 +5224,12 @@ bool Camera2CameraProvider::capture_burst_(
     const auto sample_deadline =
         std::chrono::steady_clock::now() + std::chrono::milliseconds(kCaptureSampleWaitMs);
 
-    // First wait: everything accounted for, or the platform closes the sequence.
-    // burst->settled() cannot end this wait on sequence end alone -- the grace
-    // flag is still false -- so the predicate names both conditions itself.
+    // First wait: every payload AND every result accounted for, or the platform
+    // closes the sequence. Results arrive on their own callback and can trail
+    // the payload; stopping on payloads alone lost the per-image facts of ~11%
+    // of captures (see capture_results_settled). burst->settled() cannot end
+    // this wait on sequence end alone -- the grace flag is still false -- so
+    // the predicate names both conditions itself.
     settled = burst->cv.wait_until(wl, sample_deadline, [&burst] {
       return burst->settled() || burst->sequence_ended;
     });
@@ -5259,6 +5274,7 @@ bool Camera2CameraProvider::capture_burst_(
   progress.expected = specs.size();
   progress.arrived = images.size();
   progress.failed = failed_count;
+  progress.results = results_by_time.size() + results_in_order.size();
   progress.sequence_ended = sequence_ended;
 
   const size_t accounted = capture_accounted_members(progress);

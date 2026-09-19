@@ -28,12 +28,17 @@ int g_failed = 0;
 // Sequence ended and its in-flight grace expired: the capture has waited as long
 // as it is ever going to. Most cases below are about the terminal state, so this
 // is the default shape.
+//
+// Each arrived payload's result is taken to have arrived with it. These fixtures
+// are about payload settlement; the result channel is exercised on its own in
+// run_result_metadata_settlement_checks, which sets `results` explicitly.
 CaptureSequenceProgress progress(size_t expected, size_t arrived, size_t failed,
                                  bool sequence_ended) {
   CaptureSequenceProgress p{};
   p.expected = expected;
   p.arrived = arrived;
   p.failed = failed;
+  p.results = arrived;
   p.sequence_ended = sequence_ended;
   p.in_flight_grace_elapsed = sequence_ended;
   return p;
@@ -46,8 +51,23 @@ CaptureSequenceProgress in_grace(size_t expected, size_t arrived, size_t failed)
   p.expected = expected;
   p.arrived = arrived;
   p.failed = failed;
+  p.results = arrived;
   p.sequence_ended = true;
   p.in_flight_grace_elapsed = false;
+  return p;
+}
+
+// Exact channel state, for the result-metadata checks: payloads and results
+// counted separately, sequence open unless stated.
+CaptureSequenceProgress channels(size_t expected, size_t arrived, size_t results,
+                                 size_t failed, bool sequence_ended) {
+  CaptureSequenceProgress p{};
+  p.expected = expected;
+  p.arrived = arrived;
+  p.results = results;
+  p.failed = failed;
+  p.sequence_ended = sequence_ended;
+  p.in_flight_grace_elapsed = sequence_ended;
   return p;
 }
 
@@ -309,6 +329,66 @@ void run_starvation_regression_check() {
         !delivered_after_loss && outstanding_debt > 0);
 }
 
+void run_result_metadata_settlement_checks() {
+  // Camera2 delivers a member's payload and its capture result on separate
+  // callbacks, in no guaranteed order. A capture that stops waiting once its
+  // payloads are in can snapshot before its results arrive, and every per-image
+  // fact is lost -- exposure, ISO, intrinsics, and everything derived from them.
+  //
+  // Measured on Quest 3 (scene 870, 2026-09-19): 16 of 161 single-member
+  // captures settled without their result, and in all 16 the result arrived
+  // 0-1 ms after the collector had stopped waiting. None was genuinely absent.
+  // Retained August logs show the same ~11% on Quest 3 and ~11% on Galaxy S20+.
+  //
+  // The result channel must settle on platform events alone -- a result or
+  // failure per member, or the sequence ending, which NdkCameraCaptureSession.h
+  // defines as occurring after every result and failure has been delivered. No
+  // timer belongs in it.
+
+  // THE CASE: payload in, result not yet, sequence open. Must keep waiting.
+  const CaptureSequenceProgress payload_first = channels(1, 1, 0, 0, false);
+  check("payload before result: capture keeps waiting for its result",
+        !capture_sequence_is_settled(payload_first));
+
+  // The result lands: now settled, complete, owing nothing.
+  expect("payload then result", channels(1, 1, 1, 0, false),
+         /*settled=*/true, /*debt=*/0, /*short=*/false);
+
+  // The ordinary ordering, result first, is unaffected: waits for the payload,
+  // then settles.
+  check("result before payload: still waits for the payload",
+        !capture_sequence_is_settled(channels(1, 0, 1, 0, false)));
+  expect("result then payload", channels(1, 1, 1, 0, false), true, 0, false);
+
+  // Sequence end guarantees every result and failure has been delivered. A
+  // capture whose sequence has ended with its payload in but no result has
+  // nothing further to wait for on that channel.
+  expect("payload in, no result, sequence ended", channels(1, 1, 0, 0, true),
+         /*settled=*/true, /*debt=*/0, /*short=*/false);
+
+  // A failure stands in for the result on the metadata channel.
+  expect("member failed: no result owed", channels(1, 0, 0, 1, false), true, 0, false);
+  check("bracket: one result outstanding keeps it waiting",
+        !capture_sequence_is_settled(channels(3, 3, 2, 0, false)));
+  expect("bracket: last result lands", channels(3, 3, 3, 0, false), true, 0, false);
+  expect("bracket: failure covers the missing result", channels(3, 2, 2, 1, false), true, 0,
+         false);
+
+  // Event-driven, not timed: settling on a result never depends on the
+  // in-flight grace, which exists only for payloads after sequence end.
+  CaptureSequenceProgress no_grace_needed = channels(1, 1, 1, 0, false);
+  no_grace_needed.in_flight_grace_elapsed = false;
+  check("result settles without any grace", capture_sequence_is_settled(no_grace_needed));
+  check("waiting on a result does not arm the payload grace",
+        !capture_awaits_in_flight_grace(payload_first));
+
+  // Results have no bearing on debt or shortness: both are about payloads.
+  check("missing result is not payload debt",
+        capture_outstanding_payload_debt(payload_first) == 0);
+  check("missing result does not make the capture short",
+        !capture_finished_short(payload_first));
+}
+
 }  // namespace
 
 int main() {
@@ -321,6 +401,7 @@ int main() {
   run_overdelivery_check();
   run_degenerate_expectation_check();
   run_starvation_regression_check();
+  run_result_metadata_settlement_checks();
 
   if (g_failed != 0) {
     std::cout << "FAIL capture_sequence_settlement_verify run=" << g_run

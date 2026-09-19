@@ -414,6 +414,14 @@ CoreCaptureAssemblyRegistry::terminal_capture_device_pairs() const {
   return pairs;
 }
 
+bool CoreCaptureAssemblyRegistry::has_assembly(uint64_t capture_id,
+                                               uint64_t device_instance_id) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto capture_it = assemblies_by_capture_id_.find(capture_id);
+  return capture_it != assemblies_by_capture_id_.end() &&
+         capture_it->second.find(device_instance_id) != capture_it->second.end();
+}
+
 void CoreCaptureAssemblyRegistry::remove_assembly(uint64_t capture_id, uint64_t device_instance_id) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto capture_it = assemblies_by_capture_id_.find(capture_id);

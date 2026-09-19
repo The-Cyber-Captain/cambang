@@ -117,9 +117,9 @@ public:
   // number: a completion whose reason cannot be named is only half reported.
   //
   // All six are bound because they are the model's vocabulary. Only four can
-  // reach capture_finished today -- LATE_EXCLUDED and NEVER_ARRIVED are
-  // produced solely as cohort member outcomes, and become caller-visible when
-  // 4.3's per-member reporting lands. See 9.4.
+  // reach capture_finished -- LATE_EXCLUDED and NEVER_ARRIVED are produced
+  // solely as cohort member outcomes, and reach the caller through
+  // CamBANGRig.get_member_outcomes() / get_capture_member_outcomes_by_id().
   static constexpr int DISPOSITION_DELIVERED =
       static_cast<int>(CoreCaptureAssemblyRegistry::TerminalState::DELIVERED);
   static constexpr int DISPOSITION_FAILED =
@@ -633,7 +633,9 @@ private:
   //
   // Strong refs: the server keeps these alive, which is the whole point --
   // a canonical wrapper that dies when the caller drops it is not canonical.
-  // Cleared on stop(), because the ids they name do not survive the session.
+  // The instance-id and rig maps are cleared on stop(), because the ids they
+  // name do not survive the session. The hardware_id map is kept across
+  // sessions, because hardware_id does; stop() resets only its session state.
   mutable std::unordered_map<std::string, godot::Ref<CamBANGDevice>>
       canonical_device_by_hardware_id_;
   mutable std::unordered_map<uint64_t, godot::Ref<CamBANGDevice>>

@@ -281,40 +281,60 @@ uint64_t CoreCaptureCohortRegistry::device_capture_id_for(
   return 0;
 }
 
-size_t CoreCaptureCohortRegistry::retire_expired_cohorts(
-    uint64_t now_ns, uint64_t retention_window_ns) {
+std::vector<CoreCaptureCohortRegistry::RetirementCandidate>
+CoreCaptureCohortRegistry::settled_cohorts() const {
+  std::vector<RetirementCandidate> out;
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (const auto& [rig_capture_id, record] : cohorts_) {
+    if (record.state == CohortState::OPEN) {
+      continue;
+    }
+    RetirementCandidate candidate{};
+    candidate.rig_capture_id = rig_capture_id;
+    candidate.members.reserve(record.expected_participants.size());
+    for (const auto& participant : record.expected_participants) {
+      candidate.members.emplace_back(participant.device_capture_id,
+                                     participant.device_instance_id);
+    }
+    out.push_back(std::move(candidate));
+  }
+  return out;
+}
+
+std::vector<uint64_t> CoreCaptureCohortRegistry::cohorts_without_members(
+    const std::vector<RetirementCandidate>& candidates,
+    const CoreCaptureAssemblyRegistry& assemblies) {
+  std::vector<uint64_t> out;
+  for (const auto& candidate : candidates) {
+    bool any_member_left = false;
+    for (const auto& [device_capture_id, device_instance_id] : candidate.members) {
+      if (assemblies.has_assembly(device_capture_id, device_instance_id)) {
+        any_member_left = true;
+        break;
+      }
+    }
+    if (!any_member_left) {
+      out.push_back(candidate.rig_capture_id);
+    }
+  }
+  return out;
+}
+
+size_t CoreCaptureCohortRegistry::retire_cohorts(const std::vector<uint64_t>& rig_capture_ids) {
   size_t retired = 0;
   std::lock_guard<std::mutex> lock(mutex_);
-  for (auto it = cohorts_.begin(); it != cohorts_.end();) {
-    if (now_ns < it->second.created_ns + retention_window_ns) {
-      ++it;
+  for (const uint64_t rig_capture_id : rig_capture_ids) {
+    const auto it = cohorts_.find(rig_capture_id);
+    if (it == cohorts_.end() || it->second.state == CohortState::OPEN) {
       continue;
     }
     for (const auto& participant : it->second.expected_participants) {
       rig_capture_id_by_device_capture_id_.erase(participant.device_capture_id);
     }
-    it = cohorts_.erase(it);
+    cohorts_.erase(it);
     ++retired;
   }
   return retired;
-}
-
-std::optional<uint64_t> CoreCaptureCohortRegistry::next_cohort_expiry_delay_ns(
-    uint64_t now_ns, uint64_t retention_window_ns) const {
-  std::optional<uint64_t> min_delay;
-  std::lock_guard<std::mutex> lock(mutex_);
-  for (const auto& [rig_capture_id, record] : cohorts_) {
-    (void)rig_capture_id;
-    const uint64_t expiry_ns = record.created_ns + retention_window_ns;
-    uint64_t delay = 0;
-    if (expiry_ns > now_ns) {
-      delay = expiry_ns - now_ns;
-    }
-    if (!min_delay.has_value() || delay < *min_delay) {
-      min_delay = delay;
-    }
-  }
-  return min_delay;
 }
 
 } // namespace cambang

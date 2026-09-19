@@ -75,6 +75,10 @@ struct CaptureSequenceProgress {
   // Members the platform explicitly reported as failed. A failed member owes
   // nothing: the platform has already accounted for it.
   size_t failed = 0;
+  // Capture results -- the per-member metadata -- that have arrived. Delivered
+  // on a separate callback from the payload, in no guaranteed order relative to
+  // it. A failed member receives a failure instead of a result.
+  size_t results = 0;
   // The platform has reported this submission's sequence as completed or
   // aborted. Backends with no such signal leave this false and fall back to
   // the caller's wait window.
@@ -91,7 +95,7 @@ constexpr size_t capture_accounted_members(const CaptureSequenceProgress& p) noe
   return p.arrived + p.failed;
 }
 
-// Whether the capture can stop waiting.
+// Whether the payload channel can stop waiting.
 //
 // Every member accounted for is the ordinary case, and needs no grace: there is
 // nothing left to wait for.
@@ -99,9 +103,33 @@ constexpr size_t capture_accounted_members(const CaptureSequenceProgress& p) noe
 // Otherwise the sequence must have ended AND its in-flight grace expired. Ending
 // alone is not enough -- see the header note; a buffer mid-delivery at the moment
 // of sequence end is lost by anything that stops waiting right then.
-constexpr bool capture_sequence_is_settled(const CaptureSequenceProgress& p) noexcept {
+constexpr bool capture_payloads_settled(const CaptureSequenceProgress& p) noexcept {
   return capture_accounted_members(p) >= p.expected ||
          (p.sequence_ended && p.in_flight_grace_elapsed);
+}
+
+// Whether the result channel can stop waiting.
+//
+// Every member has a result or a failure, or the sequence has ended. The second
+// is exact rather than a fallback: NdkCameraCaptureSession.h defines sequence
+// completion as occurring after every result and failure of the sequence has
+// been delivered, so once it ends there is nothing more to come on this channel.
+// Both conditions are platform events. No timer belongs here, and the in-flight
+// grace is not consulted -- it exists for payloads, whose delivery sequence end
+// does not cover.
+//
+// Why this is a channel of its own: Camera2 delivers a member's payload and its
+// result on separate callbacks in no guaranteed order. A capture that stopped
+// once its payloads were in snapshotted before its results on ~11% of captures
+// on both Quest 3 and Galaxy S20+, losing every per-image fact; on Quest 3 the
+// late result arrived 0-1 ms after the snapshot in all 16 measured cases.
+constexpr bool capture_results_settled(const CaptureSequenceProgress& p) noexcept {
+  return p.results + p.failed >= p.expected || p.sequence_ended;
+}
+
+// Whether the capture can stop waiting: both channels settled.
+constexpr bool capture_sequence_is_settled(const CaptureSequenceProgress& p) noexcept {
+  return capture_payloads_settled(p) && capture_results_settled(p);
 }
 
 // Whether the capture should start its in-flight grace: the platform has closed

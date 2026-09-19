@@ -237,6 +237,13 @@ same id, so that a handle is a durable thing to subscribe to and identity
 comparison behaves. Instancing a fresh wrapper per call makes per-object
 signals unreliable by construction.
 
+Canonical means **for as long as the id means the same thing.** A `hardware_id`
+names the same camera in every session, so its handle survives `stop()`/`start()`:
+the object a caller held before a restart is the one
+`get_device_for_hardware_id(...)` returns after it, and its connections carry
+over. Instance ids and rig ids are session-scoped and never reissued, so their
+handles belong to the session that minted them.
+
 ### 4.3 Dispositions
 
 Per-member terminal disposition:
@@ -259,6 +266,11 @@ it is not part of the same moment, and excluding it (`LATE_EXCLUDED`) is
 correct behaviour rather than a failure to wait. A rig capture of six devices
 that closes with four delivered, one failed and one late-excluded is a complete
 and truthful outcome, and reports the instant at which it closed.
+
+The result set is decided at that instant. It holds the members that were
+`DELIVERED` when the capture closed and no others; a member that settles
+afterwards becomes `LATE_EXCLUDED` in the outcomes and stays out of the set, so
+the set a caller reads never disagrees with the outcomes beside it.
 
 **Clock constraint:** lateness is measured on Core's own clock from capture
 admission. `camera_fact_model.md` §12.2 forbids using acquisition timing as
@@ -588,11 +600,12 @@ no literals.
 `DELIVERED`, `FAILED`, `PREEMPTED_BY_RIG`, `DEVICE_LOST` — the four sites that
 assign `terminal_state` in `core_capture_assembly_registry.cpp`.
 `LATE_EXCLUDED` and `NEVER_ARRIVED` are assigned only as cohort member outcomes
-(`core_capture_cohort_registry.cpp:208`, `core_runtime.cpp:4133`), never as an
-assembly terminal state. A caller matching on either would wait indefinitely.
-All six are nonetheless bound (§9.3): they are the model's vocabulary, and the
-two unreachable ones become caller-visible when §4.3's per-member reporting
-lands.
+(`CoreCaptureCohortRegistry::mark_member_late_excluded`,
+`CoreRuntime::sweep_capture_cohort_closure_`), never as an assembly terminal
+state. A caller matching on either in `capture_finished` would wait
+indefinitely. All six are nonetheless bound (§9.3): they are the model's
+vocabulary, and the two cohort-only ones reach the caller through §4.3's
+per-member reporting, `CamBANGRig.get_member_outcomes()`.
 
 ### 9.5 The device signal fires more broadly than §4.2 describes
 
@@ -795,3 +808,30 @@ Verdicts from `tests/cambang_gde/run-logs/`, 2026-08-24, Windows.
 - ~~`get_rig(...)` and `get_device_for_hardware_id(...)` instantiate a new
   wrapper per call~~ — canonical per id (§9.1).
 - ~~`create_rig` takes hardware-id strings~~ — it takes device handles (§9.1).
+- ~~A restart minted a second handle for the same camera~~ — `stop()` cleared the
+  `hardware_id` map while the caller's handle stayed tracked and resolved by
+  `hardware_id`, so both emitted every `capture_finished` and `live_changed`
+  and `old == new` was false. The map is now kept across sessions and only its
+  session state reset (`CamBANGServer::stop()`, `CamBANGDevice::_reset_session_state_`),
+  per §4.2. Instance-id and rig handles are still dropped on `stop()`.
+- ~~A closed rig capture's result set grew after closure~~ —
+  `CoreRuntime::get_capture_result_set` re-evaluated assembly success on every
+  read, so a `LATE_EXCLUDED` member joined the set once its own capture
+  finished. A `CLOSED` cohort now returns only members recorded `DELIVERED` at
+  closure (§4.4); an `OPEN` one still reports work in progress.
+  `core_spine_smoke` `test_capture_cohort_window_expiry_sweep_smoke` asserts it,
+  and fails against the old rule.
+- ~~A rig capture's result set emptied five minutes after the trigger~~ — the
+  cohort record, which maps a Rig Capture Id to its members, was retired on its
+  own clock (five minutes after creation) while member results retire five
+  minutes after reaching a terminal state or earlier under the byte budget, so
+  `get_result()` read empty with every member still stored. The fallback meant
+  to cover it searched the result store by Rig Capture Id, which nothing has
+  been keyed by since §2.1. A settled cohort is now retired in the same sweep
+  as its last member's assembly record, and never while `OPEN`
+  (`CoreCaptureCohortRegistry::cohorts_without_members`, run from
+  `CoreRuntime::on_core_timer_tick`). `phase3_snapshot_verify`
+  `test_capture_cohort_retention_follows_members` asserts it, and fails against
+  a rule that ignores members. Member results themselves still retire
+  independently, so under byte-budget pressure a settled set can lose members
+  before the cohort goes; that is unchanged.
