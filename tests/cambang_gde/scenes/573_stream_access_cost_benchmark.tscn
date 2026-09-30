@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/573_stream_access_cost_benchmark.gd" id="1_script"]
+
+[node name="573_StreamAccessCostBenchmark" type="Node"]
+script = ExtResource("1_script")
