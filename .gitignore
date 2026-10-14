@@ -36,6 +36,10 @@ compile_commands/
 .ninja_deps
 .ninja_log
 
+# ------------------------------
+# UV environment
+# ------------------------------
+.venv/
 
 # ------------------------------
 # Python / SCons

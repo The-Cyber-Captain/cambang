@@ -1,8 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(scons *)",
-      "PowerShell(scons *)",
+      "Bash(uv sync --locked)",
+      "PowerShell(uv sync --locked)",
+      "Bash(uv run --locked python -m SCons *)",
+      "PowerShell(uv run --locked python -m SCons *)",
       "Bash(out/*.exe)",
       "Bash(./out/*.exe)",
       "PowerShell(.\\out\\*.exe)",

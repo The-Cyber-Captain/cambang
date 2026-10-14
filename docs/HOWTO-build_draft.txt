@@ -1,1 +1,57 @@
-Some scons stuff probably goes here
+CamBANG — build from a fresh clone
+=================================
+Run commands in Git Bash from the repository root.
+
+Prerequisites
+-------------
+- uv available on PATH.
+- Microsoft C++ Build Tools with the C++ toolset and Windows SDK.
+- For Android: Android SDK containing NDK 28.1.13356709.
+
+Prepare the checkout and Python environment
+------------------------------------------
+git submodule update --init --recursive
+uv sync --locked
+
+uv uses .python-version and uv.lock to recreate the Python/SCons environment.
+Do not install SCons globally. Do not commit .venv/.
+
+CamBANG GDE builds — Git Bash, from the repository root
+
+Setup
+-----
+git submodule update --init --recursive
+uv sync --locked
+
+Windows GDE — tested
+--------------------
+Prepare godot-cpp:
+uv run --locked python -m SCons -C thirdparty/godot-cpp platform=windows target=template_debug arch=x86_64 precision=single
+
+Build plugin and compilation database:
+uv run --locked python -m SCons all platform=windows use_mingw=no godot_cpp=external maintainer_tools=no -j8
+
+Android GDE
+---------------------------
+Set your actual Android SDK path:
+export ANDROID_HOME='C:/path/to/Android/Sdk'
+
+Prepare godot-cpp:
+uv run --locked python -m SCons -C thirdparty/godot-cpp platform=android target=template_debug arch=arm64 precision=single android_api_level=26 ndk_version=28.1.13356709
+
+Build plugin and compilation database:
+uv run --locked python -m SCons all platform=android arch=arm64 godot_cpp=external maintainer_tools=no -j8
+
+For subsequent builds, repeat only the relevant plugin build command.
+
+
+Routine builds
+--------------
+Repeat the appropriate CamBANG build command using godot_cpp=external.
+Prepare godot-cpp again when its source or required build configuration changes.
+Do not pass Windows MinGW options to Android builds.
+
+Godot export/deployment additionally requires a compatible Godot editor,
+export templates, JDK and Android export configuration.
+
+Reference: docs/dev/build_and_scaffolding.md

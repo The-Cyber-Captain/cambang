@@ -20,16 +20,19 @@ The Godot-facing public API (methods, signals, constants, dictionary shapes) and
 
 SCons only (no CMake). Windows host, **MSVC** toolchain — the `windows_winrt` platform provider is C++/WinRT and MinGW cannot compile it. The working invocations on this machine:
 
+Run these commands from the repository root using the uv-managed Python
+environment; see AGENTS.md for environment setup and dependency-update rules.
+
 ```sh
 # GDE plugin only / maintainer tools only
-scons gde use_mingw=no godot_cpp=external -j8
-scons gde=no use_mingw=no godot_cpp=external -j8
+uv run --locked python -m SCons gde use_mingw=no godot_cpp=external -j8
+uv run --locked python -m SCons gde=no use_mingw=no godot_cpp=external -j8
 
 # Both artifact families
-scons use_mingw=no godot_cpp=external -j8
+uv run --locked python -m SCons use_mingw=no godot_cpp=external -j8
 
 # Android GDE for hardware validation (no mingw flags; arch is not inferred)
-scons gde platform=android arch=arm64 godot_cpp=external -j8
+uv run --locked python -m SCons gde platform=android arch=arm64 godot_cpp=external -j8
 ```
 
 Three standing rules, each of which has cost real time when broken:

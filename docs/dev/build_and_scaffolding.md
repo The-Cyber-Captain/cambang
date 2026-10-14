@@ -7,6 +7,50 @@ build-system direction, scaffolding constraints, and repeatable local workflow.
 Build system: **SCons-only**. CMake is not supported. The repo-root
 `SConstruct` is the source of truth for the build contract.
 
+## Python tooling environment
+
+Run Python tooling from the repository root through uv. The repository tracks
+`pyproject.toml`, `uv.lock` and `.python-version`; `.venv/` is generated locally
+and must not be committed.
+
+Create or restore the environment:
+
+```sh
+uv sync --locked
+```
+
+For every SCons command documented below, replace the leading `scons` with:
+
+```sh
+uv run --locked python -m SCons
+```
+
+For example, the Windows GDE build is:
+
+```sh
+uv run --locked python -m SCons gde platform=windows use_mingw=no godot_cpp=external -j8
+```
+
+Run Python helper scripts through the same environment:
+
+```sh
+uv run --locked python scripts/gdscript_to_xml.py <gdscript_file>
+```
+
+The same prefix applies when preparing godot-cpp directly:
+
+```sh
+uv run --locked python -m SCons -C thirdparty/godot-cpp <documented-preparation-arguments>
+```
+
+`--locked` rejects missing or outdated lockfiles rather than changing dependency
+resolution during routine builds. Dependency and Python version updates are
+deliberate maintenance changes.
+
+uv manages Python and its dependencies. Compiler, Windows SDK, Android SDK/NDK
+and prepared godot-cpp artifact requirements remain governed by the existing
+build instructions.
+
 ---
 
 ## 1. Purpose and status
