@@ -55,7 +55,17 @@ canonical CamBANG documents listed in `docs/INDEX.md`.
 
 ## Build and validation
 
-Build and validation are SCons-based. See:
+Build and validation are SCons-based. Python tooling uses a repository-local
+uv environment. From the repository root, prepare it with:
+
+```sh
+uv sync --locked
+```
+
+Run SCons through `uv run --locked python -m SCons`, preserving the build
+arguments documented below. Compiler and SDK/NDK prerequisites are separate.
+
+See:
 
 - `docs/dev/build_and_scaffolding.md`
 - `docs/dev/maintainer_tools.md`

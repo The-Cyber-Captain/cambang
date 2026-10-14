@@ -58,3 +58,21 @@ task or tranche completion unless every required validation check passes.
 Do not assume cloud or sandbox validation proves Windows, Godot, hardware, GPU, or platform-provider behaviour unless those paths were actually exercised.
 
 For this repo on this machine, treat sandboxed Codex Godot launches as non-authoritative: they may crash with a signal-11 / "memory could not be read" dialog even when local runs are otherwise healthy. For Godot scene or harness verification, prefer the explicit PowerShell helpers under `tests/cambang_gde/` and, when needed, an approved unsandboxed run.
+
+## Python build environment
+
+Use the repository's uv-managed environment from the repository root:
+
+- `uv sync --locked` recreates the declared environment.
+- Run SCons with `uv run --locked python -m SCons`, preserving the
+  documented target and toolchain arguments.
+- Run Python helper scripts with `uv run --locked python <script>`.
+- Do not install Python dependencies globally or modify `.venv` manually.
+- Change Python/dependency versions and regenerate `uv.lock` only as
+  part of an explicitly requested dependency update.
+
+Commit `pyproject.toml`, `uv.lock` and `.python-version`.
+Keep `.venv/` untracked.
+
+uv manages Python dependencies only. Existing compiler, SDK/NDK and
+godot-cpp preparation requirements still apply.
