@@ -117,6 +117,13 @@ func _emit(status: String, reason: String) -> void:
 	if _verdict_emitted:
 		return
 	_verdict_emitted = true
+	# Printed on every verdict, so a failed run still carries its distributions.
+	print("[CamBANG][EarlyTiming] provider=%s os=%s model=%s phases=%s skipped=%s no_timing=%d %s %s %s" % [
+		_provider_arg, OS.get_name(), OS.get_model_name(), ",".join(_phases_run), ",".join(_phases_skipped),
+		_no_timing_count,
+		_dist("dispatch_usec", _dispatch_usec),
+		_dist("trigger_to_notice_usec", _trigger_to_notice_usec),
+		_dist("notice_lead_over_finished_usec", _notice_lead_usec)])
 	var code := 0 if status == "ok" or status == "expected_unsupported" else 1
 	print("[CamBANG][HarnessVerdict] scene=%s status=%s exit_code=%d reason=%s" % [SCENE_LABEL, status, code, reason])
 	CamBANGServer.stop()
@@ -198,7 +205,12 @@ func _engage(dev) -> bool:
 
 # Triggers via `trigger_fn` (retrying ERR_BUSY briefly) and waits for its
 # capture_finished. Returns the capture id or "" after failing the scene.
-func _trigger_and_wait(trigger_fn: Callable, what: String) -> String:
+#
+# `refused_ok` names a trigger error that means "this device does not do this"
+# rather than a failure; it returns REFUSED instead of failing the scene.
+const REFUSED := "<refused>"
+
+func _trigger_and_wait(trigger_fn: Callable, what: String, refused_ok: int = OK) -> String:
 	var deadline := Time.get_ticks_msec() + TIMEOUT_MS
 	var trigger: Dictionary = trigger_fn.call()
 	var trigger_ticks := Time.get_ticks_usec()
@@ -208,6 +220,8 @@ func _trigger_and_wait(trigger_fn: Callable, what: String) -> String:
 		trigger_ticks = Time.get_ticks_usec()
 	var err := int(trigger.get("error", FAILED))
 	var id := str(trigger.get("id", ""))
+	if refused_ok != OK and err == refused_ok:
+		return REFUSED
 	if err != OK or id.is_empty():
 		_fail("%s: trigger_capture() err=%d" % [what, err])
 		return ""
@@ -380,7 +394,17 @@ func _phase_bracket(dev) -> bool:
 	var done := 0
 	var deadline := Time.get_ticks_msec() + TIMEOUT_MS
 	while done < _captures_bracket:
-		var id := await _trigger_and_wait(func(): return dev.trigger_capture(), "bracket #%d" % done)
+		# A provider may accept the profile yet refuse a multi-image bundle at
+		# admission on a device that cannot honour it (WinRT without an
+		# exposure-compensation control refuses with ERR_UNAVAILABLE). That is
+		# the hardware's answer, so the phase is skipped, not failed -- but only
+		# before any bracket has been delivered.
+		var id := await _trigger_and_wait(func(): return dev.trigger_capture(), "bracket #%d" % done,
+			ERR_UNAVAILABLE if done == 0 else OK)
+		if id == REFUSED:
+			print("SKIP: bracket: trigger_capture() refused the bundle on this device (ERR_UNAVAILABLE)")
+			_phases_skipped.append("bracket")
+			return true
 		if id.is_empty():
 			return false
 		var problem := _verify_device_capture(id, "")
@@ -490,12 +514,6 @@ func _run() -> void:
 	if not await _phase_rig():
 		return
 
-	print("[CamBANG][EarlyTiming] provider=%s os=%s model=%s phases=%s skipped=%s no_timing=%d %s %s %s" % [
-		_provider_arg, OS.get_name(), OS.get_model_name(), ",".join(_phases_run), ",".join(_phases_skipped),
-		_no_timing_count,
-		_dist("dispatch_usec", _dispatch_usec),
-		_dist("trigger_to_notice_usec", _trigger_to_notice_usec),
-		_dist("notice_lead_over_finished_usec", _notice_lead_usec)])
 	var p99 := _percentile(_dispatch_usec, 0.99)
 	if p99 > WINDOW_USEC:
 		_fail("dispatch latency p99=%dus exceeds the %dus window" % [p99, WINDOW_USEC])
