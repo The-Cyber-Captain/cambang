@@ -817,6 +817,32 @@ struct BurstCollector {
   };
   std::vector<NoticeTarget> notice_targets;
   uint64_t capture_id = 0;
+
+  // Which member slots have had their notice posted, so each member is
+  // announced exactly once whichever path gets there first.
+  //
+  // The notice normally leaves from onCaptureStarted: the platform's report
+  // that exposure began, carrying the same SENSOR_TIMESTAMP every output
+  // buffer of that capture is stamped with. On a phone with heavy still
+  // processing the payload lands 120-290 ms after that (S20+, Hammer), so
+  // announcing at payload arrival would spend the consumer's budget before it
+  // could start. Starts are attributed by counting, like payloads: Camera2
+  // runs a submitted burst's requests in order, so start k is member k.
+  //
+  // Counting is only trusted when no abandoned capture could still emit a
+  // start into this collector (`early_starts`, from the payload ledger).
+  // Otherwise, and for any slot whose start never came, the notice falls back
+  // to payload arrival. started_ts keeps what each start announced, so the
+  // payload can be checked against it.
+  bool early_starts = false;
+  // Read on the sensor's declared clock just before this collector was
+  // installed. A start stamped earlier cannot be an exposure of ours (no
+  // reprocess or ZSL requests are made here), so it is a late start from an
+  // earlier capture and is neither counted nor announced.
+  int64_t starts_not_before_ns = 0;
+  size_t started = 0;
+  std::vector<bool> noticed;
+  std::vector<int64_t> started_ts;
   std::vector<ResultFacts> results_in_order;      // results with no timestamp
   std::map<int64_t, ResultFacts> results_by_time; // results keyed by sensor ts
 
@@ -1704,11 +1730,11 @@ void on_still_image_available(void* context, AImageReader* reader) {
   {
     const uint64_t arrived_ns = camera2_detail::diag_mono_ns();
     const uint64_t submit_ns = backend->diag_last_submit_ns.load(std::memory_order_acquire);
-    // The PAYLOAD's own sensor timestamp -- a different value from
-    // onCaptureStarted's request-start stamp, and the one that becomes the
-    // published acquisition mark on a CamBANGCaptureResult. They are reported
-    // by different callbacks and are not guaranteed to agree, so both are
-    // logged rather than one being taken as a proxy for the other.
+    // The PAYLOAD's own sensor timestamp, the one that becomes the published
+    // acquisition mark on a CamBANGCaptureResult. Android defines it as the
+    // same SENSOR_TIMESTAMP onCaptureStarted reports for that capture (no
+    // timestamp base or readout timestamps are configured here); both are
+    // logged so a device that breaks that is visible in the trace.
     int64_t payload_ts = -1;
     if (AImage_getTimestamp(image, &payload_ts) != AMEDIA_OK) {
       payload_ts = -1;
@@ -1781,10 +1807,12 @@ void on_still_image_available(void* context, AImageReader* reader) {
   }
 
   // Take this payload's member slot BEFORE converting it. The slot is what the
-  // early timing notice names, and the notice must leave before the copy so
-  // its latency is the platform's, not ours.
+  // early timing notice names. The notice normally left at onCaptureStarted;
+  // when it did not (see BurstCollector::early_starts), it leaves here, before
+  // the copy, so its latency is at least the platform's and not ours.
   size_t ordinal = 0;
   bool notify = false;
+  int64_t announced_ts = -1;
   BurstCollector::NoticeTarget target{};
   {
     std::lock_guard<std::mutex> wl(burst->m);
@@ -1795,16 +1823,34 @@ void on_still_image_available(void* context, AImageReader* reader) {
     }
     ordinal = burst->reserved++;
     if (ordinal < burst->notice_targets.size()) {
-      notify = true;
       target = burst->notice_targets[ordinal];
+      announced_ts = burst->started_ts[ordinal];
+      if (!burst->noticed[ordinal]) {
+        burst->noticed[ordinal] = true;
+        notify = true;
+      }
     }
   }
+  if (announced_ts >= 0 && announced_ts != timestamp_ns) {
+    // Android defines the start timestamp and the buffer timestamp as the same
+    // SENSOR_TIMESTAMP (this provider sets no timestamp base and no readout
+    // timestamps), so any difference is a device fault. The notice has already
+    // gone out with the start's value; the retained result keeps the payload's.
+    camera2_detail::log_line(
+        "early timing: device=%llu capture=%llu member=%u start timestamp %lld "
+        "differs from payload timestamp %lld (delta_ns=%lld); the notice "
+        "announced the start's value",
+        static_cast<unsigned long long>(backend->device_instance_id),
+        static_cast<unsigned long long>(burst->capture_id), target.image_member_index,
+        static_cast<long long>(announced_ts), static_cast<long long>(timestamp_ns),
+        static_cast<long long>(timestamp_ns - announced_ts));
+  }
   if (notify && backend->strand) {
-    // Posted on the same strand as the frame that will carry this image, so
-    // it is delivered ahead of it. The timing is built by the same helper and
-    // from the same timestamp as the final FrameView's, which is what makes
-    // the two equal by construction. A member whose image is later lost still
-    // had its notice: capture_finished's failure is the consumer's settlement.
+    // Fallback notice. Posted on the same strand as the frame that will carry
+    // this image, so it is delivered ahead of it, and built by the same helper
+    // from the same timestamp as the final FrameView's. A member whose image
+    // is later lost still had its notice: capture_finished's failure is the
+    // consumer's settlement.
     CaptureImageTimingNotice notice{};
     notice.capture_id = burst->capture_id;
     notice.device_instance_id = backend->device_instance_id;
@@ -1829,7 +1875,7 @@ void on_still_image_available(void* context, AImageReader* reader) {
           (now_ns >= static_cast<uint64_t>(timestamp_ns))
               ? static_cast<double>(now_ns - static_cast<uint64_t>(timestamp_ns)) / 1.0e6
               : -1.0;
-      camera2_detail::log_line("early timing: device=%llu capture=%llu member=%u mark_age_at_notice_ms=%.3f clock=%s",
+      camera2_detail::log_line("early timing: device=%llu capture=%llu member=%u mark_age_at_notice_ms=%.3f clock=%s source=payload",
                static_cast<unsigned long long>(backend->device_instance_id),
                static_cast<unsigned long long>(burst->capture_id), target.image_member_index,
                age_ms, realtime ? "boottime" : "monotonic");
@@ -2406,12 +2452,13 @@ void on_repeating_capture_completed(void* context,
 // result metadata arrives while its payload never does looks identical to
 // "nothing happened" when that callback is not registered.
 //
-// These record only. None of them produces a fact, and none participates in
-// attribution.
-void on_capture_started_diag(void* context,
-                             ACameraCaptureSession* /*session*/,
-                             const ACaptureRequest* /*request*/,
-                             int64_t timestamp) {
+// These record only, with one exception: onCaptureStarted also posts the
+// early acquisition-timing notice (see BurstCollector::early_starts). None of
+// them produces a retained fact.
+void on_capture_started(void* context,
+                        ACameraCaptureSession* /*session*/,
+                        const ACaptureRequest* /*request*/,
+                        int64_t timestamp) {
   auto* ctx = static_cast<ListenerCtx*>(context);
   if (!ctx) return;
   std::shared_ptr<DeviceBackend> backend = ctx->backend.lock();
@@ -2426,6 +2473,57 @@ void on_capture_started_diag(void* context,
            static_cast<long long>(timestamp),
            static_cast<unsigned long long>(diag_mono_ns()),
            static_cast<unsigned long long>(diag_boot_ns()));
+
+  // Early acquisition-timing notice (see BurstCollector::early_starts).
+  std::shared_ptr<BurstCollector> burst;
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    burst = backend->burst;
+  }
+  if (!burst || !backend->strand) return;
+  BurstCollector::NoticeTarget target{};
+  {
+    std::lock_guard<std::mutex> wl(burst->m);
+    if (!burst->early_starts || burst->notice_targets.empty()) return;
+    if (timestamp < burst->starts_not_before_ns) {
+      log_line("early timing: device=%llu capture=%llu ignored a start stamped %lld, "
+               "before this capture's collector (%lld); it belongs to an earlier capture",
+               static_cast<unsigned long long>(backend->device_instance_id),
+               static_cast<unsigned long long>(burst->capture_id),
+               static_cast<long long>(timestamp),
+               static_cast<long long>(burst->starts_not_before_ns));
+      return;
+    }
+    const size_t slot = burst->started++;
+    if (slot >= burst->notice_targets.size() || burst->noticed[slot]) return;
+    burst->noticed[slot] = true;
+    burst->started_ts[slot] = timestamp;
+    target = burst->notice_targets[slot];
+  }
+  CaptureImageTimingNotice notice{};
+  notice.capture_id = burst->capture_id;
+  notice.device_instance_id = backend->device_instance_id;
+  notice.image_member_index = target.image_member_index;
+  notice.routing = target.routing;
+  if (timestamp >= 0) {
+    notice.acquisition_timing =
+        make_acquisition_timing(timestamp, backend->chars.timestamp_source_realtime);
+  }
+  notice.observed_core_monotonic_ns =
+      backend->callbacks ? backend->callbacks->core_monotonic_now_ns() : 0;
+  backend->strand->post_capture_image_timing(notice);
+  if (timestamp >= 0) {
+    const bool realtime = backend->chars.timestamp_source_realtime;
+    const uint64_t now_ns = realtime ? diag_boot_ns() : diag_mono_ns();
+    const double age_ms =
+        (now_ns >= static_cast<uint64_t>(timestamp))
+            ? static_cast<double>(now_ns - static_cast<uint64_t>(timestamp)) / 1.0e6
+            : -1.0;
+    log_line("early timing: device=%llu capture=%llu member=%u mark_age_at_notice_ms=%.3f clock=%s source=started",
+             static_cast<unsigned long long>(backend->device_instance_id),
+             static_cast<unsigned long long>(burst->capture_id), target.image_member_index,
+             age_ms, realtime ? "boottime" : "monotonic");
+  }
 }
 
 void on_capture_buffer_lost_diag(void* context,
@@ -5023,6 +5121,14 @@ bool Camera2CameraProvider::capture_burst_(
       burst->notice_targets.push_back(
           BurstCollector::NoticeTarget{s.notice_image_member_index, s.notice_routing});
     }
+    burst->noticed.assign(specs.size(), false);
+    burst->started_ts.assign(specs.size(), -1);
+    // A device that owes payloads from an abandoned capture may also still owe
+    // that capture's starts, which counting would hand to our members.
+    burst->early_starts = (ledger_at_start.outstanding == 0);
+    burst->starts_not_before_ns = static_cast<int64_t>(
+        backend->chars.timestamp_source_realtime ? camera2_detail::diag_boot_ns()
+                                                 : camera2_detail::diag_mono_ns());
   }
 
   {
@@ -5191,11 +5297,12 @@ bool Camera2CameraProvider::capture_burst_(
         capture_cbs.context = backend->capture_ctx.get();
         capture_cbs.onCaptureCompleted = &camera2_detail::on_capture_completed;
         capture_cbs.onCaptureFailed = &camera2_detail::on_capture_failed;
-        // The remaining callbacks are diagnostic. onCaptureBufferLost in
+        // onCaptureStarted posts the early timing notice; the remaining
+        // callbacks are diagnostic. onCaptureBufferLost in
         // particular is the platform reporting that a payload will never
         // arrive; without it, a lost buffer and a withheld one are
         // indistinguishable from here.
-        capture_cbs.onCaptureStarted = &camera2_detail::on_capture_started_diag;
+        capture_cbs.onCaptureStarted = &camera2_detail::on_capture_started;
         capture_cbs.onCaptureBufferLost = &camera2_detail::on_capture_buffer_lost_diag;
         capture_cbs.onCaptureSequenceCompleted =
             &camera2_detail::on_capture_sequence_completed;

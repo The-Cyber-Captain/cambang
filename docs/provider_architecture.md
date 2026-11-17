@@ -623,11 +623,20 @@ carries. The rules a provider owes:
   as the timing is known. The notice is a Lifecycle-class (non-lossy) event.
 - `image_member_index` and `routing` are the member's FINAL values. A provider
   that only learns member order later must assign it at arrival and keep it
-  (Camera2 assigns the burst slot at payload arrival and places the final
-  frame by that slot).
-- `acquisition_timing` must be equal in every field to the frame's, built
-  from the same native value by the same helper. Absent in one means absent in
-  both.
+  (Camera2 attributes starts and payloads to burst slots by counting, in
+  submission order, and places the final frame by its payload slot).
+- `acquisition_timing` must be equal in every field to the frame's, built by
+  the same helper from a native value the platform defines as the frame's
+  own. Absent in one means absent in both. Camera2 announces from
+  `onCaptureStarted`, whose timestamp Android defines as the SENSOR_TIMESTAMP
+  every output buffer of that capture carries (this provider sets no timestamp
+  base and no readout timestamps); each payload is checked against what its
+  slot announced, and any difference is logged as a device fault while the
+  retained result keeps the payload's value.
+- Announce at the earliest point the timing is known, not at payload arrival:
+  on Camera2 phones with heavy still processing (Galaxy S20+, Hammer
+  Construction 2 Thermal) the payload lands 120-290 ms after the mark, which
+  is the whole of a consumer's budget.
 - At most one notice per member. A member whose image is lost after its notice
   needs no retraction: the capture's failure is the consumer's settlement.
 - `observed_core_monotonic_ns` is `IProviderCallbacks::core_monotonic_now_ns()`
@@ -638,7 +647,10 @@ Core forwards the notice on the strand thread to the listener installed with
 `CoreRuntime::set_capture_image_timing_listener`, without marshalling through
 CoreThread. This is the one deliberate exception to every provider callback
 being marshalled to CoreThread. `clear_capture_image_timing_listener()` is
-quiescent. Notice points today: Camera2 still-reader arrival before conversion,
+quiescent. Notice points today: Camera2 `onCaptureStarted` (falling back to
+still-reader arrival, before conversion, for a slot whose start was not
+counted, or for a whole capture when the device still owes payloads from an
+abandoned one),
 WinRT after `LowLagPhotoCapture::CaptureAsync` completes and before the bitmap
 copy, and Synthetic before each member's pixels are prepared. Verified by
 `provider_compliance_verify` (`run_synthetic_capture_image_timing_notice_check`)
