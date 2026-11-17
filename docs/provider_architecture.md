@@ -633,10 +633,18 @@ carries. The rules a provider owes:
   base and no readout timestamps); each payload is checked against what its
   slot announced, and any difference is logged as a device fault while the
   retained result keeps the payload's value.
-- Announce at the earliest point the timing is known, not at payload arrival:
-  on Camera2 phones with heavy still processing (Galaxy S20+, Hammer
-  Construction 2 Thermal) the payload lands 120-290 ms after the mark, which
-  is the whole of a consumer's budget.
+- Announce at the earliest point the timing is known, not at payload arrival.
+  Measured with scene 80 (`mark_age_at_notice_ms` in the Camera2 log), the
+  mark's age when the notice leaves:
+
+  | Device | At payload arrival | At `onCaptureStarted` |
+  |---|---|---|
+  | Galaxy S20+ (SM-G986U1) | ~123 ms | ~86 ms |
+  | Hammer Construction 2 Thermal | 185-290 ms | ~73 ms |
+  | Quest 3 | ~22 ms | ~23 ms |
+
+  `onCaptureStarted` is the earliest point Camera2 reports a still's mark, so
+  the right-hand column is that platform's floor, not CamBANG's.
 - At most one notice per member. A member whose image is lost after its notice
   needs no retraction: the capture's failure is the consumer's settlement.
 - `observed_core_monotonic_ns` is `IProviderCallbacks::core_monotonic_now_ns()`
