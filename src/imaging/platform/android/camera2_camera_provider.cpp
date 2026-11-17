@@ -1817,6 +1817,23 @@ void on_still_image_available(void* context, AImageReader* reader) {
     notice.observed_core_monotonic_ns =
         backend->callbacks ? backend->callbacks->core_monotonic_now_ns() : 0;
     backend->strand->post_capture_image_timing(notice);
+    // How old the acquisition mark already is when the notice leaves: the
+    // platform's share of a consumer's latency budget (exposure, readout, ISP,
+    // buffer delivery), which no Godot-side clock can see. Read on the clock
+    // the sensor declares. Diagnostics only, never a fact.
+    if (timestamp_ns >= 0) {
+      const bool realtime = backend->chars.timestamp_source_realtime;
+      const uint64_t now_ns =
+          realtime ? camera2_detail::diag_boot_ns() : camera2_detail::diag_mono_ns();
+      const double age_ms =
+          (now_ns >= static_cast<uint64_t>(timestamp_ns))
+              ? static_cast<double>(now_ns - static_cast<uint64_t>(timestamp_ns)) / 1.0e6
+              : -1.0;
+      camera2_detail::log_line("early timing: device=%llu capture=%llu member=%u mark_age_at_notice_ms=%.3f clock=%s",
+               static_cast<unsigned long long>(backend->device_instance_id),
+               static_cast<unsigned long long>(burst->capture_id), target.image_member_index,
+               age_ms, realtime ? "boottime" : "monotonic");
+    }
   }
 
   // Planar capture takes the device's planes through unconverted, exactly as
