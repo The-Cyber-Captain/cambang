@@ -231,6 +231,8 @@ void CBProviderStrand::deliver_(Event& ev) {
               e.device_instance_id,
               e.image_member_index,
               std::move(e.facts));
+        } else if constexpr (std::is_same_v<T, EvCaptureImageTiming>) {
+          callbacks_->on_capture_image_timing(e.notice);
         } else if constexpr (std::is_same_v<T, EvFrame>) {
           callbacks_->on_frame(e.frame);
         } else if constexpr (std::is_same_v<T, EvDeviceError>) {
@@ -301,6 +303,10 @@ void CBProviderStrand::post_capture_image_facts(
     ProviderCaptureImageFacts facts) {
   post(EvCaptureImageFacts{
       capture_id, device_instance_id, image_member_index, std::move(facts)});
+}
+
+void CBProviderStrand::post_capture_image_timing(const CaptureImageTimingNotice& notice) {
+  post(EvCaptureImageTiming{notice});
 }
 
 void CBProviderStrand::post_frame(const FrameView& frame) { post(EvFrame{frame}); }

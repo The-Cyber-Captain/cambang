@@ -354,6 +354,51 @@ void ProviderCallbackIngress::on_capture_image_facts(
   post_command(std::move(cmd));
 }
 
+void ProviderCallbackIngress::set_capture_image_timing_listener(
+    CaptureImageTimingListener listener) {
+  auto next = listener
+      ? std::make_shared<const CaptureImageTimingListener>(std::move(listener))
+      : std::shared_ptr<const CaptureImageTimingListener>{};
+  std::unique_lock<std::mutex> lock(timing_listener_mu_);
+  // Replacing a listener is a clear followed by an install, so the previous
+  // listener's state is quiescent before the new one is visible.
+  timing_listener_.reset();
+  timing_listener_idle_.wait(lock, [this] { return timing_listener_in_flight_ == 0; });
+  timing_listener_ = std::move(next);
+}
+
+void ProviderCallbackIngress::clear_capture_image_timing_listener() {
+  std::unique_lock<std::mutex> lock(timing_listener_mu_);
+  timing_listener_.reset();
+  timing_listener_idle_.wait(lock, [this] { return timing_listener_in_flight_ == 0; });
+}
+
+void ProviderCallbackIngress::on_capture_image_timing(const CaptureImageTimingNotice& notice) {
+  std::shared_ptr<const CaptureImageTimingListener> listener;
+  {
+    std::lock_guard<std::mutex> lock(timing_listener_mu_);
+    if (!timing_listener_) {
+      return;
+    }
+    listener = timing_listener_;
+    ++timing_listener_in_flight_;
+  }
+  try {
+    (*listener)(notice);
+  } catch (...) {
+    // A throwing listener must not wedge clear_ or unwind into the strand.
+  }
+  // Drop this invocation's reference BEFORE leaving the in-flight count: if a
+  // clear has already released the installed copy, ours is the last, and the
+  // listener's captures must be destroyed before clear_ is allowed to return.
+  listener.reset();
+  {
+    std::lock_guard<std::mutex> lock(timing_listener_mu_);
+    --timing_listener_in_flight_;
+  }
+  timing_listener_idle_.notify_all();
+}
+
 void ProviderCallbackIngress::on_frame(const FrameView& frame) {
   // Contract tripwire: icamera_provider.h's update_stream_retained_production_plan()
   // requires providers not emit a frame synchronously from that call. That call

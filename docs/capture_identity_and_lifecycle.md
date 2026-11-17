@@ -244,6 +244,33 @@ the object a caller held before a restart is the one
 over. Instance ids and rig ids are session-scoped and never reissued, so their
 handles belong to the session that minted them.
 
+**Early acquisition timing is announced, not settled.** `CamBANGServer`
+also emits `capture_image_acquired(capture_id, info)` as soon as a provider
+reports an image's acquisition timing, before that image's pixels are ready
+and before `capture_finished`. `capture_id` is the Device Capture Id the final
+result carries, including for a rig member, and `info.image_member_index` is
+that image's final member index, so the pair names exactly one image of the
+eventual result. The announced `acquisition_timing` is equal to the final
+image's. CamBANG keeps no join state. The consumer records what it needs
+against `(capture_id, image_member_index)`, and `capture_finished` is the
+settlement: a capture that does not deliver has no image to join, and a
+consumer discards what it recorded for it. Each image is announced at most
+once, and only while the session that triggered the capture is running.
+`stop()` discards undelivered announcements.
+
+Delivery path: the provider posts a `CaptureImageTimingNotice` on its
+callback strand ahead of the member's frame. The ingress hands it to a listener
+installed by `CamBANGServer::start()`, which runs on the strand thread and only
+queues it (bounded at 256 entries) and schedules a main-thread drain with
+`call_deferred`. Public ids, rig participation, the `info` Dictionary and the
+emit all happen on the main thread. The per-tick hook also drains, ahead of
+`capture_finished`, so an announcement is never heard after its capture's
+settlement. No separate thread is involved. With nothing connected, a drain
+builds nothing. Source: `CamBANGServer::_install_capture_image_timing_listener_`,
+`_drain_capture_image_timing` (`src/godot/cambang_server.cpp`), and
+`ProviderCallbackIngress::on_capture_image_timing`
+(`src/core/provider_callback_ingress.cpp`).
+
 ### 4.3 Dispositions
 
 Per-member terminal disposition:
@@ -461,6 +488,13 @@ CamBANGRig.capture_finished(rig_capture_id: String, closed_reason)
 CamBANGServer.capture_finished(capture_id: String, info)
     info = { capture_origin, device_instance_id, rig_id,
              disposition, closed_reason, error_code }
+CamBANGServer.capture_image_acquired(capture_id: String, info)   // §4.2
+    info = { capture_origin, rig_capture_id, rig_member_hardware_id,
+             rig_member_index, device_instance_id, image_member_index,
+             image_role, acquisition_timing, has_acquisition_timing,
+             observed_ticks_usec, emitted_ticks_usec }
+    acquisition_timing is {} when has_acquisition_timing is false;
+    observed_ticks_usec is -1 when the provider gave no observation time.
 
 CamBANGServer.get_unfinished_captures() -> Dictionary
     { by_device:    { device_instance_id: [device_capture_id, ...] },
@@ -496,7 +530,9 @@ alone is not one.
 
 The completion verb, collapsing the server signal to one, `create_rig` taking
 device handles, and the constants in §9.3 were all decided by the maintainer in
-conversation.
+conversation. So were `capture_image_acquired`, its name and its `info` keys,
+including the two tick fields, which are public in this version to make a
+consumer's latency budget observable.
 
 Canonical wrappers: `get_device_for_hardware_id`, `get_rig` and `create_rig`
 return one cached instance per id. `get_device(instance_id)` is canonical for

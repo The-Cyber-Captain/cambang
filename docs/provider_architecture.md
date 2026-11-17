@@ -612,6 +612,58 @@ The delivered frame is the single provider-to-Core transport for acquisition
 timing. Providers must not send the same acquisition event through a separate
 per-image fact callback.
 
+**Early announcement (`on_capture_image_timing`).** A capture member's timing
+may additionally be *announced* before its frame, through
+`CaptureImageTimingNotice` posted with `CBProviderStrand::post_capture_image_timing`.
+This is not a second transport for retained truth: Core retains nothing from
+it, and the member's frame remains the only source of the timing a result
+carries. The rules a provider owes:
+
+- Post it on the same strand as the member's frame, before that frame, as soon
+  as the timing is known. The notice is a Lifecycle-class (non-lossy) event.
+- `image_member_index` and `routing` are the member's FINAL values. A provider
+  that only learns member order later must assign it at arrival and keep it
+  (Camera2 attributes starts and payloads to burst slots by counting, in
+  submission order, and places the final frame by its payload slot).
+- `acquisition_timing` must be equal in every field to the frame's, built by
+  the same helper from a native value the platform defines as the frame's
+  own. Absent in one means absent in both. Camera2 announces from
+  `onCaptureStarted`, whose timestamp Android defines as the SENSOR_TIMESTAMP
+  every output buffer of that capture carries (this provider sets no timestamp
+  base and no readout timestamps); each payload is checked against what its
+  slot announced, and any difference is logged as a device fault while the
+  retained result keeps the payload's value.
+- Announce at the earliest point the timing is known, not at payload arrival.
+  Measured with scene 80 (`mark_age_at_notice_ms` in the Camera2 log), the
+  mark's age when the notice leaves:
+
+  | Device | At payload arrival | At `onCaptureStarted` |
+  |---|---|---|
+  | Galaxy S20+ (SM-G986U1) | ~123 ms | ~86 ms |
+  | Hammer Construction 2 Thermal | 185-290 ms | ~73 ms |
+  | Quest 3 | ~22 ms | ~23 ms |
+
+  `onCaptureStarted` is the earliest point Camera2 reports a still's mark, so
+  the right-hand column is that platform's floor, not CamBANG's.
+- At most one notice per member. A member whose image is lost after its notice
+  needs no retraction: the capture's failure is the consumer's settlement.
+- `observed_core_monotonic_ns` is `IProviderCallbacks::core_monotonic_now_ns()`
+  read when the provider observed the timing, or 0 if unknown. It is latency
+  telemetry for the consumer and is never acquisition timing.
+
+Core forwards the notice on the strand thread to the listener installed with
+`CoreRuntime::set_capture_image_timing_listener`, without marshalling through
+CoreThread. This is the one deliberate exception to every provider callback
+being marshalled to CoreThread. `clear_capture_image_timing_listener()` is
+quiescent. Notice points today: Camera2 `onCaptureStarted` (falling back to
+still-reader arrival, before conversion, for a slot whose start was not
+counted, or for a whole capture when the device still owes payloads from an
+abandoned one),
+WinRT after `LowLagPhotoCapture::CaptureAsync` completes and before the bitmap
+copy, and Synthetic before each member's pixels are prepared. Verified by
+`provider_compliance_verify` (`run_synthetic_capture_image_timing_notice_check`)
+and `early_timing_dispatch_verify`.
+
 Core must not use Image Acquisition Timing as retained-frame identity, backing
 identity, freshness, ordering, deduplication, lifecycle chronology, or latency
 evidence. Core supplies its own retained-frame identity wherever those semantics

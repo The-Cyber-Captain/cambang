@@ -13,12 +13,14 @@
 #include "godot/synthetic_gpu_backing_bridge.h"
 #include "godot/godot_gpu_display_service.h"
 #include "godot/cambang_rig.h"
+#include "godot/cambang_result_convert_timing.h"
 #include "pixels/pattern/pattern_registry.h"
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/error_macros.hpp>
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
+#include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/variant/callable.hpp>
 #include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -1549,6 +1551,7 @@ CamBANGServer::CamBANGServer() {
 
 CamBANGServer::~CamBANGServer() {
   _disconnect_tick_if_connected_();
+  _remove_capture_image_timing_listener_();
 
   // Ensure graceful stop if the extension is torn down.
   runtime_.stop();
@@ -1783,10 +1786,13 @@ godot::Error CamBANGServer::_start_with_provider_config(
     return godot::FAILED;
   }
   _refresh_timeline_teardown_trace_mode();
+  // Before any provider exists, so no notice can precede the listener.
+  _install_capture_image_timing_listener_();
 
   // Ensure a provider is attached + initialized (latched selection).
   // This is the canonical linkage point between Godot and the core runtime.
   if (!_ensure_provider_attached_and_initialized(mode, synthetic_role, timing_driver)) {
+    _remove_capture_image_timing_listener_();
     runtime_.stop();
     runtime_.attach_provider(nullptr);
     provider_.reset();
@@ -1797,6 +1803,10 @@ godot::Error CamBANGServer::_start_with_provider_config(
 }
 
 void CamBANGServer::stop() {
+  // First, so no strand thread is inside the listener once stop proceeds, and
+  // undelivered notices of this session are discarded rather than emitted
+  // against ids that are about to stop resolving.
+  _remove_capture_image_timing_listener_();
   synthetic_gpu_backing_warn_and_abandon_live_display_wrappers_before_stop();
   abandon_all_live_cpu_display_wrappers_before_stop();
 
@@ -2748,6 +2758,133 @@ godot::Ref<CamBANGRig> CamBANGServer::_canonical_rig_for_id_(uint64_t rig_id) co
   return slot;
 }
 
+// ---- Early acquisition timing (capture_image_acquired) ---------------------
+
+void CamBANGServer::_install_capture_image_timing_listener_() {
+  {
+    std::lock_guard<std::mutex> lk(capture_image_timing_queue_->m);
+    capture_image_timing_queue_->items.clear();
+    capture_image_timing_queue_->drain_scheduled = false;
+    capture_image_timing_queue_->dropped = 0;
+    capture_image_timing_queue_->open = true;
+  }
+  // Built here, on the main thread, so the strand thread only copies it. A
+  // method Callable holds the ObjectID, so a deferred call that outlives this
+  // object is dropped by the engine rather than dispatched into freed memory.
+  const godot::Callable drain(this, "_drain_capture_image_timing");
+  std::shared_ptr<CaptureImageTimingQueue> queue = capture_image_timing_queue_;
+  runtime_.set_capture_image_timing_listener(
+      [queue, drain](const CaptureImageTimingNotice& notice) {
+        bool schedule = false;
+        {
+          std::lock_guard<std::mutex> lk(queue->m);
+          if (!queue->open) {
+            return;
+          }
+          if (queue->items.size() >= kCaptureImageTimingQueueCapacity) {
+            // The main thread has not drained 256 notices: it is stalled far
+            // past any useful latency window. Counted and reported at the next
+            // drain rather than growing without bound.
+            ++queue->dropped;
+            return;
+          }
+          queue->items.push_back(notice);
+          if (!queue->drain_scheduled) {
+            queue->drain_scheduled = true;
+            schedule = true;
+          }
+        }
+        if (schedule) {
+          // Godot's message queue is thread-safe; a non-engine thread posts
+          // to the main thread's queue, flushed within the current iteration.
+          drain.call_deferred();
+        }
+      });
+}
+
+void CamBANGServer::_remove_capture_image_timing_listener_() {
+  // Quiescent: returns only once no strand thread is inside the listener.
+  runtime_.clear_capture_image_timing_listener();
+  std::lock_guard<std::mutex> lk(capture_image_timing_queue_->m);
+  capture_image_timing_queue_->open = false;
+  capture_image_timing_queue_->items.clear();
+  capture_image_timing_queue_->drain_scheduled = false;
+}
+
+void CamBANGServer::_drain_capture_image_timing() {
+  std::deque<CaptureImageTimingNotice> pending;
+  uint64_t dropped = 0;
+  {
+    std::lock_guard<std::mutex> lk(capture_image_timing_queue_->m);
+    pending.swap(capture_image_timing_queue_->items);
+    capture_image_timing_queue_->drain_scheduled = false;
+    dropped = capture_image_timing_queue_->dropped;
+    capture_image_timing_queue_->dropped = 0;
+  }
+  if (dropped != 0) {
+    WARN_PRINT(godot::vformat(
+        "CamBANGServer: discarded %d capture_image_acquired notice(s); the main "
+        "thread did not drain %d queued notices in time.",
+        static_cast<int64_t>(dropped),
+        static_cast<int64_t>(kCaptureImageTimingQueueCapacity)));
+  }
+  if (pending.empty()) {
+    return;
+  }
+  // No listener, no work: the Dictionary is the cost, so skip building it.
+  if (get_signal_connection_list("capture_image_acquired").is_empty()) {
+    return;
+  }
+
+  godot::Time* time = godot::Time::get_singleton();
+  for (const CaptureImageTimingNotice& notice : pending) {
+    const godot::String capture_id = device_capture_public_id(notice.capture_id);
+    if (capture_id.is_empty()) {
+      // Not a capture of this session (or not one the boundary minted): there
+      // is no id the caller could join it to.
+      continue;
+    }
+    const int64_t emitted_ticks_usec =
+        time ? static_cast<int64_t>(time->get_ticks_usec()) : -1;
+    // Observation time on Godot's ticks clock, derived from the age of the
+    // provider's core-monotonic stamp so the strand thread never calls Godot.
+    int64_t observed_ticks_usec = -1;
+    if (emitted_ticks_usec >= 0 && notice.observed_core_monotonic_ns != 0) {
+      const uint64_t core_now_ns = runtime_.core_monotonic_now_ns();
+      if (core_now_ns >= notice.observed_core_monotonic_ns) {
+        const int64_t age_usec = static_cast<int64_t>(
+            (core_now_ns - notice.observed_core_monotonic_ns) / 1000u);
+        observed_ticks_usec = std::max<int64_t>(0, emitted_ticks_usec - age_usec);
+      }
+    }
+
+    godot::Dictionary info;
+    info["capture_origin"] = CamBANGCaptureResult::CAPTURE_ORIGIN_DEVICE;
+    info["rig_capture_id"] = godot::String();
+    info["rig_member_hardware_id"] = godot::String();
+    info["rig_member_index"] = -1;
+    if (const auto participation =
+            rig_participation_for_device_capture(notice.capture_id)) {
+      info["capture_origin"] = CamBANGCaptureResult::CAPTURE_ORIGIN_RIG;
+      info["rig_capture_id"] = rig_capture_public_id(participation->rig_capture_id);
+      info["rig_member_hardware_id"] = godot::String(participation->hardware_id.c_str());
+      info["rig_member_index"] = static_cast<int64_t>(participation->member_index);
+    }
+    info["device_instance_id"] = static_cast<uint64_t>(notice.device_instance_id);
+    info["image_member_index"] = static_cast<int64_t>(notice.image_member_index);
+    info["image_role"] = notice.routing == CaptureImageRouting::ADDITIONAL_BRACKET
+                             ? CamBANGCaptureResult::IMAGE_ROLE_ADDITIONAL_BRACKET
+                             : CamBANGCaptureResult::IMAGE_ROLE_DEFAULT_METERED;
+    info["has_acquisition_timing"] = notice.acquisition_timing.has_value();
+    info["acquisition_timing"] = notice.acquisition_timing
+                                     ? to_dict(*notice.acquisition_timing)
+                                     : godot::Dictionary();
+    info["observed_ticks_usec"] = observed_ticks_usec;
+    info["emitted_ticks_usec"] = emitted_ticks_usec;
+    emit_signal("capture_image_acquired", capture_id, info);
+  }
+}
+
 godot::String CamBANGServer::mint_device_capture_public_id_(uint64_t internal_id) {
   if (internal_id == 0) {
     return godot::String();
@@ -3508,6 +3645,9 @@ void CamBANGServer::_on_godot_process_frame() {
   runtime_.check_core_thread_liveness();
 
   _on_godot_tick(delta_s);
+  // Ahead of capture_finished: an early timing notice must never be heard
+  // after the settlement of the capture it belongs to.
+  _drain_capture_image_timing();
   // Deliberately outside _consume_latest_core_snapshot(): that function has
   // several early returns (no publish this tick, no session, gen gate), and a
   // settlement queue that only drains when a snapshot happens to be consumed
@@ -5027,6 +5167,8 @@ void CamBANGServer::_bind_methods() {
 
   // Internal tick hook (connected to SceneTree.process_frame).
   godot::ClassDB::bind_method(godot::D_METHOD("_on_godot_process_frame"), &CamBANGServer::_on_godot_process_frame);
+  // Internal: the strand-side listener call_defers this onto the main thread.
+  godot::ClassDB::bind_method(godot::D_METHOD("_drain_capture_image_timing"), &CamBANGServer::_drain_capture_image_timing);
 
   BIND_CONSTANT(PROVIDER_KIND_PLATFORM_BACKED);
   BIND_CONSTANT(PROVIDER_KIND_SYNTHETIC);
@@ -5077,6 +5219,23 @@ void CamBANGServer::_bind_methods() {
   // device_instance_id 0, disposition -1 and error_code 0.
   ADD_SIGNAL(godot::MethodInfo(
       "capture_finished",
+      godot::PropertyInfo(godot::Variant::STRING, "capture_id"),
+      godot::PropertyInfo(godot::Variant::DICTIONARY, "info")));
+  // Early acquisition timing, emitted on the main thread as soon as a
+  // provider reports an image's acquisition timing -- before its pixels are
+  // ready and before capture_finished. capture_id is the dc_ id the final
+  // CamBANGCaptureResult will carry; (capture_id, info.image_member_index)
+  // names the image the final result will hold at that member index, with an
+  // equal acquisition_timing. capture_finished remains the settlement: a
+  // notice whose capture fails has no image to join. Keys are always present:
+  //   { capture_origin, rig_capture_id, rig_member_hardware_id,
+  //     rig_member_index, device_instance_id, image_member_index, image_role,
+  //     acquisition_timing, has_acquisition_timing,
+  //     observed_ticks_usec, emitted_ticks_usec }
+  // acquisition_timing is {} when has_acquisition_timing is false;
+  // observed_ticks_usec is -1 when the provider gave no observation time.
+  ADD_SIGNAL(godot::MethodInfo(
+      "capture_image_acquired",
       godot::PropertyInfo(godot::Variant::STRING, "capture_id"),
       godot::PropertyInfo(godot::Variant::DICTIONARY, "info")));
   ADD_SIGNAL(godot::MethodInfo(
