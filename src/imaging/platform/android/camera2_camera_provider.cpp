@@ -860,6 +860,14 @@ struct BurstCollector {
   int sequence_id = -1;
   bool sequence_ended = false;
   bool in_flight_grace_elapsed = false;
+  // Sequence ends heard while sequence_id was still unknown. The collector is
+  // installed before ACameraCaptureSession_capture returns our id, so in that
+  // window an end may be ours (a fast sequence) or a late one from the
+  // previous submission (seen on a Hammer Construction 2 Thermal: the
+  // metering burst's completion landed 2 ms before the members were
+  // submitted). It is held here and only settles this capture once the id
+  // proves it ours.
+  std::vector<int> ended_before_id_known;
 
   // The settlement/debt decision itself lives in imaging/api, so it can be
   // exercised host-native away from this Android-only file.
@@ -2551,11 +2559,12 @@ void on_capture_buffer_lost_diag(void* context,
 
 // Marks the installed collector's sequence as over, and wakes the waiter.
 //
-// Matched by "there is a collector installed", not by sequence id: these
-// callbacks are registered per submission on the capture context, and
-// still_capture_mutex admits one device capture at a time, so a sequence
-// event arriving here belongs to the installed capture. The id is compared
-// only to catch that assumption breaking.
+// Matched by sequence id. still_capture_mutex admits one device capture at a
+// time, but one capture submits more than once (metering, then members), and
+// an earlier submission's end can land after the next collector is installed
+// and before ACameraCaptureSession_capture has returned that collector's id.
+// An end heard in that window is held until the id is known (see
+// BurstCollector::ended_before_id_known); one for another id never settles.
 void mark_capture_sequence_over(const std::shared_ptr<DeviceBackend>& backend,
                                 int sequence_id,
                                 const char* why) {
@@ -2569,7 +2578,13 @@ void mark_capture_sequence_over(const std::shared_ptr<DeviceBackend>& backend,
   }
   {
     std::lock_guard<std::mutex> gl(burst->m);
-    if (burst->sequence_id >= 0 && burst->sequence_id != sequence_id) {
+    if (burst->sequence_id < 0) {
+      if (burst->ended_before_id_known.size() < 8) {
+        burst->ended_before_id_known.push_back(sequence_id);
+      }
+      return;
+    }
+    if (burst->sequence_id != sequence_id) {
       log_line("device=%llu sequence %s for seq=%d but the installed capture is seq=%d;"
                " not settling it",
                static_cast<unsigned long long>(backend->device_instance_id), why,
@@ -5329,9 +5344,22 @@ bool Camera2CameraProvider::capture_burst_(
             bool already_over = false;
             {
               std::lock_guard<std::mutex> gl(installed->m);
-              // The sequence can end before this line runs, so do not clobber
-              // a settlement that has already been recorded for it.
+              // The sequence can end before this line runs. Its end was then
+              // held, unattributed, alongside any late end of an earlier
+              // sequence; only ours settles this capture.
               installed->sequence_id = sequence_id;
+              for (const int ended : installed->ended_before_id_known) {
+                if (ended == sequence_id) {
+                  installed->sequence_ended = true;
+                } else {
+                  camera2_detail::log_line(
+                      "device=%llu sequence end for seq=%d arrived before this "
+                      "capture's id (seq=%d) was known; not settling it",
+                      static_cast<unsigned long long>(backend->device_instance_id),
+                      ended, sequence_id);
+                }
+              }
+              installed->ended_before_id_known.clear();
               already_over = installed->sequence_ended;
             }
             if (already_over) {
