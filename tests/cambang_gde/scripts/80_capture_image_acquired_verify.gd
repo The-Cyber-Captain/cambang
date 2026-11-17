@@ -496,6 +496,12 @@ func _run() -> void:
 	if not await _start(""):
 		return
 	var hw := await _first_hardware_id()
+	# Where the equipment table names a rig pair, the single and bracket phases
+	# use its first camera: on a Quest the first enumerated id can be the
+	# virtual avatar camera (1), not a passthrough sensor.
+	var plan := _rig_plan()
+	if _provider_arg != "synthetic" and not plan.is_empty():
+		hw = str((plan["pair"] as Array)[0])
 	if hw.is_empty():
 		_emit("expected_unsupported", "no_camera_endpoints")
 		return
