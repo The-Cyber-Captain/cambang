@@ -79,6 +79,9 @@ var _finished_ticks: Dictionary = {}
 var _no_timing_count := 0
 var _phases_run: Array[String] = []
 var _phases_skipped: Array[String] = []
+# Still geometry taken from the endpoint's own capture catalog (platform only);
+# empty means the provider default, which a real camera may not offer.
+var _still_geometry: Dictionary = {}
 
 
 func _ready() -> void:
@@ -235,7 +238,8 @@ func _record_trigger_latency(capture_id: String, trigger_ticks: int) -> void:
 func _verify_device_capture(capture_id: String, expect_rig_id: String) -> String:
 	var finished: Dictionary = _finished_info.get(capture_id, {})
 	if int(finished.get("disposition", -1)) != CamBANGServer.DISPOSITION_DELIVERED:
-		return "capture %s finished with disposition %d" % [capture_id, int(finished.get("disposition", -1))]
+		return "capture %s finished with disposition %d error_code=%d" % [
+			capture_id, int(finished.get("disposition", -1)), int(finished.get("error_code", 0))]
 	var result = CamBANGServer.get_capture_result_by_id(capture_id)
 	if result == null:
 		return "no result for delivered capture %s" % capture_id
@@ -315,6 +319,38 @@ func _dist(label: String, values: Array[int]) -> String:
 
 # ---- phases ------------------------------------------------------------------
 
+# A platform camera only captures at a geometry it advertises, and the default
+# still profile is not guaranteed to be one. Take the first catalog entry, as a
+# consumer would, and wait for the profile to apply before capturing.
+func _apply_catalog_still_geometry(dev, hw: String) -> bool:
+	if _provider_arg == "synthetic":
+		return true
+	var caps: Dictionary = CamBANGServer.get_supported_capture_profiles(hw)
+	if not caps.has("profiles") or (caps["profiles"] as Array).is_empty():
+		print("INFO: %s advertises no capture catalog; using the default still profile" % hw)
+		return true
+	var profile: Dictionary = (((caps["profiles"] as Array)[0] as Dictionary)["profile"] as Dictionary).duplicate()
+	_still_geometry = {
+		"width": int(profile.get("width", 0)),
+		"height": int(profile.get("height", 0)),
+		"format_fourcc": int(profile.get("format_fourcc", 0)),
+	}
+	var err := int(dev.set_still_capture_profile(_still_geometry))
+	if err != OK:
+		_fail("set_still_capture_profile(%s) refused a catalog entry (%d)" % [JSON.stringify(_still_geometry), err])
+		return false
+	var deadline := Time.get_ticks_msec() + TIMEOUT_MS
+	while Time.get_ticks_msec() < deadline:
+		await get_tree().process_frame
+		var p = dev.get_still_capture_profile()
+		if typeof(p) == TYPE_DICTIONARY and int((p as Dictionary).get("width", 0)) == int(_still_geometry["width"]) \
+				and int((p as Dictionary).get("height", 0)) == int(_still_geometry["height"]):
+			print("STEP OK: still geometry %s" % JSON.stringify(_still_geometry))
+			return true
+	_fail("still profile %s never applied" % JSON.stringify(_still_geometry))
+	return false
+
+
 func _phase_single(dev) -> bool:
 	for i in range(_captures_single):
 		var id := await _trigger_and_wait(func(): return dev.trigger_capture(), "single #%d" % i)
@@ -334,7 +370,9 @@ func _phase_bracket(dev) -> bool:
 		{"image_member_index": 1, "role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET, "intended_exposure_compensation_milli_ev": -1000},
 		{"image_member_index": 2, "role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET, "intended_exposure_compensation_milli_ev": 1000},
 	]
-	var err := int(dev.set_still_capture_profile({"still_image_bundle": {"members": members}}))
+	var request: Dictionary = _still_geometry.duplicate()
+	request["still_image_bundle"] = {"members": members}
+	var err := int(dev.set_still_capture_profile(request))
 	if err != OK:
 		print("SKIP: bracket: set_still_capture_profile refused (%d)" % err)
 		_phases_skipped.append("bracket")
@@ -398,6 +436,8 @@ func _phase_rig() -> bool:
 			return false
 		if not await _engage(d):
 			return false
+		if not await _apply_catalog_still_geometry(d, str(hw)):
+			return false
 		devs.append(d)
 	var rig = CamBANGServer.create_rig(devs)
 	if rig == null:
@@ -440,6 +480,8 @@ func _run() -> void:
 		_fail("no handle for %s" % hw)
 		return
 	if not await _engage(dev):
+		return
+	if not await _apply_catalog_still_geometry(dev, hw):
 		return
 	if not await _phase_single(dev):
 		return
