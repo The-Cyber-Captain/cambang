@@ -82,6 +82,14 @@ var _phases_skipped: Array[String] = []
 # Still geometry taken from the endpoint's own capture catalog (platform only);
 # empty means the provider default, which a real camera may not offer.
 var _still_geometry: Dictionary = {}
+# Locating the dispatch tail: a notice slower than SLOW_DISPATCH_USEC is
+# printed with its phase and how long the main thread had gone without a
+# _process tick when it was handled (a long gap means a main-thread stall,
+# not a slow queue).
+const SLOW_DISPATCH_USEC := 25000
+var _phase_name := ""
+var _last_process_usec := 0
+var _slow_notices: Array[String] = []
 
 
 func _ready() -> void:
@@ -124,6 +132,8 @@ func _emit(status: String, reason: String) -> void:
 		_dist("dispatch_usec", _dispatch_usec),
 		_dist("trigger_to_notice_usec", _trigger_to_notice_usec),
 		_dist("notice_lead_over_finished_usec", _notice_lead_usec)])
+	for line in _slow_notices:
+		print("[CamBANG][EarlyTimingSlow] " + line)
 	var code := 0 if status == "ok" or status == "expected_unsupported" else 1
 	print("[CamBANG][HarnessVerdict] scene=%s status=%s exit_code=%d reason=%s" % [SCENE_LABEL, status, code, reason])
 	CamBANGServer.stop()
@@ -140,8 +150,18 @@ func _exit_tree() -> void:
 
 # ---- signal handlers ---------------------------------------------------------
 
+func _process(_delta: float) -> void:
+	_last_process_usec = Time.get_ticks_usec()
+
+
 func _on_image_acquired(capture_id: String, info: Dictionary) -> void:
 	_seq += 1
+	var observed := int(info.get("observed_ticks_usec", -1))
+	var emitted := int(info.get("emitted_ticks_usec", -1))
+	if observed >= 0 and emitted >= observed and emitted - observed > SLOW_DISPATCH_USEC:
+		_slow_notices.append("phase=%s capture=%s member=%d dispatch_usec=%d since_last_process_usec=%d frame=%d" % [
+			_phase_name, capture_id, int(info.get("image_member_index", -1)), emitted - observed,
+			Time.get_ticks_usec() - _last_process_usec, Engine.get_process_frames()])
 	if not _notices.has(capture_id):
 		_notices[capture_id] = []
 	(_notices[capture_id] as Array).append({"seq": _seq, "info": info.duplicate(true)})
@@ -366,6 +386,7 @@ func _apply_catalog_still_geometry(dev, hw: String) -> bool:
 
 
 func _phase_single(dev) -> bool:
+	_phase_name = "single"
 	for i in range(_captures_single):
 		var id := await _trigger_and_wait(func(): return dev.trigger_capture(), "single #%d" % i)
 		if id.is_empty():
@@ -379,6 +400,7 @@ func _phase_single(dev) -> bool:
 
 
 func _phase_bracket(dev) -> bool:
+	_phase_name = "bracket"
 	var members := [
 		{"image_member_index": 0, "role": CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED, "intended_exposure_compensation_milli_ev": 0},
 		{"image_member_index": 1, "role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET, "intended_exposure_compensation_milli_ev": -1000},
@@ -445,6 +467,7 @@ func _truth(plan: Dictionary) -> String:
 
 
 func _phase_rig() -> bool:
+	_phase_name = "rig"
 	var plan := _rig_plan()
 	if plan.is_empty():
 		print("SKIP: rig: no declared concurrent pair for %s/%s" % [OS.get_name(), OS.get_model_name()])
