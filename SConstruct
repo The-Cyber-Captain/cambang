@@ -792,6 +792,7 @@ maintainer_tools_clean_outputs = [
     _program_path("core_result_path_smoke"),
     _program_path("core_result_byte_budget_stress_smoke"),
     _program_path("outstanding_payload_ledger_verify"),
+    _program_path("early_timing_dispatch_verify"),
     _program_path("capture_sequence_settlement_verify"),
     _program_path("acquisition_seam_claims_verify"),
     _program_path("frame_rate_selection_verify"),
@@ -956,6 +957,16 @@ if build_maintainer_tools:
         source=restart_boundary_maintainer_tools_sources,
     )
 
+    # Core side of early acquisition-timing delivery (ingress listener), end to
+    # end against the reference provider.
+    early_timing_dispatch_verify_prog = maintainer_tools_env.Program(
+        target=os.path.join(out_dir, "early_timing_dispatch_verify"),
+        source=_unique_sources(
+            maintainer_tools_core_runtime_sources + maintainer_tools_synthetic_sources
+            + ["src/smoke/early_timing_dispatch_verify.cpp"]
+        ),
+    )
+
     verify_case_runner_sources = _unique_sources(
         maintainer_tools_core_runtime_sources
         + maintainer_tools_broker_sources
@@ -1043,6 +1054,7 @@ if build_maintainer_tools:
             provider_maintainer_tools_prog,
             synthetic_gpu_backing_runtime_verify_prog,
             restart_boundary_maintainer_tools_prog,
+            early_timing_dispatch_verify_prog,
             synthetic_only_provider_support_prog,
         ],
     )

@@ -2492,6 +2492,48 @@ bool SyntheticProvider::generate_device_capture_payloads_(
     uint64_t member_frame_assembly_sample_ns = 0;
     uint64_t member_post_sample_ns = 0;
     const auto& member = members[i];
+
+    // Deterministic sequential-capture cadence. Each member represents a fresh
+    // exposure taken one nominal frame period after the previous, so member i's
+    // acquisition mark is capture_ts_ns + i*frame_period (member 0 == the capture
+    // start, delta 0). This is a MODELLED, reproducible cadence in virtual time,
+    // NOT a wall-clock processing timestamp: synthetic is the deterministic
+    // reference provider, so its published marks must be identical across runs
+    // and machines. The stagger reflects sequential-capture order only, never
+    // compute time; a real burst's marks come from the sensor, here they are
+    // authored. (If the mark's meaning is ever redefined to mid/end-of-capture,
+    // this stays start-referenced -- synthetic members have no exposure duration.)
+    const uint64_t member_acquisition_mark_ns =
+        capture_ts_ns +
+        static_cast<uint64_t>(i) *
+            fps_period_ns(cfg_.nominal.fps_num, cfg_.nominal.fps_den);
+    std::optional<SourcedFact<ImageAcquisitionTiming>> member_acquisition_timing{};
+    if (const auto timing = synthetic_acquisition_timing_from_unsigned(
+            member_acquisition_mark_ns,
+            ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
+            ImageAcquisitionComparability::SAME_PROVIDER)) {
+      member_acquisition_timing =
+          SourcedFact<ImageAcquisitionTiming>{*timing, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+    }
+    const CaptureImageRouting member_routing = (i == 0)
+        ? CaptureImageRouting::DEFAULT_METERED
+        : CaptureImageRouting::ADDITIONAL_BRACKET;
+
+    // Early acquisition-timing notice, posted before this member's pixels are
+    // prepared: the synthetic analogue of a platform reporting the image's
+    // timing ahead of its payload. Same timing value as the frame below, on
+    // the same strand, so it is delivered first and agrees with the final.
+    {
+      CaptureImageTimingNotice notice{};
+      notice.capture_id = req.capture_id;
+      notice.device_instance_id = req.device_instance_id;
+      notice.image_member_index = member.image_member_index;
+      notice.routing = member_routing;
+      notice.acquisition_timing = member_acquisition_timing;
+      notice.observed_core_monotonic_ns =
+          callbacks_ ? callbacks_->core_monotonic_now_ns() : 0;
+      strand_.post_capture_image_timing(notice);
+    }
     // A planar member reads the base render as a conversion source and never
     // writes to it, so it can share the base buffer too. Forcing it down the
     // copy branch would put a full RGBA frame memcpy on the trigger->result
@@ -2561,30 +2603,8 @@ bool SyntheticProvider::generate_device_capture_payloads_(
     fv.width = req.width;
     fv.height = req.height;
     fv.format_fourcc = job.format_fourcc;
-    // Deterministic sequential-capture cadence. Each member represents a fresh
-    // exposure taken one nominal frame period after the previous, so member i's
-    // acquisition mark is capture_ts_ns + i*frame_period (member 0 == the capture
-    // start, delta 0). This is a MODELLED, reproducible cadence in virtual time,
-    // NOT a wall-clock processing timestamp: synthetic is the deterministic
-    // reference provider, so its published marks must be identical across runs
-    // and machines. The stagger reflects sequential-capture order only, never
-    // compute time; a real burst's marks come from the sensor, here they are
-    // authored. (If the mark's meaning is ever redefined to mid/end-of-capture,
-    // this stays start-referenced -- synthetic members have no exposure duration.)
-    const uint64_t member_acquisition_mark_ns =
-        capture_ts_ns +
-        static_cast<uint64_t>(i) *
-            fps_period_ns(cfg_.nominal.fps_num, cfg_.nominal.fps_den);
-    if (const auto timing = synthetic_acquisition_timing_from_unsigned(
-            member_acquisition_mark_ns,
-            ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
-            ImageAcquisitionComparability::SAME_PROVIDER)) {
-      fv.acquisition_timing =
-          SourcedFact<ImageAcquisitionTiming>{*timing, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
-    }
-    fv.capture_image.routing = (i == 0)
-        ? CaptureImageRouting::DEFAULT_METERED
-        : CaptureImageRouting::ADDITIONAL_BRACKET;
+    fv.acquisition_timing = member_acquisition_timing;
+    fv.capture_image.routing = member_routing;
     fv.capture_image.image_member_index = member.image_member_index;
     fv.capture_image.applied_exposure_compensation_milli_ev = member.intended_exposure_compensation_milli_ev;
     fv.capture_image.has_realized_exposure_compensation_milli_ev = true;

@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <atomic>
+#include <deque>
+#include <mutex>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
@@ -382,6 +384,33 @@ private:
   void _refresh_tracked_wrapper_live_states_from_snapshot_();
   // Drains Core's settlement queues and emits, once per Godot tick.
   void _emit_capture_completion_signals_();
+
+  // Early acquisition timing (capture_image_acquired).
+  //
+  // Providers post a CaptureImageTimingNotice on their strand; the ingress
+  // hands it to the listener installed at start(), which runs ON THE STRAND
+  // THREAD and therefore does nothing but push into this bounded queue and
+  // ask the main thread to drain it (call_deferred). Every Godot-facing step
+  // -- public ids, rig participation, Dictionary building, emit -- happens in
+  // _drain_capture_image_timing() on the main thread. The tick hook drains as
+  // well, ahead of capture_finished, so a notice is never emitted after its
+  // capture's settlement even if the deferred call has not run yet.
+  struct CaptureImageTimingQueue {
+    std::mutex m;
+    std::deque<CaptureImageTimingNotice> items;
+    bool open = false;
+    bool drain_scheduled = false;
+    uint64_t dropped = 0;
+  };
+  static constexpr size_t kCaptureImageTimingQueueCapacity = 256;
+  std::shared_ptr<CaptureImageTimingQueue> capture_image_timing_queue_ =
+      std::make_shared<CaptureImageTimingQueue>();
+  void _install_capture_image_timing_listener_();
+  void _remove_capture_image_timing_listener_();
+public:
+  // Bound for call_deferred only; underscore-prefixed like the tick hook.
+  void _drain_capture_image_timing();
+private:
   void _set_all_tracked_wrapper_live_states_false_();
   bool _is_device_live_by_identity_(const godot::String& hardware_id,
                                     uint64_t device_instance_id) const;

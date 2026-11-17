@@ -2823,7 +2823,8 @@ ProviderResult WinrtCameraProvider::ensure_low_lag_photo_realized_(
 
 WinrtCameraProvider::CapturedMemberFrame WinrtCameraProvider::capture_one_member_frame_(
     const std::shared_ptr<DeviceBackend>& backend,
-    uint32_t width, uint32_t height, uint32_t format_fourcc) noexcept {
+    uint32_t width, uint32_t height, uint32_t format_fourcc,
+    const std::optional<CaptureImageTimingNotice>& notice) noexcept {
   CapturedMemberFrame result{};
   if (!backend) {
     return result;
@@ -2841,8 +2842,8 @@ WinrtCameraProvider::CapturedMemberFrame WinrtCameraProvider::capture_one_member
   auto captured = std::make_shared<CapturedMemberFrame>();
   auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
   const bool completed = control_.run_bounded(
-      [captured, backend, width, height, format_fourcc](
-          const BoundedControlExecutor::AbandonToken& t) {
+      [captured, backend, width, height, format_fourcc, notice, strand = &strand_,
+       callbacks = callbacks_](const BoundedControlExecutor::AbandonToken& t) {
         CapturedMemberFrame local{};
         try {
           wmc::LowLagPhotoCapture low_lag{nullptr};
@@ -2872,6 +2873,20 @@ WinrtCameraProvider::CapturedMemberFrame WinrtCameraProvider::capture_one_member
               // single image -- see make_provider_observed_timing.
               local.sample_time_100ns = winrt_detail::provider_monotonic_100ns();
               local.has_sample_time = true;
+
+              // Early timing notice: the mark exists now and the copy below
+              // is the slow part, so the notice leaves first. Same helper and
+              // same mark as the final FrameView, so the two are equal by
+              // construction. An abandoned capture posts nothing: its caller
+              // has already reported the timeout.
+              if (notice && !t.abandoned.load(std::memory_order_acquire)) {
+                CaptureImageTimingNotice n = *notice;
+                n.acquisition_timing =
+                    winrt_detail::make_provider_observed_timing(local.sample_time_100ns);
+                n.observed_core_monotonic_ns =
+                    callbacks ? callbacks->core_monotonic_now_ns() : 0;
+                strand->post_capture_image_timing(n);
+              }
 
               const wmc::CapturedPhoto photo = op.GetResults();
               const wmc::CapturedFrame frame = photo ? photo.Frame() : nullptr;
@@ -3139,8 +3154,16 @@ void WinrtCameraProvider::run_device_capture_job_(const DeviceCaptureJob& job) n
         has_realized_ev = true;
       }
 
+      CaptureImageTimingNotice notice{};
+      notice.capture_id = capture_id;
+      notice.device_instance_id = device_id;
+      notice.image_member_index = member.image_member_index;
+      notice.routing = member.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET
+                           ? CaptureImageRouting::ADDITIONAL_BRACKET
+                           : CaptureImageRouting::DEFAULT_METERED;
       const CapturedMemberFrame captured = capture_one_member_frame_(
-          backend, job.request.width, job.request.height, job.request.format_fourcc);
+          backend, job.request.width, job.request.height, job.request.format_fourcc,
+          notice);
       if (!captured.ok || !captured.bytes) {
         fail(captured.error);
         restore_baseline_if_needed();

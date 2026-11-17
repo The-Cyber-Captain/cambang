@@ -384,6 +384,13 @@ domain, tick period, reference event, comparability, origin, and mark from that
 frame. Acquisition timing must not also travel through the separate per-image
 fact callback.
 
+A capture member's timing may also be announced early, ahead of its frame,
+through `CaptureImageTimingNotice` (surfaced to Godot as
+`CamBANGServer.capture_image_acquired`). The announcement is not retained and
+is not a second source of the fact. It must equal the frame's timing in every
+field, and the retained result is still built only from the frame. See
+`provider_architecture.md` §11 and `capture_identity_and_lifecycle.md` §4.2.
+
 A provider must not substitute Capture Date-Time, capture-admission time, Core
 lifecycle time, geolocation sample time, or another member's mark. Core must not
 use acquisition timing as retained-frame identity, backing identity, freshness,

@@ -11,6 +11,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <sstream>
 #include <utility>
@@ -596,6 +597,16 @@ struct RecorderCallbacks final : IProviderCallbacks {
     if (frame.release) {
       frame.release(frame.release_user, &frame);
     }
+  }
+
+  void on_capture_image_timing(const CaptureImageTimingNotice& notice) override {
+    EventRec ev{"capture_image_timing", notice.capture_id};
+    ev.capture_id = notice.capture_id;
+    ev.capture_image_routing = notice.routing;
+    ev.capture_image_member_index = notice.image_member_index;
+    ev.acquisition_timing = notice.acquisition_timing;
+    std::lock_guard<std::mutex> lk(mu);
+    events.push_back(ev);
   }
 
   void on_device_error(uint64_t id, ProviderError) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"device_error", id}); }
@@ -5065,6 +5076,102 @@ bool run_synthetic_multi_member_still_sequence_check() {
     return false;
   }
   return assert_native_balance(cb_events, "synthetic_multi_member_still_sequence");
+}
+
+bool same_acquisition_timing(const std::optional<SourcedFact<ImageAcquisitionTiming>>& a,
+                             const std::optional<SourcedFact<ImageAcquisitionTiming>>& b) {
+  if (a.has_value() != b.has_value()) return false;
+  if (!a) return true;
+  return a->origin == b->origin &&
+         a->value.acquisition_mark() == b->value.acquisition_mark() &&
+         a->value.tick_period().numerator_ns() == b->value.tick_period().numerator_ns() &&
+         a->value.tick_period().denominator() == b->value.tick_period().denominator() &&
+         a->value.clock_domain() == b->value.clock_domain() &&
+         a->value.reference_event() == b->value.reference_event() &&
+         a->value.comparability() == b->value.comparability();
+}
+
+// Early acquisition-timing contract (CaptureImageTimingNotice), on the
+// reference provider: every published still member is announced exactly once,
+// strictly before its frame on the same callback sequence, naming the frame's
+// final image_member_index and routing, with an acquisition timing equal to
+// the frame's in every field. A provider that renumbered members after
+// notifying, or announced from a different timestamp, fails here.
+bool run_synthetic_capture_image_timing_notice_check() {
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 64;
+  cfg.nominal.height = 64;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(cfg);
+
+  if (!provider.initialize(&cb).ok() || !provider.open_device("synthetic:0", 44, 4401).ok()) {
+    std::cerr << "FAIL capture image timing notice setup failed\n";
+    return false;
+  }
+  CaptureRequest cap = make_direct_provider_multi_member_still_capture_request(
+      8004, 44, 64, 64, FOURCC_RGBA, {1000, -1000});
+  if (!provider.trigger_capture(cap).ok()) {
+    std::cerr << "FAIL capture image timing notice trigger_capture failed\n";
+    return false;
+  }
+  if (!wait_for_capture_completed_with_frames(cb, cap.capture_id, 3)) {
+    std::cerr << "FAIL capture image timing notice capture did not complete with frames\n";
+    return false;
+  }
+  if (!provider.close_device(44).ok() || !provider.shutdown().ok()) {
+    std::cerr << "FAIL capture image timing notice teardown failed\n";
+    return false;
+  }
+
+  const auto events = cb.snapshot_events();
+  std::map<uint32_t, size_t> notice_at;  // member index -> event position
+  std::map<uint32_t, size_t> frame_at;
+  for (size_t i = 0; i < events.size(); ++i) {
+    const EventRec& ev = events[i];
+    if (ev.capture_id != cap.capture_id) continue;
+    if (ev.tag == "capture_image_timing") {
+      if (!notice_at.emplace(ev.capture_image_member_index, i).second) {
+        std::cerr << "FAIL capture image timing notice duplicated for member "
+                  << ev.capture_image_member_index << "\n";
+        return false;
+      }
+    } else if (ev.tag == "frame") {
+      frame_at.emplace(ev.capture_image_member_index, i);
+    }
+  }
+  if (frame_at.size() != 3 || notice_at.size() != frame_at.size()) {
+    std::cerr << "FAIL capture image timing notice count mismatch notices=" << notice_at.size()
+              << " frames=" << frame_at.size() << "\n";
+    return false;
+  }
+  for (const auto& [member, frame_pos] : frame_at) {
+    const auto it = notice_at.find(member);
+    if (it == notice_at.end()) {
+      std::cerr << "FAIL capture image timing notice missing for member " << member << "\n";
+      return false;
+    }
+    const EventRec& notice = events[it->second];
+    const EventRec& frame = events[frame_pos];
+    if (it->second >= frame_pos) {
+      std::cerr << "FAIL capture image timing notice for member " << member
+                << " did not precede its frame\n";
+      return false;
+    }
+    if (notice.capture_image_routing != frame.capture_image_routing) {
+      std::cerr << "FAIL capture image timing notice routing differs from frame for member "
+                << member << "\n";
+      return false;
+    }
+    if (!notice.acquisition_timing ||
+        !same_acquisition_timing(notice.acquisition_timing, frame.acquisition_timing)) {
+      std::cerr << "FAIL capture image timing notice timing differs from frame for member "
+                << member << "\n";
+      return false;
+    }
+  }
+  return assert_native_balance(events, "synthetic_capture_image_timing_notice");
 }
 
 bool run_synthetic_dynamic_still_bundle_shape_check() {
@@ -12158,6 +12265,7 @@ int main(int argc, char** argv) {
       {"run_synthetic_still_only_acquisition_session_truth_check", [] { return run_synthetic_still_only_acquisition_session_truth_check(); }},
       {"run_synthetic_multi_member_still_sequence_check", [] { return run_synthetic_multi_member_still_sequence_check(); }},
       {"run_synthetic_dynamic_still_bundle_shape_check", [] { return run_synthetic_dynamic_still_bundle_shape_check(); }},
+      {"run_synthetic_capture_image_timing_notice_check", [] { return run_synthetic_capture_image_timing_notice_check(); }},
       {"run_core_synthetic_three_member_capture_result_check", [] { return run_core_synthetic_three_member_capture_result_check(); }},
       {"run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check", [] { return run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check(); }},
       {"run_synthetic_still_bundle_capability_gate_contract_check", [] { return run_synthetic_still_bundle_capability_gate_contract_check(); }},

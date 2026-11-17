@@ -809,6 +809,35 @@ inline bool retained_gpu_backing_descriptor_is_self_consistent(
   return true;
 }
 
+// Early notice that one still-capture image member has been acquired, carrying
+// that member's provider-authored acquisition timing.
+//
+// Posted through the provider's strand as soon as the provider can associate
+// the timing with an admitted member -- before pixel copies, before waiting for
+// the capture's other members, and before the member's FrameView. It is not a
+// success or completion event: the member may still fail, and the capture's
+// ordinary terminal callbacks remain the only settlement.
+//
+// Identity is the member's ordinary identity, never the timing mark: equal marks
+// are legal and identify nothing. image_member_index is the FINAL index the
+// member will carry in its FrameView; a provider that cannot know it yet must
+// not post the notice. A provider posts at most one notice per member.
+//
+// acquisition_timing must equal the FrameView::acquisition_timing the member is
+// later delivered with (provider_compliance_verify checks this). Absence is
+// explicit: a member with no timing may still be notified, with nullopt.
+struct CaptureImageTimingNotice {
+  uint64_t capture_id = 0;
+  uint64_t device_instance_id = 0;
+  uint32_t image_member_index = 0;
+  CaptureImageRouting routing = CaptureImageRouting::DEFAULT_METERED;
+  std::optional<SourcedFact<ImageAcquisitionTiming>> acquisition_timing{};
+  // IProviderCallbacks::core_monotonic_now_ns() when the provider first held
+  // the image, so the delay CamBANG adds after that point can be reported.
+  // Zero means unknown.
+  uint64_t observed_core_monotonic_ns = 0;
+};
+
 // Frame view delivered from provider.
 // Provider retains buffer ownership until core calls release().
 // release() must be safe and non-blocking; it is called from core thread context.

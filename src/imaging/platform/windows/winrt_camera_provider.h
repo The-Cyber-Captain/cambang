@@ -489,9 +489,14 @@ private:
       uint32_t width,
       uint32_t height) noexcept;
 
+  // `notice` (optional) is this member's early acquisition-timing notice. It
+  // is completed with the timing and observation time and posted on strand_
+  // the moment the capture call returns, before the bitmap copy, so it always
+  // precedes the member's frame.
   CapturedMemberFrame capture_one_member_frame_(
       const std::shared_ptr<winrt_detail::DeviceBackend>& backend,
-      uint32_t width, uint32_t height, uint32_t format_fourcc) noexcept;
+      uint32_t width, uint32_t height, uint32_t format_fourcc,
+      const std::optional<CaptureImageTimingNotice>& notice = std::nullopt) noexcept;
 
   CBProviderStrand strand_;
   IProviderCallbacks* callbacks_ = nullptr;

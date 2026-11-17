@@ -71,6 +71,9 @@ public:
                                 uint64_t device_instance_id,
                                 uint32_t image_member_index,
                                 ProviderCaptureImageFacts facts);
+  // Non-lossy. Post before the member's post_frame(); strand FIFO order then
+  // guarantees the notice is delivered first.
+  void post_capture_image_timing(const CaptureImageTimingNotice& notice);
 
   void post_frame(const FrameView& frame);
 
@@ -99,6 +102,7 @@ private:
     uint32_t image_member_index;
     ProviderCaptureImageFacts facts;
   };
+  struct EvCaptureImageTiming { CaptureImageTimingNotice notice; };
 
   struct EvFrame { FrameView frame; };
 
@@ -122,6 +126,7 @@ private:
       EvCaptureFailed,
       EvCameraStaticFacts,
       EvCaptureImageFacts,
+      EvCaptureImageTiming,
       EvFrame,
       EvDeviceError,
       EvStreamError,

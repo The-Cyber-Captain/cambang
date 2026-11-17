@@ -735,6 +735,20 @@ enum class TryCloseDeviceStatus : uint8_t {
 
   ProviderCallbackIngress::Stats ingress_stats_copy() const noexcept { return ingress_.stats_copy(); }
 
+  // Early capture-image timing listener; see ProviderCallbackIngress. Invoked
+  // on provider-strand threads, never on CoreThread. clear waits for
+  // in-flight invocations, so it must not be called from inside the listener.
+  void set_capture_image_timing_listener(
+      ProviderCallbackIngress::CaptureImageTimingListener listener) {
+    ingress_.set_capture_image_timing_listener(std::move(listener));
+  }
+  void clear_capture_image_timing_listener() {
+    ingress_.clear_capture_image_timing_listener();
+  }
+  // Core monotonic timebase (ns since core epoch), the same clock providers
+  // read through IProviderCallbacks::core_monotonic_now_ns. Safe from any thread.
+  uint64_t core_monotonic_now_ns() const noexcept { return ns_since_epoch_(); }
+
   struct ShutdownDiag {
     uint8_t phase_code = 0;
     uint64_t phase_changes = 0;

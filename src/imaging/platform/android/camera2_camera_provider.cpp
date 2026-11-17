@@ -791,9 +791,32 @@ struct BurstCollector {
     // Read at acquisition, because the AImage is gone by the time the
     // FrameView is assembled.
     PayloadColorimetry colorimetry{};
+    // The member slot this payload took at arrival (see `reserved`). The
+    // final frame is placed by this, not by a later sort, because the early
+    // timing notice already told the consumer which member it is.
+    size_t ordinal = 0;
   };
-  std::vector<Image> images;      // arrival order == capture order
-  size_t failed_count = 0;        // onCaptureFailed, per member
+  std::vector<Image> images;      // completed conversions, in arrival order
+  size_t failed_count = 0;        // onCaptureFailed + conversion failures
+
+  // Member slots handed out at payload arrival, before conversion. Slot k is
+  // member k of this submission: Camera2 delivers one reader's buffers in
+  // submission order, and assigning the slot at arrival is what lets the
+  // early timing notice name its final image_member_index before the pixels
+  // are copied. Counting reservations (not just completed images) also keeps
+  // a payload that is still converting from being mistaken for spare room.
+  size_t reserved = 0;
+  size_t conversion_failed = 0;   // subset of failed_count that held a slot
+
+  // Early acquisition-timing notices. One entry per submitted spec, in member
+  // order; empty means this burst posts none (metering, AF). Copied from the
+  // specs before the collector is installed and never changed afterwards.
+  struct NoticeTarget {
+    uint32_t image_member_index = 0;
+    CaptureImageRouting routing = CaptureImageRouting::DEFAULT_METERED;
+  };
+  std::vector<NoticeTarget> notice_targets;
+  uint64_t capture_id = 0;
   std::vector<ResultFacts> results_in_order;      // results with no timestamp
   std::map<int64_t, ResultFacts> results_by_time; // results keyed by sensor ts
 
@@ -947,6 +970,9 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   uint64_t root_id = 0;
   uint64_t acquisition_session_id = 0; // core-issued native id once realized
   CBProviderStrand* strand = nullptr;  // provider outlives all backends
+  // Core services that are documented safe from any thread
+  // (core_monotonic_now_ns). Same lifetime argument as `strand`.
+  IProviderCallbacks* callbacks = nullptr;
 
   // Who currently requires the acquisition seam to exist. Same three-claimant
   // model as SyntheticProvider (lifecycle_model.md section 2: the seam is
@@ -1749,6 +1775,50 @@ void on_still_image_available(void* context, AImageReader* reader) {
     return;
   }
 
+  int64_t timestamp_ns = -1;
+  if (AImage_getTimestamp(image, &timestamp_ns) != AMEDIA_OK) {
+    timestamp_ns = -1;
+  }
+
+  // Take this payload's member slot BEFORE converting it. The slot is what the
+  // early timing notice names, and the notice must leave before the copy so
+  // its latency is the platform's, not ours.
+  size_t ordinal = 0;
+  bool notify = false;
+  BurstCollector::NoticeTarget target{};
+  {
+    std::lock_guard<std::mutex> wl(burst->m);
+    const size_t platform_failed = burst->failed_count - burst->conversion_failed;
+    if (burst->reserved + platform_failed >= burst->expected) {
+      AImage_delete(image);
+      return; // burst already satisfied; this image belongs to nobody
+    }
+    ordinal = burst->reserved++;
+    if (ordinal < burst->notice_targets.size()) {
+      notify = true;
+      target = burst->notice_targets[ordinal];
+    }
+  }
+  if (notify && backend->strand) {
+    // Posted on the same strand as the frame that will carry this image, so
+    // it is delivered ahead of it. The timing is built by the same helper and
+    // from the same timestamp as the final FrameView's, which is what makes
+    // the two equal by construction. A member whose image is later lost still
+    // had its notice: capture_finished's failure is the consumer's settlement.
+    CaptureImageTimingNotice notice{};
+    notice.capture_id = burst->capture_id;
+    notice.device_instance_id = backend->device_instance_id;
+    notice.image_member_index = target.image_member_index;
+    notice.routing = target.routing;
+    if (timestamp_ns >= 0) {
+      notice.acquisition_timing = make_acquisition_timing(
+          timestamp_ns, backend->chars.timestamp_source_realtime);
+    }
+    notice.observed_core_monotonic_ns =
+        backend->callbacks ? backend->callbacks->core_monotonic_now_ns() : 0;
+    backend->strand->post_capture_image_timing(notice);
+  }
+
   // Planar capture takes the device's planes through unconverted, exactly as
   // the stream path does. Sized from the descriptor so a planar buffer is
   // w*h*3/2 rather than w*h*4.
@@ -1764,17 +1834,10 @@ void on_still_image_available(void* context, AImageReader* reader) {
                                    bytes->data(), &member_fourcc, &member_planes)
       : convert_acquired_image(image, burst->width, burst->height, burst->fourcc,
                                bytes->data());
-  int64_t timestamp_ns = -1;
-  if (AImage_getTimestamp(image, &timestamp_ns) != AMEDIA_OK) {
-    timestamp_ns = -1;
-  }
   AImage_delete(image);
 
   {
     std::lock_guard<std::mutex> wl(burst->m);
-    if (burst->images.size() + burst->failed_count >= burst->expected) {
-      return; // burst already satisfied; this image belongs to nobody
-    }
     if (converted) {
       BurstCollector::Image item;
       item.bytes = std::move(bytes);
@@ -1784,9 +1847,11 @@ void on_still_image_available(void* context, AImageReader* reader) {
       item.timestamp_ns = timestamp_ns;
       item.colorimetry = colorimetry_from_dataspace(
           backend->still_dataspace.load(std::memory_order_acquire));
+      item.ordinal = ordinal;
       burst->images.push_back(std::move(item));
     } else {
       ++burst->failed_count;
+      ++burst->conversion_failed;
     }
   }
   burst->cv.notify_all();
@@ -2785,6 +2850,11 @@ struct Camera2CameraProvider::CapturedMemberFrame {
 };
 
 struct Camera2CameraProvider::MemberRequestSpec {
+  // Early acquisition-timing notice for this member's image. Left false for
+  // submissions whose images are not published members (metering).
+  bool notify_timing = false;
+  uint32_t notice_image_member_index = 0;
+  CaptureImageRouting notice_routing = CaptureImageRouting::DEFAULT_METERED;
   // Manual: AE off, this exact exposure/sensitivity. The bracket is then exact
   // by construction with nothing to converge, which is also what makes
   // bursting safe.
@@ -3142,6 +3212,7 @@ ProviderResult Camera2CameraProvider::open_device(
   backend->device_instance_id = device_instance_id;
   backend->root_id = root_id;
   backend->strand = &strand_;
+  backend->callbacks = callbacks_;
   // Every NDK callback context is allocated up front and owned by the
   // backend. The NDK keeps the raw pointer for the lifetime of the object it
   // was registered on, and the backend outlives all of them: it is released
@@ -4925,6 +4996,17 @@ bool Camera2CameraProvider::capture_burst_(
   burst->width = width;
   burst->height = height;
   burst->fourcc = format_fourcc;
+  burst->capture_id = capture_id;
+  // All or none: slots map positionally onto specs, so a partial target list
+  // would let a later member's notice borrow an earlier member's identity.
+  if (std::all_of(specs.begin(), specs.end(),
+                  [](const MemberRequestSpec& s) { return s.notify_timing; })) {
+    burst->notice_targets.reserve(specs.size());
+    for (const MemberRequestSpec& s : specs) {
+      burst->notice_targets.push_back(
+          BurstCollector::NoticeTarget{s.notice_image_member_index, s.notice_routing});
+    }
+  }
 
   {
     std::lock_guard<std::mutex> bl(backend->m);
@@ -5295,12 +5377,28 @@ bool Camera2CameraProvider::capture_burst_(
     }
   }
 
-  // Sensor timestamps are monotonic within a device, so ascending timestamp is
-  // submission order, which is member order.
+  // Member order is the slot each payload took at arrival -- the same slot
+  // its early timing notice already published -- so the final frame cannot
+  // contradict the notice. Sensor timestamps are monotonic within a device,
+  // so for a well-behaved device ascending timestamp is the same order; a
+  // disagreement is logged as evidence rather than silently re-sorted.
   std::sort(images.begin(), images.end(),
             [](const BurstCollector::Image& a, const BurstCollector::Image& b) {
-              return a.timestamp_ns < b.timestamp_ns;
+              return a.ordinal < b.ordinal;
             });
+  for (size_t i = 1; i < images.size(); ++i) {
+    if (images[i].has_timestamp && images[i - 1].has_timestamp &&
+        images[i].timestamp_ns < images[i - 1].timestamp_ns) {
+      camera2_detail::log_line(
+          "device=%llu capture=%llu purpose=%s arrival order disagrees with sensor "
+          "timestamp order at slot %zu (ts=%lld after ts=%lld); members follow arrival",
+          static_cast<unsigned long long>(backend->device_instance_id),
+          static_cast<unsigned long long>(capture_id), purpose, images[i].ordinal,
+          static_cast<long long>(images[i].timestamp_ns),
+          static_cast<long long>(images[i - 1].timestamp_ns));
+      break;
+    }
+  }
 
   // Raw collector state, independent of any member mapping. This is what
   // distinguishes "the sensor produced these intervals" from "we paired the
@@ -5337,13 +5435,20 @@ bool Camera2CameraProvider::capture_burst_(
         settled ? "yes" : "no", grace_was_paid ? "yes" : "no", deltas);
   }
 
+  // Slot -> image. A slot with no completed image (conversion failed, or never
+  // arrived) is that member's failure; it no longer shifts later images down
+  // onto the wrong member.
+  std::vector<const BurstCollector::Image*> by_slot(out_frames.size(), nullptr);
+  for (const BurstCollector::Image& img : images) {
+    if (img.ordinal < by_slot.size()) by_slot[img.ordinal] = &img;
+  }
   for (size_t i = 0; i < out_frames.size(); ++i) {
-    if (i >= images.size()) {
+    if (!by_slot[i]) {
       out_frames[i].error =
           settled ? ProviderError::ERR_PROVIDER_FAILED : ProviderError::ERR_TIMEOUT;
       continue;
     }
-    const BurstCollector::Image& img = images[i];
+    const BurstCollector::Image& img = *by_slot[i];
     if (!img.bytes) {
       out_frames[i].error = ProviderError::ERR_PROVIDER_FAILED;
       continue;
@@ -6068,6 +6173,12 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
         }
 
         MemberRequestSpec spec;
+        spec.notify_timing = true;
+        spec.notice_image_member_index = member.image_member_index;
+        spec.notice_routing =
+            member.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET
+                ? CaptureImageRouting::ADDITIONAL_BRACKET
+                : CaptureImageRouting::DEFAULT_METERED;
         spec.manual = true;
         spec.exposure_ns = static_cast<int64_t>(std::llround(exposure));
         spec.sensitivity = static_cast<int32_t>(std::lround(sensitivity));
@@ -6105,6 +6216,12 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
       frames.reserve(members.size());
       for (const CaptureStillImageMember& member : members) {
         MemberRequestSpec spec;
+        spec.notify_timing = true;
+        spec.notice_image_member_index = member.image_member_index;
+        spec.notice_routing =
+            member.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET
+                ? CaptureImageRouting::ADDITIONAL_BRACKET
+                : CaptureImageRouting::DEFAULT_METERED;
         if (member.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET &&
             chars.has_exposure_compensation) {
           const double requested_ev =

@@ -1,8 +1,10 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 
@@ -82,6 +84,7 @@ public:
                               uint32_t image_member_index,
                               ProviderCaptureImageFacts facts) override;
 
+  void on_capture_image_timing(const CaptureImageTimingNotice& notice) override;
   void on_frame(const FrameView& frame) override;
 
   void on_device_error(uint64_t device_instance_id, ProviderError error) override;
@@ -89,6 +92,23 @@ public:
 
   void on_native_object_created(const NativeObjectCreateInfo& info) override;
   void on_native_object_destroyed(const NativeObjectDestroyInfo& info) override;
+
+  // Early capture-image timing listener.
+  //
+  // The one documented exception to "every callback is marshalled onto
+  // CoreThread": on_capture_image_timing() invokes this listener directly on
+  // the calling provider-strand thread, because the notice exists to arrive
+  // before core work, retention and publication. It changes no Core state.
+  //
+  // The listener must be prompt and bounded (it runs inside provider-strand
+  // delivery) and must not call back into Core or the provider. It is invoked
+  // with no ingress lock held.
+  //
+  // clear_ waits until every invocation already admitted has returned, so after
+  // it returns the listener's captured state is never touched again.
+  using CaptureImageTimingListener = std::function<void(const CaptureImageTimingNotice&)>;
+  void set_capture_image_timing_listener(CaptureImageTimingListener listener);
+  void clear_capture_image_timing_listener();
 
 private:
   uint32_t on_frame_ingress_enqueued_(uint64_t stream_id);
@@ -121,6 +141,11 @@ private:
   std::atomic<uint64_t> frames_released_on_drop_full_{0};
   std::atomic<uint64_t> frames_released_on_drop_closed_{0};
   std::atomic<uint64_t> frames_released_on_drop_allocfail_{0};
+
+  std::mutex timing_listener_mu_;
+  std::condition_variable timing_listener_idle_;
+  std::shared_ptr<const CaptureImageTimingListener> timing_listener_;
+  uint32_t timing_listener_in_flight_ = 0;
 
   mutable std::mutex ingress_mu_;
   std::unordered_map<uint64_t, uint32_t> stream_ingress_depth_;
