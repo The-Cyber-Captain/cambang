@@ -689,6 +689,11 @@ private:
   size_t capture_queue_count_ = 0;
   size_t capture_active_jobs_ = 0;
   std::vector<std::thread> capture_workers_;
+  // Devices Core has asked for a GPU compute sidecar on each still member.
+  // Own lock: read once per member on the capture job, never nested.
+  mutable std::mutex gpu_compute_sidecar_mutex_;
+  std::set<uint64_t> gpu_compute_sidecar_demanded_devices_;
+  bool is_gpu_compute_sidecar_demanded_(uint64_t device_instance_id) const;
 #if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
   bool capture_workers_paused_for_test_ = false;
   bool capture_jobs_paused_after_dequeue_for_test_ = false;
@@ -701,11 +706,6 @@ private:
   // Withheld-payload machinery (see arm_withheld_capture_payload_for_test).
   // Its own mutex: capture workers for different devices touch it
   // concurrently, and it must not be ordered against provider state locks.
-  // Devices Core has asked for a GPU compute sidecar on each still member.
-  // Own lock: read once per member on the capture job, never nested.
-  mutable std::mutex gpu_compute_sidecar_mutex_;
-  std::set<uint64_t> gpu_compute_sidecar_demanded_devices_;
-  bool is_gpu_compute_sidecar_demanded_(uint64_t device_instance_id) const;
   mutable std::mutex withheld_payload_mutex_for_test_;
   std::set<uint64_t> withhold_armed_devices_for_test_;
   std::set<uint64_t> withheld_captures_for_test_;
