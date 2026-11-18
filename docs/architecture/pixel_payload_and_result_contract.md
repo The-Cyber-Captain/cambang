@@ -1654,6 +1654,39 @@ an absent entry means "not implemented yet", never "excluded by design".
   further from a GPU route: its pixels arrive as a `SoftwareBitmap` read via
   `IMemoryBufferByteAccess`, and the provider references no D3D or DXGI
   interface at all.
+- **A frozen GPU copy beside the CPU primary (the GPU compute sidecar).** A
+  member may carry a GPU copy of its planes next to its CPU payload
+  (`FrameView::gpu_compute_sidecar` and its descriptor,
+  `src/imaging/api/provider_contract_datatypes.h`). It is armed per device by
+  compute-texture demand: the first `get_compute_texture_plane()` on a device
+  asks Core to arm it (`CoreRuntime::demand_capture_gpu_compute_sidecar`), and
+  Core forwards that to the provider
+  (`ICameraProvider::set_capture_gpu_compute_sidecar_demand`, default
+  `ERR_NOT_SUPPORTED`). Members captured before arming carry none. Core retains
+  a sidecar only when its planes are exactly those the member's CPU format and
+  extent call for (`gpu_compute_sidecar_descriptor_matches`,
+  `src/imaging/api/gpu_compute_sidecar_planes.h`), counts it in the capture
+  byte budget, and leaves the member's payload kind, access truth and
+  calibration unchanged. A member holding a usable sidecar reports `READY`,
+  serves its planes from it with zero uploads, and reports
+  `get_compute_texture_backing() == COMPUTE_TEXTURE_BACKING_GPU_RETAINED`;
+  every other supported member reports `CPU_UPLOAD`, and an unsupported one
+  `NONE` (`src/godot/capture_compute_texture.cpp`).
+  - Synthetic produces it from the member's CPU planes
+    (`src/imaging/synthetic/provider.cpp`); verified host-natively by
+    `provider_compliance_verify` (RGBA, NV12, NV21, I420: content equals the CPU
+    planes, budget delta equals CPU plus sidecar bytes, a held sidecar survives
+    stop). Scene 74 asserts the backing query and, for its planar phase, that a
+    member captured after arming is `GPU_RETAINED` with no upload.
+  - Camera2 creates its still reader with `GPU_SAMPLED_IMAGE |
+    CPU_READ_OFTEN` when the host can import native buffers, and for an armed
+    NV12/NV21 member hands the AImage's AHardwareBuffer to the neutral import
+    seam (`src/imaging/api/platform_gpu_import_ops.h`), holding at most one
+    image and bounding the wait at 50 ms before posting
+    (`src/imaging/platform/android/camera2_camera_provider.cpp`). No Godot-side
+    import implementation is installed yet, so on every device the seam reports
+    no import support and Camera2 members stay `CPU_UPLOAD`. WinRT does not
+    implement the demand and stays `CPU_UPLOAD`.
 - The descriptor can distinguish a linear backing from an opaque external one
   and can declare that display or import costs real work
   (`GpuBackingLayoutKind`, `display_requires_import`,

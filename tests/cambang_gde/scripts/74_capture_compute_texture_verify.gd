@@ -232,6 +232,10 @@ func _verify_phase(capture_id: String, expected_planes: int, label: String) -> v
 		if result.get_compute_texture_plane(0, 0) != null:
 			_fail("no RenderingDevice but get_compute_texture_plane(0,0) returned an object")
 			return
+		if int(result.get_compute_texture_backing(0)) != result.COMPUTE_TEXTURE_BACKING_NONE:
+			_fail("no RenderingDevice but get_compute_texture_backing(0)=%d (expected NONE=%d)"
+				% [int(result.get_compute_texture_backing(0)), result.COMPUTE_TEXTURE_BACKING_NONE])
+			return
 		_step_ok("no RenderingDevice: UNSUPPORTED reported and nothing produced")
 		_finish_unsupported("no RenderingDevice under this renderer")
 		return
@@ -242,6 +246,31 @@ func _verify_phase(capture_id: String, expected_planes: int, label: String) -> v
 	if support == result.CAPABILITY_CHEAP:
 		# 11.6.1: no path may be declared CHEAP without measured evidence.
 		_fail("can_get_compute_texture_member(0) declared CHEAP; only READY/EXPENSIVE are derivable")
+		return
+
+	# Which route will serve the planes, asked before producing them. READY and
+	# GPU_RETAINED are the same fact seen from two sides: a member already
+	# holding GPU planes (a GPU-backed payload, or a frozen GPU copy taken at
+	# arrival) needs no upload, and every other member uploads its CPU payload.
+	var backing := int(result.get_compute_texture_backing(0))
+	_step_ok("%s: get_compute_texture_backing(0) = %d" % [label, backing])
+	if backing == result.COMPUTE_TEXTURE_BACKING_NONE:
+		_fail("%s: backing NONE although support=%d" % [label, support])
+		return
+	if (support == result.CAPABILITY_READY) != (backing == result.COMPUTE_TEXTURE_BACKING_GPU_RETAINED):
+		_fail("%s: support=%d disagrees with backing=%d (READY must mean GPU_RETAINED)"
+			% [label, support, backing])
+		return
+	# The packed phase's plane request below armed this device's GPU copy, and
+	# the planar capture is triggered after it, so its member must carry one:
+	# Synthetic owes the copy wherever a RenderingDevice exists.
+	if label == "planar" and backing != result.COMPUTE_TEXTURE_BACKING_GPU_RETAINED:
+		_fail("planar: member captured after compute-texture demand reports backing=%d, "
+			% backing + "expected GPU_RETAINED=%d" % result.COMPUTE_TEXTURE_BACKING_GPU_RETAINED)
+		return
+	if int(result.get_compute_texture_backing(-1)) != result.COMPUTE_TEXTURE_BACKING_NONE \
+			or int(result.get_compute_texture_backing(64)) != result.COMPUTE_TEXTURE_BACKING_NONE:
+		_fail("%s: out-of-range member index did not report backing NONE" % label)
 		return
 
 	# Timed because it is the number that decides whether a zero-copy native path
@@ -259,11 +288,22 @@ func _verify_phase(capture_id: String, expected_planes: int, label: String) -> v
 	if cold_image == null:
 		_fail("cold to_image() returned null")
 		return
+	var first_before: Dictionary = _compute_texture_metrics()
 	var t0 := Time.get_ticks_usec()
 	var texture = result.get_compute_texture_plane(0, 0)
 	var produce_us := Time.get_ticks_usec() - t0
+	var first_after: Dictionary = _compute_texture_metrics()
 	if texture == null or not (texture is Texture2D):
 		_fail("get_compute_texture_plane(0,0) returned no Texture2D despite support=%d" % support)
+		return
+	var first_uploads := int(first_after.get("uploads", 0)) - int(first_before.get("uploads", 0))
+	if backing == result.COMPUTE_TEXTURE_BACKING_GPU_RETAINED and first_uploads != 0:
+		_fail("%s: backing GPU_RETAINED but the first plane request uploaded (%d)"
+			% [label, first_uploads])
+		return
+	if backing == result.COMPUTE_TEXTURE_BACKING_CPU_UPLOAD and first_uploads != 1:
+		_fail("%s: backing CPU_UPLOAD but the first plane request made %d uploads (expected 1)"
+			% [label, first_uploads])
 		return
 	var t1 := Time.get_ticks_usec()
 	var timing_image: Image = result.to_image()
