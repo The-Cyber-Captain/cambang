@@ -1815,6 +1815,13 @@ void CamBANGServer::stop() {
   // undelivered notices of this session are discarded rather than emitted
   // against ids that are about to stop resolving.
   _remove_capture_image_timing_listener_();
+  // Before the live-wrapper warning: CamBANG's own capture compute-texture
+  // cache holds a Ref to every plane it produced, and those references are not
+  // the caller's. Counting them made every session that ever requested a plane
+  // warn at stop even after the caller had dropped everything. Clearing here
+  // leaves only the wrappers a caller still holds, which is what the warning
+  // is for.
+  clear_capture_compute_texture_cache();
   synthetic_gpu_backing_warn_and_abandon_live_display_wrappers_before_stop();
   abandon_all_live_cpu_display_wrappers_before_stop();
 
@@ -1835,7 +1842,6 @@ void CamBANGServer::stop() {
     provider_.reset();
   }
   CamBANGStreamResult::clear_live_stream_cpu_display_views();
-  clear_capture_compute_texture_cache();
   clear_stream_compute_texture_cache();
   synthetic_gpu_backing_drain_render_releases_before_stop();
   drain_live_cpu_display_bridge_before_stop();
