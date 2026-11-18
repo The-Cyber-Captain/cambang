@@ -15,9 +15,9 @@ extends Node
 ##   and the first plane request for one makes no upload;
 ## - outside that scope every capture stays CPU_UPLOAD (the gate is closed and
 ##   the scene is expected_unsupported, after checking exactly that);
-## - the GPU copy holds the same image as the CPU payload: plane 0 matches luma
-##   derived from to_image() with the member's own colorimetry, and plane 1's
-##   chroma is in the member format's byte order (NV12 = Cb,Cr; NV21 = Cr,Cb);
+## - the GPU copy holds the CPU payload's bytes: decoding planes 0 and 1 with
+##   Core's own integer conversion, in the member format's chroma order
+##   (NV12 = Cb,Cr; NV21 = Cr,Cb), reproduces to_image() exactly;
 ## - capture_image_acquired still reaches the main thread inside the 50 ms
 ##   consumer window at p99 while copies are being made.
 ##
@@ -52,13 +52,6 @@ const MIN_RETAINED_SHARE := 0.9
 # stalls the GPU, and the remaining captures carry the pacing numbers.
 const CONTENT_CHECKS := 3
 const SAMPLE_STRIDE := 4
-# Luma reconstructed from clamped RGB is not exact on saturated pixels.
-const LUMA_MEAN_ABS_LIMIT := 4.0
-const LUMA_WITHIN := 8
-const LUMA_WITHIN_SHARE := 0.95
-# Below this mean chroma excursion from 128 the scene is too grey for the
-# byte-order comparison to say anything; it is reported as inconclusive.
-const CHROMA_MIN_EXCURSION := 3.0
 
 # Quest 3's forward passthrough sensors; 1 is the virtual avatar camera.
 const QUEST_CAMERA := "50"
@@ -345,34 +338,49 @@ func _rd_bytes(texture: Texture2D) -> PackedByteArray:
 	return rd.texture_get_data(rd_texture, 0)
 
 
-# Kr/Kb for the member's matrix; "unspecified" resolves to BT.601 as CamBANG's
-# own CPU conversion does.
-func _matrix_coefficients(matrix: String) -> Vector2:
-	match matrix:
-		"bt709":
-			return Vector2(0.2126, 0.0722)
-		"bt2020_ncl":
-			return Vector2(0.2627, 0.0593)
-	return Vector2(0.299, 0.114)
+func _clamp_u8(v: int) -> int:
+	return clampi(v, 0, 255)
 
 
-# Proves the GPU copy holds the CPU payload's image. Returns "" or the failure.
+# Exactly Core's integer YUV -> RGB (src/pixels/format/yuv_convert.h,
+# yuv_to_rgb_bt601_full / _limited), so a decode of the GPU planes can be held
+# to to_image() byte for byte. GDScript's >> is arithmetic on negative ints,
+# as the C++ is on every supported compiler.
+func _decode(yv: int, u: int, v: int, full: bool) -> Vector3i:
+	var d := u - 128
+	var e := v - 128
+	if full:
+		return Vector3i(
+			_clamp_u8(yv + ((359 * e + 128) >> 8)),
+			_clamp_u8(yv + ((-88 * d - 183 * e + 128) >> 8)),
+			_clamp_u8(yv + ((454 * d + 128) >> 8)))
+	var c := yv - 16
+	return Vector3i(
+		_clamp_u8((298 * c + 409 * e + 128) >> 8),
+		_clamp_u8((298 * c - 100 * d - 208 * e + 128) >> 8),
+		_clamp_u8((298 * c + 516 * d + 128) >> 8))
+
+
+# Proves the GPU copy holds the CPU payload's bytes. to_image() is Core's
+# conversion of the CPU planes; decoding the GPU planes with the same integer
+# conversion must reproduce it exactly at every sampled pixel. Any differing
+# Y, Cb or Cr byte changes at least one channel unless clamping hides it, so
+# an exact match on a lit, non-saturated scene is a byte-level proof in
+# practice. The same decode with Cb/Cr swapped is reported alongside: on a
+# scene with colour it must mismatch, which shows the check can see the order.
+# Returns "" or the failure.
 func _verify_content(result, what: String) -> String:
-	var member: Dictionary = result.get_image_member(0)
-	var fourcc := int(member.get("format", result.get_format()))
+	var fourcc := int(result.get_format())
 	if fourcc != CamBANGServer.PIXEL_FORMAT_NV12 and fourcc != CamBANGServer.PIXEL_FORMAT_NV21:
 		return "%s: GPU_RETAINED member has format %d, expected NV12/NV21" % [what, fourcc]
+	var member: Dictionary = result.get_image_member(0)
 	var colorimetry: Dictionary = member.get("colorimetry", {})
 	var full := str(colorimetry.get("range", "unspecified")) == "full"
-	var k := _matrix_coefficients(str(colorimetry.get("matrix", "unspecified")))
-	var kr := k.x
-	var kb := k.y
-	var kg := 1.0 - kr - kb
 	var image: Image = result.to_image()
 	if image == null:
 		return "%s: to_image() returned null" % what
 	if image.get_format() != Image.FORMAT_RGBA8:
-		image.convert(Image.FORMAT_RGBA8)
+		return "%s: to_image() format %d, expected RGBA8" % [what, image.get_format()]
 	var w := image.get_width()
 	var h := image.get_height()
 	var rgba := image.get_data()
@@ -386,63 +394,50 @@ func _verify_content(result, what: String) -> String:
 	var ch := int((h + 1) / 2.0)
 	if c_bytes.size() != cw * ch * 2:
 		return "%s: plane 1 read back %d bytes, expected %dx%dx2=%d" % [what, c_bytes.size(), cw, ch, cw * ch * 2]
-
-	var luma_scale := 219.0 / 255.0 if not full else 1.0
-	var luma_offset := 16.0 if not full else 0.0
-	var chroma_scale := 224.0 / 255.0 if not full else 1.0
+	# Native byte order within a chroma pair: NV12 is Cb,Cr; NV21 is Cr,Cb.
+	var u_off := 0 if fourcc == CamBANGServer.PIXEL_FORMAT_NV12 else 1
+	var v_off := 1 - u_off
 	var samples := 0
-	var abs_sum := 0.0
-	var within := 0
-	var err_native := 0.0
-	var err_swapped := 0.0
-	var excursion := 0.0
-	var csamples := 0
+	var exact := 0
+	var swapped_exact := 0
+	var max_diff := 0
+	var first_miss := ""
 	var y := 0
 	while y < h:
 		var x := 0
 		while x < w:
+			var ci := ((y >> 1) * cw + (x >> 1)) * 2
+			var yv := int(y_bytes[y * w + x])
+			var b0 := int(c_bytes[ci])
+			var b1 := int(c_bytes[ci + 1])
+			var u := b0 if u_off == 0 else b1
+			var v := b1 if v_off == 1 else b0
+			var got := _decode(yv, u, v, full)
+			var swp := _decode(yv, v, u, full)
 			var i := (y * w + x) * 4
-			var r := float(rgba[i])
-			var g := float(rgba[i + 1])
-			var b := float(rgba[i + 2])
-			var lum := kr * r + kg * g + kb * b
-			var ref_y := luma_offset + luma_scale * lum
-			var d := absf(float(y_bytes[y * w + x]) - ref_y)
-			abs_sum += d
-			if d <= LUMA_WITHIN:
-				within += 1
+			var want := Vector3i(int(rgba[i]), int(rgba[i + 1]), int(rgba[i + 2]))
+			var diff := maxi(absi(got.x - want.x), maxi(absi(got.y - want.y), absi(got.z - want.z)))
+			max_diff = maxi(max_diff, diff)
+			if diff == 0:
+				exact += 1
+			elif first_miss == "":
+				first_miss = "(%d,%d) gpu_yuv=%d,%d,%d gpu_rgb=%s cpu_rgb=%s" % [x, y, yv, u, v, str(got), str(want)]
+			if swp == want:
+				swapped_exact += 1
 			samples += 1
-			if (x % 2) == 0 and (y % 2) == 0:
-				var cb := 128.0 + chroma_scale * (b - lum) / (2.0 * (1.0 - kb))
-				var cr := 128.0 + chroma_scale * (r - lum) / (2.0 * (1.0 - kr))
-				var ci := ((y >> 1) * cw + (x >> 1)) * 2
-				var b0 := float(c_bytes[ci])
-				var b1 := float(c_bytes[ci + 1])
-				# Native order: NV12 interleaves Cb,Cr; NV21 Cr,Cb.
-				var first := cb if fourcc == CamBANGServer.PIXEL_FORMAT_NV12 else cr
-				var second := cr if fourcc == CamBANGServer.PIXEL_FORMAT_NV12 else cb
-				err_native += absf(b0 - first) + absf(b1 - second)
-				err_swapped += absf(b0 - second) + absf(b1 - first)
-				excursion += absf(cb - 128.0) + absf(cr - 128.0)
-				csamples += 1
 			x += SAMPLE_STRIDE
 		y += SAMPLE_STRIDE
-	var mean_abs := abs_sum / float(maxi(samples, 1))
-	var within_share := float(within) / float(maxi(samples, 1))
-	var mean_excursion := excursion / float(maxi(csamples * 2, 1))
-	var chroma := "inconclusive"
-	if mean_excursion >= CHROMA_MIN_EXCURSION:
-		chroma = "native" if err_native < err_swapped else "swapped"
+	var swapped_share := float(swapped_exact) / float(maxi(samples, 1))
+	var chroma := "native"
+	if swapped_share >= 0.99:
+		chroma = "inconclusive_grey_scene"
 	_chroma_verdicts.append(chroma)
-	_content_lines.append("%s %dx%d fmt=%d range=%s matrix=%s luma_mean_abs=%.2f luma_within_%d=%.3f chroma_err_native=%.1f chroma_err_swapped=%.1f chroma_excursion=%.2f chroma=%s" % [
+	_content_lines.append("%s %dx%d fmt=%d range=%s matrix=%s samples=%d exact=%d max_diff=%d swapped_exact_share=%.3f chroma=%s first_miss=%s" % [
 		what, w, h, fourcc, str(colorimetry.get("range", "")), str(colorimetry.get("matrix", "")),
-		mean_abs, LUMA_WITHIN, within_share,
-		err_native / float(maxi(csamples, 1)), err_swapped / float(maxi(csamples, 1)), mean_excursion, chroma])
-	if mean_abs > LUMA_MEAN_ABS_LIMIT or within_share < LUMA_WITHIN_SHARE:
-		return "%s: GPU plane 0 does not match luma from to_image() (mean_abs=%.2f within_%d=%.3f)" % [
-			what, mean_abs, LUMA_WITHIN, within_share]
-	if chroma == "swapped":
-		return "%s: GPU plane 1 chroma is in the swapped order for format %d" % [what, fourcc]
+		samples, exact, max_diff, swapped_share, chroma, first_miss])
+	if exact != samples:
+		return "%s: GPU planes decode differently from to_image() at %d of %d samples (max_diff=%d first=%s)" % [
+			what, samples - exact, samples, max_diff, first_miss]
 	return ""
 
 
