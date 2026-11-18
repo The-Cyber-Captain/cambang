@@ -136,7 +136,10 @@ private:
       std::vector<std::uint8_t> bytes;
       std::atomic<bool> in_use{false};
     };
-    std::vector<std::unique_ptr<BufferSlot>> pool;
+    // shared_ptr: a posted frame owns its slot through a heap lease, so a
+    // stream destroyed (or a pool rebuilt) while frames are still queued on the
+    // strand cannot leave release pointing at a freed slot.
+    std::vector<std::shared_ptr<BufferSlot>> pool;
     size_t pool_cursor = 0;
   };
 

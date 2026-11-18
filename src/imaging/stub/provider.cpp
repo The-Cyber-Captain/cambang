@@ -133,12 +133,15 @@ void StubProvider::release_native_acquisition_session_(DeviceState& dev) {
 }
 
 void StubProvider::release_test_frame(void* user, const FrameView* /*frame*/) {
-  auto* slot = static_cast<StreamState::BufferSlot*>(user);
-  if (!slot) return;
-  if (slot->owner) {
-    slot->owner->frames_released_.fetch_add(1, std::memory_order_relaxed);
+  auto* lease = static_cast<std::shared_ptr<StreamState::BufferSlot>*>(user);
+  if (!lease) return;
+  if (const std::shared_ptr<StreamState::BufferSlot>& slot = *lease) {
+    if (slot->owner) {
+      slot->owner->frames_released_.fetch_add(1, std::memory_order_relaxed);
+    }
+    slot->in_use.store(false, std::memory_order_release);
   }
-  slot->in_use.store(false, std::memory_order_release);
+  delete lease;
 }
 
 ProviderResult StubProvider::initialize(IProviderCallbacks* callbacks) {
@@ -355,7 +358,7 @@ ProviderResult StubProvider::start_stream(
     st.pool.clear();
     st.pool.reserve(kPoolSize);
     for (size_t i = 0; i < kPoolSize; ++i) {
-      auto slot = std::make_unique<StreamState::BufferSlot>();
+      auto slot = std::make_shared<StreamState::BufferSlot>();
       slot->owner = this;
       slot->stream_id = stream_id;
       slot->bytes.resize(total);
@@ -453,7 +456,7 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     const uint64_t fi = st.frame_index++;
 
     // Acquire a buffer slot (no per-frame allocation).
-    StreamState::BufferSlot* slot = nullptr;
+    std::shared_ptr<StreamState::BufferSlot> slot;
     const size_t n = st.pool.size();
     if (n == 0) {
       return;
@@ -470,7 +473,7 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
               true,
               std::memory_order_acq_rel,
               std::memory_order_acquire)) {
-        slot = cand;
+        slot = st.pool[idx];
         st.pool_cursor = (idx + 1) % n;
         break;
       }
@@ -534,7 +537,7 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     fv.requested_retained_plan = st.req.requested_retained_plan;
 
     fv.release = &StubProvider::release_test_frame;
-    fv.release_user = slot;
+    fv.release_user = new std::shared_ptr<StreamState::BufferSlot>(slot);
 
     strand_.post_frame(fv);
   }
