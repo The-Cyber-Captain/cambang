@@ -31,6 +31,7 @@
 #include "imaging/stub/provider.h"
 #include "imaging/synthetic/builtin_scenario_library.h"
 #include "imaging/synthetic/gpu_backing_runtime.h"
+#include "imaging/api/gpu_compute_sidecar_planes.h"
 #include "imaging/synthetic/provider.h"
 #include "imaging/synthetic/scenario_loader.h"
 #include "imaging/synthetic/scenario_model.h"
@@ -5473,6 +5474,323 @@ bool run_core_synthetic_three_member_capture_result_check() {
 
   rt.stop();
   rt.attach_provider(nullptr);
+  return true;
+}
+
+// --- GPU compute sidecar (retained-gpu-captures) ---------------------------
+//
+// Host-side reference for FrameView::gpu_compute_sidecar: a fake runtime ops
+// table stands in for the Godot bridge, so arming, per-member retention,
+// plane shapes and content, budget accounting, eviction and teardown release
+// are all checked without a GPU. Synthetic evidence only: it proves the
+// contract and Core's handling, not any platform's GPU copy.
+
+struct FakeGpuComputeSidecar final {
+  uint32_t plane_count = 0;
+  GpuBackingPlaneDescriptor shapes[kMaxGpuBackingPlanes]{};
+  std::vector<uint8_t> tight[kMaxGpuBackingPlanes];
+  ~FakeGpuComputeSidecar();
+};
+
+std::atomic<uint64_t> g_fake_sidecar_created{0};
+std::atomic<uint64_t> g_fake_sidecar_released{0};
+
+FakeGpuComputeSidecar::~FakeGpuComputeSidecar() {
+  g_fake_sidecar_released.fetch_add(1, std::memory_order_relaxed);
+}
+
+std::shared_ptr<void> fake_create_capture_gpu_compute_sidecar(
+    const SyntheticGpuComputeSidecarPlane* planes,
+    uint32_t plane_count) noexcept {
+  if (!planes || plane_count == 0 || plane_count > kMaxGpuBackingPlanes) {
+    return {};
+  }
+  auto sidecar = std::make_shared<FakeGpuComputeSidecar>();
+  sidecar->plane_count = plane_count;
+  for (uint32_t p = 0; p < plane_count; ++p) {
+    const uint32_t row = planes[p].shape.width *
+                         gpu_backing_plane_bytes_per_sample(planes[p].shape.format);
+    if (!planes[p].data || row == 0 || planes[p].stride_bytes < row) {
+      return {};
+    }
+    sidecar->shapes[p] = planes[p].shape;
+    sidecar->tight[p].resize(static_cast<size_t>(row) * planes[p].shape.height);
+    for (uint32_t y = 0; y < planes[p].shape.height; ++y) {
+      std::memcpy(sidecar->tight[p].data() + static_cast<size_t>(y) * row,
+                  planes[p].data + static_cast<size_t>(y) * planes[p].stride_bytes, row);
+    }
+  }
+  g_fake_sidecar_created.fetch_add(1, std::memory_order_relaxed);
+  return std::static_pointer_cast<void>(sidecar);
+}
+
+const SyntheticGpuBackingRuntimeOps kFakeGpuComputeSidecarOps{
+    &synthetic_gpu_truth_probe_available,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    &fake_create_capture_gpu_compute_sidecar,
+};
+
+bool run_gpu_compute_sidecar_plane_contract_check() {
+  struct Case {
+    uint32_t fourcc;
+    bool has_sidecar;
+    uint32_t planes;
+    GpuBackingPlaneFormat chroma;
+  };
+  const Case cases[] = {
+      {FOURCC_RGBA, true, 1, GpuBackingPlaneFormat::UNKNOWN},
+      {FOURCC_BGRA, false, 0, GpuBackingPlaneFormat::UNKNOWN},
+      {FOURCC_NV12, true, 2, GpuBackingPlaneFormat::RG8_UNORM},
+      {FOURCC_NV21, true, 2, GpuBackingPlaneFormat::RG8_UNORM},
+      {FOURCC_I420, true, 3, GpuBackingPlaneFormat::R8_UNORM},
+      {FOURCC_YV12, true, 3, GpuBackingPlaneFormat::R8_UNORM},
+      {FOURCC_YUY2, false, 0, GpuBackingPlaneFormat::UNKNOWN},
+  };
+  for (const Case& c : cases) {
+    uint32_t count = 0;
+    GpuBackingPlaneDescriptor planes[kMaxGpuBackingPlanes]{};
+    const bool ok = describe_gpu_compute_sidecar_planes(c.fourcc, 64, 48, count, planes);
+    if (ok != c.has_sidecar || count != c.planes) {
+      std::cerr << "FAIL gpu compute sidecar plane derivation fourcc=" << c.fourcc << "\n";
+      return false;
+    }
+    if (!ok) continue;
+    if (c.planes == 1) {
+      if (planes[0].format != GpuBackingPlaneFormat::RGBA8_UNORM || planes[0].width != 64 ||
+          planes[0].height != 48) {
+        std::cerr << "FAIL gpu compute sidecar packed plane shape\n";
+        return false;
+      }
+    } else {
+      if (planes[0].format != GpuBackingPlaneFormat::R8_UNORM || planes[0].width != 64 ||
+          planes[0].height != 48) {
+        std::cerr << "FAIL gpu compute sidecar luma plane shape\n";
+        return false;
+      }
+      for (uint32_t p = 1; p < c.planes; ++p) {
+        if (planes[p].format != c.chroma || planes[p].width != 32 || planes[p].height != 24) {
+          std::cerr << "FAIL gpu compute sidecar chroma plane shape fourcc=" << c.fourcc << "\n";
+          return false;
+        }
+      }
+    }
+    RetainedGpuBackingDescriptor d{};
+    d.valid = true;
+    d.width = 64;
+    d.height = 48;
+    d.layout_kind = GpuBackingLayoutKind::OPAQUE_EXTERNAL;
+    d.plane_count = count;
+    for (uint32_t p = 0; p < count; ++p) d.planes[p] = planes[p];
+    if (!gpu_compute_sidecar_descriptor_matches(d, c.fourcc, 64, 48)) {
+      std::cerr << "FAIL gpu compute sidecar descriptor does not match its own derivation\n";
+      return false;
+    }
+    uint64_t expected_bytes = 0;
+    for (uint32_t p = 0; p < count; ++p) {
+      expected_bytes += static_cast<uint64_t>(planes[p].width) * planes[p].height *
+                        gpu_backing_plane_bytes_per_sample(planes[p].format);
+    }
+    if (retained_gpu_backing_footprint_bytes(d) != expected_bytes) {
+      std::cerr << "FAIL gpu compute sidecar footprint is not the sum of its planes\n";
+      return false;
+    }
+    if (gpu_compute_sidecar_descriptor_matches(d, c.fourcc, 64, 50)) {
+      std::cerr << "FAIL gpu compute sidecar descriptor matched a different extent\n";
+      return false;
+    }
+    RetainedGpuBackingDescriptor wrong = d;
+    wrong.planes[0].format = GpuBackingPlaneFormat::RG8_UNORM;
+    if (gpu_compute_sidecar_descriptor_matches(wrong, c.fourcc, 64, 48)) {
+      std::cerr << "FAIL gpu compute sidecar descriptor matched a wrong plane format\n";
+      return false;
+    }
+  }
+  RetainedGpuBackingDescriptor stray{};
+  stray.valid = true;
+  stray.width = 8;
+  stray.height = 8;
+  stray.plane_count = 1;
+  stray.planes[0] = {GpuBackingPlaneFormat::R8_UNORM, 8, 8};
+  stray.planes[1] = {GpuBackingPlaneFormat::R8_UNORM, 4, 4};
+  if (retained_gpu_backing_descriptor_is_self_consistent(stray)) {
+    std::cerr << "FAIL gpu compute sidecar descriptor with a plane past plane_count is self-consistent\n";
+    return false;
+  }
+  stray.planes[1] = {};
+  stray.plane_count = kMaxGpuBackingPlanes + 1;
+  if (retained_gpu_backing_descriptor_is_self_consistent(stray)) {
+    std::cerr << "FAIL gpu compute sidecar descriptor with plane_count over the limit is self-consistent\n";
+    return false;
+  }
+  RetainedGpuBackingDescriptor legacy{};
+  legacy.valid = true;
+  legacy.width = 16;
+  legacy.height = 16;
+  legacy.stride_bytes = 64;
+  if (!retained_gpu_backing_descriptor_is_self_consistent(legacy) ||
+      retained_gpu_backing_footprint_bytes(legacy) != 64u * 16u) {
+    std::cerr << "FAIL gpu compute sidecar fields changed a legacy single-resource descriptor\n";
+    return false;
+  }
+  return true;
+}
+
+bool core_gpu_compute_sidecar_run(uint32_t fourcc) {
+  g_fake_sidecar_created.store(0);
+  g_fake_sidecar_released.store(0);
+  set_synthetic_gpu_backing_runtime_ops(&kFakeGpuComputeSidecarOps);
+  struct OpsReset {
+    ~OpsReset() { clear_synthetic_gpu_backing_runtime_ops(); }
+  } ops_reset;
+
+  CoreRuntime rt;
+  if (!rt.start() || !wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL gpu compute sidecar runtime start\n";
+    rt.stop();
+    return false;
+  }
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 64;
+  cfg.nominal.height = 48;
+  cfg.nominal.format_fourcc = fourcc;
+  SyntheticProvider provider(cfg);
+  const auto fail = [&](const std::string& msg) -> bool {
+    std::cerr << "FAIL gpu compute sidecar fourcc=" << fourcc << " " << msg << "\n";
+    rt.stop();
+    rt.attach_provider(nullptr);
+    return false;
+  };
+  if (!provider.initialize(rt.provider_callbacks()).ok()) return fail("provider init");
+  rt.attach_provider(&provider);
+  std::vector<CameraEndpoint> eps;
+  if (!provider.enumerate_endpoints(eps).ok() || eps.empty()) return fail("enumerate");
+  const uint64_t device_id = 66;
+  if (!provider.open_device(eps[0].hardware_id, device_id, 6601).ok()) return fail("open_device");
+
+  CaptureRequest req{};
+  for (int i = 0; i < 50; ++i) {
+    if (rt.materialize_capture_request(device_id, req)) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  if (req.device_instance_id != device_id) return fail("materialize request");
+  req.format_fourcc = fourcc;
+  req.still_image_bundle = make_default_metered_still_image_bundle();
+  req.still_image_bundle.members.push_back(
+      CaptureStillImageMember{1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, -1000});
+  req.still_image_bundle.members.push_back(
+      CaptureStillImageMember{2u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, +1000});
+
+  const auto capture = [&](uint64_t capture_id) -> SharedCaptureResultData {
+    CaptureRequest r = req;
+    r.capture_id = capture_id;
+    if (!provider.trigger_capture(r).ok()) return {};
+    for (int i = 0; i < 200; ++i) {
+      SharedCaptureResultData res = rt.get_capture_result(capture_id, device_id);
+      if (res && res->image_member_count() == 3) return res;
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return {};
+  };
+
+  // 1. Unarmed: no sidecar anywhere, and nothing was even made.
+  SharedCaptureResultData unarmed = capture(9800);
+  if (!unarmed) return fail("unarmed capture missing");
+  for (uint32_t m = 0; m < 3; ++m) {
+    if (unarmed->image_member_at(m)->gpu_compute_sidecar) return fail("unarmed member carries a sidecar");
+  }
+  if (g_fake_sidecar_created.load() != 0) return fail("sidecar made without demand");
+
+  // 2. Arm through Core, exactly as the Godot layer does.
+  if (!rt.demand_capture_gpu_compute_sidecar(device_id)) return fail("demand not accepted");
+  for (int i = 0; i < 200 && !provider.is_gpu_compute_sidecar_demanded_for_test(device_id); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  if (!provider.is_gpu_compute_sidecar_demanded_for_test(device_id)) {
+    return fail("demand did not reach the provider");
+  }
+  // Repeated demand is idempotent and harmless.
+  (void)rt.demand_capture_gpu_compute_sidecar(device_id);
+
+  const uint64_t bytes_before = rt.estimated_capture_result_bytes();
+  SharedCaptureResultData armed = capture(9801);
+  if (!armed) return fail("armed capture missing");
+  const uint64_t bytes_after = rt.estimated_capture_result_bytes();
+  uint64_t sidecar_bytes = 0;
+  for (uint32_t m = 0; m < 3; ++m) {
+    const auto* member = armed->image_member_at(m);
+    if (!member->has_gpu_compute_sidecar()) return fail("armed member has no sidecar m=" + std::to_string(m));
+    const RetainedGpuBackingDescriptor& d = member->gpu_compute_sidecar_descriptor;
+    if (!gpu_compute_sidecar_descriptor_matches(d, member->payload.format_fourcc,
+                                                member->payload.width, member->payload.height)) {
+      return fail("retained sidecar planes do not match the CPU payload m=" + std::to_string(m));
+    }
+    if (d.stream_id != 0 || d.backing_id == 0) return fail("sidecar identity");
+    const auto fake = std::static_pointer_cast<FakeGpuComputeSidecar>(member->gpu_compute_sidecar);
+    // Content: each GPU plane is byte-identical to the CPU plane it copies.
+    for (uint32_t p = 0; p < d.plane_count; ++p) {
+      const uint32_t row = d.planes[p].width * gpu_backing_plane_bytes_per_sample(d.planes[p].format);
+      const uint8_t* src = member->payload.is_planar() ? member->payload.plane_data(p)
+                                                       : member->payload.data();
+      const uint32_t stride = member->payload.is_planar() ? member->payload.planes[p].stride_bytes
+                                                          : member->payload.stride_bytes;
+      if (!src || fake->tight[p].size() != static_cast<size_t>(row) * d.planes[p].height) {
+        return fail("sidecar plane extent m=" + std::to_string(m));
+      }
+      for (uint32_t y = 0; y < d.planes[p].height; ++y) {
+        if (std::memcmp(fake->tight[p].data() + static_cast<size_t>(y) * row,
+                        src + static_cast<size_t>(y) * stride, row) != 0) {
+          return fail("sidecar plane content differs from CPU plane m=" + std::to_string(m));
+        }
+      }
+    }
+    sidecar_bytes += retained_gpu_backing_footprint_bytes(d);
+    // Classification is untouched by the sidecar.
+    const auto* plain = unarmed->image_member_at(m);
+    if (member->payload_kind != plain->payload_kind ||
+        member->retained_access_truth.display_view != plain->retained_access_truth.display_view ||
+        member->retained_access_truth.to_image != plain->retained_access_truth.to_image ||
+        member->retained_access_truth.encoded_bytes != plain->retained_access_truth.encoded_bytes ||
+        member->access_posture.has_retained_gpu_backing != plain->access_posture.has_retained_gpu_backing ||
+        member->retained_gpu_backing) {
+      return fail("sidecar changed member classification m=" + std::to_string(m));
+    }
+  }
+  if (g_fake_sidecar_created.load() != 3) return fail("expected exactly one sidecar per member");
+  uint64_t cpu_bytes = 0;
+  for (uint32_t m = 0; m < 3; ++m) cpu_bytes += armed->image_member_at(m)->payload.size_bytes();
+  if (bytes_after - bytes_before != cpu_bytes + sidecar_bytes) {
+    return fail("byte budget did not count the sidecar: delta=" + std::to_string(bytes_after - bytes_before) +
+                " expected=" + std::to_string(cpu_bytes + sidecar_bytes));
+  }
+
+  // 3. A caller's reference outlives Core: drop Core's copy by stopping, and
+  //    the held sidecar survives until the caller lets go.
+  std::shared_ptr<void> held = armed->default_image.gpu_compute_sidecar;
+  unarmed.reset();
+  armed.reset();
+  rt.stop();
+  rt.attach_provider(nullptr);
+  if (g_fake_sidecar_released.load() != 2) {
+    return fail("stop released " + std::to_string(g_fake_sidecar_released.load()) +
+                " sidecars; expected the two unheld ones");
+  }
+  held.reset();
+  if (g_fake_sidecar_released.load() != 3) return fail("held sidecar not released when dropped");
+  return true;
+}
+
+bool run_core_synthetic_gpu_compute_sidecar_check() {
+  for (const uint32_t fourcc : {FOURCC_RGBA, FOURCC_NV12, FOURCC_NV21, FOURCC_I420}) {
+    if (!core_gpu_compute_sidecar_run(fourcc)) return false;
+  }
   return true;
 }
 
@@ -12268,6 +12586,8 @@ int main(int argc, char** argv) {
       {"run_synthetic_capture_image_timing_notice_check", [] { return run_synthetic_capture_image_timing_notice_check(); }},
       {"run_core_synthetic_three_member_capture_result_check", [] { return run_core_synthetic_three_member_capture_result_check(); }},
       {"run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check", [] { return run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check(); }},
+      {"run_gpu_compute_sidecar_plane_contract_check", [] { return run_gpu_compute_sidecar_plane_contract_check(); }},
+      {"run_core_synthetic_gpu_compute_sidecar_check", [] { return run_core_synthetic_gpu_compute_sidecar_check(); }},
       {"run_synthetic_still_bundle_capability_gate_contract_check", [] { return run_synthetic_still_bundle_capability_gate_contract_check(); }},
       {"run_core_synthetic_multi_member_capture_admission_context_check", [] { return run_core_synthetic_multi_member_capture_admission_context_check(); }},
       {"run_provider_camera_fact_ingress_check", [] { return run_provider_camera_fact_ingress_check(); }},

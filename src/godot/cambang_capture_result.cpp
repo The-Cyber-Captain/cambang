@@ -431,10 +431,24 @@ godot::Ref<godot::Texture2D> CamBANGCaptureResult::get_compute_texture_plane(
   if (image_member_index < 0 || plane_index < 0) {
     return {};
   }
+  if (server_ && data_ &&
+      capture_compute_texture_take_first_device_request(data_->device_instance_id) &&
+      !server_->demand_capture_gpu_compute_sidecar(data_->device_instance_id)) {
+    // Not accepted (core thread busy or stopping): let the next request retry.
+    capture_compute_texture_forget_device_request(data_->device_instance_id);
+  }
   return capture_compute_texture_plane(
       data_,
       static_cast<uint32_t>(image_member_index),
       static_cast<uint32_t>(plane_index));
+}
+
+int CamBANGCaptureResult::get_compute_texture_backing(int image_member_index) const {
+  if (image_member_index < 0) {
+    return COMPUTE_TEXTURE_BACKING_NONE;
+  }
+  return static_cast<int>(capture_compute_texture_backing(
+      data_, static_cast<uint32_t>(image_member_index)));
 }
 
 godot::Variant CamBANGCaptureResult::get_display_view() const {
@@ -478,6 +492,7 @@ void CamBANGCaptureResult::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("can_get_compute_texture_member", "image_member_index"), &CamBANGCaptureResult::can_get_compute_texture_member);
   godot::ClassDB::bind_method(godot::D_METHOD("get_compute_texture_plane_count", "image_member_index"), &CamBANGCaptureResult::get_compute_texture_plane_count);
   godot::ClassDB::bind_method(godot::D_METHOD("get_compute_texture_plane", "image_member_index", "plane_index"), &CamBANGCaptureResult::get_compute_texture_plane);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_compute_texture_backing", "image_member_index"), &CamBANGCaptureResult::get_compute_texture_backing);
 
   godot::ClassDB::bind_method(godot::D_METHOD("get_display_view"), &CamBANGCaptureResult::get_display_view);
   godot::ClassDB::bind_method(godot::D_METHOD("to_image"), &CamBANGCaptureResult::to_image);
@@ -491,6 +506,10 @@ void CamBANGCaptureResult::_bind_methods() {
   BIND_CONSTANT(CAPTURE_ORIGIN_RIG);
   BIND_CONSTANT(IMAGE_ROLE_DEFAULT_METERED);
   BIND_CONSTANT(IMAGE_ROLE_ADDITIONAL_BRACKET);
+  BIND_CONSTANT(COMPUTE_TEXTURE_BACKING_NONE);
+  BIND_CONSTANT(COMPUTE_TEXTURE_BACKING_CPU_UPLOAD);
+  BIND_CONSTANT(COMPUTE_TEXTURE_BACKING_GPU_COPY);
+  BIND_CONSTANT(COMPUTE_TEXTURE_BACKING_GPU_RETAINED);
 }
 
 godot::Dictionary capture_materialization_stats() {

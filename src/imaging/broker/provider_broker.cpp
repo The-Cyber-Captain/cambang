@@ -791,6 +791,17 @@ ProviderResult ProviderBroker::release_capture_parent_priming(
   return call.provider()->release_capture_parent_priming(device_instance_id);
 }
 
+ProviderResult ProviderBroker::set_capture_gpu_compute_sidecar_demand(
+    uint64_t device_instance_id,
+    bool demanded) {
+  ActiveProviderCall call;
+  ProviderResult pr = acquire_active_provider_call_(call);
+  if (!pr.ok()) {
+    return pr;
+  }
+  return call.provider()->set_capture_gpu_compute_sidecar_demand(device_instance_id, demanded);
+}
+
 ProviderResult ProviderBroker::trigger_capture(const CaptureRequest& req) {
   ActiveProviderCall call;
   ProviderResult pr = acquire_active_provider_call_(call);

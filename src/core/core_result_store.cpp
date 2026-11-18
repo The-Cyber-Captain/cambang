@@ -1,5 +1,7 @@
 #include "core/core_result_store.h"
 
+#include "imaging/api/gpu_compute_sidecar_planes.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -278,7 +280,37 @@ RetainedGpuBackingDescriptor build_retained_gpu_backing_descriptor(
 uint64_t effective_member_bytes(const CoreCaptureResultData::ImageMemberData& member) noexcept {
   uint64_t bytes = member.payload.size_bytes();
   bytes += retained_gpu_backing_footprint_bytes(member.retained_gpu_backing_descriptor);
+  if (member.gpu_compute_sidecar) {
+    bytes += retained_gpu_backing_footprint_bytes(member.gpu_compute_sidecar_descriptor);
+  }
   return bytes;
+}
+
+// Adopts a frame's GPU compute sidecar onto the member being built, or leaves
+// the member without one. Only a sidecar whose planes are exactly the ones the
+// retained CPU payload calls for is kept: anything else would let the GPU and
+// CPU compute-texture routes describe one image differently. Refusing costs the
+// consumer the upload route for this member, never the member itself.
+void adopt_gpu_compute_sidecar(const FrameView& frame,
+                               CoreCaptureResultData::ImageMemberData& member) noexcept {
+  member.gpu_compute_sidecar.reset();
+  member.gpu_compute_sidecar_descriptor = RetainedGpuBackingDescriptor{};
+  if (frame.capture_id == 0 || !frame.gpu_compute_sidecar) {
+    return;
+  }
+  const CoreResultPayloadCpu& payload = member.payload;
+  if (payload.empty() ||
+      !gpu_compute_sidecar_descriptor_matches(frame.gpu_compute_sidecar_descriptor,
+                                              payload.format_fourcc,
+                                              payload.width,
+                                              payload.height)) {
+    return;
+  }
+  member.gpu_compute_sidecar = frame.gpu_compute_sidecar;
+  member.gpu_compute_sidecar_descriptor = frame.gpu_compute_sidecar_descriptor;
+  // A capture member belongs to no stream; normalise the correlation field the
+  // same way the primary descriptor's is normalised.
+  member.gpu_compute_sidecar_descriptor.stream_id = 0;
 }
 
 uint64_t compute_capture_result_bytes(const CoreCaptureResultData& data) noexcept {
@@ -747,6 +779,7 @@ bool CoreResultStore::try_build_capture_image_member_data_from_frame(
   } else {
     return false;
   }
+  adopt_gpu_compute_sidecar(frame, out_member);
   out_member.acquisition_timing = frame.acquisition_timing;
   out_member.payload_kind = plan.primary_kind;
   out_member.retained_access_truth = build_capture_image_member_retained_access_truth(out_member);
@@ -817,6 +850,7 @@ MutableCaptureResultData CoreResultStore::build_default_image_capture_result(
   }
   capture_result->default_image.retained_gpu_backing = std::move(retained_gpu_backing);
   capture_result->default_image.retained_gpu_backing_descriptor = retained_gpu_backing_descriptor;
+  adopt_gpu_compute_sidecar(frame, capture_result->default_image);
   capture_result->default_image.retained_access_truth =
       build_capture_image_member_retained_access_truth(capture_result->default_image);
   capture_result->default_image.access_classification =

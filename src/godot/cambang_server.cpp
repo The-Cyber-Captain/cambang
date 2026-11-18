@@ -3153,6 +3153,13 @@ void CamBANGServer::report_capture_result_member_observation(
       const_cast<CoreRuntime*>(&runtime_));
 }
 
+bool CamBANGServer::demand_capture_gpu_compute_sidecar(uint64_t device_instance_id) {
+  if (device_instance_id == 0 || !is_public_boundary_ready_()) {
+    return false;
+  }
+  return runtime_.demand_capture_gpu_compute_sidecar(device_instance_id);
+}
+
 void CamBANGServer::mark_stream_display_demand(uint64_t stream_id) {
   if (stream_id == 0 || !is_public_boundary_ready_()) {
     return;

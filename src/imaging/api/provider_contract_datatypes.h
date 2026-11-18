@@ -718,6 +718,35 @@ enum class GpuBackingLayoutKind : uint8_t {
   OPAQUE_EXTERNAL = 1,
 };
 
+// Format of one plane of a planar GPU backing. Only the single-plane formats a
+// native YUV or packed member is exposed as -- the same set compute_texture_planes.h
+// derives for the CPU upload route, so both routes hand a consumer identical
+// plane shapes. UNKNOWN is never valid inside plane_count.
+enum class GpuBackingPlaneFormat : uint8_t {
+  UNKNOWN = 0,
+  R8_UNORM = 1,     // luma, or one chroma component of a fully planar member
+  RG8_UNORM = 2,    // interleaved chroma of a semi-planar member, in its own order
+  RGBA8_UNORM = 3,  // the sole plane of a packed RGBA member
+};
+
+inline constexpr uint32_t kMaxGpuBackingPlanes = 3;
+
+struct GpuBackingPlaneDescriptor {
+  GpuBackingPlaneFormat format = GpuBackingPlaneFormat::UNKNOWN;
+  uint32_t width = 0;
+  uint32_t height = 0;
+};
+
+inline constexpr uint32_t gpu_backing_plane_bytes_per_sample(GpuBackingPlaneFormat format) noexcept {
+  switch (format) {
+    case GpuBackingPlaneFormat::R8_UNORM: return 1;
+    case GpuBackingPlaneFormat::RG8_UNORM: return 2;
+    case GpuBackingPlaneFormat::RGBA8_UNORM: return 4;
+    case GpuBackingPlaneFormat::UNKNOWN: break;
+  }
+  return 0;
+}
+
 // Neutral description of a retained GPU backing. This struct intentionally
 // carries only scalar identity, shape, and capability facts so provider/core
 // metadata can describe GPU-backed frames without exposing rendering-resource
@@ -758,6 +787,13 @@ struct RetainedGpuBackingDescriptor {
   bool display_requires_import = false;
   bool materialization_available = false;
   bool materialization_requires_gpu_readback = false;
+  // Planar shape of the backing. Zero means one whole-image resource, which is
+  // what every descriptor written before this field described. A non-zero count
+  // describes a backing held as separate native planes -- the GPU compute
+  // sidecar (FrameView::gpu_compute_sidecar) -- and each listed plane must have
+  // a known format and non-zero extent. Entries past plane_count stay zeroed.
+  uint32_t plane_count = 0;
+  GpuBackingPlaneDescriptor planes[kMaxGpuBackingPlanes]{};
 };
 
 // Deliberately conservative bytes-per-pixel used only when a GPU backing
@@ -777,6 +813,21 @@ inline uint64_t retained_gpu_backing_footprint_bytes(
   }
   if (descriptor.allocation_size_bytes != 0) {
     return descriptor.allocation_size_bytes;
+  }
+  if (descriptor.plane_count != 0) {
+    // Planes are separate allocations whose extents are exact, so their sum is
+    // a better estimate than the whole-image fallback below, which would
+    // over-count an NV12 sidecar by more than half.
+    uint64_t bytes = 0;
+    const uint32_t count = descriptor.plane_count < kMaxGpuBackingPlanes
+                               ? descriptor.plane_count
+                               : kMaxGpuBackingPlanes;
+    for (uint32_t i = 0; i < count; ++i) {
+      const GpuBackingPlaneDescriptor& plane = descriptor.planes[i];
+      bytes += static_cast<uint64_t>(plane.width) * static_cast<uint64_t>(plane.height) *
+               gpu_backing_plane_bytes_per_sample(plane.format);
+    }
+    return bytes;
   }
   if (descriptor.layout_kind == GpuBackingLayoutKind::LINEAR &&
       descriptor.stride_bytes != 0 && descriptor.height != 0) {
@@ -805,6 +856,22 @@ inline bool retained_gpu_backing_descriptor_is_self_consistent(
   if (descriptor.layout_kind == GpuBackingLayoutKind::OPAQUE_EXTERNAL &&
       descriptor.stride_bytes != 0) {
     return false;
+  }
+  if (descriptor.plane_count > kMaxGpuBackingPlanes) {
+    return false;
+  }
+  for (uint32_t i = 0; i < kMaxGpuBackingPlanes; ++i) {
+    const GpuBackingPlaneDescriptor& plane = descriptor.planes[i];
+    if (i < descriptor.plane_count) {
+      if (plane.format == GpuBackingPlaneFormat::UNKNOWN || plane.width == 0 ||
+          plane.height == 0 || plane.width > descriptor.width ||
+          plane.height > descriptor.height) {
+        return false;
+      }
+    } else if (plane.format != GpuBackingPlaneFormat::UNKNOWN || plane.width != 0 ||
+               plane.height != 0) {
+      return false;
+    }
   }
   return true;
 }
@@ -899,6 +966,18 @@ struct FrameView {
   // legacy primary_backing_artifact path authoritative for behavior; the
   // descriptor is passive scaffolding for later resource-ownership isolation.
   RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
+  // Optional frozen GPU copy of this still image member's native planes, held
+  // beside -- never instead of -- the frame's ordinary primary. It changes no
+  // payload kind, display, to_image or calibration answer; the only surface
+  // that reads it is the capture compute texture. Still captures only: a
+  // provider attaches one solely for a device Core has demanded it for
+  // (ICameraProvider::set_capture_gpu_compute_sidecar_demand), and only when
+  // the copy is complete -- a copy still in flight is never posted. The
+  // descriptor must be valid with plane_count != 0, and its planes must match
+  // the CPU primary's plane shapes exactly, so a consumer sees the same planes
+  // whichever route served them. Absence is always truthful.
+  std::shared_ptr<void> gpu_compute_sidecar{};
+  RetainedGpuBackingDescriptor gpu_compute_sidecar_descriptor{};
   // Echo of the Core-requested internal retention posture that produced this frame.
   CoreRetainedProductionPlan requested_retained_plan{};
 

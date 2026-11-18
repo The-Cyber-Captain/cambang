@@ -8,6 +8,7 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -802,6 +803,11 @@ enum class TryCloseDeviceStatus : uint8_t {
       uint64_t device_instance_id) const {
     return result_store_.get_capture_result(capture_id, device_instance_id);
   }
+  // Core's running estimate of retained capture-result bytes, the figure the
+  // capture byte budget evicts against. Diagnostic and verification use.
+  uint64_t estimated_capture_result_bytes() const {
+    return result_store_.total_estimated_capture_bytes();
+  }
 #endif
 
   std::vector<CoreBackingPlanEvaluationReport> backing_plan_evaluation_reports() const;
@@ -825,6 +831,17 @@ enum class TryCloseDeviceStatus : uint8_t {
       ResultCapability provisional_to_image,
       bool has_normalized_cost_units,
       uint64_t normalized_cost_units);
+  // Demand for a frozen GPU copy of every still image member this device
+  // acquires from now on (FrameView::gpu_compute_sidecar), raised the first
+  // time a consumer asks one of the device's captures for a compute texture.
+  // Producer-side and lossy: any thread may call it, it never blocks, and a
+  // dropped post is repeated by the next request. The demand lasts until the
+  // device closes. Captures acquired before it carry no sidecar.
+  // Returns whether the demand was accepted for the core thread.
+  bool demand_capture_gpu_compute_sidecar(uint64_t device_instance_id);
+  bool is_capture_gpu_compute_sidecar_demanded_on_core_thread(
+      uint64_t device_instance_id) const noexcept;
+
   void report_capture_retained_to_image_observation(
       uint64_t device_instance_id,
       uint64_t capture_id,
@@ -1154,6 +1171,7 @@ private:
       const CaptureRequest& effective,
       const ProducerBackingCapabilities& runtime_backing_capabilities,
       const ProducerBackingCapabilities& parent_context_backing_capabilities);
+  void handle_capture_gpu_compute_sidecar_demand_(uint64_t device_instance_id);
   void release_capture_parent_priming_(uint64_t device_instance_id);
   bool device_has_any_stream_(uint64_t device_instance_id) const noexcept;
   bool device_has_active_capture_evaluator_(
@@ -1547,6 +1565,7 @@ private:
       capture_retained_plan_decisions_;
   std::map<std::string, CapturePrimingSeed> capture_priming_seeds_;
   std::map<uint64_t, CaptureParentPrimingState> capture_parent_priming_states_;
+  std::set<uint64_t> gpu_compute_sidecar_demanded_devices_;
 
   struct CaptureStreamPreemptionRecord {
     uint64_t capture_id = 0;

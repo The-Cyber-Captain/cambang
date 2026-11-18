@@ -54,11 +54,40 @@ godot::Ref<godot::Texture2D> capture_compute_texture_plane(
     uint32_t image_member_index,
     uint32_t plane_index);
 
+// Which route serves this member's compute textures -- the D6 backing query.
+// Values match CamBANGCaptureResult.COMPUTE_TEXTURE_BACKING_*.
+//
+//   NONE          no compute texture: member absent, or no RenderingDevice
+//                 (Compatibility renderer)
+//   CPU_UPLOAD    planes uploaded from the retained CPU payload on request
+//   GPU_COPY      reserved for a route that copies on the GPU on request; no
+//                 path produces it today
+//   GPU_RETAINED  planes already GPU-resident: a frozen GPU copy made at
+//                 acquisition, or a retained GPU-primary backing
+//
+// It names the route only. Capability (READY/EXPENSIVE) stays the cost answer.
+enum class ComputeTextureBacking : int {
+  NONE = 0,
+  CPU_UPLOAD = 1,
+  GPU_COPY = 2,
+  GPU_RETAINED = 3,
+};
+
+ComputeTextureBacking capture_compute_texture_backing(
+    const SharedCaptureResultData& data,
+    uint32_t image_member_index);
+
+// True the first time it is asked for a given device since the last cache
+// clear. The caller uses it to raise the device's GPU-copy demand once rather
+// than on every plane request.
+bool capture_compute_texture_take_first_device_request(uint64_t device_instance_id);
+void capture_compute_texture_forget_device_request(uint64_t device_instance_id);
+
 // Dropped on stop/restart, like the stream display caches, so no texture
 // outlives the runtime that produced its pixels.
 void clear_capture_compute_texture_cache();
 
-// Diagnostic: { uploads, gpu_wraps, hits, entries, uploaded_bytes }.
+// Diagnostic: { uploads, gpu_wraps, gpu_sidecar_planes, hits, entries, uploaded_bytes }.
 godot::Dictionary capture_compute_texture_metrics();
 
 } // namespace cambang

@@ -1,5 +1,7 @@
 #include "imaging/synthetic/provider.h"
 
+#include "imaging/api/gpu_compute_sidecar_planes.h"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -1437,6 +1439,10 @@ ProviderResult SyntheticProvider::close_device(uint64_t device_instance_id) {
   strand_.post_device_closed(device_instance_id);
   emit_native_destroy_(it->second.native_id);
   devices_.erase(it);
+  {
+    std::lock_guard<std::mutex> lock(gpu_compute_sidecar_mutex_);
+    gpu_compute_sidecar_demanded_devices_.erase(device_instance_id);
+  }
   return ProviderResult::success();
 }
 
@@ -1789,6 +1795,42 @@ ProviderResult SyntheticProvider::release_capture_parent_priming(uint64_t device
   }
   release_native_acquisition_session_for_priming_(device_instance_id);
   return ProviderResult::success();
+}
+
+ProviderResult SyntheticProvider::set_capture_gpu_compute_sidecar_demand(
+    uint64_t device_instance_id,
+    bool demanded) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (device_instance_id == 0) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  {
+    std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
+    auto it = devices_.find(device_instance_id);
+    if (it == devices_.end() || !it->second.open) {
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+    }
+  }
+  if (demanded && !synthetic_gpu_backing_runtime_available()) {
+    // No RenderingDevice to hold a copy (Compatibility, or a maintainer tool
+    // without a GPU bridge): the honest answer, and compute textures stay on
+    // the upload route.
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  std::lock_guard<std::mutex> lock(gpu_compute_sidecar_mutex_);
+  if (demanded) {
+    gpu_compute_sidecar_demanded_devices_.insert(device_instance_id);
+  } else {
+    gpu_compute_sidecar_demanded_devices_.erase(device_instance_id);
+  }
+  return ProviderResult::success();
+}
+
+bool SyntheticProvider::is_gpu_compute_sidecar_demanded_(uint64_t device_instance_id) const {
+  std::lock_guard<std::mutex> lock(gpu_compute_sidecar_mutex_);
+  return gpu_compute_sidecar_demanded_devices_.count(device_instance_id) != 0;
 }
 
 ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
@@ -2718,6 +2760,50 @@ bool SyntheticProvider::generate_device_capture_payloads_(
     }
     // Scalar stride describes plane 0, which for a 4:2:0 format is luma.
     fv.stride_bytes = planar_bytes ? req.width : job.stride_bytes;
+    if (retain_cpu_payload && fv.data &&
+        is_gpu_compute_sidecar_demanded_(req.device_instance_id)) {
+      // The frozen GPU copy of exactly the planes just retained for the CPU,
+      // made now, at acquisition, as the contract requires. A member it cannot
+      // be made for simply posts without one.
+      uint32_t plane_count = 0;
+      GpuBackingPlaneDescriptor shapes[kMaxGpuBackingPlanes]{};
+      if (describe_gpu_compute_sidecar_planes(job.format_fourcc, req.width, req.height,
+                                              plane_count, shapes)) {
+        SyntheticGpuComputeSidecarPlane planes[kMaxGpuBackingPlanes]{};
+        bool planes_ok = true;
+        for (uint32_t p = 0; p < plane_count; ++p) {
+          planes[p].shape = shapes[p];
+          if (planar_bytes) {
+            planes[p].data = fv.payload_layout.planes[p].data;
+            planes[p].stride_bytes = fv.payload_layout.planes[p].stride_bytes;
+          } else {
+            planes[p].data = fv.data;
+            planes[p].stride_bytes = fv.stride_bytes;
+          }
+          planes_ok = planes_ok && planes[p].data != nullptr;
+        }
+        std::shared_ptr<void> sidecar =
+            planes_ok ? synthetic_gpu_backing_create_capture_gpu_compute_sidecar(planes, plane_count)
+                      : std::shared_ptr<void>{};
+        if (sidecar) {
+          fv.gpu_compute_sidecar = std::move(sidecar);
+          RetainedGpuBackingDescriptor& d = fv.gpu_compute_sidecar_descriptor;
+          d.valid = true;
+          d.stream_id = 0;
+          d.backing_id = mint_gpu_backing_identity_();
+          d.width = req.width;
+          d.height = req.height;
+          // RD textures: tiling is the driver's, so no stride is claimed.
+          d.layout_kind = GpuBackingLayoutKind::OPAQUE_EXTERNAL;
+          d.stride_bytes = 0;
+          d.format_fourcc = job.format_fourcc;
+          d.plane_count = plane_count;
+          for (uint32_t p = 0; p < plane_count; ++p) {
+            d.planes[p] = shapes[p];
+          }
+        }
+      }
+    }
     auto* lease = new FrameReleaseLease();
     lease->bytes = bytes;
     fv.release = &SyntheticProvider::release_frame_;

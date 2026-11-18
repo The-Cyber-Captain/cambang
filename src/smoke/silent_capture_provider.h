@@ -231,6 +231,11 @@ public:
   ProviderResult release_capture_parent_priming(uint64_t device_instance_id) override {
     return inner_.release_capture_parent_priming(device_instance_id);
   }
+  ProviderResult set_capture_gpu_compute_sidecar_demand(
+      uint64_t device_instance_id,
+      bool demanded) override {
+    return inner_.set_capture_gpu_compute_sidecar_demand(device_instance_id, demanded);
+  }
   ProviderResult apply_camera_spec_patch(
       const std::string& hardware_id,
       uint64_t new_camera_spec_version,

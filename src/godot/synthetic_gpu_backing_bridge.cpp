@@ -3,12 +3,14 @@
 #include "godot/godot_gpu_display_service.h"
 #include "godot/cambang_stream_result_internal.h"
 #include "core/resource_aggregate_telemetry.h"
+#include "godot/gpu_compute_sidecar.h"
 
 #include <cstring>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -101,6 +103,12 @@ struct SharedDisplayTextureRidState final {
   godot::RID rd_texture;
   bool invalidated = false;
   uint64_t registration_id = 0;
+  // Runs once, after the RID has been accepted by the render-thread release
+  // drain. Used by a GPU compute sidecar whose RD texture wraps memory its
+  // producer owns, so that memory is destroyed only after the wrapper is.
+  // Never run when the release was rejected: leaking the memory is the safe
+  // failure, destroying it under a live wrapper is not.
+  std::function<void()> after_release;
 
   explicit SharedDisplayTextureRidState(const godot::RID& rid) : rd_texture(rid) {}
 
@@ -139,6 +147,15 @@ struct SharedDisplayTextureRidState final {
     }
     if (release_admission && enqueue_pending_release(rid)) {
       request_pending_release_drain();
+      std::function<void()> hook;
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        hook = std::move(after_release);
+        after_release = nullptr;
+      }
+      if (hook) {
+        hook();
+      }
       return;
     }
     std::fprintf(stderr,
@@ -177,6 +194,39 @@ struct RetainedSyntheticGpuBacking final {
   }
 
   ~RetainedSyntheticGpuBacking() {
+    release_now();
+  }
+};
+
+// See gpu_compute_sidecar.h. One RID state per plane, so a caller holding one
+// plane's texture keeps only that plane alive.
+struct RetainedGpuComputeSidecar final {
+  struct Plane {
+    std::shared_ptr<SharedDisplayTextureRidState> rid_state;
+    GpuBackingPlaneDescriptor shape{};
+  };
+  std::mutex mutex;
+  std::vector<Plane> planes;
+  bool released = false;
+  ScopedResourceTelemetryKey telemetry_key{};
+
+  void release_now() {
+    std::vector<Plane> dropped;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (released) {
+        return;
+      }
+      released = true;
+      global_resource_aggregate_telemetry().retained_gpu_backing_released(telemetry_key);
+      dropped.swap(planes);
+    }
+    // States still referenced by a caller's texture stay alive with it; the
+    // rest release their RIDs here, outside the sidecar lock.
+    dropped.clear();
+  }
+
+  ~RetainedGpuComputeSidecar() {
     release_now();
   }
 };
@@ -1039,6 +1089,89 @@ godot::Ref<godot::Image> materialize_to_image(const std::shared_ptr<void>& backi
       bytes);
 }
 
+godot::RenderingDevice::DataFormat rd_format_for_plane(GpuBackingPlaneFormat format) {
+  switch (format) {
+    case GpuBackingPlaneFormat::R8_UNORM: return godot::RenderingDevice::DATA_FORMAT_R8_UNORM;
+    case GpuBackingPlaneFormat::RG8_UNORM: return godot::RenderingDevice::DATA_FORMAT_R8G8_UNORM;
+    case GpuBackingPlaneFormat::RGBA8_UNORM: return godot::RenderingDevice::DATA_FORMAT_R8G8B8A8_UNORM;
+    case GpuBackingPlaneFormat::UNKNOWN: break;
+  }
+  return godot::RenderingDevice::DATA_FORMAT_MAX;
+}
+
+// Synthetic's sidecar: each native plane uploaded once into its own immutable
+// RD texture at acquisition, then never written again. Immutable with initial
+// data means RenderingDevice owns the layout from creation, which is the
+// property that makes a frozen texture safe to hand to arbitrary later GPU work.
+std::shared_ptr<void> create_capture_gpu_compute_sidecar(
+    const SyntheticGpuComputeSidecarPlane* planes,
+    uint32_t plane_count) noexcept {
+  if (bridge_teardown_started() || !planes || plane_count == 0 ||
+      plane_count > kMaxGpuBackingPlanes) {
+    return {};
+  }
+  request_pending_release_drain();
+  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
+  godot::RenderingDevice* rd = rs ? rs->get_rendering_device() : nullptr;
+  if (!rd) {
+    return {};
+  }
+
+  GpuComputeSidecarPlaneRid created[kMaxGpuBackingPlanes]{};
+  uint32_t created_count = 0;
+  bool ok = true;
+  for (uint32_t i = 0; i < plane_count && ok; ++i) {
+    const SyntheticGpuComputeSidecarPlane& plane = planes[i];
+    const uint32_t bps = gpu_backing_plane_bytes_per_sample(plane.shape.format);
+    const godot::RenderingDevice::DataFormat format = rd_format_for_plane(plane.shape.format);
+    const uint32_t tight_row = plane.shape.width * bps;
+    if (!plane.data || bps == 0 || format == godot::RenderingDevice::DATA_FORMAT_MAX ||
+        plane.shape.width == 0 || plane.shape.height == 0 || plane.stride_bytes < tight_row) {
+      ok = false;
+      break;
+    }
+    godot::PackedByteArray bytes;
+    bytes.resize(static_cast<int64_t>(tight_row) * static_cast<int64_t>(plane.shape.height));
+    uint8_t* dst = bytes.ptrw();
+    if (!dst) {
+      ok = false;
+      break;
+    }
+    for (uint32_t row = 0; row < plane.shape.height; ++row) {
+      std::memcpy(dst + static_cast<size_t>(row) * tight_row,
+                  plane.data + static_cast<size_t>(row) * plane.stride_bytes,
+                  tight_row);
+    }
+
+    godot::Ref<godot::RDTextureFormat> tf;
+    tf.instantiate();
+    tf->set_width(static_cast<int64_t>(plane.shape.width));
+    tf->set_height(static_cast<int64_t>(plane.shape.height));
+    tf->set_format(format);
+    tf->set_usage_bits(godot::RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT |
+                       godot::RenderingDevice::TEXTURE_USAGE_CAN_COPY_FROM_BIT);
+    godot::Ref<godot::RDTextureView> view;
+    view.instantiate();
+    godot::Array data;
+    data.push_back(bytes);
+    const godot::RID texture = rd->texture_create(tf, view, data);
+    if (!texture.is_valid()) {
+      ok = false;
+      break;
+    }
+    created[created_count++] = GpuComputeSidecarPlaneRid{texture, plane.shape};
+  }
+  if (!ok) {
+    for (uint32_t i = 0; i < created_count; ++i) {
+      if (enqueue_pending_release(created[i].rd_texture)) {
+        request_pending_release_drain();
+      }
+    }
+    return {};
+  }
+  return gpu_compute_sidecar_adopt_rd_textures(created, created_count, {});
+}
+
 const SyntheticGpuBackingRuntimeOps kOps{
     &global_rd_available,
     &global_rd_roundtrip_rgba8,
@@ -1049,6 +1182,7 @@ const SyntheticGpuBackingRuntimeOps kOps{
     &can_materialize_to_image,
     &take_update_timing_stats,
     &peek_update_timing_stats,
+    &create_capture_gpu_compute_sidecar,
 };
 
 bool activate_render_release_bridge() {
@@ -1175,6 +1309,13 @@ void synthetic_gpu_backing_warn_and_abandon_live_display_wrappers_before_stop() 
   godot::UtilityFunctions::push_warning(message);
 
   for (const auto& [stream_id, borrow_count] : counts_by_stream_id) {
+    if (stream_id == 0) {
+      // Capture-side GPU textures: retained capture display views and compute
+      // texture planes. They belong to no stream, so a stream id would mislead.
+      godot::UtilityFunctions::push_warning("[CamBANG][DisplayLifetime] live_capture_gpu_texture wrapper_borrow_count=",
+                                            static_cast<uint64_t>(borrow_count));
+      continue;
+    }
     godot::UtilityFunctions::push_warning("[CamBANG][DisplayLifetime] live_gpu_display_view stream_id=",
                                           static_cast<uint64_t>(stream_id),
                                           " wrapper_borrow_count=",
@@ -1291,8 +1432,15 @@ void synthetic_gpu_backing_drain_pending_live_display_wrapper_refreshes() {
   }
 }
 
+namespace {
+godot::Ref<godot::Texture2D> make_deferred_display_texture(
+    std::shared_ptr<SharedDisplayTextureRidState> state,
+    uint64_t stream_id,
+    uint32_t width,
+    uint32_t height);
+} // namespace
+
 godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::shared_ptr<void>& backing) {
-  constexpr const char* kDisplayTextureRidOwnerMetaKey = "__cambang_synth_gpu_rid_owner";
   if (bridge_teardown_started()) {
     return {};
   }
@@ -1330,6 +1478,20 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
     height = retained->height;
   }
 
+  return make_deferred_display_texture(std::move(state), stream_id, width, height);
+}
+
+namespace {
+
+godot::Ref<godot::Texture2D> make_deferred_display_texture(
+    std::shared_ptr<SharedDisplayTextureRidState> state,
+    uint64_t stream_id,
+    uint32_t width,
+    uint32_t height) {
+  constexpr const char* kDisplayTextureRidOwnerMetaKey = "__cambang_synth_gpu_rid_owner";
+  if (!state) {
+    return {};
+  }
   const godot::RID display_rid = state->snapshot_rid();
   if (!display_rid.is_valid()) {
     return {};
@@ -1362,6 +1524,75 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
   rid_owner->init(stream_id, std::move(state));
   display_view->set_meta(godot::StringName(kDisplayTextureRidOwnerMetaKey), rid_owner);
   return display_view;
+}
+
+} // namespace
+
+std::shared_ptr<void> gpu_compute_sidecar_adopt_rd_textures(
+    const GpuComputeSidecarPlaneRid* planes,
+    uint32_t plane_count,
+    std::function<void()> after_plane_release) {
+  if (!planes || plane_count == 0 || plane_count > kMaxGpuBackingPlanes) {
+    return {};
+  }
+  std::vector<RetainedGpuComputeSidecar::Plane> adopted;
+  adopted.reserve(plane_count);
+  for (uint32_t i = 0; i < plane_count; ++i) {
+    auto state = make_display_texture_rid_state(planes[i].rd_texture);
+    state->after_release = after_plane_release;
+    adopted.push_back(RetainedGpuComputeSidecar::Plane{std::move(state), planes[i].shape});
+  }
+  if (bridge_teardown_started()) {
+    // The states release (or, once the bridge is closed, refuse and report)
+    // their RIDs as they go out of scope; the caller gets no sidecar.
+    return {};
+  }
+  auto sidecar = std::make_shared<RetainedGpuComputeSidecar>();
+  sidecar->planes = std::move(adopted);
+  sidecar->telemetry_key = make_unknown_scoped_resource_telemetry();
+  global_resource_aggregate_telemetry().retained_gpu_backing_created(sidecar->telemetry_key);
+  return std::static_pointer_cast<void>(sidecar);
+}
+
+bool gpu_compute_sidecar_is_usable(const std::shared_ptr<void>& sidecar) {
+  if (!sidecar || bridge_teardown_started()) {
+    return false;
+  }
+  const auto retained = std::static_pointer_cast<RetainedGpuComputeSidecar>(sidecar);
+  std::lock_guard<std::mutex> lock(retained->mutex);
+  if (retained->released || retained->planes.empty()) {
+    return false;
+  }
+  for (const RetainedGpuComputeSidecar::Plane& plane : retained->planes) {
+    if (!plane.rid_state || !plane.rid_state->draw_allowed()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+godot::Ref<godot::Texture2D> gpu_compute_sidecar_plane_texture(
+    const std::shared_ptr<void>& sidecar,
+    uint32_t plane_index) {
+  if (!sidecar || bridge_teardown_started()) {
+    return {};
+  }
+  request_pending_release_drain();
+  const auto retained = std::static_pointer_cast<RetainedGpuComputeSidecar>(sidecar);
+  std::shared_ptr<SharedDisplayTextureRidState> state;
+  GpuBackingPlaneDescriptor shape{};
+  {
+    std::lock_guard<std::mutex> lock(retained->mutex);
+    if (retained->released || plane_index >= retained->planes.size()) {
+      return {};
+    }
+    state = retained->planes[plane_index].rid_state;
+    shape = retained->planes[plane_index].shape;
+  }
+  // stream_id 0: a capture plane is no stream's display, so it carries no
+  // display demand. It still registers as a live wrapper, which is what makes
+  // it inert after stop() like every other texture CamBANG hands out.
+  return make_deferred_display_texture(std::move(state), 0, shape.width, shape.height);
 }
 
 godot::Ref<godot::Image> synthetic_gpu_backing_materialize_to_image(const std::shared_ptr<void>& backing) {

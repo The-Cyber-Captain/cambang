@@ -180,6 +180,9 @@ public:
   ProviderResult set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) override;
   ProviderResult sync_capture_parent_priming(const CaptureRequest& req) override;
   ProviderResult release_capture_parent_priming(uint64_t device_instance_id) override;
+  ProviderResult set_capture_gpu_compute_sidecar_demand(
+      uint64_t device_instance_id,
+      bool demanded) override;
 
   ProviderResult trigger_capture(const CaptureRequest& req) override;
   ProviderResult trigger_capture_submission(const CaptureSubmission& submission) override;

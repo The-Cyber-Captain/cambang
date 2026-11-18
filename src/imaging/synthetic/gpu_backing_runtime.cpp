@@ -250,6 +250,21 @@ bool synthetic_gpu_backing_can_materialize_to_image(const std::shared_ptr<void>&
   return ok;
 }
 
+std::shared_ptr<void> synthetic_gpu_backing_create_capture_gpu_compute_sidecar(
+    const SyntheticGpuComputeSidecarPlane* planes,
+    uint32_t plane_count) noexcept {
+  const RuntimeOpsRegistry::CallLease lease = g_registry.acquire_call();
+  if (!lease || !lease.ops()->create_capture_gpu_compute_sidecar) {
+    trace_line("create_capture_gpu_compute_sidecar success=false reason=ops_unset_or_missing_fn");
+    return {};
+  }
+  std::shared_ptr<void> sidecar =
+      lease.ops()->create_capture_gpu_compute_sidecar(planes, plane_count);
+  trace_line(sidecar ? "create_capture_gpu_compute_sidecar success=true"
+                     : "create_capture_gpu_compute_sidecar success=false");
+  return sidecar;
+}
+
 bool synthetic_gpu_backing_take_update_timing_stats(
     uint64_t& upload_copy_calls,
     uint64_t& upload_copy_total_ns,
@@ -323,6 +338,13 @@ void synthetic_gpu_backing_release_stream_live_gpu_backing(std::shared_ptr<void>
 bool synthetic_gpu_backing_can_materialize_to_image(const std::shared_ptr<void>& backing) noexcept {
   (void)backing;
   return false;
+}
+std::shared_ptr<void> synthetic_gpu_backing_create_capture_gpu_compute_sidecar(
+    const SyntheticGpuComputeSidecarPlane* planes,
+    uint32_t plane_count) noexcept {
+  (void)planes;
+  (void)plane_count;
+  return {};
 }
 bool synthetic_gpu_backing_take_update_timing_stats(
     uint64_t& upload_copy_calls,

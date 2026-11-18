@@ -9,6 +9,7 @@
 
 #include "core/core_result_store.h"
 #include "core/result_capability.h"
+#include "godot/capture_compute_texture.h"
 
 namespace cambang {
 
@@ -29,6 +30,12 @@ public:
   static constexpr int CAPTURE_ORIGIN_RIG = 1;
   static constexpr int IMAGE_ROLE_DEFAULT_METERED = 0;
   static constexpr int IMAGE_ROLE_ADDITIONAL_BRACKET = 1;
+  // Which route serves a member's compute textures; see
+  // get_compute_texture_backing(). GPU_COPY is reserved and not returned today.
+  static constexpr int COMPUTE_TEXTURE_BACKING_NONE = static_cast<int>(ComputeTextureBacking::NONE);
+  static constexpr int COMPUTE_TEXTURE_BACKING_CPU_UPLOAD = static_cast<int>(ComputeTextureBacking::CPU_UPLOAD);
+  static constexpr int COMPUTE_TEXTURE_BACKING_GPU_COPY = static_cast<int>(ComputeTextureBacking::GPU_COPY);
+  static constexpr int COMPUTE_TEXTURE_BACKING_GPU_RETAINED = static_cast<int>(ComputeTextureBacking::GPU_RETAINED);
 
   CamBANGCaptureResult() = default;
 
@@ -117,6 +124,17 @@ public:
   int get_compute_texture_plane_count(int image_member_index) const;
   godot::Ref<godot::Texture2D> get_compute_texture_plane(int image_member_index,
                                                          int plane_index) const;
+  // The route behind those textures, so a consumer can tell before relying on
+  // it: GPU_RETAINED when the planes are already GPU-resident (a frozen GPU
+  // copy made at acquisition), CPU_UPLOAD when they are uploaded from the
+  // retained CPU pixels on request, NONE when there are no compute textures
+  // (no RenderingDevice, as under Compatibility, or no such member).
+  //
+  // The first get_compute_texture_plane() call on a device is also what asks
+  // that device for GPU copies of the captures it takes afterwards, where the
+  // platform can make them. Captures taken before that, and every capture on a
+  // platform that cannot, report CPU_UPLOAD truthfully.
+  int get_compute_texture_backing(int image_member_index) const;
 
   godot::Variant get_display_view() const;
   godot::Ref<godot::Image> to_image() const;

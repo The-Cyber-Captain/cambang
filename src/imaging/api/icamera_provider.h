@@ -516,6 +516,28 @@ public:
     return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
   }
 
+  // Demand, from Core, for a frozen GPU copy of each still image member this
+  // device acquires from now on (FrameView::gpu_compute_sidecar). Core calls it
+  // with true when a consumer first asks one of this device's captures for a
+  // compute texture, and with false when that demand ends. Repeated equal calls
+  // are idempotent.
+  //
+  // Runs on the core thread, so it must be prompt: a provider that has to
+  // reconfigure its still path to supply the copy does that on its own worker
+  // and keeps posting captures without the sidecar until the reconfiguration
+  // is in place. Success means the demand was recorded, not that every later
+  // member will carry a sidecar; absence on any member stays truthful.
+  //
+  // A provider that cannot produce a GPU copy returns ERR_NOT_SUPPORTED, which
+  // is the honest answer and leaves compute textures on the CPU upload route.
+  virtual ProviderResult set_capture_gpu_compute_sidecar_demand(
+      uint64_t device_instance_id,
+      bool demanded) {
+    (void)device_instance_id;
+    (void)demanded;
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+
   // Optional release of provider-owned capture-parent priming for a device.
   // Providers that implement sync_capture_parent_priming() should make this
   // idempotent and safe even when no primed seam is currently held.

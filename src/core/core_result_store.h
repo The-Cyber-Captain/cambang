@@ -242,11 +242,24 @@ struct CoreCaptureResultData {
     CoreResultPayloadCpu payload{};
     std::shared_ptr<void> retained_gpu_backing{};
     RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
+    // Frozen GPU copy of this member's native planes, retained beside the
+    // primary when the provider supplied one (FrameView::gpu_compute_sidecar).
+    // Read only by the capture compute texture; it takes no part in
+    // payload_kind, retained_access_truth, access posture or calibration, so a
+    // member is classified identically with or without it. Counted in the
+    // capture byte budget.
+    std::shared_ptr<void> gpu_compute_sidecar{};
+    RetainedGpuBackingDescriptor gpu_compute_sidecar_descriptor{};
     CoreRetainedAccessTruth retained_access_truth{};
     SharedResultAccessClassificationRecord access_classification{};
     CoreResultAccessPostureKey access_posture{};
 
     CoreResolvedImageFacts resolved_image_facts{};
+
+    bool has_gpu_compute_sidecar() const noexcept {
+      return gpu_compute_sidecar && gpu_compute_sidecar_descriptor.valid &&
+             gpu_compute_sidecar_descriptor.plane_count != 0;
+    }
   };
 
   uint64_t capture_id = 0;

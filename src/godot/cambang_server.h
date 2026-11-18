@@ -279,6 +279,9 @@ public:
   void report_capture_result_member_observation(
       const SharedCaptureResultData& data,
       uint32_t image_member_index) const;
+  // Internal: the first compute-texture plane request on a device asks Core
+  // for GPU copies of that device's later captures. Not bound.
+  bool demand_capture_gpu_compute_sidecar(uint64_t device_instance_id);
   void mark_stream_display_demand(uint64_t stream_id);
   void retain_stream_display_demand(uint64_t stream_id);
   void release_stream_display_demand(uint64_t stream_id);

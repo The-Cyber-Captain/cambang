@@ -1618,6 +1618,42 @@ void CoreRuntime::report_stream_retained_display_view_observation(
   (void)pr;
 }
 
+bool CoreRuntime::demand_capture_gpu_compute_sidecar(uint64_t device_instance_id) {
+  if (device_instance_id == 0) {
+    return false;
+  }
+  // Lossy on purpose: a refused post is simply a demand the next compute
+  // texture request repeats, and the caller must never block on it.
+  const CoreThread::PostResult pr = try_post([this, device_instance_id]() {
+    handle_capture_gpu_compute_sidecar_demand_(device_instance_id);
+  });
+  return pr == CoreThread::PostResult::Enqueued;
+}
+
+void CoreRuntime::handle_capture_gpu_compute_sidecar_demand_(uint64_t device_instance_id) {
+  const CoreDeviceRegistry::DeviceRecord* rec = devices_.find(device_instance_id);
+  if (!rec || !rec->open) {
+    return;
+  }
+  if (!gpu_compute_sidecar_demanded_devices_.insert(device_instance_id).second) {
+    return;
+  }
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    gpu_compute_sidecar_demanded_devices_.erase(device_instance_id);
+    return;
+  }
+  // ERR_NOT_SUPPORTED is the expected answer from every provider without a GPU
+  // copy route. The demand stays recorded either way, so it is offered once per
+  // device rather than on every request.
+  (void)prov->set_capture_gpu_compute_sidecar_demand(device_instance_id, true);
+}
+
+bool CoreRuntime::is_capture_gpu_compute_sidecar_demanded_on_core_thread(
+    uint64_t device_instance_id) const noexcept {
+  return gpu_compute_sidecar_demanded_devices_.count(device_instance_id) != 0;
+}
+
 void CoreRuntime::report_capture_retained_to_image_observation(
     uint64_t device_instance_id,
     uint64_t capture_id,
@@ -6293,6 +6329,9 @@ TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) 
     }
     const bool state_changed = devices_.on_device_closed(device_instance_id);
     capture_parent_priming_states_.erase(device_instance_id);
+    // The provider forgets a closed device's demand with the device, and
+    // device_instance_id is never reissued, so only Core's record goes.
+    gpu_compute_sidecar_demanded_devices_.erase(device_instance_id);
     if (retain_capture_orphans) {
       mark_capture_retained_plan_state_orphaned_for_device_(
           device_instance_id,

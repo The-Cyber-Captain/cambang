@@ -4,6 +4,7 @@
 #include <deque>
 #include <map>
 #include <mutex>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -15,6 +16,7 @@
 #include "godot/cambang_result_convert.h"
 #include "godot/compute_texture_planes.h"
 #include "godot/godot_gpu_display_service.h"
+#include "godot/gpu_compute_sidecar.h"
 #include "pixels/format/pixel_format_descriptor.h"
 
 namespace cambang {
@@ -41,6 +43,14 @@ bool member_has_ready_gpu_texture(const CoreCaptureResultData::ImageMemberData& 
          !member.retained_gpu_backing_descriptor.display_requires_import;
 }
 
+
+// A frozen GPU copy of the member's native planes, still usable. Core only
+// retains one whose planes match the CPU payload's, so its plane count and
+// shapes are the ones the upload route would produce.
+bool member_has_usable_gpu_sidecar(const CoreCaptureResultData::ImageMemberData& member) {
+  return member.has_gpu_compute_sidecar() &&
+         gpu_compute_sidecar_is_usable(member.gpu_compute_sidecar);
+}
 
 bool member_has_packed_source(const CoreCaptureResultData::ImageMemberData& member) {
   return retained_cpu_payload_is_packed_readable(member.payload);
@@ -81,7 +91,9 @@ std::map<CacheKey, godot::Ref<godot::Texture2D>> g_cache;
 std::deque<CacheKey> g_insertion_order;
 uint64_t g_uploads = 0;
 uint64_t g_gpu_wraps = 0;
+uint64_t g_gpu_sidecar_planes = 0;
 uint64_t g_hits = 0;
+std::set<uint64_t> g_requested_devices;
 uint64_t g_uploaded_bytes = 0;
 
 } // namespace
@@ -96,7 +108,7 @@ ResultCapability capture_compute_texture_support(
   if (!member || !rendering_device_available()) {
     return ResultCapability::UNSUPPORTED;
   }
-  if (member_has_ready_gpu_texture(*member)) {
+  if (member_has_usable_gpu_sidecar(*member) || member_has_ready_gpu_texture(*member)) {
     return ResultCapability::READY;
   }
   // A plane upload is still a full-frame copy, which is 11.2's worked example
@@ -118,6 +130,9 @@ uint32_t capture_compute_texture_plane_count(
   const auto* member = data->image_member_at(image_member_index);
   if (!member) {
     return 0;
+  }
+  if (member_has_usable_gpu_sidecar(*member)) {
+    return member->gpu_compute_sidecar_descriptor.plane_count;
   }
   if (member_has_ready_gpu_texture(*member)) {
     return 1;
@@ -154,9 +169,15 @@ godot::Ref<godot::Texture2D> capture_compute_texture_plane(
 
   godot::Ref<godot::Texture2D> produced;
   bool was_upload = false;
+  bool was_sidecar = false;
   uint64_t uploaded_bytes = 0;
 
-  if (member_has_ready_gpu_texture(*member)) {
+  if (member_has_usable_gpu_sidecar(*member)) {
+    // The frozen GPU copy made at acquisition: hand over its plane, no pixels
+    // move.
+    produced = gpu_compute_sidecar_plane_texture(member->gpu_compute_sidecar, plane_index);
+    was_sidecar = true;
+  } else if (member_has_ready_gpu_texture(*member)) {
     // Already GPU-resident: wrap the retained backing rather than moving any
     // pixels. This is the whole point of the READY row.
     produced = godot_gpu_display_get_texture_by_descriptor(
@@ -193,6 +214,8 @@ godot::Ref<godot::Texture2D> capture_compute_texture_plane(
     if (was_upload) {
       ++g_uploads;
       g_uploaded_bytes += uploaded_bytes;
+    } else if (was_sidecar) {
+      ++g_gpu_sidecar_planes;
     } else {
       ++g_gpu_wraps;
     }
@@ -215,12 +238,43 @@ godot::Ref<godot::Texture2D> capture_compute_texture_plane(
   return produced;
 }
 
+ComputeTextureBacking capture_compute_texture_backing(
+    const SharedCaptureResultData& data,
+    uint32_t image_member_index) {
+  if (capture_compute_texture_support(data, image_member_index) ==
+      ResultCapability::UNSUPPORTED) {
+    return ComputeTextureBacking::NONE;
+  }
+  const auto* member = data->image_member_at(image_member_index);
+  if (!member) {
+    return ComputeTextureBacking::NONE;
+  }
+  if (member_has_usable_gpu_sidecar(*member) || member_has_ready_gpu_texture(*member)) {
+    return ComputeTextureBacking::GPU_RETAINED;
+  }
+  return ComputeTextureBacking::CPU_UPLOAD;
+}
+
+bool capture_compute_texture_take_first_device_request(uint64_t device_instance_id) {
+  if (device_instance_id == 0) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return g_requested_devices.insert(device_instance_id).second;
+}
+
+void capture_compute_texture_forget_device_request(uint64_t device_instance_id) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  g_requested_devices.erase(device_instance_id);
+}
+
 void clear_capture_compute_texture_cache() {
   std::map<CacheKey, godot::Ref<godot::Texture2D>> dropped;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     dropped.swap(g_cache);
     g_insertion_order.clear();
+    g_requested_devices.clear();
   }
   dropped.clear();
 }
@@ -230,6 +284,7 @@ godot::Dictionary capture_compute_texture_metrics() {
   godot::Dictionary d;
   d["uploads"] = static_cast<uint64_t>(g_uploads);
   d["gpu_wraps"] = static_cast<uint64_t>(g_gpu_wraps);
+  d["gpu_sidecar_planes"] = static_cast<uint64_t>(g_gpu_sidecar_planes);
   d["hits"] = static_cast<uint64_t>(g_hits);
   d["entries"] = static_cast<uint64_t>(g_cache.size());
   d["uploaded_bytes"] = static_cast<uint64_t>(g_uploaded_bytes);

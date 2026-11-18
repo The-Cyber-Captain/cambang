@@ -195,6 +195,9 @@ public:
   ProviderResult set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) override;
   ProviderResult sync_capture_parent_priming(const CaptureRequest& req) override;
   ProviderResult release_capture_parent_priming(uint64_t device_instance_id) override;
+  ProviderResult set_capture_gpu_compute_sidecar_demand(
+      uint64_t device_instance_id,
+      bool demanded) override;
 
   ProviderResult trigger_capture(const CaptureRequest& req) override;
   ProviderResult trigger_capture_submission(const CaptureSubmission& submission) override;
@@ -227,6 +230,9 @@ public:
   // Smoke/scenario-only helpers. These preserve the main runtime architecture
   // while allowing deterministic lifecycle edge cases to be exercised.
   ProviderResult disconnect_device_for_test(uint64_t device_instance_id);
+  bool is_gpu_compute_sidecar_demanded_for_test(uint64_t device_instance_id) const {
+    return is_gpu_compute_sidecar_demanded_(device_instance_id);
+  }
   ProviderResult force_close_device_for_test(uint64_t device_instance_id);
   ProviderResult fail_stream_for_test(uint64_t stream_id, ProviderError error);
   ProviderResult load_timeline_canonical_scenario_from_json_text_for_host(
@@ -695,6 +701,11 @@ private:
   // Withheld-payload machinery (see arm_withheld_capture_payload_for_test).
   // Its own mutex: capture workers for different devices touch it
   // concurrently, and it must not be ordered against provider state locks.
+  // Devices Core has asked for a GPU compute sidecar on each still member.
+  // Own lock: read once per member on the capture job, never nested.
+  mutable std::mutex gpu_compute_sidecar_mutex_;
+  std::set<uint64_t> gpu_compute_sidecar_demanded_devices_;
+  bool is_gpu_compute_sidecar_demanded_(uint64_t device_instance_id) const;
   mutable std::mutex withheld_payload_mutex_for_test_;
   std::set<uint64_t> withhold_armed_devices_for_test_;
   std::set<uint64_t> withheld_captures_for_test_;
