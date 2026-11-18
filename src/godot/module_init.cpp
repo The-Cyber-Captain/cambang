@@ -20,6 +20,9 @@
 #include "godot/cambang_stream_result_internal.h"
 #include "godot/synthetic_gpu_backing_bridge.h"
 #include "godot/synthetic_gpu_backing_bridge_internal.h"
+#if defined(__ANDROID__)
+#include "godot/platform_gpu_import_android.h"
+#endif
 
 
 static cambang::CamBANGServer* g_server = nullptr;
@@ -38,6 +41,12 @@ static void cambang_gde_initialize(godot::ModuleInitializationLevel p_level) {
     cambang::register_stream_result_internal_classes();
     cambang::register_synthetic_gpu_backing_internal_classes();
     cambang::install_synthetic_gpu_backing_godot_bridge();
+#if defined(__ANDROID__)
+    // After the bridge: its sidecars are realised through the bridge's
+    // render-release drain.
+    cambang::register_platform_gpu_import_android_internal_classes();
+    cambang::install_platform_gpu_import_android();
+#endif
     cambang::install_live_cpu_display_bridge();
 
     // Create and register the Engine singleton.
@@ -59,6 +68,11 @@ static void cambang_gde_uninitialize(godot::ModuleInitializationLevel p_level) {
         memdelete(g_server);
         g_server = nullptr;
     }
+#if defined(__ANDROID__)
+    // Before the bridge: drains every copy job and releases its RIDs into the
+    // bridge's drain, which the bridge's uninstall then empties.
+    cambang::uninstall_platform_gpu_import_android();
+#endif
     cambang::uninstall_synthetic_gpu_backing_godot_bridge();
     cambang::uninstall_live_cpu_display_bridge();
 }

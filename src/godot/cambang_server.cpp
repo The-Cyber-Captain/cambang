@@ -39,6 +39,9 @@
 #include "imaging/api/provider_error_string.h"
 #include "imaging/broker/provider_broker.h"
 #include "imaging/broker/banner_info.h"
+#if defined(__ANDROID__)
+#include "godot/platform_gpu_import_android.h"
+#endif
 
 #ifndef CAMBANG_GDE_TARGET_PLATFORM
 #define CAMBANG_GDE_TARGET_PLATFORM "unknown"
@@ -1779,6 +1782,11 @@ godot::Error CamBANGServer::_start_with_provider_config(
 
   // Ensure the SceneTree tick hook exists so snapshots can be drained + signals emitted.
   _ensure_tick_connected();
+#if defined(__ANDROID__)
+  // The platform GPU import scope gate is evaluated before any device session
+  // decides its still reader's usage.
+  platform_gpu_import_android_main_thread_tick();
+#endif
 
   // Explicit user action: do not auto-start on launch.
   if (!runtime_.start()) {
@@ -3650,6 +3658,9 @@ void CamBANGServer::_on_godot_process_frame() {
   // Cheap: one atomic load inside, early-returns when the core thread is
   // idle. See CoreRuntime::check_core_thread_liveness()'s doc comment.
   runtime_.check_core_thread_liveness();
+#if defined(__ANDROID__)
+  platform_gpu_import_android_main_thread_tick();
+#endif
 
   _on_godot_tick(delta_s);
   // Ahead of capture_finished: an early timing notice must never be heard

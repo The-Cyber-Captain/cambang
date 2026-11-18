@@ -1168,6 +1168,9 @@ if build_gde_graph:
         os.path.join(gde_obj_dir, "godot", "retained_result_access_calibration.cpp"),
         os.path.join(gde_obj_dir, "godot", "synthetic_gpu_backing_bridge.cpp"),
     ]
+    if gde_platform == "android":
+        # Second-VkDevice GPU import of Camera2 still buffers (Quest under OpenXR).
+        gde_sources.append(os.path.join(gde_obj_dir, "godot", "platform_gpu_import_android.cpp"))
     gde_sources = _unique_sources(gde_sources)
 
     gde_target = _gde_artifact_base(gde_platform, godot_target, env["arch"])
