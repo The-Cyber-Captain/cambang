@@ -62,26 +62,33 @@ private:
   std::size_t in_flight_ = 0;
 };
 
-Registry g_registry;
+// Never destroyed. Camera callback threads and the render thread can call in
+// while the process is exiting, after static destructors have begun; a
+// destroyed registry mutex would then abort in pthread_mutex_lock (the
+// FORTIFY "destroyed mutex" abort).
+Registry& registry() noexcept {
+  static Registry* const instance = new Registry();
+  return *instance;
+}
 
 } // namespace
 
 void set_platform_gpu_import_ops(const PlatformGpuImportOps* ops) noexcept {
-  g_registry.install(ops);
+  registry().install(ops);
 }
 
 void clear_platform_gpu_import_ops() noexcept {
-  g_registry.clear();
+  registry().clear();
 }
 
 bool platform_gpu_import_can_copy_native_buffers() noexcept {
-  const Registry::Lease lease = g_registry.acquire();
+  const Registry::Lease lease = registry().acquire();
   return lease && lease.ops()->can_copy_native_buffers &&
          lease.ops()->can_copy_native_buffers();
 }
 
 std::shared_ptr<void> platform_gpu_import_begin_copy(const PlatformGpuCopyRequest& request) noexcept {
-  const Registry::Lease lease = g_registry.acquire();
+  const Registry::Lease lease = registry().acquire();
   if (!lease || !lease.ops()->begin_copy) return {};
   return lease.ops()->begin_copy(request);
 }
@@ -89,7 +96,7 @@ std::shared_ptr<void> platform_gpu_import_begin_copy(const PlatformGpuCopyReques
 std::shared_ptr<void> platform_gpu_import_finish_copy(const std::shared_ptr<void>& job,
                                                       uint64_t timeout_ns) noexcept {
   if (!job) return {};
-  const Registry::Lease lease = g_registry.acquire();
+  const Registry::Lease lease = registry().acquire();
   if (!lease || !lease.ops()->finish_copy) return {};
   return lease.ops()->finish_copy(job, timeout_ns);
 }
