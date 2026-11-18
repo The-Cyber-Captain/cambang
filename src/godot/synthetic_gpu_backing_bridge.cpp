@@ -38,7 +38,7 @@ namespace cambang {
 
 void register_synthetic_gpu_backing_internal_classes();
 
-static bool enqueue_pending_release(const godot::RID& rid);
+static bool enqueue_pending_release(const godot::RID& rid, std::function<void()> after_free = {});
 static void request_pending_release_drain();
 static void schedule_render_thread_drain(godot::RenderingServer* rs, RenderThreadDrainHelper* helper);
 static void unregister_display_texture_rid_state(uint64_t registration_id);
@@ -53,6 +53,9 @@ static std::mutex g_pending_release_mutex;
 static std::condition_variable g_pending_release_changed;
 // RIDs that must be released from the render thread.
 static std::vector<godot::RID> g_pending_releases;
+// Run on the render thread right after the drain that freed their RIDs. A hook
+// belongs to a RID queued above, so it never runs before that RID is freed.
+static std::vector<std::function<void()>> g_pending_release_hooks;
 static std::size_t g_release_producers = 0;
 static bool g_pending_release_drain_scheduled = false;
 static bool g_pending_release_drain_running = false;
@@ -103,11 +106,11 @@ struct SharedDisplayTextureRidState final {
   godot::RID rd_texture;
   bool invalidated = false;
   uint64_t registration_id = 0;
-  // Runs once, after the RID has been accepted by the render-thread release
-  // drain. Used by a GPU compute sidecar whose RD texture wraps memory its
-  // producer owns, so that memory is destroyed only after the wrapper is.
-  // Never run when the release was rejected: leaking the memory is the safe
-  // failure, destroying it under a live wrapper is not.
+  // Runs once, on the render thread, right after the drain has freed the RID.
+  // Used by a GPU compute sidecar whose RD texture wraps memory its producer
+  // owns, so that memory is destroyed only after the wrapper is. Never run
+  // when the release was rejected: leaking the memory is the safe failure,
+  // destroying it under a live wrapper is not.
   std::function<void()> after_release;
 
   explicit SharedDisplayTextureRidState(const godot::RID& rid) : rd_texture(rid) {}
@@ -145,17 +148,14 @@ struct SharedDisplayTextureRidState final {
     if (!rid.is_valid()) {
       return;
     }
-    if (release_admission && enqueue_pending_release(rid)) {
+    std::function<void()> hook;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      hook = std::move(after_release);
+      after_release = nullptr;
+    }
+    if (release_admission && enqueue_pending_release(rid, std::move(hook))) {
       request_pending_release_drain();
-      std::function<void()> hook;
-      {
-        std::lock_guard<std::mutex> lock(mutex);
-        hook = std::move(after_release);
-        after_release = nullptr;
-      }
-      if (hook) {
-        hook();
-      }
       return;
     }
     std::fprintf(stderr,
@@ -322,7 +322,7 @@ struct PendingTextureWrapperRelease final {
 // their destructor frees Godot's internal RenderingServer texture wrapper.
 static std::vector<PendingTextureWrapperRelease> g_pending_texture_wrapper_releases;
 
-static bool enqueue_pending_release(const godot::RID& rid) {
+static bool enqueue_pending_release(const godot::RID& rid, std::function<void()> after_free) {
   if (!rid.is_valid()) {
     return false;
   }
@@ -331,6 +331,9 @@ static bool enqueue_pending_release(const godot::RID& rid) {
     return false;
   }
   g_pending_releases.push_back(rid);
+  if (after_free) {
+    g_pending_release_hooks.push_back(std::move(after_free));
+  }
   return true;
 }
 
@@ -667,6 +670,7 @@ static void request_pending_release_drain() {
 
 bool RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
   std::vector<godot::RID> pending;
+  std::vector<std::function<void()>> pending_hooks;
   std::vector<PendingTextureWrapperRelease> pending_texture_wrappers;
   {
     std::lock_guard<std::mutex> lock(g_pending_release_mutex);
@@ -677,6 +681,7 @@ bool RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
     }
     g_pending_release_drain_running = true;
     pending.swap(g_pending_releases);
+    pending_hooks.swap(g_pending_release_hooks);
     pending_texture_wrappers.swap(g_pending_texture_wrapper_releases);
     g_pending_release_drain_scheduled = false;
   }
@@ -690,6 +695,9 @@ bool RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
       std::lock_guard<std::mutex> lock(g_pending_release_mutex);
       for (godot::RID &rid : pending) {
         g_pending_releases.push_back(std::move(rid));
+      }
+      for (std::function<void()>& hook : pending_hooks) {
+        g_pending_release_hooks.push_back(std::move(hook));
       }
       g_pending_release_drain_running = false;
       g_pending_release_changed.notify_all();
@@ -705,6 +713,9 @@ bool RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
       }
       rd->free_rid(rid);
     }
+  }
+  for (const std::function<void()>& hook : pending_hooks) {
+    hook();
   }
 
   {
