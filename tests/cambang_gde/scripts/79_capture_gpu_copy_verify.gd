@@ -232,20 +232,23 @@ func _engage(dev) -> bool:
 	return false
 
 
-# The first NV12 entry of the endpoint's own catalog: a real camera captures
-# only at a geometry it advertises, and the GPU copy covers the YUV family only.
+# The largest NV12 entry of the endpoint's own catalog: a real camera captures
+# only at a geometry it advertises, the GPU copy covers the YUV family only, and
+# the copy's cost is only representative at a full-size still (the first entry
+# can be a thumbnail size such as 320x240).
 func _apply_planar_still_geometry(dev, hw: String) -> bool:
 	var caps: Dictionary = CamBANGServer.get_supported_capture_profiles(hw)
 	var chosen: Dictionary = {}
+	var best_area := 0
 	for entry in caps.get("profiles", []):
 		var profile: Dictionary = (entry as Dictionary).get("profile", {})
-		if int(profile.get("format_fourcc", 0)) == CamBANGServer.PIXEL_FORMAT_NV12:
-			chosen = {
-				"width": int(profile.get("width", 0)),
-				"height": int(profile.get("height", 0)),
-				"format_fourcc": CamBANGServer.PIXEL_FORMAT_NV12,
-			}
-			break
+		if int(profile.get("format_fourcc", 0)) != CamBANGServer.PIXEL_FORMAT_NV12:
+			continue
+		var pw := int(profile.get("width", 0))
+		var ph := int(profile.get("height", 0))
+		if pw * ph > best_area:
+			best_area = pw * ph
+			chosen = {"width": pw, "height": ph, "format_fourcc": CamBANGServer.PIXEL_FORMAT_NV12}
 	if chosen.is_empty():
 		_fail("%s advertises no NV12 still geometry" % hw)
 		return false
