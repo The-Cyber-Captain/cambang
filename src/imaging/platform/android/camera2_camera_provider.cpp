@@ -10,6 +10,8 @@
 
 #include "imaging/api/delivered_calibration.h"
 #include "imaging/api/frame_rate_selection.h"
+#include "imaging/api/gpu_compute_sidecar_planes.h"
+#include "imaging/api/platform_gpu_import_ops.h"
 
 #include <camera/NdkCameraCaptureSession.h>
 #include <camera/NdkCameraDevice.h>
@@ -791,6 +793,10 @@ struct BurstCollector {
     // Read at acquisition, because the AImage is gone by the time the
     // FrameView is assembled.
     PayloadColorimetry colorimetry{};
+    // A GPU copy of this payload's planes, started at arrival while the
+    // AImage still existed; finished by the capture worker before posting.
+    // Null when the member is CPU-only.
+    std::shared_ptr<void> gpu_copy_job;
     // The member slot this payload took at arrival (see `reserved`). The
     // final frame is placed by this, not by a later sort, because the early
     // timing notice already told the consumer which member it is.
@@ -974,6 +980,27 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   // available.
   uint32_t retained_still_w = 0;
   uint32_t retained_still_h = 0;
+
+  // GPU compute sidecar (FrameView::gpu_compute_sidecar) for still members.
+  //
+  // `gpu_compute_sidecar_demanded` is Core's arming, set from
+  // set_capture_gpu_compute_sidecar_demand and read by the still callback. It
+  // lives on the backend, so a closed device forgets it with its backend.
+  //
+  // `still_reader_gpu_sampled` records whether the realized still reader was
+  // created with GPU_SAMPLED_IMAGE usage, which is what lets its buffers be
+  // imported at all. Decided when the reader is created -- from whether the
+  // host can copy native buffers, not from demand -- so arming never needs a
+  // session rebuild (measured on Quest 3: the flag costs nothing on the CPU
+  // copy and no buffer memory). Guarded by backend.m.
+  //
+  // `gpu_copy_held` counts AImages kept past the callback for a GPU copy. At
+  // most one is held at a time: the still reader has kStillReaderMaxImages
+  // buffers, and holding more would starve the next arrival. A member that
+  // arrives while one is held goes CPU-only and reports CPU_UPLOAD truthfully.
+  std::atomic<bool> gpu_compute_sidecar_demanded{false};
+  bool still_reader_gpu_sampled = false;
+  std::atomic<uint32_t> gpu_copy_held{0};
 
   std::unique_ptr<ListenerCtx> device_ctx;
   std::unique_ptr<ListenerCtx> session_ctx;
@@ -1219,6 +1246,103 @@ void flush_pending_frames(StreamProduction& s, CBProviderStrand* strand) {
 }
 void release_capture_frame(void* user, const FrameView* /*frame*/) {
   delete static_cast<CaptureFrameLease*>(user);
+}
+
+// An AImage kept past its reader callback because the GPU is still copying out
+// of its buffer. While held it counts as an in-flight reader callback, so
+// ReaderCallbackQuiesce waits for it before deleting the reader: returning the
+// buffer to a deleted reader is the use-after-free that guard exists for, and
+// the camera must not refill a buffer the GPU is still reading.
+struct HeldGpuCopySource {
+  std::shared_ptr<DeviceBackend> backend;
+  AImage* image = nullptr;
+};
+
+// Takes a reader-callback slot for a held image. Called from inside an entered
+// callback, so readers_closing cannot already be set and the slot is always
+// granted; the explicit check keeps that an invariant rather than a hope.
+bool hold_reader_slot_for_gpu_copy(DeviceBackend& backend) {
+  std::lock_guard<std::mutex> lk(backend.reader_cb_mutex);
+  if (backend.readers_closing) return false;
+  ++backend.reader_cb_inflight;
+  return true;
+}
+
+void release_reader_slot_for_gpu_copy(DeviceBackend& backend) {
+  bool idle = false;
+  {
+    std::lock_guard<std::mutex> lk(backend.reader_cb_mutex);
+    idle = (--backend.reader_cb_inflight == 0);
+  }
+  if (idle) backend.reader_cb_idle.notify_all();
+}
+
+// PlatformGpuCopyRequest::on_source_released. Runs exactly once, on whatever
+// thread the host's copy finishes on.
+void release_held_gpu_copy_source(void* user) {
+  auto* held = static_cast<HeldGpuCopySource*>(user);
+  if (!held) return;
+  if (held->image) AImage_delete(held->image);
+  if (held->backend) {
+    held->backend->gpu_copy_held.fetch_sub(1, std::memory_order_acq_rel);
+    release_reader_slot_for_gpu_copy(*held->backend);
+  }
+  delete held;
+}
+
+// Starts a frozen GPU copy of `image` for a still member, taking ownership of
+// the image when it succeeds. Returns the copy job, or null with `image` still
+// owned by the caller, who then deletes it as usual. Gates, in order: Core armed
+// the device; the reader's buffers are importable; the member is semi-planar
+// (the only shape whose GPU planes match the CPU payload byte for byte); no
+// other image is already held.
+std::shared_ptr<void> try_begin_still_gpu_copy(const std::shared_ptr<DeviceBackend>& backend,
+                                               AImage* image,
+                                               uint32_t member_fourcc,
+                                               uint8_t member_planes,
+                                               uint32_t width,
+                                               uint32_t height) {
+  if (!backend || !image) return {};
+  if (!backend->gpu_compute_sidecar_demanded.load(std::memory_order_acquire)) return {};
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    if (!backend->still_reader_gpu_sampled) return {};
+  }
+  if (member_planes != 2 || (member_fourcc != FOURCC_NV12 && member_fourcc != FOURCC_NV21)) {
+    return {};
+  }
+  uint32_t expected = 0;
+  if (!backend->gpu_copy_held.compare_exchange_strong(expected, 1, std::memory_order_acq_rel)) {
+    return {};
+  }
+  AHardwareBuffer* ahb = nullptr;
+  bool have_ahb = false;
+  if (__builtin_available(android 26, *)) {
+    have_ahb = (AImage_getHardwareBuffer(image, &ahb) == AMEDIA_OK && ahb != nullptr);
+  }
+  if (!have_ahb || !hold_reader_slot_for_gpu_copy(*backend)) {
+    backend->gpu_copy_held.store(0, std::memory_order_release);
+    return {};
+  }
+  auto* held = new HeldGpuCopySource{backend, image};
+  PlatformGpuCopyRequest request{};
+  request.native_buffer = ahb;
+  request.width = width;
+  request.height = height;
+  request.chroma_v_first = (member_fourcc == FOURCC_NV21);
+  request.on_source_released = &release_held_gpu_copy_source;
+  request.user = held;
+  std::shared_ptr<void> job = platform_gpu_import_begin_copy(request);
+  if (!job) {
+    // Not started, so on_source_released will never run: undo the hold and
+    // hand the image back.
+    held->image = nullptr;
+    held->backend.reset();
+    delete held;
+    release_reader_slot_for_gpu_copy(*backend);
+    backend->gpu_copy_held.store(0, std::memory_order_release);
+  }
+  return job;
 }
 
 // Acquisition timing from AImage_getTimestamp, which carries the Camera2
@@ -1905,7 +2029,17 @@ void on_still_image_available(void* context, AImageReader* reader) {
                                    bytes->data(), &member_fourcc, &member_planes)
       : convert_acquired_image(image, burst->width, burst->height, burst->fourcc,
                                bytes->data());
-  AImage_delete(image);
+  // A published member (metering and AF bursts carry no notice targets) may
+  // also get a frozen GPU copy, taken from the same buffer the CPU copy just
+  // read. The job owns the image when it starts.
+  std::shared_ptr<void> gpu_copy_job;
+  if (converted && !burst->notice_targets.empty()) {
+    gpu_copy_job = try_begin_still_gpu_copy(backend, image, member_fourcc, member_planes,
+                                            burst->width, burst->height);
+  }
+  if (!gpu_copy_job) {
+    AImage_delete(image);
+  }
 
   {
     std::lock_guard<std::mutex> wl(burst->m);
@@ -1918,6 +2052,7 @@ void on_still_image_available(void* context, AImageReader* reader) {
       item.timestamp_ns = timestamp_ns;
       item.colorimetry = colorimetry_from_dataspace(
           backend->still_dataspace.load(std::memory_order_acquire));
+      item.gpu_copy_job = std::move(gpu_copy_job);
       item.ordinal = ordinal;
       burst->images.push_back(std::move(item));
     } else {
@@ -2975,6 +3110,8 @@ struct Camera2CameraProvider::CapturedMemberFrame {
   // Declared by the platform at acquisition, carried through because the
   // AImage is released long before the FrameView is assembled.
   PayloadColorimetry colorimetry{};
+  // See BurstCollector::Image::gpu_copy_job.
+  std::shared_ptr<void> gpu_copy_job;
   bool has_facts = false;
   ResultFacts facts{};
 };
@@ -3742,6 +3879,7 @@ void Camera2CameraProvider::teardown_session_locked_(
     backend->cfg_has_stream = false;
     backend->cfg_flow_is_pilot = false;
     backend->cfg_has_still = false;
+    backend->still_reader_gpu_sampled = false;
   }
 
   auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
@@ -4182,10 +4320,42 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
           }
         }
         if (want_still) {
-          ms = AImageReader_new(static_cast<int32_t>(still_width),
-                                static_cast<int32_t>(still_height),
-                                AIMAGE_FORMAT_YUV_420_888, kStillReaderMaxImages,
-                                &still_reader);
+          // GPU_SAMPLED_IMAGE alongside CPU_READ_OFTEN whenever the host can
+          // import native buffers, so a later compute-texture demand can copy
+          // a still on the GPU without rebuilding the session. Decided here,
+          // not on demand: a session rebuild costs 80-100 ms of capture
+          // downtime, the flag costs nothing (Quest 3, G6: CPU copy p50 0.34
+          // vs 0.35 ms, identical AHB size). Falls back to the plain reader.
+          bool still_gpu_sampled = false;
+          if (platform_gpu_import_can_copy_native_buffers()) {
+            if (__builtin_available(android 26, *)) {
+              ms = AImageReader_newWithUsage(
+                  static_cast<int32_t>(still_width), static_cast<int32_t>(still_height),
+                  AIMAGE_FORMAT_YUV_420_888,
+                  AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+                      AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN,
+                  kStillReaderMaxImages, &still_reader);
+              still_gpu_sampled = (ms == AMEDIA_OK && still_reader != nullptr);
+              if (!still_gpu_sampled) {
+                camera2_detail::log_line(
+                    "device=%llu GPU-sampled still reader refused (status=%d); "
+                    "falling back to CPU-only",
+                    static_cast<unsigned long long>(backend->device_instance_id),
+                    static_cast<int>(ms));
+                still_reader = nullptr;
+              }
+            }
+          }
+          if (!still_gpu_sampled) {
+            ms = AImageReader_new(static_cast<int32_t>(still_width),
+                                  static_cast<int32_t>(still_height),
+                                  AIMAGE_FORMAT_YUV_420_888, kStillReaderMaxImages,
+                                  &still_reader);
+          }
+          {
+            std::lock_guard<std::mutex> bl(backend->m);
+            backend->still_reader_gpu_sampled = still_gpu_sampled;
+          }
           if (ms != AMEDIA_OK || !still_reader) {
             local.error = ProviderError::ERR_PLATFORM_CONSTRAINT;
             unwind();
@@ -4355,6 +4525,30 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
         static_cast<unsigned long long>(device_instance_id),
         stream_width, stream_height);
   }
+  return ProviderResult::success();
+}
+
+ProviderResult Camera2CameraProvider::set_capture_gpu_compute_sidecar_demand(
+    uint64_t device_instance_id, bool demanded) {
+  if (!initialized_.load(std::memory_order_acquire)) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (demanded && !platform_gpu_import_can_copy_native_buffers()) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  std::shared_ptr<DeviceBackend> backend;
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    auto it = devices_.find(device_instance_id);
+    if (it == devices_.end() || !it->second.open || !it->second.backend) {
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+    }
+    backend = it->second.backend;
+  }
+  backend->gpu_compute_sidecar_demanded.store(demanded, std::memory_order_release);
+  camera2_detail::log_line("device=%llu gpu compute sidecar %s",
+                           static_cast<unsigned long long>(device_instance_id),
+                           demanded ? "armed" : "disarmed");
   return ProviderResult::success();
 }
 
@@ -5612,6 +5806,7 @@ bool Camera2CameraProvider::capture_burst_(
     out_frames[i].has_timestamp = img.has_timestamp;
     out_frames[i].timestamp_ns = img.timestamp_ns;
     out_frames[i].colorimetry = img.colorimetry;
+    out_frames[i].gpu_copy_job = img.gpu_copy_job;
 
     // Pair by sensor timestamp. Positional pairing is only sound for a single
     // capture, where there is nothing to confuse it with; within a real burst
@@ -6543,6 +6738,36 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
       fv.requested_retained_plan = job.request.requested_retained_plan;
       fv.release = &camera2_detail::release_capture_frame;
       fv.release_user = new camera2_detail::CaptureFrameLease{captured.bytes};
+      // The member's frozen GPU copy, when one was started at arrival. Waited
+      // for here, bounded, so it rides the same FrameView as the CPU payload;
+      // one that misses the bound is dropped and the member stays CPU-only.
+      // Core keeps it only if its planes match this member's format/extent.
+      if (captured.gpu_copy_job) {
+        std::shared_ptr<void> sidecar = platform_gpu_import_finish_copy(
+            captured.gpu_copy_job,
+            static_cast<uint64_t>(kStillGpuCopyFinishTimeoutMs) * 1000000ull);
+        uint32_t sidecar_planes = 0;
+        GpuBackingPlaneDescriptor shapes[kMaxGpuBackingPlanes]{};
+        if (sidecar && member_is_planar &&
+            describe_gpu_compute_sidecar_planes(fv.format_fourcc, fv.width, fv.height,
+                                                sidecar_planes, shapes)) {
+          fv.gpu_compute_sidecar = std::move(sidecar);
+          RetainedGpuBackingDescriptor& d = fv.gpu_compute_sidecar_descriptor;
+          d.valid = true;
+          d.stream_id = 0;
+          d.backing_id =
+              next_gpu_backing_identity_.fetch_add(1, std::memory_order_relaxed) + 1;
+          d.width = fv.width;
+          d.height = fv.height;
+          d.layout_kind = GpuBackingLayoutKind::OPAQUE_EXTERNAL;
+          d.stride_bytes = 0;
+          d.format_fourcc = fv.format_fourcc;
+          d.plane_count = sidecar_planes;
+          for (uint32_t p = 0; p < sidecar_planes; ++p) {
+            d.planes[p] = shapes[p];
+          }
+        }
+      }
       strand_.post_frame(fv);
 
       // Realized per-image camera facts, straight out of this member's own

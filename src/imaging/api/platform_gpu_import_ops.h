@@ -27,7 +27,16 @@ struct PlatformGpuCopyRequest {
   bool chroma_v_first = false;
   // Called exactly once, on an unspecified thread, when the GPU no longer reads
   // the buffer -- after the copy has executed, or straight away if it never
-  // will. Only called when begin_copy returned a job.
+  // will. Only called when begin_copy returned a job, and called whether or
+  // not finish_copy is ever called: a provider may drop a job it no longer
+  // wants (a failed capture) and the source is still released.
+  //
+  // Must not depend on the host's render or main thread making progress. The
+  // provider counts a held source as live reader work, and its session
+  // teardown waits (bounded) for the release; Godot's main thread can be
+  // blocked in a synchronous CamBANG command that is waiting on that teardown,
+  // and under XR on Android the render thread IS the main thread. Signal it
+  // from a fence wait the implementation owns.
   void (*on_source_released)(void* user) = nullptr;
   void* user = nullptr;
 };

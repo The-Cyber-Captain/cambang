@@ -299,6 +299,12 @@ public:
       uint64_t device_instance_id,
       uint64_t root_id) override;
   ProviderResult close_device(uint64_t device_instance_id) override;
+  // Arms (or disarms) a frozen GPU copy of each still member, for
+  // compute-texture demand. NOT_SUPPORTED unless the host can import this
+  // platform's native camera buffers; otherwise only a flag on the open
+  // device's backend, so it is prompt on the core thread.
+  ProviderResult set_capture_gpu_compute_sidecar_demand(uint64_t device_instance_id,
+                                                        bool demanded) override;
 
   ProviderResult create_stream(const StreamRequest& req) override;
   ProviderResult destroy_stream(uint64_t stream_id) override;
@@ -350,6 +356,12 @@ private:
   // widest measured window, and is paid only by a capture that is genuinely
   // short -- one that already has every member never waits.
   static constexpr uint32_t kSequenceEndInFlightGraceMs = 50;
+  // Bound on waiting, before a still member is posted, for its GPU copy to be
+  // submitted. Measured on Quest 3 (G6): ~0.3 ms of submit work and ~0.85 ms of
+  // GPU time per 1280x1280 NV21 still once the pipeline exists. A copy that
+  // misses this is abandoned and the member posts CPU-only -- it never delays
+  // a capture by more than this.
+  static constexpr uint32_t kStillGpuCopyFinishTimeoutMs = 50;
   // Session creation is the slowest bounded step (the HAL allocates buffers
   // for every output), so this is deliberately larger than the WinRT
   // provider's equivalent.
@@ -746,6 +758,8 @@ private:
 
   CBProviderStrand strand_;
   IProviderCallbacks* callbacks_ = nullptr;
+  // Provider-unique, never-zero GPU backing identities (descriptor contract).
+  std::atomic<uint64_t> next_gpu_backing_identity_{0};
   std::atomic<bool> initialized_{false};
   std::atomic<bool> shutting_down_{false};
 
