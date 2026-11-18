@@ -488,14 +488,19 @@ func _run_compute(rd: RenderingDevice, rd_texture: RID, result, plane_count: int
 	var reference_sum := 0
 	var reference_label := ""
 	if plane_count > 1:
-		var plane_img: Image = (texture as Texture2D).get_image()
-		if plane_img == null:
-			_fail("could not read back plane 0 for the CPU reference")
+		# Read through the RenderingDevice, not Texture2D.get_image(): a plane
+		# served from a frozen GPU copy is a GDExtension Texture2D, which has no
+		# get_image() override in Godot 4.5 and returns null. What this proves
+		# on that row is that the compute dispatch saw what the GPU texture
+		# holds; that the GPU copy equals the CPU planes byte for byte is proven
+		# host-natively by provider_compliance_verify.
+		var pdata: PackedByteArray = rd.texture_get_data(rd_texture, 0)
+		if pdata.is_empty():
+			_fail("could not read back plane 0 through the RenderingDevice for the reference")
 			return false
-		var pdata: PackedByteArray = plane_img.get_data()
 		for i in range(pdata.size()):
 			reference_sum += pdata[i]
-		reference_label = "plane0(%s)" % plane_img.get_format()
+		reference_label = "plane0(rd bytes=%d)" % pdata.size()
 	else:
 		var image: Image = result.to_image()
 		if image == null:
