@@ -1165,6 +1165,7 @@ if build_gde_graph:
         os.path.join(gde_obj_dir, "godot", "stream_compute_texture.cpp"),
         os.path.join(gde_obj_dir, "godot", "godot_gpu_display_service.cpp"),
         os.path.join(gde_obj_dir, "godot", "result_access_cost_evidence.cpp"),
+        os.path.join(gde_obj_dir, "godot", "result_conversion_gate.cpp"),
         os.path.join(gde_obj_dir, "godot", "retained_result_access_calibration.cpp"),
         os.path.join(gde_obj_dir, "godot", "synthetic_gpu_backing_bridge.cpp"),
     ]

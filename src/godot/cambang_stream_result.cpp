@@ -23,6 +23,7 @@
 #include "godot/colorimetry_convert.h"
 #include "godot/stream_compute_texture.h"
 #include "godot/result_access_cost_evidence.h"
+#include "godot/result_conversion_gate.h"
 #include "godot/cambang_stream_result_internal.h"
 
 namespace cambang {
@@ -794,6 +795,11 @@ godot::Variant CamBANGStreamResult::get_display_view() const {
 }
 
 godot::Ref<godot::Image> CamBANGStreamResult::to_image() const {
+  // Any thread (result contract).
+  const ResultConversionScope scope;
+  if (!scope.admitted()) {
+    return godot::Ref<godot::Image>();
+  }
   return perform_stream_to_image_access(data_);
 }
 

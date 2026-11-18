@@ -1142,6 +1142,24 @@ In particular:
 Operation Support populated from the current Backing State and the implemented
 access paths, not a per-call route-economics recalculation.
 
+**Threads.** `CaptureResult.to_image()`, `CaptureResult.to_image_member()` and
+`StreamResult.to_image()` may be called from any thread, for every member and
+payload kind, and behave the same on every thread. A capture result's data
+never changes after it is handed out, and the conversion reads only that data:
+a CPU payload is converted directly, and a GPU-only member's materialization
+copies its retained bytes under the backing's own lock, never a RenderingDevice
+readback. (A stream result's GPU-only live backing is rewritten in place by its
+producer under that same lock, so a call returns one whole frame, on any
+thread.) The access observation a capture conversion feeds to retained-access
+calibration reads main-thread-owned server state, so off the main thread it is
+queued and reported by `CamBANGServer`'s next main-thread tick (bounded;
+any still queued at `stop()` are discarded with the session). The shared
+bookkeeping a conversion touches is never destroyed, and extension teardown
+waits for conversions in progress before it destroys the server or any bridge;
+a conversion started after teardown has begun returns null. A consumer that
+saves every 1280x1280 still can therefore move the conversion (about 8 ms per
+member on a Quest 3) off the main thread.
+
 Recommended first-pass capability/cost states:
 
 - `READY`

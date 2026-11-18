@@ -7,6 +7,7 @@
 #include "godot/capture_compute_texture.h"
 #include "godot/godot_gpu_display_service.h"
 #include "godot/result_access_cost_evidence.h"
+#include "godot/result_conversion_gate.h"
 
 #include <chrono>
 #include <mutex>
@@ -30,7 +31,10 @@ namespace {
 // for ~5s of Godot-thread work in an 87s soak. Splitting the counts is what
 // made it findable; keeping them split is what will make a regression here
 // findable again.
-std::mutex g_capture_materialization_counter_mutex;
+//
+// Never destroyed: to_image() may run on a worker thread, which can still be
+// here while static destructors run at exit.
+std::mutex& g_capture_materialization_counter_mutex = *new std::mutex();
 uint64_t g_capture_materializations_application = 0;
 uint64_t g_capture_materializations_calibration = 0;
 
@@ -372,11 +376,22 @@ godot::Ref<godot::Image> perform_capture_to_image_member_gpu_materializer_access
 }
 
 godot::Ref<godot::Image> CamBANGCaptureResult::to_image_member(int image_member_index) const {
+  // Any thread (result contract). Off the main thread nothing here reaches
+  // server_: the observation goes through the gate's queue to the server's
+  // next main-thread tick.
+  const ResultConversionScope scope;
+  if (!scope.admitted()) {
+    return godot::Ref<godot::Image>();
+  }
   godot::Ref<godot::Image> image =
       perform_capture_to_image_member_access(data_, image_member_index);
-  if (server_ && data_ && image_member_index >= 0) {
-    server_->report_capture_result_member_observation(
-        data_, static_cast<uint32_t>(image_member_index));
+  if (data_ && image_member_index >= 0) {
+    if (!result_conversion_on_main_thread()) {
+      queue_off_main_capture_observation(data_, static_cast<uint32_t>(image_member_index));
+    } else if (server_) {
+      server_->report_capture_result_member_observation(
+          data_, static_cast<uint32_t>(image_member_index));
+    }
   }
   return image;
 }

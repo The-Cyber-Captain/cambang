@@ -276,6 +276,8 @@ public:
   uint64_t device_capture_internal_id(const godot::String& public_id) const;
   uint64_t rig_capture_internal_id(const godot::String& public_id) const;
   godot::TypedArray<CamBANGCaptureResult> get_capture_result_set_by_id(const godot::String& capture_id) const;
+  // Main thread only: reads main-thread-owned boundary state. Off-main callers
+  // (to_image() from a worker) queue through result_conversion_gate instead.
   void report_capture_result_member_observation(
       const SharedCaptureResultData& data,
       uint32_t image_member_index) const;
@@ -373,6 +375,8 @@ private:
   // state_published for this boundary observation.
   bool _consume_latest_core_snapshot();
   bool is_public_boundary_ready_() const;
+  // Main thread: reports the observations queued by off-main to_image() calls.
+  void _drain_off_main_capture_observations_();
   bool is_provider_discovery_available_() const;
   bool is_synthetic_timeline_session_active_() const;
   void _clear_pending_scenario_start_();

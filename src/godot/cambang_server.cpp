@@ -1,6 +1,7 @@
 #include "godot/cambang_server.h"
 #include "godot/camera_fact_convert.h"
 #include "godot/cambang_capture_result.h"
+#include "godot/result_conversion_gate.h"
 #include "godot/capture_compute_texture.h"
 #include "godot/stream_compute_texture.h"
 #include "godot/cambang_device.h"
@@ -1815,6 +1816,9 @@ void CamBANGServer::stop() {
   // undelivered notices of this session are discarded rather than emitted
   // against ids that are about to stop resolving.
   _remove_capture_image_timing_listener_();
+  // Observations queued by worker conversions of this session's results are
+  // not reported against the next session.
+  discard_off_main_capture_observations();
   // Before the live-wrapper warning: CamBANG's own capture compute-texture
   // cache holds a Ref to every plane it produced, and those references are not
   // the caller's. Counting them made every session that ever requested a plane
@@ -3167,6 +3171,12 @@ void CamBANGServer::report_capture_result_member_observation(
       const_cast<CoreRuntime*>(&runtime_));
 }
 
+void CamBANGServer::_drain_off_main_capture_observations_() {
+  for (const CaptureObservation& entry : take_off_main_capture_observations()) {
+    report_capture_result_member_observation(entry.first, entry.second);
+  }
+}
+
 bool CamBANGServer::demand_capture_gpu_compute_sidecar(uint64_t device_instance_id) {
   if (device_instance_id == 0 || !is_public_boundary_ready_()) {
     return false;
@@ -3672,6 +3682,7 @@ void CamBANGServer::_on_godot_process_frame() {
   // Ahead of capture_finished: an early timing notice must never be heard
   // after the settlement of the capture it belongs to.
   _drain_capture_image_timing();
+  _drain_off_main_capture_observations_();
   // Deliberately outside _consume_latest_core_snapshot(): that function has
   // several early returns (no publish this tick, no session, gen gate), and a
   // settlement queue that only drains when a snapshot happens to be consumed

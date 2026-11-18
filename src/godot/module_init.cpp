@@ -20,6 +20,7 @@
 #include "godot/cambang_stream_result_internal.h"
 #include "godot/synthetic_gpu_backing_bridge.h"
 #include "godot/synthetic_gpu_backing_bridge_internal.h"
+#include "godot/result_conversion_gate.h"
 #if defined(__ANDROID__)
 #include "godot/platform_gpu_import_android.h"
 #endif
@@ -48,6 +49,7 @@ static void cambang_gde_initialize(godot::ModuleInitializationLevel p_level) {
     cambang::install_platform_gpu_import_android();
 #endif
     cambang::install_live_cpu_display_bridge();
+    cambang::result_conversion_gate_open();
 
     // Create and register the Engine singleton.
     // Note: Engine singletons are not part of the scene tree; they do not receive _process.
@@ -62,6 +64,10 @@ static void cambang_gde_uninitialize(godot::ModuleInitializationLevel p_level) {
         return;
     }
 
+    // First: to_image() may be running on a worker thread. No conversion is
+    // admitted after this, and every admitted one has finished, before the
+    // server or any bridge it reads is destroyed.
+    cambang::result_conversion_gate_close_and_wait();
     if (g_server) {
         g_server->stop();
         godot::Engine::get_singleton()->unregister_singleton("CamBANGServer");
