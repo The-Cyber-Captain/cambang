@@ -254,10 +254,8 @@ ScopedResourceTelemetryKey make_unknown_scoped_resource_telemetry() noexcept {
 }
 
 ResourceAggregateTelemetry& global_resource_aggregate_telemetry() noexcept {
-  // Never destroyed: a result's last reference may be dropped on a worker
-  // thread, whose release reports here while static destructors run at exit.
-  static ResourceAggregateTelemetry* telemetry = new ResourceAggregateTelemetry();
-  return *telemetry;
+  static ResourceAggregateTelemetry telemetry;
+  return telemetry;
 }
 
 } // namespace cambang

@@ -4,17 +4,23 @@
 // CaptureResult.to_image_member(), StreamResult.to_image()), which the result
 // contract allows on any thread.
 //
-// What a conversion touches off the main thread is either immutable result
-// data held by the caller's own reference, or process-lifetime state that is
-// deliberately never destroyed. The one remaining hazard is extension
-// teardown: CamBANGServer and the GPU bridges are torn down while a worker may
-// still be converting. Teardown therefore closes this gate first and waits for
-// every admitted conversion to leave before anything is destroyed.
+// A conversion off the main thread reads the result data held by the caller's
+// own reference, plus mutex-guarded bookkeeping. The hazard is extension
+// teardown: CamBANGServer and the GPU bridges are destroyed while a conversion
+// that started earlier may still be running. Godot 4.5.2 idles its worker pool
+// and shuts GDScript down before it tears CamBANG down, so no new GDScript call
+// can arrive then, but a call already in flight can. Teardown therefore closes
+// this gate first and waits for every admitted conversion to leave before
+// anything is destroyed; a conversion arriving after that returns null. The
+// gate's own state is trivially destructible, so that refusal holds even for a
+// call arriving after static destructors have run. Everything else here is an
+// ordinary destructible object: a caller finishes or waits for its threads
+// before quit.
 //
 // The capture-result observation a conversion feeds to retained-access
 // calibration reads main-thread-owned server state, so off the main thread it
-// is queued here and reported by the server's main-thread tick. The queue is
-// process-lifetime state too: a worker never reaches the server itself.
+// is queued here and reported by the server's main-thread tick: a worker never
+// reaches the server itself.
 
 #include <cstdint>
 #include <utility>

@@ -31,10 +31,7 @@ namespace {
 // for ~5s of Godot-thread work in an 87s soak. Splitting the counts is what
 // made it findable; keeping them split is what will make a regression here
 // findable again.
-//
-// Never destroyed: to_image() may run on a worker thread, which can still be
-// here while static destructors run at exit.
-std::mutex& g_capture_materialization_counter_mutex = *new std::mutex();
+std::mutex g_capture_materialization_counter_mutex;
 uint64_t g_capture_materializations_application = 0;
 uint64_t g_capture_materializations_calibration = 0;
 
@@ -379,18 +376,28 @@ godot::Ref<godot::Image> CamBANGCaptureResult::to_image_member(int image_member_
   // Any thread (result contract). Off the main thread nothing here reaches
   // server_: the observation goes through the gate's queue to the server's
   // next main-thread tick.
+  //
+  // Owning copies first, and nothing read through `this` after them: a caller
+  // may drop its last reference on another thread while this call runs, and
+  // the conversion and the bookkeeping after it must then still read live
+  // data. (The copy itself is the one read of this object; a caller that
+  // frees the object before the call reaches it is outside the contract.)
+  // Taken after admission, so it is released -- possibly as the last owner --
+  // before the scope leaves the gate, never during extension teardown.
   const ResultConversionScope scope;
   if (!scope.admitted()) {
     return godot::Ref<godot::Image>();
   }
+  const SharedCaptureResultData data = data_;
+  CamBANGServer* const server = server_;
   godot::Ref<godot::Image> image =
-      perform_capture_to_image_member_access(data_, image_member_index);
-  if (data_ && image_member_index >= 0) {
+      perform_capture_to_image_member_access(data, image_member_index);
+  if (data && image_member_index >= 0) {
     if (!result_conversion_on_main_thread()) {
-      queue_off_main_capture_observation(data_, static_cast<uint32_t>(image_member_index));
-    } else if (server_) {
-      server_->report_capture_result_member_observation(
-          data_, static_cast<uint32_t>(image_member_index));
+      queue_off_main_capture_observation(data, static_cast<uint32_t>(image_member_index));
+    } else if (server) {
+      server->report_capture_result_member_observation(
+          data, static_cast<uint32_t>(image_member_index));
     }
   }
   return image;

@@ -58,14 +58,12 @@ struct RouteEvidence final {
   int last_reported_capability = static_cast<int>(ResultCapability::UNSUPPORTED);
 };
 
-// Never destroyed: to_image() may run on a worker thread, which can still be
-// recording here while static destructors run at exit.
-std::mutex& g_mutex = *new std::mutex();
-std::map<std::string, RouteEvidence>& g_routes = *new std::map<std::string, RouteEvidence>();
-std::set<OperationIdentity>& g_seen_fresh_identities = *new std::set<OperationIdentity>();
-std::deque<OperationIdentity>& g_seen_fresh_order = *new std::deque<OperationIdentity>();
-std::map<std::string, std::set<uint64_t>>& g_postures_by_route = *new std::map<std::string, std::set<uint64_t>>();
-std::map<OperationIdentity, RecordedAccessMeasurement>& g_latest_measurements = *new std::map<OperationIdentity, RecordedAccessMeasurement>();
+std::mutex g_mutex;
+std::map<std::string, RouteEvidence> g_routes;
+std::set<OperationIdentity> g_seen_fresh_identities;
+std::deque<OperationIdentity> g_seen_fresh_order;
+std::map<std::string, std::set<uint64_t>> g_postures_by_route;
+std::map<OperationIdentity, RecordedAccessMeasurement> g_latest_measurements;
 
 uint64_t infer_last_bytes(const SharedStreamResultData& data) noexcept {
   if (!data) {

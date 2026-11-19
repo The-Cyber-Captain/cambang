@@ -49,15 +49,13 @@ enum class RenderReleasePhase {
   Draining,
 };
 
-// Never destroyed: a result converted or released on a worker thread can
-// still reach this state while static destructors run at exit.
-static std::mutex& g_pending_release_mutex = *new std::mutex();
-static std::condition_variable& g_pending_release_changed = *new std::condition_variable();
+static std::mutex g_pending_release_mutex;
+static std::condition_variable g_pending_release_changed;
 // RIDs that must be released from the render thread.
-static std::vector<godot::RID>& g_pending_releases = *new std::vector<godot::RID>();
+static std::vector<godot::RID> g_pending_releases;
 // Run on the render thread right after the drain that freed their RIDs. A hook
 // belongs to a RID queued above, so it never runs before that RID is freed.
-static std::vector<std::function<void()>>& g_pending_release_hooks = *new std::vector<std::function<void()>>();
+static std::vector<std::function<void()>> g_pending_release_hooks;
 static std::size_t g_release_producers = 0;
 static bool g_pending_release_drain_scheduled = false;
 static bool g_pending_release_drain_running = false;
@@ -322,7 +320,7 @@ struct PendingTextureWrapperRelease final {
 
 // Texture2DRD wrappers that must be unreferenced on the render thread because
 // their destructor frees Godot's internal RenderingServer texture wrapper.
-static std::vector<PendingTextureWrapperRelease>& g_pending_texture_wrapper_releases = *new std::vector<PendingTextureWrapperRelease>();
+static std::vector<PendingTextureWrapperRelease> g_pending_texture_wrapper_releases;
 
 static bool enqueue_pending_release(const godot::RID& rid, std::function<void()> after_free) {
   if (!rid.is_valid()) {

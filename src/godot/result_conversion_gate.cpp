@@ -1,8 +1,10 @@
 #include "godot/result_conversion_gate.h"
 
+#include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <mutex>
+#include <thread>
+#include <type_traits>
 
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -11,27 +13,30 @@ namespace cambang {
 
 namespace {
 
-// Process lifetime, never destroyed: a worker may still reach this state while
-// static destructors run at exit.
-struct GateState final {
-  std::mutex mutex;
-  std::condition_variable idle;
-  bool open = false;
-  uint64_t in_flight = 0;
+// The gate itself is trivially destructible, so it stays readable for the
+// whole life of the process: a call that arrives after teardown, even after
+// static destructors have run, reads a closed gate and returns null.
+//
+// Admission increments first and then checks open; teardown clears open and
+// then waits for in_flight to reach zero. Both are sequentially consistent, so
+// either teardown sees the increment and waits for it, or the conversion sees
+// the gate closed and backs out.
+std::atomic<bool> g_open{false};
+std::atomic<uint64_t> g_in_flight{0};
+static_assert(std::is_trivially_destructible_v<std::atomic<bool>>);
+static_assert(std::is_trivially_destructible_v<std::atomic<uint64_t>>);
 
-  std::mutex observations_mutex;
-  std::vector<CaptureObservation> observations;
-};
-
-GateState& gate() {
-  static GateState* state = new GateState();
-  return *state;
-}
+// Ordinary statics. Only an admitted conversion or the main thread reaches
+// them, and teardown waits for the admitted conversions and then empties the
+// queue (CamBANGServer::stop()) before static destructors run.
+std::mutex g_observations_mutex;
+std::vector<CaptureObservation> g_observations;
 
 constexpr size_t kMaxOffMainCaptureObservations = 256;
 // A conversion is pure CPU work of tens of milliseconds at most; the bound only
 // keeps a wedged worker from hanging engine shutdown, and is reported if hit.
 constexpr auto kTeardownWait = std::chrono::seconds(5);
+constexpr auto kTeardownPoll = std::chrono::milliseconds(1);
 
 } // namespace
 
@@ -41,22 +46,17 @@ bool result_conversion_on_main_thread() {
 }
 
 ResultConversionScope::ResultConversionScope() {
-  GateState& g = gate();
-  std::lock_guard<std::mutex> lock(g.mutex);
-  if (g.open) {
-    ++g.in_flight;
+  g_in_flight.fetch_add(1);
+  if (g_open.load()) {
     admitted_ = true;
+  } else {
+    g_in_flight.fetch_sub(1);
   }
 }
 
 ResultConversionScope::~ResultConversionScope() {
-  if (!admitted_) {
-    return;
-  }
-  GateState& g = gate();
-  std::lock_guard<std::mutex> lock(g.mutex);
-  if (--g.in_flight == 0) {
-    g.idle.notify_all();
+  if (admitted_) {
+    g_in_flight.fetch_sub(1);
   }
 }
 
@@ -65,21 +65,20 @@ void result_conversion_gate_open() {
   // first call; make that first call here, on the main thread, so a worker's
   // main-thread check only ever reads it.
   (void)godot::OS::get_singleton();
-  GateState& g = gate();
-  std::lock_guard<std::mutex> lock(g.mutex);
-  g.open = true;
+  g_open.store(true);
 }
 
 void result_conversion_gate_close_and_wait() {
-  GateState& g = gate();
-  std::unique_lock<std::mutex> lock(g.mutex);
-  g.open = false;
-  if (!g.idle.wait_for(lock, kTeardownWait, [&g] { return g.in_flight == 0; })) {
-    const uint64_t remaining = g.in_flight;
-    lock.unlock();
-    godot::UtilityFunctions::push_error(
-        "[CamBANG] extension teardown: ", static_cast<int64_t>(remaining),
-        " result conversion(s) still running after 5 s; tearing down regardless.");
+  g_open.store(false);
+  const auto deadline = std::chrono::steady_clock::now() + kTeardownWait;
+  while (g_in_flight.load() != 0) {
+    if (std::chrono::steady_clock::now() >= deadline) {
+      godot::UtilityFunctions::push_error(
+          "[CamBANG] extension teardown: ", static_cast<int64_t>(g_in_flight.load()),
+          " result conversion(s) still running after 5 s; tearing down regardless.");
+      return;
+    }
+    std::this_thread::sleep_for(kTeardownPoll);
   }
 }
 
@@ -87,18 +86,16 @@ void queue_off_main_capture_observation(const SharedCaptureResultData& data, uin
   if (!data) {
     return;
   }
-  GateState& g = gate();
-  std::lock_guard<std::mutex> lock(g.observations_mutex);
-  if (g.observations.size() < kMaxOffMainCaptureObservations) {
-    g.observations.emplace_back(data, image_member_index);
+  std::lock_guard<std::mutex> lock(g_observations_mutex);
+  if (g_observations.size() < kMaxOffMainCaptureObservations) {
+    g_observations.emplace_back(data, image_member_index);
   }
 }
 
 std::vector<CaptureObservation> take_off_main_capture_observations() {
   std::vector<CaptureObservation> out;
-  GateState& g = gate();
-  std::lock_guard<std::mutex> lock(g.observations_mutex);
-  out.swap(g.observations);
+  std::lock_guard<std::mutex> lock(g_observations_mutex);
+  out.swap(g_observations);
   return out;
 }
 

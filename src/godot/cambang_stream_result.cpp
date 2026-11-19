@@ -795,12 +795,16 @@ godot::Variant CamBANGStreamResult::get_display_view() const {
 }
 
 godot::Ref<godot::Image> CamBANGStreamResult::to_image() const {
-  // Any thread (result contract).
+  // Any thread (result contract). An owning copy first, and nothing read
+  // through `this` after it: the caller may drop its last reference on another
+  // thread while this call runs (see CamBANGCaptureResult::to_image_member()).
+  // Taken after admission, so it is released before the scope leaves the gate.
   const ResultConversionScope scope;
   if (!scope.admitted()) {
     return godot::Ref<godot::Image>();
   }
-  return perform_stream_to_image_access(data_);
+  const SharedStreamResultData data = data_;
+  return perform_stream_to_image_access(data);
 }
 
 godot::Variant CamBANGStreamResult::calibrate_display_view_for_retained_access(const SharedStreamResultData& data) {
