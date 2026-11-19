@@ -1146,7 +1146,9 @@ access paths, not a per-call route-economics recalculation.
 `StreamResult.to_image()` are callable from any thread, for every member and
 payload kind, and behave the same on every thread; a conversion started after
 the extension begins teardown returns null; callers must finish or wait for
-their threads before quit. A capture result's data
+their threads before quit. The calling thread must hold its own reference to
+the result for the duration of the call; a result freed while a call is in
+progress is undefined. A capture result's data
 never changes after it is handed out, and the conversion reads only that data:
 a CPU payload is converted directly, and a GPU-only member's materialization
 copies its retained bytes under the backing's own lock, never a RenderingDevice
