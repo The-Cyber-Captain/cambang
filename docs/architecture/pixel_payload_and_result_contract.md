@@ -1142,6 +1142,15 @@ In particular:
 Operation Support populated from the current Backing State and the implemented
 access paths, not a per-call route-economics recalculation.
 
+**Threads.** `CaptureResult.to_image()`, `CaptureResult.to_image_member()` and
+`StreamResult.to_image()` are callable from any thread. The calling thread
+must hold its own reference to the result for the entire call and callers must
+finish or wait for their threads before quitting. A conversion started after
+extension teardown begins returns null; teardown waits up to five seconds for
+conversions already in progress before reporting a timeout and continuing.
+Capture conversion observations produced off the main thread are queued for the
+next main-thread tick; queued observations are discarded at stop.
+
 Recommended first-pass capability/cost states:
 
 - `READY`
@@ -1292,6 +1301,30 @@ For a capture member that retains both a current CPU sidecar and a GPU primary
 artifact, `to_image_member()` prefers the current CPU bytes. The GPU
 materializer is used only when no current CPU sidecar is available. Capability
 and access-cost evidence must describe the route actually selected.
+
+### Provider-owned capture backing
+
+An opt-in still capture may offer a `CamBANGGpuBacking` for a specific
+capture member. The provider may offer backing only when it can associate its
+GPU input with that same acquired member. The application claims the backing
+once and may submit multiple operations while it holds a reference. Unclaimed
+offers expire, and accepted GPU work retains the backing until the work retires.
+
+The shader input describes read-only captured samples, their logical layout
+and visible extent, their mapping to the capture member's pixel coordinates,
+and their colour interpretation. If the native input differs in crop,
+orientation, resolution, sample layout, or colour encoding, the provider
+must accurately describe the relationship or produce the declared view on the
+GPU. A provider that cannot establish the relationship can report the backing
+unavailable while preserving the ordinary capture result.
+
+The camera surface, graphics API, synchronization, memory budget, and physical
+texture layout are provider implementation details. The compute path must
+consume the camera data on the GPU and return only the caller's bounded result.
+Ordinary CPU image access continues through `to_image()`. Godot's renderer
+does not determine whether this provider-owned backing can be used. The common
+shader binding layout and accepted program representations require qualification
+across providers.
 
 ### 11.6.1 Capture Compute Texture
 

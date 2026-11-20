@@ -39,6 +39,7 @@
 
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -59,7 +60,7 @@ public:
   ProviderResult trigger_capture(const CaptureRequest& req) override {
     {
       std::lock_guard<std::mutex> lock(mu_);
-      accepted_.push_back(req.capture_id);
+      accepted_.push_back({req.capture_id, req.keep_gpu_backing});
     }
     return ProviderResult::success();
   }
@@ -90,6 +91,14 @@ public:
     std::lock_guard<std::mutex> lock(mu_);
     return aborted_.size();
   }
+  std::optional<bool> gpu_backing_requested(uint64_t capture_id) const {
+    std::lock_guard<std::mutex> lock(mu_);
+    for (const auto& request : accepted_) {
+      if (request.capture_id == capture_id) return request.keep_gpu_backing;
+    }
+    return std::nullopt;
+  }
+
   size_t accepted_count() const {
     std::lock_guard<std::mutex> lock(mu_);
     return accepted_.size();
@@ -248,7 +257,11 @@ private:
   StubProvider& inner_;
 
   mutable std::mutex mu_;
-  std::vector<uint64_t> accepted_;
+  struct AcceptedCapture {
+    uint64_t capture_id;
+    bool keep_gpu_backing;
+  };
+  std::vector<AcceptedCapture> accepted_;
   std::vector<uint64_t> aborted_;
 
   // Short by design; see the note at the top of this file.

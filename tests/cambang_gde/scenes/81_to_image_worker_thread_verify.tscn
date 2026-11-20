@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/81_to_image_worker_thread_verify.gd" id="1_script"]
+
+[node name="81_ToImageWorkerThreadVerify" type="Node"]
+script = ExtResource("1_script")

@@ -110,6 +110,12 @@ public:
   void set_capture_image_timing_listener(CaptureImageTimingListener listener);
   void clear_capture_image_timing_listener();
 
+  // The listener only enqueues a notice. It runs on the provider strand under
+  // the listener lock and must not call back into the runtime.
+  using CaptureGpuBackingListener = std::function<void(const CaptureGpuBackingNotice&)>;
+  void set_capture_gpu_backing_listener(CaptureGpuBackingListener listener);
+  void on_capture_gpu_backing_ready(const CaptureGpuBackingNotice& notice) override;
+
 private:
   uint32_t on_frame_ingress_enqueued_(uint64_t stream_id);
   void on_frame_ingress_failed_(uint64_t stream_id);
@@ -146,6 +152,9 @@ private:
   std::condition_variable timing_listener_idle_;
   std::shared_ptr<const CaptureImageTimingListener> timing_listener_;
   uint32_t timing_listener_in_flight_ = 0;
+
+  std::mutex gpu_backing_listener_mu_;
+  CaptureGpuBackingListener gpu_backing_listener_;
 
   mutable std::mutex ingress_mu_;
   std::unordered_map<uint64_t, uint32_t> stream_ingress_depth_;

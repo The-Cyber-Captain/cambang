@@ -58,7 +58,7 @@ public:
   // Returning the id is what lets a caller know what it is waiting for: record
   // it here, clear it on the matching completion signal, and outstanding work
   // is known without polling anything (4.5).
-  godot::Dictionary trigger_capture();
+  godot::Dictionary trigger_capture(const godot::Dictionary& options = {});
   godot::Ref<CamBANGCaptureResult> get_result() const;
   godot::Error set_warm_policy(const godot::Dictionary& policy);
   godot::Error set_still_capture_profile(const godot::Dictionary& profile);

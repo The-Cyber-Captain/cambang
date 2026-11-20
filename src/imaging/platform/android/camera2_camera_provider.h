@@ -137,6 +137,7 @@ private:
 // Opaque holder for per-device Camera2 objects + frame routing state.
 // Defined in the .cpp so no platform headers leak into this header.
 struct DeviceBackend;
+class Camera2CaptureGpuService;
 
 } // namespace camera2_detail
 
@@ -622,7 +623,8 @@ private:
       uint32_t stream_height,
       bool want_still,
       uint32_t still_width,
-      uint32_t still_height);
+      uint32_t still_height,
+      bool try_gpu_reader = false);
 
   // Tears the session down (session close, outputs, readers) on the control
   // thread and emits the AcquisitionSession destruction fact. Caller must
@@ -678,7 +680,8 @@ private:
       const std::vector<MemberRequestSpec>& specs,
       std::vector<CapturedMemberFrame>& out_frames,
       const char* purpose,
-      uint64_t capture_id) noexcept;
+      uint64_t capture_id,
+      const std::shared_ptr<camera2_detail::Camera2CaptureGpuService>& gpu_backings = {}) noexcept;
 
   // Single auto-exposed capture whose realized exposure/sensitivity become the
   // frozen reference every manual bracket member is derived from. Its image is
@@ -733,7 +736,8 @@ private:
       uint32_t still_width,
       uint32_t still_height,
       uint32_t flow_width = 0,
-      uint32_t flow_height = 0);
+      uint32_t flow_height = 0,
+      bool try_gpu_reader = false);
 
   // Runs the pilot stream flow and stops it again. Returns whether AE
   // reported convergence within the wait -- which some devices never do; see
@@ -759,6 +763,11 @@ private:
   std::map<uint64_t, DeviceState> devices_;   // key: device_instance_id
   std::map<uint64_t, StreamState> streams_;   // key: stream_id
   uint64_t provider_native_id_ = 0;
+
+  // Lazily opened by the first GPU capture request. Capture workers are joined
+  // before shutdown stops the service.
+  std::mutex gpu_backings_mutex_;
+  std::shared_ptr<camera2_detail::Camera2CaptureGpuService> gpu_backings_;
 
   // Capture executor state.
   mutable std::mutex capture_mutex_;

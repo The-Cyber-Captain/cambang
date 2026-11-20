@@ -748,6 +748,7 @@ bool CoreResultStore::try_build_capture_image_member_data_from_frame(
     return false;
   }
   out_member.acquisition_timing = frame.acquisition_timing;
+  out_member.capture_gpu_backing_offer = frame.capture_gpu_backing_offer;
   out_member.payload_kind = plan.primary_kind;
   out_member.retained_access_truth = build_capture_image_member_retained_access_truth(out_member);
   out_member.access_classification =
@@ -803,6 +804,7 @@ MutableCaptureResultData CoreResultStore::build_default_image_capture_result(
     return nullptr;
   }
   capture_result->default_image.acquisition_timing = frame.acquisition_timing;
+  capture_result->default_image.capture_gpu_backing_offer = frame.capture_gpu_backing_offer;
 
   // Derive from the already-assigned top-level fields (not frame.* again) so
   // image_properties cannot structurally drift from get_width()/get_height()/

@@ -6654,7 +6654,8 @@ bool CoreRuntime::materialize_capture_request_(uint64_t device_instance_id, Capt
 
 TryTriggerDeviceCaptureStatus CoreRuntime::trigger_device_capture_with_capture_id_(
     uint64_t device_instance_id,
-    uint64_t capture_id) {
+    uint64_t capture_id,
+    bool keep_gpu_backing) {
   assert(core_thread_.is_core_thread());
 
   if (device_instance_id == 0 || capture_id == 0) {
@@ -6717,6 +6718,7 @@ TryTriggerDeviceCaptureStatus CoreRuntime::trigger_device_capture_with_capture_i
     return TryTriggerDeviceCaptureStatus::Busy;
   }
   req.capture_id = capture_id;
+  req.keep_gpu_backing = keep_gpu_backing;
   if (!req.requested_retained_plan.valid) {
     return TryTriggerDeviceCaptureStatus::Unavailable;
   }
@@ -6759,18 +6761,19 @@ TryTriggerDeviceCaptureStatus CoreRuntime::trigger_device_capture_with_capture_i
 
 TryTriggerDeviceCaptureStatus CoreRuntime::try_trigger_device_capture_with_capture_id_for_server(
     uint64_t device_instance_id,
-    uint64_t capture_id) noexcept try {
+    uint64_t capture_id,
+    bool keep_gpu_backing) noexcept try {
   if (device_instance_id == 0 || capture_id == 0) {
     return TryTriggerDeviceCaptureStatus::InvalidArgument;
   }
 
   if (core_thread_.is_core_thread()) {
-    return trigger_device_capture_with_capture_id_(device_instance_id, capture_id);
+    return trigger_device_capture_with_capture_id_(device_instance_id, capture_id, keep_gpu_backing);
   }
 
   return run_synchronous_command_(TryTriggerDeviceCaptureStatus::Busy,
-      [this, device_instance_id, capture_id]() {
-    return trigger_device_capture_with_capture_id_(device_instance_id, capture_id);
+      [this, device_instance_id, capture_id, keep_gpu_backing]() {
+    return trigger_device_capture_with_capture_id_(device_instance_id, capture_id, keep_gpu_backing);
   });
 } catch (...) {
   return TryTriggerDeviceCaptureStatus::Busy;
@@ -7199,10 +7202,16 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_
 CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_with_capture_id_(
     uint64_t rig_id,
     uint64_t rig_capture_id,
-    const DeviceCaptureIdMinter& mint_device_capture_id) {
+    const DeviceCaptureIdMinter& mint_device_capture_id,
+    bool keep_gpu_backing) {
   assert(core_thread_.is_core_thread());
 
-  const RigPreflightResult preflight = preflight_rig_participants_materialize_(rig_id);
+  RigPreflightResult preflight = preflight_rig_participants_materialize_(rig_id);
+  if (keep_gpu_backing) {
+    for (auto& member : preflight.participants) {
+      member.request.keep_gpu_backing = true;
+    }
+  }
   return orchestrate_rig_capture_from_preflight_(
       rig_id, rig_capture_id, preflight, mint_device_capture_id);
 }
@@ -7325,10 +7334,11 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::smoke_orchestrate_rig_ca
 CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_with_capture_id_for_server(
     uint64_t rig_id,
     uint64_t rig_capture_id,
-    const DeviceCaptureIdMinter& mint_device_capture_id) noexcept try {
+    const DeviceCaptureIdMinter& mint_device_capture_id,
+    bool keep_gpu_backing) noexcept try {
   if (core_thread_.is_core_thread()) {
     return orchestrate_rig_capture_with_capture_id_(
-        rig_id, rig_capture_id, mint_device_capture_id);
+        rig_id, rig_capture_id, mint_device_capture_id, keep_gpu_backing);
   }
 
   RigTriggerOrchestrationResult fallback =
@@ -7338,9 +7348,9 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_
               rig_capture_id,
               static_cast<uint32_t>(ProviderError::ERR_BAD_STATE)));
   return run_synchronous_command_(fallback,
-      [this, rig_id, rig_capture_id, &mint_device_capture_id]() {
+      [this, rig_id, rig_capture_id, mint_device_capture_id, keep_gpu_backing]() {
     return orchestrate_rig_capture_with_capture_id_(
-        rig_id, rig_capture_id, mint_device_capture_id);
+        rig_id, rig_capture_id, mint_device_capture_id, keep_gpu_backing);
   });
 } catch (...) {
   return make_rig_orchestration_submission_failure(

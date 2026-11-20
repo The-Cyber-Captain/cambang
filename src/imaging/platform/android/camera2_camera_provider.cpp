@@ -7,6 +7,7 @@
 // images. Requires the Android NDK.
 
 #include "imaging/platform/android/camera2_camera_provider.h"
+#include "imaging/platform/android/camera2_gpu_device.h"
 
 #include "imaging/api/delivered_calibration.h"
 #include "imaging/api/frame_rate_selection.h"
@@ -779,9 +780,11 @@ struct BurstCollector {
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t fourcc = 0;
+  std::shared_ptr<Camera2CaptureGpuService> gpu_backings;
 
   struct Image {
     std::shared_ptr<std::vector<uint8_t>> bytes;
+    Camera2CaptureGpuService::Offer gpu_backing;
     bool has_timestamp = false;
     int64_t timestamp_ns = 0;
     // Which family member the device actually delivered, and how many CamBANG
@@ -796,6 +799,17 @@ struct BurstCollector {
     // timing notice already told the consumer which member it is.
     size_t ordinal = 0;
   };
+  struct RetiredSource {
+    // Destroy the image before dropping the reader that owns it.
+    std::shared_ptr<AImageReader> reader;
+    Camera2CaptureGpuService::OwnedImage image;
+    size_t ordinal;
+    int64_t timestamp_ns;
+    PayloadColorimetry colorimetry;
+    Camera2CaptureGpuService::Offer gpu_backing;
+  };
+  std::deque<RetiredSource> retired_sources;
+  bool accepting_retired_sources = true;
   std::vector<Image> images;      // completed conversions, in arrival order
   size_t failed_count = 0;        // onCaptureFailed + conversion failures
 
@@ -924,7 +938,7 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   ACaptureSessionOutput* stream_output = nullptr;
   ACaptureSessionOutput* still_output = nullptr;
   AImageReader* stream_reader = nullptr;
-  AImageReader* still_reader = nullptr;
+  std::shared_ptr<AImageReader> still_reader;
   ANativeWindow* stream_window = nullptr;
   ANativeWindow* still_window = nullptr;
 
@@ -961,6 +975,7 @@ struct DeviceBackend : std::enable_shared_from_this<DeviceBackend> {
   uint32_t cfg_stream_w = 0;
   uint32_t cfg_stream_h = 0;
   bool cfg_has_still = false;
+  bool cfg_gpu_still = false;
   uint32_t cfg_still_w = 0;
   uint32_t cfg_still_h = 0;
   bool repeating_active = false;
@@ -1706,6 +1721,59 @@ void on_stream_image_available(void* context, AImageReader* reader) {
   AImage_delete(image);
 }
 
+void finish_still_member(const std::shared_ptr<BurstCollector>& burst,
+                         Camera2CaptureGpuService::OwnedImage owner,
+                         size_t ordinal, int64_t timestamp_ns, PayloadColorimetry colorimetry,
+                         Camera2CaptureGpuService::Offer gpu_backing) {
+  AImage* const image = owner.get();
+  if (!image) {
+    {
+      std::lock_guard<std::mutex> lock(burst->m);
+      ++burst->failed_count;
+      ++burst->conversion_failed;
+    }
+    burst->cv.notify_all();
+    return;
+  }
+
+  // Planar capture takes the device's planes through unconverted, exactly as
+  // the stream path does. Sized from the descriptor so a planar buffer is
+  // w*h*3/2 rather than w*h*4.
+  const PixelFormatDescriptor burst_desc = describe_pixel_format(burst->fourcc);
+  const bool burst_is_planar =
+      burst_desc.valid && burst_desc.layout_class != PixelLayoutClass::Packed;
+  auto bytes = std::make_shared<std::vector<uint8_t>>(
+      min_tight_size_bytes(burst->fourcc, burst->width, burst->height));
+  uint32_t member_fourcc = burst->fourcc;
+  uint8_t member_planes = 0;
+  const bool converted = burst_is_planar
+      ? copy_acquired_image_planar(image, burst->width, burst->height,
+                                   bytes->data(), &member_fourcc, &member_planes)
+      : convert_acquired_image(image, burst->width, burst->height, burst->fourcc,
+                               bytes->data());
+  owner.reset();
+
+  {
+    std::lock_guard<std::mutex> wl(burst->m);
+    if (converted) {
+      BurstCollector::Image item;
+      item.bytes = std::move(bytes);
+      item.gpu_backing = std::move(gpu_backing);
+      item.fourcc = member_fourcc;
+      item.plane_count = member_planes;
+      item.has_timestamp = (timestamp_ns >= 0);
+      item.timestamp_ns = timestamp_ns;
+      item.colorimetry = colorimetry;
+      item.ordinal = ordinal;
+      burst->images.push_back(std::move(item));
+    } else {
+      ++burst->failed_count;
+      ++burst->conversion_failed;
+    }
+  }
+  burst->cv.notify_all();
+}
+
 void on_still_image_available(void* context, AImageReader* reader) {
   auto* ctx = static_cast<ListenerCtx*>(context);
   if (!ctx || !reader) return;
@@ -1721,9 +1789,11 @@ void on_still_image_available(void* context, AImageReader* reader) {
   // still queued on the old reader's looper arrives after it, and calling into
   // that reader is a use-after-free. Identity under backend.m is what separates
   // them, and teardown clears these pointers under the same lock.
+  std::shared_ptr<AImageReader> reader_owner;
   {
     std::lock_guard<std::mutex> bl(backend->m);
-    if (reader != backend->still_reader) return;
+    if (reader != backend->still_reader.get()) return;
+    reader_owner = backend->still_reader;
   }
 
   AImage* image = nullptr;
@@ -1890,42 +1960,38 @@ void on_still_image_available(void* context, AImageReader* reader) {
     }
   }
 
-  // Planar capture takes the device's planes through unconverted, exactly as
-  // the stream path does. Sized from the descriptor so a planar buffer is
-  // w*h*3/2 rather than w*h*4.
-  const PixelFormatDescriptor burst_desc = describe_pixel_format(burst->fourcc);
-  const bool burst_is_planar =
-      burst_desc.valid && burst_desc.layout_class != PixelLayoutClass::Packed;
-  auto bytes = std::make_shared<std::vector<uint8_t>>(
-      min_tight_size_bytes(burst->fourcc, burst->width, burst->height));
-  uint32_t member_fourcc = burst->fourcc;
-  uint8_t member_planes = 0;
-  const bool converted = burst_is_planar
-      ? copy_acquired_image_planar(image, burst->width, burst->height,
-                                   bytes->data(), &member_fourcc, &member_planes)
-      : convert_acquired_image(image, burst->width, burst->height, burst->fourcc,
-                               bytes->data());
-  AImage_delete(image);
-
-  {
-    std::lock_guard<std::mutex> wl(burst->m);
-    if (converted) {
-      BurstCollector::Image item;
-      item.bytes = std::move(bytes);
-      item.fourcc = member_fourcc;
-      item.plane_count = member_planes;
-      item.has_timestamp = (timestamp_ns >= 0);
-      item.timestamp_ns = timestamp_ns;
-      item.colorimetry = colorimetry_from_dataspace(
-          backend->still_dataspace.load(std::memory_order_acquire));
-      item.ordinal = ordinal;
-      burst->images.push_back(std::move(item));
-    } else {
-      ++burst->failed_count;
-      ++burst->conversion_failed;
+  const auto colorimetry = colorimetry_from_dataspace(
+      backend->still_dataspace.load(std::memory_order_acquire));
+  if (burst->gpu_backings) {
+    Camera2GpuSource source{reader_owner, image};
+    if (burst->gpu_backings->enqueue(source, burst->width, burst->height,
+            [collector = std::weak_ptr<BurstCollector>(burst), reader_owner,
+             strand = backend->strand, ordinal, timestamp_ns, colorimetry](
+                Camera2CaptureGpuService::OwnedImage retired_image,
+                Camera2CaptureGpuService::Offer gpu_backing) {
+              if (auto active = collector.lock()) {
+                std::lock_guard<std::mutex> lock(active->m);
+                if (!active->accepting_retired_sources) return;
+                if (strand && ordinal < active->notice_targets.size() && gpu_backing &&
+                    gpu_backing->is_available(CaptureGpuBackingOffer::Clock::now())) {
+                  strand->post_capture_gpu_backing_ready(
+                      {active->capture_id, active->notice_targets[ordinal].image_member_index,
+                       colorimetry, gpu_backing});
+                }
+                // The capture worker wakes to copy/convert the CPU companion.
+                // The GPU worker is then free to run application compute,
+                // even if this member cannot be converted for CPU access.
+                active->retired_sources.push_back(
+                    {reader_owner, std::move(retired_image), ordinal, timestamp_ns,
+                     colorimetry, std::move(gpu_backing)});
+                active->cv.notify_all();
+              }
+            })) {
+      return;
     }
   }
-  burst->cv.notify_all();
+  finish_still_member(burst, Camera2CaptureGpuService::OwnedImage(image, &AImage_delete),
+                      ordinal, timestamp_ns, colorimetry, {});
 }
 
 void extract_result_facts(const ACameraMetadata* result, ResultFacts& out) {
@@ -2968,6 +3034,7 @@ struct Camera2CameraProvider::CapturedMemberFrame {
   bool ok = false;
   ProviderError error = ProviderError::ERR_PROVIDER_FAILED;
   std::shared_ptr<std::vector<uint8_t>> bytes;
+  std::shared_ptr<CaptureGpuBackingOffer> gpu_backing;
   uint32_t fourcc = 0;
   uint8_t plane_count = 0;
   bool has_timestamp = false;
@@ -3742,6 +3809,7 @@ void Camera2CameraProvider::teardown_session_locked_(
     backend->cfg_has_stream = false;
     backend->cfg_flow_is_pilot = false;
     backend->cfg_has_still = false;
+    backend->cfg_gpu_still = false;
   }
 
   auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
@@ -3752,7 +3820,7 @@ void Camera2CameraProvider::teardown_session_locked_(
         ACaptureSessionOutput* stream_output = nullptr;
         ACaptureSessionOutput* still_output = nullptr;
         AImageReader* stream_reader = nullptr;
-        AImageReader* still_reader = nullptr;
+        std::shared_ptr<AImageReader> still_reader;
         ACameraOutputTarget* stream_target = nullptr;
         ACaptureRequest* repeating_request = nullptr;
         {
@@ -3762,7 +3830,7 @@ void Camera2CameraProvider::teardown_session_locked_(
           stream_output = std::exchange(backend->stream_output, nullptr);
           still_output = std::exchange(backend->still_output, nullptr);
           stream_reader = std::exchange(backend->stream_reader, nullptr);
-          still_reader = std::exchange(backend->still_reader, nullptr);
+          still_reader = std::move(backend->still_reader);
           stream_target = std::exchange(backend->stream_target, nullptr);
           repeating_request = std::exchange(backend->repeating_request, nullptr);
           backend->stream_window = nullptr;
@@ -3812,8 +3880,10 @@ void Camera2CameraProvider::teardown_session_locked_(
           if (quiesce.drained()) AImageReader_delete(stream_reader);
         }
         if (still_reader) {
-          AImageReader_setImageListener(still_reader, nullptr);
-          if (quiesce.drained()) AImageReader_delete(still_reader);
+          AImageReader_setImageListener(still_reader.get(), nullptr);
+          // In-flight callbacks and GPU work own a strong reference acquired
+          // before the session relinquished ownership.
+          still_reader.reset();
         }
       },
       token, kControlJobTimeoutMs);
@@ -3829,7 +3899,8 @@ ProviderResult Camera2CameraProvider::ensure_seam_realized_(
     uint32_t still_width,
     uint32_t still_height,
     uint32_t flow_width,
-    uint32_t flow_height) {
+    uint32_t flow_height,
+    bool try_gpu_reader) {
   if (!backend) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
@@ -3876,7 +3947,8 @@ ProviderResult Camera2CameraProvider::ensure_seam_realized_(
 
   return ensure_session_configured_(claimant, !has_caller_stream, backend,
                                     /*want_stream=*/true, flow_w, flow_h,
-                                    /*want_still=*/true, still_width, still_height);
+                                    /*want_still=*/true, still_width, still_height,
+                                    try_gpu_reader);
 }
 
 ProviderResult Camera2CameraProvider::ensure_session_configured_(
@@ -3888,7 +3960,8 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
     uint32_t stream_height,
     bool want_still,
     uint32_t still_width,
-    uint32_t still_height) {
+    uint32_t still_height,
+    bool try_gpu_reader) {
   if (!backend) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
@@ -3928,6 +4001,7 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
     const bool matches = backend->session != nullptr &&
                          backend->cfg_has_stream == want_stream &&
                          backend->cfg_has_still == want_still &&
+                         (!want_still || !try_gpu_reader || backend->cfg_gpu_still) &&
                          (!want_stream || reader_serves_requester) &&
                          (!want_stream || (backend->cfg_stream_w == stream_width &&
                                            backend->cfg_stream_h == stream_height)) &&
@@ -4059,7 +4133,7 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
   const bool completed = control_.run_bounded(
       [result, backend, want_stream, stream_width, stream_height, want_still,
        still_width, still_height,
-       flow_is_pilot](const BoundedControlExecutor::AbandonToken& t) {
+       flow_is_pilot, try_gpu_reader](const BoundedControlExecutor::AbandonToken& t) {
         ConfigureResult local;
 
         ACameraDevice* device = nullptr;
@@ -4074,7 +4148,7 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
         }
 
         AImageReader* stream_reader = nullptr;
-        AImageReader* still_reader = nullptr;
+        std::shared_ptr<AImageReader> still_reader;
         ANativeWindow* stream_window = nullptr;
         ANativeWindow* still_window = nullptr;
         ACaptureSessionOutput* stream_output = nullptr;
@@ -4113,8 +4187,8 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
             if (quiesce.drained()) AImageReader_delete(stream_reader);
           }
           if (still_reader) {
-            AImageReader_setImageListener(still_reader, nullptr);
-            if (quiesce.drained()) AImageReader_delete(still_reader);
+            AImageReader_setImageListener(still_reader.get(), nullptr);
+            still_reader.reset();
           }
         };
 
@@ -4181,22 +4255,35 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
             return;
           }
         }
+        bool gpu_still = false;
         if (want_still) {
-          ms = AImageReader_new(static_cast<int32_t>(still_width),
-                                static_cast<int32_t>(still_height),
-                                AIMAGE_FORMAT_YUV_420_888, kStillReaderMaxImages,
-                                &still_reader);
-          if (ms != AMEDIA_OK || !still_reader) {
+          AImageReader* created_reader = nullptr;
+          if (try_gpu_reader) {
+            ms = AImageReader_newWithUsage(
+                static_cast<int32_t>(still_width), static_cast<int32_t>(still_height),
+                AIMAGE_FORMAT_YUV_420_888,
+                AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE | AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN,
+                kStillReaderMaxImages, &created_reader);
+            gpu_still = ms == AMEDIA_OK && created_reader;
+          }
+          if (!gpu_still) {
+            ms = AImageReader_new(static_cast<int32_t>(still_width),
+                                  static_cast<int32_t>(still_height),
+                                  AIMAGE_FORMAT_YUV_420_888, kStillReaderMaxImages,
+                                  &created_reader);
+          }
+          if (ms != AMEDIA_OK || !created_reader) {
             local.error = ProviderError::ERR_PLATFORM_CONSTRAINT;
             unwind();
             if (!t.abandoned.load(std::memory_order_acquire)) *result = local;
             return;
           }
+          still_reader.reset(created_reader, &AImageReader_delete);
           AImageReader_ImageListener listener{};
           listener.context = backend->still_reader_ctx.get();
           listener.onImageAvailable = &camera2_detail::on_still_image_available;
-          AImageReader_setImageListener(still_reader, &listener);
-          if (AImageReader_getWindow(still_reader, &still_window) != AMEDIA_OK ||
+          AImageReader_setImageListener(still_reader.get(), &listener);
+          if (AImageReader_getWindow(still_reader.get(), &still_window) != AMEDIA_OK ||
               !still_window) {
             local.error = ProviderError::ERR_PROVIDER_FAILED;
             unwind();
@@ -4280,6 +4367,7 @@ ProviderResult Camera2CameraProvider::ensure_session_configured_(
           backend->cfg_stream_w = stream_width;
           backend->cfg_stream_h = stream_height;
           backend->cfg_has_still = want_still;
+          backend->cfg_gpu_still = gpu_still;
           backend->cfg_still_w = still_width;
           backend->cfg_still_h = still_height;
         }
@@ -5102,7 +5190,8 @@ bool Camera2CameraProvider::capture_burst_(
     const std::vector<MemberRequestSpec>& specs,
     std::vector<CapturedMemberFrame>& out_frames,
     const char* purpose,
-    uint64_t capture_id) noexcept {
+    uint64_t capture_id,
+    const std::shared_ptr<camera2_detail::Camera2CaptureGpuService>& gpu_backings) noexcept {
   out_frames.assign(specs.size(), CapturedMemberFrame{});
   if (!backend || specs.empty()) {
     for (auto& f : out_frames) f.error = ProviderError::ERR_BAD_STATE;
@@ -5127,6 +5216,10 @@ bool Camera2CameraProvider::capture_burst_(
   burst->height = height;
   burst->fourcc = format_fourcc;
   burst->capture_id = capture_id;
+  {
+    std::lock_guard<std::mutex> bl(backend->m);
+    if (backend->cfg_gpu_still) burst->gpu_backings = gpu_backings;
+  }
   // All or none: slots map positionally onto specs, so a partial target list
   // would let a later member's notice borrow an earlier member's identity.
   if (std::all_of(specs.begin(), specs.end(),
@@ -5458,13 +5551,38 @@ bool Camera2CameraProvider::capture_burst_(
     const auto sample_deadline =
         std::chrono::steady_clock::now() + std::chrono::milliseconds(kCaptureSampleWaitMs);
 
+    // Process retired sources on this capture worker, never on the GPU
+    // worker. The burst bounds the queue and the reader owns the image until
+    // CPU use is complete. A deadline governs delivery, so later sources
+    // cannot prolong an abandoned capture.
+    const auto wait_for = [&](auto deadline, auto predicate) {
+      for (;;) {
+        if (!burst->retired_sources.empty()) {
+          auto source = std::move(burst->retired_sources.front());
+          burst->retired_sources.pop_front();
+          wl.unlock();
+          camera2_detail::finish_still_member(
+              burst, std::move(source.image), source.ordinal, source.timestamp_ns,
+              source.colorimetry, std::move(source.gpu_backing));
+          wl.lock();
+          continue;
+        }
+        if (predicate()) return true;
+        if (!burst->cv.wait_until(wl, deadline, [&] {
+              return !burst->retired_sources.empty() || predicate();
+            })) {
+          return false;
+        }
+      }
+    };
+
     // First wait: every payload AND every result accounted for, or the platform
     // closes the sequence. Results arrive on their own callback and can trail
     // the payload; stopping on payloads alone lost the per-image facts of ~11%
     // of captures (see capture_results_settled). burst->settled() cannot end
     // this wait on sequence end alone -- the grace flag is still false -- so
     // the predicate names both conditions itself.
-    settled = burst->cv.wait_until(wl, sample_deadline, [&burst] {
+    settled = wait_for(sample_deadline, [&burst] {
       return burst->settled() || burst->sequence_ended;
     });
 
@@ -5477,10 +5595,11 @@ bool Camera2CameraProvider::capture_burst_(
       const auto grace_deadline = std::min(
           sample_deadline, std::chrono::steady_clock::now() +
                                std::chrono::milliseconds(kSequenceEndInFlightGraceMs));
-      burst->cv.wait_until(wl, grace_deadline, [&burst] {
+      wait_for(grace_deadline, [&burst] {
         return capture_accounted_members(burst->progress()) >= burst->expected;
       });
     }
+    burst->accepting_retired_sources = false;
     burst->in_flight_grace_elapsed = true;
     settled = burst->settled();
 
@@ -5607,6 +5726,7 @@ bool Camera2CameraProvider::capture_burst_(
     }
     out_frames[i].ok = true;
     out_frames[i].bytes = img.bytes;
+    out_frames[i].gpu_backing = img.gpu_backing;
     out_frames[i].fourcc = img.fourcc;
     out_frames[i].plane_count = img.plane_count;
     out_frames[i].has_timestamp = img.has_timestamp;
@@ -6005,8 +6125,31 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
     // the caller has no stream of its own producing into it.
     const bool pilot_this_capture = kPilotStreamEnabled && !stream_producing;
 
+    std::shared_ptr<camera2_detail::Camera2CaptureGpuService> gpu_backings;
+    if (job.request.keep_gpu_backing) {
+      {
+        std::lock_guard<std::mutex> lock(gpu_backings_mutex_);
+        if (!gpu_backings_) {
+          try {
+            gpu_backings_ = std::make_shared<camera2_detail::Camera2CaptureGpuService>();
+          } catch (const std::system_error& error) {
+            camera2_detail::log_line("capture GPU worker unavailable: %s", error.what());
+          }
+        }
+        gpu_backings = gpu_backings_;
+      }
+      if (gpu_backings && !gpu_backings->available_for_capture()) gpu_backings.reset();
+    }
     ProviderResult pr = ensure_seam_realized_(SeamClaimant::Capture, backend,
-                                              job.request.width, job.request.height);
+                                              job.request.width, job.request.height, 0, 0,
+                                              static_cast<bool>(gpu_backings));
+    if (!pr.ok() && gpu_backings) {
+      // The optional reader usage may be refused by the camera or an active
+      // seam owner. Retry using the ordinary capture configuration.
+      gpu_backings.reset();
+      pr = ensure_seam_realized_(SeamClaimant::Capture, backend,
+                                 job.request.width, job.request.height);
+    }
     if (!pr.ok()) {
       fail(pr.code);
       return;
@@ -6358,7 +6501,7 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
 
       if (!capture_burst_(backend, job.request.width, job.request.height,
                           job.request.format_fourcc, specs, frames,
-                          "members_manual", job.request.capture_id)) {
+                          "members_manual", job.request.capture_id, gpu_backings)) {
         fail(frames.empty() ? ProviderError::ERR_PROVIDER_FAILED : frames[0].error);
         return;
       }
@@ -6387,7 +6530,7 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
         std::vector<CapturedMemberFrame> single;
         if (!capture_burst_(backend, job.request.width, job.request.height,
                             job.request.format_fourcc, one, single,
-                            "member_ae", job.request.capture_id) ||
+                            "member_ae", job.request.capture_id, gpu_backings) ||
             single.empty()) {
           fail(single.empty() ? ProviderError::ERR_PROVIDER_FAILED : single[0].error);
           return;
@@ -6540,6 +6683,7 @@ void Camera2CameraProvider::run_device_capture_job_(const DeviceCaptureJob& job)
       }
       // Fresh immutable allocation: publish for zero-copy retention (brief §4).
       fv.cpu_payload_owner = captured.bytes;
+      fv.capture_gpu_backing_offer = captured.gpu_backing;
       fv.requested_retained_plan = job.request.requested_retained_plan;
       fv.release = &camera2_detail::release_capture_frame;
       fv.release_user = new camera2_detail::CaptureFrameLease{captured.bytes};
@@ -7176,6 +7320,11 @@ ProviderResult Camera2CameraProvider::shutdown() {
   emit_native_destroyed_(provider_native_id_);
   provider_native_id_ = 0;
   } // release state_mutex_ before draining the strand (brief §10)
+
+  if (gpu_backings_) {
+    gpu_backings_->stop();
+    gpu_backings_.reset();
+  }
 
   // 6. With provider state settled and no locks held: flush and stop the
   //    strand, then stop the control thread and release the manager.

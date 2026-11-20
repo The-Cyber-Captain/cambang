@@ -157,7 +157,7 @@ godot::Ref<CamBANGStream> CamBANGDevice::create_stream(const godot::Variant& def
   return server_->create_stream_for_endpoint_hardware_id(hardware_id_, definition);
 }
 
-godot::Dictionary CamBANGDevice::trigger_capture() {
+godot::Dictionary CamBANGDevice::trigger_capture(const godot::Dictionary& options) {
   // Keys are ALWAYS present, whatever the outcome (section 4.1). A caller
   // branches on `error`, never on whether a key exists -- an absent key is the
   // shape of a bug, not a signal.
@@ -174,9 +174,14 @@ godot::Dictionary CamBANGDevice::trigger_capture() {
     out["error"] = godot::ERR_UNAVAILABLE;
     return out;
   }
+  bool keep_gpu_backing = false;
+  if (!CamBANGServer::parse_capture_options_(options, keep_gpu_backing)) {
+    out["error"] = godot::ERR_INVALID_PARAMETER;
+    return out;
+  }
   uint64_t capture_id = 0;
   const godot::Error trigger_error =
-      server_->trigger_device_capture(device_instance_id, capture_id);
+      server_->trigger_device_capture(device_instance_id, capture_id, keep_gpu_backing);
   if (trigger_error != godot::OK) {
     out["error"] = trigger_error;
     return out;
@@ -344,7 +349,8 @@ void CamBANGDevice::_bind_methods() {
       godot::D_METHOD("create_stream", "definition"),
       &CamBANGDevice::create_stream,
       DEFVAL(godot::Variant()));
-  godot::ClassDB::bind_method(godot::D_METHOD("trigger_capture"), &CamBANGDevice::trigger_capture);
+  godot::ClassDB::bind_method(godot::D_METHOD("trigger_capture", "options"),
+                              &CamBANGDevice::trigger_capture, DEFVAL(godot::Dictionary()));
   godot::ClassDB::bind_method(godot::D_METHOD("get_result"), &CamBANGDevice::get_result);
   godot::ClassDB::bind_method(godot::D_METHOD("set_warm_policy", "policy"), &CamBANGDevice::set_warm_policy);
   godot::ClassDB::bind_method(godot::D_METHOD("set_still_capture_profile", "profile"), &CamBANGDevice::set_still_capture_profile);

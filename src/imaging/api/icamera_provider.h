@@ -128,10 +128,16 @@ public:
 
   // Optional early acquisition notice for one still-capture image member (see
   // CaptureImageTimingNotice). Must be posted before that member's on_frame().
-  // Unlike every other callback, Core forwards this to its registered listener
+  // Like GPU backing readiness, Core forwards this to its registered listener
   // directly on the calling (strand) thread rather than via CoreThread, so it
   // is not delayed behind core work; it changes no Core state.
   virtual void on_capture_image_timing(const CaptureImageTimingNotice& notice) {
+    (void)notice;
+  }
+
+  // Optional, posted by a provider before processing the companion CPU payload.
+  // This is an independent notification and does not settle the capture.
+  virtual void on_capture_gpu_backing_ready(const CaptureGpuBackingNotice& notice) {
     (void)notice;
   }
 

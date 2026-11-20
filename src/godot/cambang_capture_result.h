@@ -85,6 +85,7 @@ public:
   int get_image_count() const;
   bool has_additional_images() const;
   godot::Dictionary get_image_member(int image_member_index) const;
+  godot::Dictionary claim_gpu_backing(int member_index = 0) const;
   int can_to_image_member(int image_member_index) const;
   godot::Ref<godot::Image> to_image_member(int image_member_index) const;
   int can_get_encoded_bytes() const;
