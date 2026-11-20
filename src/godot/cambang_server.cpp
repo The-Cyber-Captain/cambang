@@ -3961,38 +3961,36 @@ void CamBANGServer::_arm_live_retained_result_access_calibration_from_snapshot_(
                armed.member_identity_signature ==
                    build_capture_member_identity_signature(data);
       };
-  for (const AcquisitionSessionState& session : latest_->acquisition_sessions) {
-    if (session.device_instance_id == 0) {
-      continue;
-    }
-    // The boundary's own record of the latest capture on this device, not the
-    // snapshot's. The snapshot publishes state for observation; which capture
-    // was most recent is bookkeeping this object already keeps, and reading it
-    // from published state made calibration depend on a field whose only other
-    // consumers were staleness guards.
-    const auto latest_it =
-        latest_capture_id_by_device_instance_id_.find(session.device_instance_id);
-    if (latest_it == latest_capture_id_by_device_instance_id_.end() ||
-        latest_it->second == 0) {
-      continue;
-    }
-    live_capture_device_ids.insert(session.device_instance_id);
-    SharedCaptureResultData result =
-        runtime_.get_capture_result(latest_it->second, session.device_instance_id);
-    if (!result) {
-      pending_live_capture_retained_result_calibrations_.erase(
-          session.device_instance_id);
-      completed_live_capture_retained_result_calibrations_.erase(
-          session.device_instance_id);
-      continue;
-    }
+  // Direct captures and rig members can describe the same device result.
+  // Validate pending work against that exact result, and reuse completed
+  // measurements only for the same applied access conditions.
+  const auto arm_capture_calibration = [&](const SharedCaptureResultData& result) {
+    const uint64_t device_id = result->device_instance_id;
     ArmedLiveCaptureRetainedResultCalibration armed{};
-    armed.device_instance_id = result->device_instance_id;
+    armed.device_instance_id = device_id;
     armed.capture_id = result->capture_id;
     armed.acquisition_session_id = result->acquisition_session_id;
-    armed.member_identity_signature =
-        build_capture_member_identity_signature(result);
+    armed.member_identity_signature = build_capture_member_identity_signature(result);
     armed.member_shape_signature = build_capture_member_shape_signature(result);
+
+    const auto pending = pending_live_capture_retained_result_calibrations_.find(device_id);
+    if (pending != pending_live_capture_retained_result_calibrations_.end() &&
+        same_capture_identity(pending->second, result, armed.evaluation_identity)) {
+      return;
+    }
+    const auto completed = completed_live_capture_retained_result_calibrations_.find(device_id);
+    if (completed != completed_live_capture_retained_result_calibrations_.end() &&
+        completed->second.acquisition_session_id == armed.acquisition_session_id &&
+        completed->second.evaluation_identity == armed.evaluation_identity &&
+        completed->second.member_shape_signature == armed.member_shape_signature &&
+        armed.member_shape_signature != 0) {
+      if (!same_capture_identity(completed->second, result, armed.evaluation_identity)) {
+        retained_result_access_calibration::apply_capture_result_access_evidence(result);
+        completed->second = armed;
+      }
+      return;
+    }
+
     bool needs_settle_delay = false;
     for (uint32_t i = 0; i < result->image_member_count(); ++i) {
       const auto* member = result->image_member_at(i);
@@ -4004,33 +4002,6 @@ void CamBANGServer::_arm_live_retained_result_access_calibration_from_snapshot_(
     armed.due_after_ns = now_ns + (needs_settle_delay
                                        ? runtime_.capture_backing_plan_evaluation_settle_delay_ns()
                                        : 0);
-    const auto pending_it = pending_live_capture_retained_result_calibrations_.find(
-        session.device_instance_id);
-    if (pending_it != pending_live_capture_retained_result_calibrations_.end() &&
-        same_capture_identity(pending_it->second, result, armed.evaluation_identity)) {
-      continue;
-    }
-    // Suppression keys on the access domain -- device, acquisition session,
-    // backing-plan evaluation, and member shape -- not on the capture. Per
-    // contract 11.7 renewal is launched from the backing-plan live-acceptance
-    // boundary, so a session recalibrates when the realized backing
-    // state/access domain changes and not once per capture.
-    const auto completed_it =
-        completed_live_capture_retained_result_calibrations_.find(
-            session.device_instance_id);
-    if (completed_it != completed_live_capture_retained_result_calibrations_.end() &&
-        completed_it->second.device_instance_id == armed.device_instance_id &&
-        completed_it->second.acquisition_session_id == armed.acquisition_session_id &&
-        completed_it->second.evaluation_identity == armed.evaluation_identity &&
-        completed_it->second.member_shape_signature == armed.member_shape_signature &&
-        armed.member_shape_signature != 0) {
-      continue;
-    }
-    // Maintainer trace, off unless cambang/maintainer/calibration_probe_trace
-    // is set. Puts calibration arming on the same timeline as the capture
-    // trace, so its cost can be read against a capture rather than inferred.
-    // Suppression keys on acquisition_session_id, so a provider that re-creates
-    // its seam re-arms a full materialisation.
     if (calibration_probe_trace_enabled()) {
       godot::UtilityFunctions::print(godot::vformat(
           "[CamBANG][calprobe] ARM capture device=%d session=%d capture=%d due_in_ms=%d",
@@ -4040,72 +4011,43 @@ void CamBANGServer::_arm_live_retained_result_access_calibration_from_snapshot_(
           static_cast<int64_t>((armed.due_after_ns > now_ns
                                     ? (armed.due_after_ns - now_ns) : 0) / 1000000)));
     }
-    pending_live_capture_retained_result_calibrations_[session.device_instance_id] =
-        armed;
-    completed_live_capture_retained_result_calibrations_.erase(
-        session.device_instance_id);
-  }
-  for (const RigState& rig : latest_->rigs) {
-    // LIVE since c44e787, which populates RigRecord::last_capture_id when a
-    // cohort settles. The comment here previously said this body was
-    // unreachable "until a later tranche" -- that tranche landed, and the note
-    // was not updated with it. Corrected rather than left, because a comment
-    // asserting dead code is worse than none: it invites the next reader to
-    // skip the very path that runs.
-    //
-    // The id comes from the boundary's own record rather than the snapshot,
-    // for the same reason as the session loop above. It is a Rig Capture Id and
-    // get_capture_result_set() takes exactly that.
-    const auto rig_it = latest_rig_capture_id_by_rig_id_.find(rig.rig_id);
-    if (rig_it == latest_rig_capture_id_by_rig_id_.end() || rig_it->second == 0) {
+    pending_live_capture_retained_result_calibrations_[device_id] = armed;
+    completed_live_capture_retained_result_calibrations_.erase(device_id);
+  };
+
+  for (const AcquisitionSessionState& session : latest_->acquisition_sessions) {
+    const auto latest = latest_capture_id_by_device_instance_id_.find(session.device_instance_id);
+    if (session.device_instance_id == 0 ||
+        latest == latest_capture_id_by_device_instance_id_.end() ||
+        latest->second == 0) {
       continue;
     }
-    std::vector<SharedCaptureResultData> results =
-        runtime_.get_capture_result_set(rig_it->second);
-    for (const SharedCaptureResultData& result : results) {
+    live_capture_device_ids.insert(session.device_instance_id);
+    const auto result = runtime_.get_capture_result(latest->second, session.device_instance_id);
+    if (result) {
+      arm_capture_calibration(result);
+    } else {
+      // A new capture may still be in flight. Its predecessor's pending work
+      // is stale, but completed evidence can still match the delivered result.
+      pending_live_capture_retained_result_calibrations_.erase(session.device_instance_id);
+    }
+  }
+  for (const RigState& rig : latest_->rigs) {
+    const auto latest_rig = latest_rig_capture_id_by_rig_id_.find(rig.rig_id);
+    if (latest_rig == latest_rig_capture_id_by_rig_id_.end() || latest_rig->second == 0) {
+      continue;
+    }
+    for (const auto& result : runtime_.get_capture_result_set(latest_rig->second)) {
       if (!result || result->device_instance_id == 0) {
         continue;
       }
+      const auto latest = latest_capture_id_by_device_instance_id_.find(result->device_instance_id);
+      if (latest != latest_capture_id_by_device_instance_id_.end() &&
+          latest->second != result->capture_id) {
+        continue;
+      }
       live_capture_device_ids.insert(result->device_instance_id);
-      ArmedLiveCaptureRetainedResultCalibration armed{};
-      armed.device_instance_id = result->device_instance_id;
-      armed.capture_id = result->capture_id;
-      armed.acquisition_session_id = result->acquisition_session_id;
-      armed.member_identity_signature =
-          build_capture_member_identity_signature(result);
-      bool needs_settle_delay = false;
-      for (uint32_t i = 0; i < result->image_member_count(); ++i) {
-        const auto* member = result->image_member_at(i);
-        if (member &&
-            member->retained_access_truth.to_image !=
-                ResultCapability::UNSUPPORTED) {
-          needs_settle_delay = true;
-          break;
-        }
-      }
-      armed.due_after_ns = now_ns + (needs_settle_delay
-                                         ? runtime_.capture_backing_plan_evaluation_settle_delay_ns()
-                                         : 0);
-      const auto pending_it =
-          pending_live_capture_retained_result_calibrations_.find(
-              result->device_instance_id);
-      if (pending_it !=
-              pending_live_capture_retained_result_calibrations_.end() &&
-          same_capture_identity(pending_it->second, result, armed.evaluation_identity)) {
-        continue;
-      }
-      const auto completed_it =
-          completed_live_capture_retained_result_calibrations_.find(
-              result->device_instance_id);
-      if (completed_it !=
-              completed_live_capture_retained_result_calibrations_.end() &&
-          same_capture_identity(completed_it->second, result, armed.evaluation_identity)) {
-        continue;
-      }
-      pending_live_capture_retained_result_calibrations_[result->device_instance_id] =
-          armed;
-      completed_live_capture_retained_result_calibrations_.erase(
-          result->device_instance_id);
+      arm_capture_calibration(result);
     }
   }
   for (auto it = pending_live_capture_retained_result_calibrations_.begin();

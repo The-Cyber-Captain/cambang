@@ -12,6 +12,7 @@ void calibrate_stream_result(const SharedStreamResultData& data,
                              CoreRuntime* runtime = nullptr);
 void calibrate_capture_result(const SharedCaptureResultData& data,
                               CoreRuntime* runtime = nullptr);
+void apply_capture_result_access_evidence(const SharedCaptureResultData& data);
 void report_capture_result_member_observation(
     const SharedCaptureResultData& data,
     uint32_t image_member_index,

@@ -316,6 +316,14 @@ void calibrate_capture_result(const SharedCaptureResultData& data,
   }
 }
 
+void apply_capture_result_access_evidence(const SharedCaptureResultData& data) {
+  for (uint32_t i = 0; i < data->image_member_count(); ++i) {
+    if (const auto* member = data->image_member_at(i)) {
+      refine_capture_to_image_classification(*member);
+    }
+  }
+}
+
 void report_capture_result_member_observation(
     const SharedCaptureResultData& data,
     uint32_t image_member_index,
