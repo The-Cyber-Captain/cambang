@@ -374,7 +374,8 @@ enum class TryCloseDeviceStatus : uint8_t {
   // the core thread and only return success after the work was accepted/submitted.
   TryTriggerDeviceCaptureStatus try_trigger_device_capture_with_capture_id_for_server(
       uint64_t device_instance_id,
-      uint64_t capture_id) noexcept;
+      uint64_t capture_id,
+      bool keep_gpu_backing = false) noexcept;
   // Reads a device's retained catalog for the Godot boundary. want_capture
   // selects which of the two. Returns false when the device is not open.
   bool profile_catalog_for_server(const std::string& hardware_id,
@@ -721,7 +722,8 @@ enum class TryCloseDeviceStatus : uint8_t {
   RigTriggerOrchestrationResult orchestrate_rig_capture_with_capture_id_for_server(
       uint64_t rig_id,
       uint64_t rig_capture_id,
-      const DeviceCaptureIdMinter& mint_device_capture_id) noexcept;
+      const DeviceCaptureIdMinter& mint_device_capture_id,
+      bool keep_gpu_backing = false) noexcept;
 
 #if defined(CAMBANG_INTERNAL_SMOKE)
   CoreThread::PostResult try_post_core_thread_unchecked(CoreThread::Task task) {
@@ -744,6 +746,9 @@ enum class TryCloseDeviceStatus : uint8_t {
   }
   void clear_capture_image_timing_listener() {
     ingress_.clear_capture_image_timing_listener();
+  }
+  void set_capture_gpu_backing_listener(ProviderCallbackIngress::CaptureGpuBackingListener listener) {
+    ingress_.set_capture_gpu_backing_listener(std::move(listener));
   }
   // Core monotonic timebase (ns since core epoch), the same clock providers
   // read through IProviderCallbacks::core_monotonic_now_ns. Safe from any thread.
@@ -1094,7 +1099,8 @@ private:
   bool materialize_capture_request_(uint64_t device_instance_id, CaptureRequest& out) const;
   TryTriggerDeviceCaptureStatus trigger_device_capture_with_capture_id_(
       uint64_t device_instance_id,
-      uint64_t capture_id);
+      uint64_t capture_id,
+      bool keep_gpu_backing);
   RigPreflightResult preflight_rig_participants_materialize_(uint64_t rig_id) const;
   RigAdmittedRequestBundle admit_rig_cohort_from_preflight_(
       uint64_t rig_id,
@@ -1112,7 +1118,8 @@ private:
   RigTriggerOrchestrationResult orchestrate_rig_capture_with_capture_id_(
       uint64_t rig_id,
       uint64_t rig_capture_id,
-      const DeviceCaptureIdMinter& mint_device_capture_id);
+      const DeviceCaptureIdMinter& mint_device_capture_id,
+      bool keep_gpu_backing);
   // Cohort closure, run once per core-thread sweep. Closes any OPEN cohort
   // whose members are all terminal (ALL_MEMBERS_TERMINAL) or whose
   // simultaneity window has expired (WINDOW_EXPIRED), and upgrades a member

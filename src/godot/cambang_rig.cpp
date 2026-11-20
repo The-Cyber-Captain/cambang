@@ -52,7 +52,7 @@ godot::Error CamBANGRig::remove_member(const godot::Ref<CamBANGDevice>& device) 
   return server_->remove_rig_member_by_hardware_id(rig_id_, hardware_id);
 }
 
-godot::Dictionary CamBANGRig::trigger_capture() {
+godot::Dictionary CamBANGRig::trigger_capture(const godot::Dictionary& options) {
   // All three keys always present, whatever the outcome (section 4.1). Branch
   // on `error`, never on a key's absence.
   godot::Dictionary out;
@@ -63,8 +63,13 @@ godot::Dictionary CamBANGRig::trigger_capture() {
     out["error"] = godot::ERR_UNAVAILABLE;
     return out;
   }
+  bool keep_gpu_backing = false;
+  if (!CamBANGServer::parse_capture_options_(options, keep_gpu_backing)) {
+    out["error"] = godot::ERR_INVALID_PARAMETER;
+    return out;
+  }
   const CamBANGServer::RigTriggerInternalResult result =
-      server_->trigger_rig_capture_internal_(rig_id_);
+      server_->trigger_rig_capture_internal_(rig_id_, keep_gpu_backing);
   if (result.rig_capture_id == 0) {
     // Refused: no rig capture id, and no member map. Nothing was minted, so
     // there is nothing for the caller to correlate against or wait for.
@@ -112,7 +117,8 @@ void CamBANGRig::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_id"), &CamBANGRig::get_id);
   godot::ClassDB::bind_method(godot::D_METHOD("add_member", "device"), &CamBANGRig::add_member);
   godot::ClassDB::bind_method(godot::D_METHOD("remove_member", "device"), &CamBANGRig::remove_member);
-  godot::ClassDB::bind_method(godot::D_METHOD("trigger_capture"), &CamBANGRig::trigger_capture);
+  godot::ClassDB::bind_method(godot::D_METHOD("trigger_capture", "options"),
+                              &CamBANGRig::trigger_capture, DEFVAL(godot::Dictionary()));
   godot::ClassDB::bind_method(godot::D_METHOD("get_result"), &CamBANGRig::get_result);
   godot::ClassDB::bind_method(godot::D_METHOD("get_member_outcomes"), &CamBANGRig::get_member_outcomes);
   // Emitted when a rig capture THIS rig triggered closes (section 4.2).

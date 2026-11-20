@@ -74,6 +74,7 @@ public:
   // Non-lossy. Post before the member's post_frame(); strand FIFO order then
   // guarantees the notice is delivered first.
   void post_capture_image_timing(const CaptureImageTimingNotice& notice);
+  void post_capture_gpu_backing_ready(const CaptureGpuBackingNotice& notice);
 
   void post_frame(const FrameView& frame);
 
@@ -103,6 +104,7 @@ private:
     ProviderCaptureImageFacts facts;
   };
   struct EvCaptureImageTiming { CaptureImageTimingNotice notice; };
+  struct EvCaptureGpuBackingReady { CaptureGpuBackingNotice notice; };
 
   struct EvFrame { FrameView frame; };
 
@@ -127,6 +129,7 @@ private:
       EvCameraStaticFacts,
       EvCaptureImageFacts,
       EvCaptureImageTiming,
+      EvCaptureGpuBackingReady,
       EvFrame,
       EvDeviceError,
       EvStreamError,

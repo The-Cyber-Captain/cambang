@@ -1,5 +1,8 @@
 #include "godot/cambang_server.h"
 #include "godot/camera_fact_convert.h"
+#include "godot/result_conversion_gate.h"
+#include "godot/cambang_gpu_backing.h"
+#include "godot/colorimetry_convert.h"
 #include "godot/cambang_capture_result.h"
 #include "godot/capture_compute_texture.h"
 #include "godot/stream_compute_texture.h"
@@ -1807,6 +1810,7 @@ void CamBANGServer::stop() {
   // undelivered notices of this session are discarded rather than emitted
   // against ids that are about to stop resolving.
   _remove_capture_image_timing_listener_();
+  discard_off_main_capture_observations();
   synthetic_gpu_backing_warn_and_abandon_live_display_wrappers_before_stop();
   abandon_all_live_cpu_display_wrappers_before_stop();
 
@@ -2773,6 +2777,13 @@ void CamBANGServer::_install_capture_image_timing_listener_() {
   // object is dropped by the engine rather than dispatched into freed memory.
   const godot::Callable drain(this, "_drain_capture_image_timing");
   std::shared_ptr<CaptureImageTimingQueue> queue = capture_image_timing_queue_;
+  runtime_.set_capture_gpu_backing_listener([this](const CaptureGpuBackingNotice& notice) {
+    std::lock_guard<std::mutex> lock(pending_gpu_backings_mutex_);
+    if (pending_gpu_backings_.size() == kCaptureGpuBackingNoticeCapacity) {
+      pending_gpu_backings_.pop_front();
+    }
+    pending_gpu_backings_.push_back(notice);
+  });
   runtime_.set_capture_image_timing_listener(
       [queue, drain](const CaptureImageTimingNotice& notice) {
         bool schedule = false;
@@ -2805,6 +2816,12 @@ void CamBANGServer::_install_capture_image_timing_listener_() {
 void CamBANGServer::_remove_capture_image_timing_listener_() {
   // Quiescent: returns only once no strand thread is inside the listener.
   runtime_.clear_capture_image_timing_listener();
+  runtime_.set_capture_gpu_backing_listener({});
+  {
+    std::lock_guard<std::mutex> lock(pending_gpu_backings_mutex_);
+    pending_gpu_backings_.clear();
+  }
+  published_gpu_backings_.clear();
   std::lock_guard<std::mutex> lk(capture_image_timing_queue_->m);
   capture_image_timing_queue_->open = false;
   capture_image_timing_queue_->items.clear();
@@ -2883,6 +2900,52 @@ void CamBANGServer::_drain_capture_image_timing() {
     info["emitted_ticks_usec"] = emitted_ticks_usec;
     emit_signal("capture_image_acquired", capture_id, info);
   }
+}
+
+void CamBANGServer::_drain_capture_gpu_backings_() {
+  std::deque<CaptureGpuBackingNotice> pending;
+  {
+    std::lock_guard<std::mutex> lock(pending_gpu_backings_mutex_);
+    pending.swap(pending_gpu_backings_);
+  }
+  for (auto& notice : pending) {
+    const godot::String capture_id = device_capture_public_id(notice.capture_id);
+    if (capture_id.is_empty() || !notice.offer ||
+        !notice.offer->is_available(CaptureGpuBackingOffer::Clock::now())) {
+      continue;
+    }
+    if (published_gpu_backings_.size() == kCaptureGpuBackingNoticeCapacity) {
+      published_gpu_backings_.pop_front();
+    }
+    godot::Dictionary info;
+    info["image_member_index"] = static_cast<int64_t>(notice.image_member_index);
+    info["colorimetry"] = colorimetry_to_dict(notice.colorimetry);
+    published_gpu_backings_.push_back(std::move(notice));
+    emit_signal("capture_gpu_backing_ready", capture_id, info);
+  }
+}
+
+godot::Dictionary CamBANGServer::claim_capture_gpu_backing(
+    const godot::String& capture_id, int member_index) const {
+  if (!is_public_boundary_ready_()) {
+    return CamBANGGpuBacking::claim_offer({});
+  }
+  const uint64_t internal_id = device_capture_internal_id(capture_id);
+  if (internal_id == 0 || member_index < 0) {
+    godot::Dictionary out;
+    out["backing"] = godot::Variant();
+    out["error"] = godot::ERR_INVALID_PARAMETER;
+    return out;
+  }
+  const auto found = std::find_if(published_gpu_backings_.rbegin(), published_gpu_backings_.rend(),
+      [internal_id, member_index](const CaptureGpuBackingNotice& notice) {
+        return notice.capture_id == internal_id &&
+               notice.image_member_index == static_cast<uint32_t>(member_index);
+      });
+  if (found != published_gpu_backings_.rend()) {
+    return CamBANGGpuBacking::claim_offer(found->offer);
+  }
+  return CamBANGGpuBacking::claim_offer({});
 }
 
 godot::String CamBANGServer::mint_device_capture_public_id_(uint64_t internal_id) {
@@ -3153,6 +3216,12 @@ void CamBANGServer::report_capture_result_member_observation(
       const_cast<CoreRuntime*>(&runtime_));
 }
 
+void CamBANGServer::_drain_off_main_capture_observations_() {
+  for (const CaptureObservation& entry : take_off_main_capture_observations()) {
+    report_capture_result_member_observation(entry.first, entry.second);
+  }
+}
+
 void CamBANGServer::mark_stream_display_demand(uint64_t stream_id) {
   if (stream_id == 0 || !is_public_boundary_ready_()) {
     return;
@@ -3181,9 +3250,21 @@ void CamBANGServer::release_stream_display_demand_async(uint64_t stream_id) {
   runtime_.release_stream_display_demand_async(stream_id);
 }
 
+bool CamBANGServer::parse_capture_options_(
+    const godot::Dictionary& options, bool& keep_gpu_backing) {
+  keep_gpu_backing = false;
+  if (options.is_empty()) return true;
+  if (options.size() != 1 || !options.has("keep_gpu_backing")) return false;
+  const godot::Variant keep = options["keep_gpu_backing"];
+  if (keep.get_type() != godot::Variant::BOOL) return false;
+  keep_gpu_backing = static_cast<bool>(keep);
+  return true;
+}
+
 godot::Error CamBANGServer::trigger_device_capture(
     uint64_t device_instance_id,
-    uint64_t& out_capture_id) {
+    uint64_t& out_capture_id,
+    bool keep_gpu_backing) {
   out_capture_id = 0;
   if (device_instance_id == 0 || !is_public_boundary_ready_()) {
     return godot::ERR_BUSY;
@@ -3195,7 +3276,8 @@ godot::Error CamBANGServer::trigger_device_capture(
   }
 
   const TryTriggerDeviceCaptureStatus status =
-      runtime_.try_trigger_device_capture_with_capture_id_for_server(device_instance_id, capture_id);
+      runtime_.try_trigger_device_capture_with_capture_id_for_server(
+          device_instance_id, capture_id, keep_gpu_backing);
   if (status != TryTriggerDeviceCaptureStatus::OK) {
     return map_try_trigger_device_capture_status(status);
   }
@@ -3494,7 +3576,8 @@ void CamBANGServer::_drain_pending_endpoint_startup_intents_after_baseline_() {
   }
 }
 
-CamBANGServer::RigTriggerInternalResult CamBANGServer::trigger_rig_capture_internal_(uint64_t rig_id) {
+CamBANGServer::RigTriggerInternalResult CamBANGServer::trigger_rig_capture_internal_(
+    uint64_t rig_id, bool keep_gpu_backing) {
   RigTriggerInternalResult out{};
   if (rig_id == 0 || !is_public_boundary_ready_()) {
     return out;
@@ -3517,7 +3600,7 @@ CamBANGServer::RigTriggerInternalResult CamBANGServer::trigger_rig_capture_inter
   };
 
   const auto orchestration = runtime_.orchestrate_rig_capture_with_capture_id_for_server(
-      rig_id, rig_capture_id, mint_device_capture_id);
+      rig_id, rig_capture_id, mint_device_capture_id, keep_gpu_backing);
   if (!orchestration.ok) {
     const bool imaging_spec_gate =
         orchestration.failure == CoreRuntime::RigOrchestrationFailure::AdmissionFailed &&
@@ -3648,6 +3731,8 @@ void CamBANGServer::_on_godot_process_frame() {
   // Ahead of capture_finished: an early timing notice must never be heard
   // after the settlement of the capture it belongs to.
   _drain_capture_image_timing();
+  _drain_capture_gpu_backings_();
+  _drain_off_main_capture_observations_();
   // Deliberately outside _consume_latest_core_snapshot(): that function has
   // several early returns (no publish this tick, no session, gen gate), and a
   // settlement queue that only drains when a snapshot happens to be consumed
@@ -5103,6 +5188,8 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("create_rig", "devices"), &CamBANGServer::create_rig);
   godot::ClassDB::bind_method(godot::D_METHOD("get_stream_result_by_stream_id", "stream_id"), &CamBANGServer::get_stream_result_by_stream_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_capture_result_by_id", "capture_id"), &CamBANGServer::get_capture_result_by_id);
+  godot::ClassDB::bind_method(godot::D_METHOD("claim_capture_gpu_backing", "capture_id", "member_index"),
+                             &CamBANGServer::claim_capture_gpu_backing, DEFVAL(0));
   godot::ClassDB::bind_method(godot::D_METHOD("get_capture_result_set_by_id", "capture_id"), &CamBANGServer::get_capture_result_set_by_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_unfinished_captures"), &CamBANGServer::get_unfinished_captures);
   godot::ClassDB::bind_method(godot::D_METHOD("get_capture_member_outcomes_by_id", "rig_capture_id"), &CamBANGServer::get_capture_member_outcomes_by_id);
@@ -5178,6 +5265,10 @@ void CamBANGServer::_bind_methods() {
   // observed_ticks_usec is -1 when the provider gave no observation time.
   ADD_SIGNAL(godot::MethodInfo(
       "capture_image_acquired",
+      godot::PropertyInfo(godot::Variant::STRING, "capture_id"),
+      godot::PropertyInfo(godot::Variant::DICTIONARY, "info")));
+  ADD_SIGNAL(godot::MethodInfo(
+      "capture_gpu_backing_ready",
       godot::PropertyInfo(godot::Variant::STRING, "capture_id"),
       godot::PropertyInfo(godot::Variant::DICTIONARY, "info")));
   ADD_SIGNAL(godot::MethodInfo(

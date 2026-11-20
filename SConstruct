@@ -213,6 +213,40 @@ def _create_android_gde_env(base_env, host_platform: str, arch: str, core_target
     return android_env
 
 
+def _link_android_spirv_validator(env, host, obj_dir):
+    from subprocess import run
+    from SCons.Action import Action
+
+    ndk, _ = _resolve_android_ndk(env["ANDROID_HOME"], env["ndk_version"])
+    spirv = os.path.join(ndk, "sources", "third_party", "shaderc", "third_party", "spirv-tools")
+    tool = os.path.abspath(os.path.join(ndk, "ndk-build.cmd" if host == "windows" else "ndk-build"))
+    abi = {"arm64": "arm64-v8a", "arm32": "armeabi-v7a", "x86_64": "x86_64", "x86_32": "x86"}[env["arch"]]
+    android_mk = os.path.join("src", "imaging", "platform", "android", "shader_validation", "Android.mk")
+    build_dir = os.path.join(obj_dir, "spirv_validator")
+    archive = os.path.join(build_dir, "local", abi, "libSPIRV-Tools.a")
+    sdk_mk = os.path.join(spirv, "Android.mk")
+
+    def build_validator(target, source, env):
+        if not os.path.isfile(sdk_mk):
+            print("The configured Android NDK is missing its SPIRV-Tools sources.")
+            return 1
+        result = run(
+            [tool, "-j" + str(GetOption("num_jobs")), "APP_ABI=" + abi,
+             "APP_PLATFORM=android-" + str(env["android_api_level"]),
+             "APP_STL=c++_static", "APP_MODULES=SPIRV-Tools",
+             "HOST_PYTHON=" + sys.executable.replace(os.sep, "/"),
+             "NDK_PROJECT_PATH=.", "NDK_OUT=" + os.path.abspath(build_dir).replace(os.sep, "/"),
+             "NDK_LIBS_OUT=" + os.path.abspath(os.path.join(build_dir, "libs")).replace(os.sep, "/"),
+             "APP_BUILD_SCRIPT=" + os.path.abspath(android_mk).replace(os.sep, "/")],
+            check=False)
+        return result.returncode
+
+    validator = env.Command(archive, [android_mk, sdk_mk], Action(build_validator, "Building Android SPIR-V validator"))
+    env.Append(CPPPATH=[os.path.join(spirv, "include"),
+                       os.path.join(spirv, "external", "spirv-headers", "include")])
+    env.Append(LIBS=[validator[0]])
+
+
 def _core_target_for_flags(t: str) -> str:
     # Map Godot template targets to our debug/release flag logic.
     if t == "template_debug":
@@ -332,7 +366,7 @@ GDE_PROVIDER_RESOLUTION = {
         # Camera2 NDK + AImageReader ship with the NDK sysroot the Android GDE
         # environment already targets, so no extra toolchain gate applies.
         "defines": ["CAMBANG_PROVIDER_ANDROID_CAMERA2=1"],
-        "libs": ["camera2ndk", "mediandk", "android", "log"],
+        "libs": ["camera2ndk", "mediandk", "android", "log", "vulkan"],
     },
     "linux": {
         "family": "linux_v4l2",
@@ -1142,6 +1176,8 @@ if build_gde_graph:
         gde_sources += _glob_cpp(gde_obj_dir, *provider_source_parts)
         gde_env.Append(CPPDEFINES=selected_provider["defines"])
         gde_env.Append(LIBS=selected_provider["libs"])
+        if gde_platform == "android":
+            _link_android_spirv_validator(gde_env, host_platform, gde_obj_dir)
 
     if windows_uses_mingw and windows_mingw_static_runtime:
         # Distribution mode: keep the Godot extension as one CamBANG DLL by
@@ -1158,6 +1194,7 @@ if build_gde_graph:
         os.path.join(gde_obj_dir, "godot", "cambang_stream_result.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_stream_result_internal.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_capture_result.cpp"),
+        os.path.join(gde_obj_dir, "godot", "cambang_gpu_backing.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_result_convert.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_result_convert_timing.cpp"),
         os.path.join(gde_obj_dir, "godot", "state_snapshot_export.cpp"),
@@ -1165,6 +1202,7 @@ if build_gde_graph:
         os.path.join(gde_obj_dir, "godot", "stream_compute_texture.cpp"),
         os.path.join(gde_obj_dir, "godot", "godot_gpu_display_service.cpp"),
         os.path.join(gde_obj_dir, "godot", "result_access_cost_evidence.cpp"),
+        os.path.join(gde_obj_dir, "godot", "result_conversion_gate.cpp"),
         os.path.join(gde_obj_dir, "godot", "retained_result_access_calibration.cpp"),
         os.path.join(gde_obj_dir, "godot", "synthetic_gpu_backing_bridge.cpp"),
     ]

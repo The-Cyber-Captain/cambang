@@ -1,0 +1,31 @@
+#version 450
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(set = 0, binding = 0) uniform sampler2D capture_luma;
+layout(set = 0, binding = 1) uniform sampler2D capture_chroma;
+layout(set = 0, binding = 2, std430) buffer Output { vec4 color; };
+layout(push_constant, std430) uniform Parameters {
+    vec4 region;
+    // Kr, Kb, luma black, luma amplitude.
+    vec4 matrix;
+    float chroma_amplitude;
+} params;
+
+void main() {
+    vec3 sum = vec3(0.0);
+    ivec2 extent = textureSize(capture_luma, 0);
+    float kr = params.matrix.x, kb = params.matrix.y, kg = 1.0 - kr - kb;
+    for (int row = 0; row < 8; ++row) {
+        for (int col = 0; col < 8; ++col) {
+            vec2 uv = params.region.xy + (vec2(col, row) + 0.5) / 8.0 * params.region.zw;
+            ivec2 xy = clamp(ivec2(uv * extent), ivec2(0), extent - 1);
+            float y = (texelFetch(capture_luma, xy, 0).r - params.matrix.z) / params.matrix.w;
+            vec2 cbcr = (texelFetch(capture_chroma, xy / 2, 0).rg - vec2(128.0 / 255.0))
+                        / params.chroma_amplitude;
+            float r = y + (2.0 - 2.0 * kr) * cbcr.y;
+            float b = y + (2.0 - 2.0 * kb) * cbcr.x;
+            float g = (y - kr * r - kb * b) / kg;
+            sum += clamp(vec3(r, g, b), 0.0, 1.0);
+        }
+    }
+    color = vec4(sum / 64.0, 1.0);
+}

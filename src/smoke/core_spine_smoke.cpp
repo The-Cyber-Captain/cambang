@@ -57,6 +57,7 @@ Non-Goals
 #include "core/provider_callback_ingress.h"
 #include "core/resource_aggregate_telemetry.h"
 #include "core/state_snapshot_buffer.h"
+#include "imaging/api/capture_gpu_backing.h"
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
 #include "imaging/stub/provider.h"
@@ -4918,6 +4919,139 @@ static int test_watchdog_abandonment_aborts_capture_smoke() {
   return 0;
 }
 
+static int test_capture_gpu_backing_ownership_smoke() {
+  using Status = CaptureGpuClaimStatus;
+  using Offer = CaptureGpuBackingOffer;
+  using namespace std::chrono_literals;
+  struct TestBacking final : CaptureGpuBacking {
+    explicit TestBacking(CaptureGpuBackingBudget::Reservation reservation)
+        : CaptureGpuBacking(std::move(reservation)) {}
+  };
+  constexpr uint64_t kBytes = 32;
+  CaptureGpuBackingBudget budget(2 * kBytes);
+  const auto now = Offer::Clock::time_point{};
+  const auto deadline = now + 5s;
+  auto create_offer = [&]() -> std::shared_ptr<Offer> {
+    auto bytes = budget.try_reserve(kBytes);
+    if (!bytes) return {};
+    return std::make_shared<Offer>(std::make_shared<TestBacking>(std::move(*bytes)), deadline);
+  };
+  auto single = create_offer();
+  auto bracket = create_offer();
+  if (!single || !bracket || budget.try_reserve(1)) return 1;
+
+  CoreResultStore store;
+  FrameView frame{};
+  frame.capture_id = 77021;
+  frame.device_instance_id = kDeviceInstanceId;
+  frame.width = 2;
+  frame.height = 2;
+  frame.format_fourcc = FOURCC_RGBA;
+  const uint8_t bytes[16] = {};
+  frame.data = bytes;
+  frame.size_bytes = sizeof(bytes);
+  frame.capture_gpu_backing_offer = single;
+  const CoreRetainedProductionPlan plan{CoreProductionPostureShape::CpuPrimary, true};
+  if (!store.retain_frame(frame, std::nullopt, 0, 0, {}, plan)) return 1;
+
+  frame.capture_image.routing = CaptureImageRouting::ADDITIONAL_BRACKET;
+  frame.capture_image.image_member_index = 1;
+  frame.capture_gpu_backing_offer = bracket;
+  CoreCaptureResultData::ImageMemberData additional{};
+  additional.image_member_index = 1;
+  additional.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
+  if (!CoreResultStore::try_build_capture_image_member_data_from_frame(frame, additional, plan) ||
+      !store.append_additional_capture_image(frame.capture_id, frame.device_instance_id,
+                                             std::move(additional), 0, plan)) return 1;
+  auto result = store.get_capture_result(frame.capture_id, frame.device_instance_id);
+  if (!result || !result->image_member_at(1) ||
+      result->default_image.capture_gpu_backing_offer != single ||
+      result->image_member_at(1)->capture_gpu_backing_offer != bracket) {
+    std::cerr << "GPU backing ownership: incorrect capture member association\n";
+    return 1;
+  }
+
+  // Both callers see the same token, even through different result references.
+  Offer::Claim first{Status::Unavailable, {}};
+  Offer::Claim second{Status::Unavailable, {}};
+  std::thread other([&] { second = single->claim(now); });
+  first = result->default_image.capture_gpu_backing_offer->claim(now);
+  other.join();
+  if ((first.status == Status::Claimed) == (second.status == Status::Claimed)) return 1;
+  if (first.status != Status::AlreadyClaimed && second.status != Status::AlreadyClaimed) return 1;
+  auto application = first.backing ? std::move(first.backing) : std::move(second.backing);
+  if (!application) return 1;
+
+  // An outstanding job owns the resource after the result is evicted and the
+  // caller lets go. An expired, unclaimed bracket returns its budget even if
+  // the ordinary result and its CPU pixels are still held.
+  auto queued_job = application;
+  application.reset();
+  store.remove_capture_result(frame.capture_id, frame.device_instance_id);
+  if (!result->image_member_at(1) || result->default_image.payload.empty() ||
+      bracket->expire_if_due(deadline - 1ms) || budget.try_reserve(1) ||
+      !bracket->expire_if_due(deadline) || bracket->claim(deadline).status != Status::Expired ||
+      budget.try_reserve(kBytes + 1)) return 1;
+  auto regained = budget.try_reserve(kBytes);
+  if (!regained || budget.try_reserve(1)) return 1;
+  queued_job.reset();
+  if (!budget.try_reserve(kBytes)) return 1;
+  return 0;
+}
+
+static int test_capture_gpu_backing_intent_smoke() {
+  constexpr uint64_t kOptedInCapture = 77011;
+  constexpr uint64_t kOrdinaryCapture = 77012;
+  constexpr uint64_t kRigId = 8811;
+  constexpr uint64_t kRigCaptureId = 9811;
+
+  CoreRuntime rt;
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+  SilentCaptureProvider silent(prov);
+  silent.set_capture_admission_watchdog_timeout_ns(150ull * 1000ull * 1000ull);
+  rt.attach_provider(&silent);
+  const auto fail = [&](const char* reason) {
+    std::cerr << "Capture GPU backing intent: " << reason << "\n";
+    rt.stop();
+    return 1;
+  };
+
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(
+          kDeviceInstanceId, kOptedInCapture, true) != TryTriggerDeviceCaptureStatus::OK ||
+      silent.gpu_backing_requested(kOptedInCapture) != std::optional<bool>{true}) {
+    return fail("capture opt-in did not reach the provider");
+  }
+  if (!wait_until([&]() { return silent.was_aborted(kOptedInCapture); }, 1000, 5)) {
+    return fail("opted-in test capture did not settle");
+  }
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(
+          kDeviceInstanceId, kOrdinaryCapture) != TryTriggerDeviceCaptureStatus::OK ||
+      silent.gpu_backing_requested(kOrdinaryCapture) != std::optional<bool>{false}) {
+    return fail("GPU backing opt-in leaked into the next capture");
+  }
+  if (!wait_until([&]() { return silent.was_aborted(kOrdinaryCapture); }, 1000, 5)) {
+    return fail("ordinary test capture did not settle");
+  }
+
+  std::vector<CameraEndpoint> endpoints;
+  if (!prov.enumerate_endpoints(endpoints).ok() || endpoints.empty() ||
+      !rt.smoke_set_rig_member_hardware_ids(kRigId, {endpoints.front().hardware_id})) {
+    return fail("could not prepare the rig");
+  }
+  const auto rig = rt.orchestrate_rig_capture_with_capture_id_for_server(
+      kRigId, kRigCaptureId, CoreRuntime::smoke_default_device_capture_id_minter(), true);
+  if (!rig.ok || rig.members.size() != 1 ||
+      silent.gpu_backing_requested(rig.members.front().device_capture_id) !=
+          std::optional<bool>{true}) {
+    return fail("rig member did not receive the opt-in under its device capture id");
+  }
+
+  rt.stop();
+  return 0;
+}
+
 // Path 2: device loss (5.3). Same requirement, different trigger.
 static int test_device_lost_abandonment_aborts_capture_smoke() {
   using TerminalState = CoreCaptureAssemblyRegistry::TerminalState;
@@ -6083,6 +6217,18 @@ int main(int argc, char** argv) {
       reporter.print_fail_line("core_spine_smoke", "test_still_capture_profile_version_idempotency_smoke", r);
       return r;
     }
+    if (int r = reporter.run("test_capture_gpu_backing_ownership_smoke",
+                             [] { return test_capture_gpu_backing_ownership_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_capture_gpu_backing_ownership_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_capture_gpu_backing_intent_smoke",
+                             [] { return test_capture_gpu_backing_intent_smoke(); })) {
+      reporter.print_fail_line("core_spine_smoke", "test_capture_gpu_backing_intent_smoke", r);
+      return r;
+    }
+
     if (int r = reporter.run("test_rig_preflight_materialization_smoke",
                              [] { return test_rig_preflight_materialization_smoke(); })) {
       if (reporter.verbose()) reporter.print_summary();

@@ -399,6 +399,19 @@ void ProviderCallbackIngress::on_capture_image_timing(const CaptureImageTimingNo
   timing_listener_idle_.notify_all();
 }
 
+void ProviderCallbackIngress::set_capture_gpu_backing_listener(
+    CaptureGpuBackingListener listener) {
+  std::lock_guard<std::mutex> lock(gpu_backing_listener_mu_);
+  gpu_backing_listener_ = std::move(listener);
+}
+
+void ProviderCallbackIngress::on_capture_gpu_backing_ready(const CaptureGpuBackingNotice& notice) {
+  std::lock_guard<std::mutex> lock(gpu_backing_listener_mu_);
+  if (gpu_backing_listener_) {
+    gpu_backing_listener_(notice);
+  }
+}
+
 void ProviderCallbackIngress::on_frame(const FrameView& frame) {
   // Contract tripwire: icamera_provider.h's update_stream_retained_production_plan()
   // requires providers not emit a frame synchronously from that call. That call

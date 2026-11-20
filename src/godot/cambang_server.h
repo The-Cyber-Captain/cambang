@@ -213,6 +213,7 @@ public:
   // belongs to exactly one device -- and a parameter that outlives its reason
   // teaches callers a constraint that is not real.
   godot::Ref<CamBANGCaptureResult> get_capture_result_by_id(const godot::String& capture_id) const;
+  godot::Dictionary claim_capture_gpu_backing(const godot::String& capture_id, int member_index = 0) const;
   uint64_t get_latest_capture_id_for_device(uint64_t device_instance_id) const;
 
   // Captures this boundary has minted and not yet seen finish
@@ -285,7 +286,8 @@ public:
   void release_stream_display_demand_async(uint64_t stream_id);
   godot::Error trigger_device_capture(
       uint64_t device_instance_id,
-      uint64_t& out_capture_id);
+      uint64_t& out_capture_id,
+      bool keep_gpu_backing = false);
   godot::Error set_device_still_capture_profile(uint64_t device_instance_id,
                                                 const CaptureProfile& profile,
                                                 const CaptureStillImageBundle& still_image_bundle);
@@ -369,6 +371,7 @@ private:
   // Consume latest core snapshot (if published_seq advanced) and emit
   // state_published for this boundary observation.
   bool _consume_latest_core_snapshot();
+  void _drain_off_main_capture_observations_();
   bool is_public_boundary_ready_() const;
   bool is_provider_discovery_available_() const;
   bool is_synthetic_timeline_session_active_() const;
@@ -405,6 +408,14 @@ private:
   static constexpr size_t kCaptureImageTimingQueueCapacity = 256;
   std::shared_ptr<CaptureImageTimingQueue> capture_image_timing_queue_ =
       std::make_shared<CaptureImageTimingQueue>();
+  // Ingress writes pending notices; only Godot's main thread uses the
+  // published offers. Both queues hold the provider's same expiring offer.
+  std::mutex pending_gpu_backings_mutex_;
+  std::deque<CaptureGpuBackingNotice> pending_gpu_backings_;
+  std::deque<CaptureGpuBackingNotice> published_gpu_backings_;
+  static constexpr size_t kCaptureGpuBackingNoticeCapacity = 256;
+  void _drain_capture_gpu_backings_();
+
   void _install_capture_image_timing_listener_();
   void _remove_capture_image_timing_listener_();
 public:
@@ -487,7 +498,8 @@ private:
     std::vector<CoreRuntime::RigTriggeredMember> members;
     godot::Error error = godot::ERR_BUSY;
   };
-  RigTriggerInternalResult trigger_rig_capture_internal_(uint64_t rig_id);
+  static bool parse_capture_options_(const godot::Dictionary& options, bool& keep_gpu_backing);
+  RigTriggerInternalResult trigger_rig_capture_internal_(uint64_t rig_id, bool keep_gpu_backing);
   // One-shot per runtime session: the first rejected rig trigger logs its
   // concrete orchestration failure category so collapsed public codes stay
   // self-describing in the log. Reset on start().

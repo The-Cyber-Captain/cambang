@@ -1,4 +1,5 @@
 #include "godot/cambang_capture_result.h"
+#include "godot/cambang_gpu_backing.h"
 
 #include "godot/cambang_server.h"
 #include "godot/camera_fact_convert.h"
@@ -7,6 +8,7 @@
 #include "godot/capture_compute_texture.h"
 #include "godot/godot_gpu_display_service.h"
 #include "godot/result_access_cost_evidence.h"
+#include "godot/result_conversion_gate.h"
 
 #include <chrono>
 #include <mutex>
@@ -223,6 +225,19 @@ godot::Dictionary CamBANGCaptureResult::get_image_member(int image_member_index)
   return out;
 }
 
+godot::Dictionary CamBANGCaptureResult::claim_gpu_backing(int member_index) const {
+  const auto* member = data_ && member_index >= 0
+      ? data_->image_member_at(static_cast<uint32_t>(member_index))
+      : nullptr;
+  if (!member) {
+    godot::Dictionary out;
+    out["backing"] = godot::Variant();
+    out["error"] = godot::ERR_INVALID_PARAMETER;
+    return out;
+  }
+  return CamBANGGpuBacking::claim_offer(member->capture_gpu_backing_offer);
+}
+
 int CamBANGCaptureResult::can_to_image_member(int image_member_index) const {
   if (!data_ || image_member_index < 0) {
     return CAPABILITY_UNSUPPORTED;
@@ -372,11 +387,32 @@ godot::Ref<godot::Image> perform_capture_to_image_member_gpu_materializer_access
 }
 
 godot::Ref<godot::Image> CamBANGCaptureResult::to_image_member(int image_member_index) const {
+  // Any thread (result contract). Off the main thread nothing here reaches
+  // server_: the observation goes through the gate's queue to the server's
+  // next main-thread tick.
+  //
+  // Owning copies first, and nothing read through `this` after them: a caller
+  // may drop its last reference on another thread while this call runs, and
+  // the conversion and the bookkeeping after it must then still read live
+  // data. (The copy itself is the one read of this object; a caller that
+  // frees the object before the call reaches it is outside the contract.)
+  // Taken after admission, so it is released -- possibly as the last owner --
+  // before the scope leaves the gate, never during extension teardown.
+  const ResultConversionScope scope;
+  if (!scope.admitted()) {
+    return godot::Ref<godot::Image>();
+  }
+  const SharedCaptureResultData data = data_;
+  CamBANGServer* const server = server_;
   godot::Ref<godot::Image> image =
-      perform_capture_to_image_member_access(data_, image_member_index);
-  if (server_ && data_ && image_member_index >= 0) {
-    server_->report_capture_result_member_observation(
-        data_, static_cast<uint32_t>(image_member_index));
+      perform_capture_to_image_member_access(data, image_member_index);
+  if (data && image_member_index >= 0) {
+    if (!result_conversion_on_main_thread()) {
+      queue_off_main_capture_observation(data, static_cast<uint32_t>(image_member_index));
+    } else if (server) {
+      server->report_capture_result_member_observation(
+          data, static_cast<uint32_t>(image_member_index));
+    }
   }
   return image;
 }
@@ -450,6 +486,8 @@ godot::PackedByteArray CamBANGCaptureResult::get_encoded_bytes() const {
 }
 
 void CamBANGCaptureResult::_bind_methods() {
+  godot::ClassDB::bind_method(godot::D_METHOD("claim_gpu_backing", "member_index"),
+                              &CamBANGCaptureResult::claim_gpu_backing, DEFVAL(0));
   godot::ClassDB::bind_method(godot::D_METHOD("get_width"), &CamBANGCaptureResult::get_width);
   godot::ClassDB::bind_method(godot::D_METHOD("get_height"), &CamBANGCaptureResult::get_height);
   godot::ClassDB::bind_method(godot::D_METHOD("get_format"), &CamBANGCaptureResult::get_format);

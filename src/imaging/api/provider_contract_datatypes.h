@@ -24,6 +24,8 @@
 
 namespace cambang {
 
+class CaptureGpuBackingOffer;
+
 // Public semantics for repeating streams.
 enum class StreamIntent : uint8_t {
   PREVIEW = 0,
@@ -620,6 +622,9 @@ struct CaptureRequest {
 
   uint64_t profile_version = 0;      // core bookkeeping
   CoreRetainedProductionPlan requested_retained_plan{}; // core-selected internal production posture
+  // Caller interest in optional GPU compute backing for this still. This is
+  // independent of the automatic production posture for the ordinary result.
+  bool keep_gpu_backing = false;
 };
 
 // Normalized provider capture submission. A device capture is represented as a
@@ -838,6 +843,14 @@ struct CaptureImageTimingNotice {
   uint64_t observed_core_monotonic_ns = 0;
 };
 
+// A GPU copy of this exact capture member is ready independently of CPU delivery.
+struct CaptureGpuBackingNotice {
+  uint64_t capture_id = 0;
+  uint32_t image_member_index = 0;
+  PayloadColorimetry colorimetry{};
+  std::shared_ptr<CaptureGpuBackingOffer> offer;
+};
+
 // Frame view delivered from provider.
 // Provider retains buffer ownership until core calls release().
 // release() must be safe and non-blocking; it is called from core thread context.
@@ -901,6 +914,10 @@ struct FrameView {
   RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
   // Echo of the Core-requested internal retention posture that produced this frame.
   CoreRetainedProductionPlan requested_retained_plan{};
+
+  // Optional provider-owned compute backing for this still member. The provider
+  // budgets this separately from Core's ordinary payload and display backing.
+  std::shared_ptr<CaptureGpuBackingOffer> capture_gpu_backing_offer{};
 
   // Optional per-row stride (0 if tightly packed/unknown)
   uint32_t stride_bytes = 0;

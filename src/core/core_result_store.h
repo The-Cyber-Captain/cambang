@@ -242,6 +242,7 @@ struct CoreCaptureResultData {
     CoreResultPayloadCpu payload{};
     std::shared_ptr<void> retained_gpu_backing{};
     RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
+    std::shared_ptr<CaptureGpuBackingOffer> capture_gpu_backing_offer{};
     CoreRetainedAccessTruth retained_access_truth{};
     SharedResultAccessClassificationRecord access_classification{};
     CoreResultAccessPostureKey access_posture{};

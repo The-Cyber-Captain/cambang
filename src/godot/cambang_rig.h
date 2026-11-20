@@ -57,7 +57,7 @@ public:
   //
   // On refusal `id` is 0 and `members` is empty: a refused trigger mints
   // nothing.
-  godot::Dictionary trigger_capture();
+  godot::Dictionary trigger_capture(const godot::Dictionary& options = {});
   godot::TypedArray<CamBANGCaptureResult> get_result() const;
 
   // What became of each member of this rig's most recent capture
