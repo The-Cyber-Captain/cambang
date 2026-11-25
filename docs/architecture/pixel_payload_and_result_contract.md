@@ -1486,6 +1486,14 @@ either: `AHardwareBuffer` imports require dedicated allocation, which binds that
 memory to exactly one image. So the obstacle is the shape of Godot's API, not
 conversion cost, and the CPU-plane path above is unaffected by it.
 
+This limitation is specific to making that camera allocation a Godot
+`RenderingDevice` texture. The retained capture API does not expose or import
+the source into Godot's renderer: Camera2 imports the matching buffer into its
+provider-owned Vulkan device, copies it into frozen compute planes, and serves
+caller work through `CamBANGGpuBacking.submit_compute()`. That path is usable
+with Compatibility or Mobile and does not require OpenXR. See
+[`retained_gpu_capture_sampling.md`](../retained_gpu_capture_sampling.md).
+
 #### Lifetime and release
 
 The texture's lifetime is bounded by the retained result. It is released when
@@ -1506,11 +1514,20 @@ Recorded so a declared-but-unimplemented capability stays distinguishable from
 a working one. This section describes what is built, not what CamBANG intends;
 an absent entry means "not implemented yet", never "excluded by design".
 
-- **The CPU-plane path is implemented; the native GPU-resident path is not
-  reachable on real hardware.** `CamBANGCaptureResult` exposes
+This status section covers both the Godot `Capture Compute Texture`/generic
+Core Backing Plan route and, separately, the provider-owned retained capture
+route. Camera2 can provide `CamBANGGpuBacking` for opted-in still captures even
+though its generic Backing Plan reports CPU payload capabilities. Therefore,
+the Synthetic-only `READY` texture row below describes the Godot texture API;
+it does not mean retained GPU compute is Synthetic-only.
+
+- **This status is for the Godot `Capture Compute Texture` API, which is
+  separate from provider-owned `CamBANGGpuBacking`.** `CamBANGCaptureResult` exposes
   `can_get_compute_texture_member(i)`, `get_compute_texture_plane_count(i)` and
   `get_compute_texture_plane(i, plane)`. Production is lazy and cached per
   retained plane in the Godot layer (`src/godot/capture_compute_texture.cpp`).
+  This API returns a Godot texture; the Camera2 retained-backing API instead
+  keeps its planes on the provider's Vulkan device and submits compute there.
 - There is deliberately **no** no-argument convenience accessor. An earlier
   revision had `get_compute_texture()` returning member 0; it was removed
   because a planar member has no single texture to return, so such an accessor
@@ -1673,20 +1690,17 @@ an absent entry means "not implemented yet", never "excluded by design".
   the stream surface deliberately has none, for the reason given in 11.6.2. Scene 870's `gpu_only` producer output form is a
   synthetic-only knob, and the matrix runner's `-ProviderOutputForms` axis
   cannot drive a platform-backed provider into it.
-- **On Android the bytes arrive in GPU-capable memory and are copied out of
-  it.** Every AImageReader buffer is an AHardwareBuffer allocation, but the
-  caller's stream and the still both open the no-usage constructor
-  (`AImageReader_new(..., AIMAGE_FORMAT_YUV_420_888, ...)`) and are read
-  through `AImage_getPlaneData` and copied into provider heap slots.
-  `AImage_getHardwareBuffer` is never called, so no GPU-importable handle
-  leaves the provider. The machinery is not absent: the *pilot* stream already
-  opens `AImageReader_newWithUsage(..., AIMAGE_FORMAT_PRIVATE,
-  AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE, ...)` under an API-26 availability
-  guard, and those frames are counted and deleted without a plane being read
-  (`src/imaging/platform/android/camera2_camera_provider.cpp`). WinRT is
-  further from a GPU route: its pixels arrive as a `SoftwareBitmap` read via
-  `IMemoryBufferByteAccess`, and the provider references no D3D or DXGI
-  interface at all.
+- **Ordinary Android CPU delivery and retained GPU capture are separate
+  paths.** Ordinary Camera2 results and streams still copy image planes into
+  provider-owned CPU payloads. When a still opts into GPU backing and the
+  Camera2 reader/device supports it, `camera2_gpu_device.cpp` calls
+  `AImage_getHardwareBuffer`, imports that matching allocation into a
+  provider-owned Vulkan device, and makes frozen R8/R8G8 compute planes. The
+  claimed `CamBANGGpuBacking` can submit compute without waiting for CPU
+  materialization; ordinary `to_image()` remains independently available.
+  This does not create a Godot `RenderingDevice` texture, which is the separate
+  limitation described above. WinRT currently provides CPU capture payloads;
+  its provider does not implement this retained GPU capture route.
 - The descriptor can distinguish a linear backing from an opaque external one
   and can declare that display or import costs real work
   (`GpuBackingLayoutKind`, `display_requires_import`,

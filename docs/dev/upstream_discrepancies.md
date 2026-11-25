@@ -190,23 +190,43 @@ Long-term note:
 - Re-verify `call_on_render_thread()` ordering and `force_sync()` implementation
   when upgrading Godot. If that source guarantee changes, the stop-time fence
   and both teardown stresses must be revisited together.
-## Godot ExternalTexture Vulkan path is unimplemented (blocks GPU-resident camera buffers)
+## Historical Godot ExternalTexture Vulkan investigation
 
-Upstream:
+**Current CamBANG status (2026-11-25):** The earlier finding concerns importing a
+Camera2 `AHardwareBuffer` directly into Godot's `ExternalTexture` or
+`RenderingDevice`. It does **not** block retained GPU capture or compute.
+CamBANG's Android Camera2 provider now imports an opted-in captured buffer into
+its own Vulkan device, makes a frozen GPU copy, and runs caller work through
+`CamBANGGpuBacking.submit_compute()`. That route does not expose a texture RID
+to Godot, does not depend on the active Godot renderer, and does not require
+OpenXR or a modified Godot build. Scene 83 has passed on Quest with both
+Compatibility and Mobile renderers while OpenXR was disabled. See
+[`retained_gpu_capture_sampling.md`](../retained_gpu_capture_sampling.md).
+
+Direct Godot `ExternalTexture`/RenderingDevice interoperability is a separate
+question for any future API that needs to expose the provider's camera
+allocation as a Godot-renderer texture. The upstream references and status
+labels below are from the original investigation and have not been refreshed;
+they are not a prerequisite or completion gate for the provider-owned compute
+API.
+
+Upstream references (status recorded at time of investigation):
 - https://github.com/godotengine/godot/pull/96982 (merged, 4.4 — GLES3 only)
 - https://github.com/godotengine/godot/pull/97163 (DRAFT, unmerged — the Vulkan half)
 - https://github.com/godotengine/godot/pull/114940 (open — `additional_device_extensions`)
 - https://github.com/godotengine/godot-proposals/issues/13969
 - https://docs.godotengine.org/en/4.5/classes/class_externaltexture.html
 
-Observation:
+Historical observation from the original direct-import investigation:
 - `ExternalTexture` documents itself as requiring "the OES_EGL_image_external
   extension (OpenGL) or VK_ANDROID_external_memory_android_hardware_buffer
   extension (Vulkan)". Only the OpenGL half exists. PR #96982 merged GLES3
   support for 4.4; the Vulkan half was split into #97163, which is still a
-  draft. Its author states the blocker plainly: "this will only work with
+  draft. Its author stated the blocker plainly: "this will only work with
   Android API level 26 or higher. Presently, we have an API minimum of 21,
-  which prevents this code from compiling." Still unresolved as of Feb 2026.
+  which prevents this code from compiling." The original investigation
+  recorded it as unresolved in Feb 2026; this is not a current upstream
+  status check.
 - Measured on a Quest 3 (Horizon OS v207, Android 14/API 34) under Godot 4.5.1,
   mobile renderer:
   - `vkEnumerateDeviceExtensionProperties` on Godot's own `VkPhysicalDevice`
@@ -235,8 +255,15 @@ Observation:
   `GPU_SAMPLED_IMAGE` set) in format `0x23`. What is missing is only the route
   into a Godot texture.
 
-CamBANG workaround:
-- Do not pursue GPU-resident import while it depends on unmerged upstream work.
+### Historical alternative for direct Godot texture import
+
+The following investigation and proposal predate the provider-owned retained
+capture compute path described above. They concern exposing the imported camera
+allocation as a Godot `RenderingDevice` texture; they are not prerequisites or
+current blockers for `CamBANGGpuBacking`.
+
+- Original recommendation: defer direct Godot texture import while it depended
+  on unmerged upstream work.
   A custom Godot Android export template built at `ndk_platform=android-26`
   carrying #97163 would work technically — the approach the #97163 discussion
   itself proposes, citing `godot_arcore` — but owning an engine fork and its
@@ -267,7 +294,7 @@ CamBANG workaround:
   uploading Y and CbCr as two single-plane textures removes the 20 ms instead.
   The upstream blocker above therefore costs the small win, not the large one.
 
-Removal criteria:
+Revisit criteria for the direct Godot texture route only:
 - #97163 (or equivalent Vulkan external-texture support) merges AND the Godot
   version CamBANG targets ships an Android export template built at API >= 26;
   or #114940 (or equivalent) lands so the AHB extension can be requested on
