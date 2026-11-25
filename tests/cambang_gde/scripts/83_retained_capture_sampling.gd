@@ -3,6 +3,7 @@ extends Node
 const SCENE := "83_retained_capture_sampling"
 const SHADER: RDShaderSPIRV = preload("res://shaders/retained_capture_sample.tres")
 const WAIT_MS := 10000
+const SAVE_PATH := "user://retained_capture.png"
 const PREVIEW_SIZE := Vector2(512, 512)
 const REGIONS := [Rect2(0.18, 0.33, 0.10, 0.10), Rect2(0.67, 0.54, 0.10, 0.10)]
 
@@ -14,6 +15,8 @@ var _early := {}
 var _finished := {}
 var _claim_on_ready := false
 var _ready_capture_id := ""
+var _first_sample := {}
+var _save_task := -1
 var _regions: Array[Rect2] = []
 var _last_output := PackedByteArray()
 var _compute_us: Array[int] = []
@@ -140,6 +143,10 @@ func _on_gpu_backing_ready(id: String, info: Dictionary) -> void:
 	_ready_capture_id = id
 	_colorimetry = info["colorimetry"]
 	_backing = claim["backing"]
+	# The ready handler can start GPU work before the CPU result is delivered.
+	_first_sample = _submit_sample(0)
+	if not _first_sample.is_empty():
+		print("Submitted region A from GPU readiness for %s member 0" % id)
 
 
 func _process(delta: float) -> void:
@@ -217,16 +224,30 @@ func _run() -> void:
 	if int(retained.claim_gpu_backing()["error"]) != ERR_ALREADY_IN_USE:
 		_fail("The ordinary result granted a second claim on the same backing")
 		return
-	var image := retained.to_image()
-	if image == null:
-		_fail("Retained capture lost its ordinary result")
-		return
-	_preview.texture = ImageTexture.create_from_image(image)
 	var id := str(retained.get_capture_identity()["device_capture_id"])
-	_status.text = "Capture %s\nEarly acquisition matched member 0\nSampling retained pixels…" % id
-	var first: Array[PackedByteArray] = await _sample_both()
+	var timing: Dictionary = _early[id]
+	var saved := {}
+	_save_task = WorkerThreadPool.add_task(func():
+		var image := retained.to_image()
+		saved["image"] = image
+		saved["error"] = ERR_UNAVAILABLE if image == null else image.save_png(SAVE_PATH))
+	_status.text = "Capture %s\nEarly acquisition matched member 0\nSampling and saving…" % id
+	if _first_sample.is_empty():
+		return
+	var first: Array[PackedByteArray] = await _sample_both(_first_sample)
+	_first_sample.clear()
 	if first.size() != REGIONS.size():
 		return
+	while not WorkerThreadPool.is_task_completed(_save_task):
+		await get_tree().process_frame
+	WorkerThreadPool.wait_for_task_completion(_save_task)
+	_save_task = -1
+	if int(saved.get("error", FAILED)) != OK:
+		_fail("Saving %s failed (%s)" % [SAVE_PATH, saved.get("error", FAILED)])
+		return
+	_preview.texture = ImageTexture.create_from_image(saved["image"])
+	print("Saved %s member 0 (acquisition mark %s) to %s" %
+		[id, timing["acquisition_mark"], ProjectSettings.globalize_path(SAVE_PATH)])
 	var next := await _capture(false)
 	if next == null:
 		return
@@ -240,7 +261,9 @@ func _run() -> void:
 	_performance_window = false
 	_busy = false
 	_refresh.disabled = false
-	_status.text = "Capture %s\nEarly acquisition matched member 0\nBoth samples matched after a later still\n\nClick the image to move a region." % id
+	_status.text = ("Capture %s\nMember 0 acquisition mark: %s\n"
+		+ "Saved %s\nBoth colours matched after a later still\n\nClick the image to move a region.") % [
+			id, timing["acquisition_mark"], SAVE_PATH]
 	var renderer := RenderingServer.get_current_rendering_method()
 	print("Retained capture metrics renderer=%s openxr=%s capture_us=%s compute_us=%s frame_ms=%s" %
 		[renderer, _xr_active, _capture_us, _compute_us, _frame_summary()])
@@ -336,23 +359,31 @@ func _parameters(region: Rect2) -> PackedByteArray:
 		1.0 if full else 224.0 / 255.0]).to_byte_array()
 
 
-func _sample_both() -> Array[PackedByteArray]:
+func _submit_sample(index: int) -> Dictionary:
+	var result := {"done": false, "error": FAILED, "bytes": PackedByteArray(),
+		"start": Time.get_ticks_usec()}
+	var admitted := _backing.submit_compute(SHADER, _parameters(_regions[index]), Vector3i.ONE, 16,
+		func(error: int, bytes: PackedByteArray):
+			result["error"] = error
+			result["bytes"] = bytes
+			result["elapsed_us"] = Time.get_ticks_usec() - int(result["start"])
+			result["done"] = true)
+	if admitted != OK:
+		_fail("Compute request refused: %d" % admitted)
+		return {}
+	return result
+
+
+func _sample_both(first_sample: Dictionary = {}) -> Array[PackedByteArray]:
 	var outputs: Array[PackedByteArray] = []
 	for i in range(_regions.size()):
-		var result := {"done": false, "error": FAILED, "bytes": PackedByteArray()}
-		var start := Time.get_ticks_usec()
-		var admitted := _backing.submit_compute(SHADER, _parameters(_regions[i]), Vector3i.ONE, 16,
-			func(error: int, bytes: PackedByteArray):
-				result["error"] = error
-				result["bytes"] = bytes
-				result["done"] = true)
-		if admitted != OK:
-			_fail("Compute request refused: %d" % admitted)
+		var result := first_sample if i == 0 and not first_sample.is_empty() else _submit_sample(i)
+		if result.is_empty():
 			return []
 		var deadline := Time.get_ticks_msec() + WAIT_MS
 		while not result["done"] and Time.get_ticks_msec() < deadline:
 			await get_tree().process_frame
-		_compute_us.append(Time.get_ticks_usec() - start)
+		_compute_us.append(int(result["elapsed_us"]))
 		var bytes: PackedByteArray = result["bytes"]
 		if int(result["error"]) != OK or bytes.size() != 16 or bytes.decode_float(12) != 1.0:
 			_fail("Compute result invalid: %d (%d bytes)" % [int(result["error"]), bytes.size()])
@@ -414,5 +445,7 @@ func _fail(message: String) -> void:
 
 
 func _exit_tree() -> void:
+	if _save_task != -1:
+		WorkerThreadPool.wait_for_task_completion(_save_task)
 	_backing = null
 	CamBANGServer.stop()

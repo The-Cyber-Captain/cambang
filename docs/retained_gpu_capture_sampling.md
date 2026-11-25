@@ -2,6 +2,12 @@
 
 Open the CamBANG test project and run [the retained capture scene](../tests/cambang_gde/scenes/83_retained_capture_sampling.tscn) on Quest. The scene selects Camera2 hardware ID `50` by default. It shows the ordinary still, marks two regions, and displays colours from the application's compute shader. It automatically samples both regions again after a later capture. Tap or click the image to move the regions in the flat view.
 
+The scene submits the first sample from the GPU readiness handler. It checks
+the early acquisition mark against the ordinary result for the same capture
+and member, and saves that result with `to_image()` on a worker thread.
+The panel shows the capture ID, acquisition mark, colour swatches and
+`user://retained_capture.png`. Each run replaces the previous demo PNG.
+
 ## Claim the captured member
 
 Use the Device Capture Id from the trigger receipt to associate the early

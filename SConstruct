@@ -1105,6 +1105,12 @@ if build_gde_graph:
         gde_env = _create_android_gde_env(env, host_platform, env["arch"], core_target)
     else:
         gde_env = env.Clone()
+        if is_msvc and core_target == "debug":
+            # Keep the debug template and PDB while optimizing camera code.
+            # Native maintainer tools retain their existing debug flags.
+            gde_env.Replace(CXXFLAGS=[
+                "/O2" if flag == "/Od" else flag for flag in gde_env["CXXFLAGS"]
+            ])
     if is_msvc:
         # Match godot-cpp's own MSVC build (thirdparty/godot-cpp/tools/
         # windows.py): MSVC cannot compile the untyped method-bind
