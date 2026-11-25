@@ -1,6 +1,14 @@
 # Sampling a retained capture on the GPU
 
-Open the CamBANG test project and run [the retained capture scene](../tests/cambang_gde/scenes/83_retained_capture_sampling.tscn) on Quest. The scene selects Camera2 hardware ID `50` by default. It shows the ordinary still, marks two regions, and displays colours from the application's compute shader. It automatically samples both regions again after a later capture. Tap or click the image to move the regions in the flat view.
+Open the CamBANG test project and run [the retained capture scene](../tests/cambang_gde/scenes/83_retained_capture_sampling.tscn) on an Android Camera2 device. The scene selects hardware ID `50` by default, which is the qualified Quest camera used for this example. Quest is the example hardware, not a product restriction. The provider-owned capture backing and `submit_compute()` do not require OpenXR or depend on Godot's active renderer; the scene has passed on Quest with both Compatibility and Mobile while OpenXR was disabled. A provider without this optional GPU route can report the backing unavailable while ordinary capture continues normally.
+
+The scene shows the ordinary still, marks two regions, and displays colours from the application's compute shader. It automatically samples both regions again after a later capture. Tap or click the image to move the regions in the flat view.
+
+The scene submits the first sample from the GPU readiness handler. It checks
+the early acquisition mark against the ordinary result for the same capture
+and member, and saves that result with `to_image()` on a worker thread.
+The panel shows the capture ID, acquisition mark, colour swatches and
+`user://retained_capture.png`. Each run replaces the previous demo PNG.
 
 ## Claim the captured member
 

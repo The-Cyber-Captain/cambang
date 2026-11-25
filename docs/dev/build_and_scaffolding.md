@@ -268,9 +268,10 @@ Notes and known gaps:
 * `-Og` is not identical across toolchains. On Clang (Android NDK) it is
   effectively `-O1`; on GCC (MinGW host) it is a distinct level. The intent is
   uniform; the codegen is not exactly.
-* The **MSVC Windows GDE build is still `/Od`** (full optimization off). MSVC
-  has no `-Og` equivalent — only `/Od`, `/O1`, `/O2` — so no exact mapping
-  exists and none has been chosen or measured.
+* The MSVC Windows debug GDExtension uses `/O2` with `/Z7` debug information
+  and a linker PDB. It retains the `template_debug` target and the WinRT
+  camera provider. MSVC maintainer tools use `/Od` in debug builds. The
+  Galaxy S20+ measurements above apply to the Android build.
 * Release-quality validation at `-O2`/`target=release` remains a separate,
   planned phase. See section 6 for what a `target=release` build currently
   requires.
