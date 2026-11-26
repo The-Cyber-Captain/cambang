@@ -8,7 +8,7 @@
 // Exercises, against the first enumerated physical endpoint:
 //   enumeration -> open -> stream create/start -> live frame arrival ->
 //   still capture while streaming -> bracketed (multi-image) still capture ->
-//   geometry-conflict rejection -> stop/destroy/close -> shutdown, and
+//   geometry-conflict arbitration response -> stop/destroy/close -> shutdown, and
 //   asserts provider fact ordering (started-before-frames, exactly-one-
 //   terminal, no frames after stopped) plus, for the bracket, per-member
 //   FIFO ordering/routing and distinct truthful realized exposure values.
@@ -476,21 +476,24 @@ int main(int argc, char** argv) {
     }
   }
 
-  // Deterministic geometry-conflict rejection: a capture needing different
-  // geometry while a started stream pins the shared reader must be refused at
-  // admission with ERR_PLATFORM_CONSTRAINT and emit no facts.
+  // This validator calls the provider directly, without CoreRuntime. It can
+  // therefore verify the provider's arbitration answer, but it cannot expect
+  // Core's resulting stream preemption or capture admission behavior. For a
+  // producing stream at a different geometry, WinRT requires that stream to
+  // yield; Core owns stopping it before it submits the capture.
   {
-    CaptureRequest conflict = creq;
-    conflict.capture_id = kCaptureId + 1;
-    conflict.width = 320;
-    conflict.height = 240;
-    const int terminals_before = harness.capture_terminals;
-    pr = provider.trigger_capture(conflict);
-    check(pr.code == ProviderError::ERR_PLATFORM_CONSTRAINT,
-          "geometry_conflict_rejected_at_admission");
-    std::lock_guard<std::mutex> lock(harness.m);
-    check(harness.capture_terminals == terminals_before,
-          "rejected_capture_emits_no_facts");
+    AcquisitionUseSet proposed{};
+    proposed.has_stream = true;
+    proposed.stream = sreq.profile;
+    proposed.has_still = true;
+    proposed.still.width = 320;
+    proposed.still.height = 240;
+    proposed.still.format_fourcc = creq.format_fourcc;
+    const AcquisitionCoexistence decision =
+        provider.acquisition_coexistence(kDeviceInstanceId, proposed);
+    check(decision.verdict == CoexistenceVerdict::StreamMustYield &&
+              decision.yielded_stream_restorable,
+          "geometry_conflict_requires_restorable_stream_yield");
   }
 
   check(provider.stop_stream(kStreamId).ok(), "stop_stream");
