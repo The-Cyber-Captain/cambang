@@ -1,5 +1,5 @@
 param(
-    [string]$GodotExe = "C:\Program Files\Godot4.5\Godot_v4.5.1-stable_win64_console.exe",
+    [string]$GodotExe = "C:\Program Files\Godot\godot4v5\Godot_v4.5.2-stable_win64_console.exe",
     [string]$ProjectPath = $PSScriptRoot,
     # The OS this run targets. Named TargetOs rather than RunPlatform because
     # "platform" already means something else here -- a platform-BACKED provider
@@ -1885,6 +1885,12 @@ function Invoke-AndroidRun {
     $projectRestored = $false
     $patchedProjectRenderingMethod = Get-SingleLineValue -Text $patchedProjectText -LinePrefix 'renderer/rendering_method='
     $patchedProjectRenderingMethodMobile = Try-GetSingleLineValue -Text $patchedProjectText -LinePrefix 'renderer/rendering_method.mobile=' -DefaultValue '(absent)'
+    $effectiveRenderingMethod = if ($AndroidLaunchSettings.HasRenderingMethod) {
+        $AndroidLaunchSettings.RenderingMethod
+    }
+    else {
+        $patchedProjectRenderingMethodMobile
+    }
 
     Add-LogSection -Path $LogRecord.StdoutPath -Header "android_run" -Body @"
 run_platform=android
@@ -1892,7 +1898,7 @@ scene=$ScenePath
 device_serial=$DeviceSerial
 export_preset=$ExportPreset
 android_sdk_root=$AndroidSdkRootResolved
-rendering_method=$(if ($AndroidLaunchSettings.HasRenderingMethod) { $AndroidLaunchSettings.RenderingMethod } else { "mobile" })
+rendering_method=$effectiveRenderingMethod
 synthetic_producer_output_form=$($AndroidLaunchSettings.SyntheticProducerOutputForm)
 synthetic_stream_capability_downgrades=$($AndroidLaunchSettings.SyntheticStreamCapabilityDowngrades)
 synthetic_capture_capability_downgrades=$($AndroidLaunchSettings.SyntheticCaptureCapabilityDowngrades)
@@ -1991,15 +1997,6 @@ patched_project_renderer_rendering_method_mobile=$patchedProjectRenderingMethodM
 
         $androidPackageName = Resolve-AndroidPackageValue -ExplicitPackage $ExplicitPackageName -ProjectFullPath $ProjectFullPath
         $androidActivityName = Resolve-AndroidActivityValue -ExplicitActivity $ExplicitActivityName -ProjectFullPath $ProjectFullPath
-
-        if ($AndroidLaunchSettings.HasRenderingMethod -and $AndroidLaunchSettings.RenderingMethod -ne "mobile") {
-            $rebuiltApkPath = Invoke-AndroidGradleRebuildForRenderer `
-                -LogRecord $LogRecord `
-                -ProjectFullPath $ProjectFullPath `
-                -RenderingMethod $AndroidLaunchSettings.RenderingMethod `
-                -PackageName $androidPackageName
-            Copy-Item -LiteralPath $rebuiltApkPath -Destination $exportApkPath -Force
-        }
 
         $clearLogcatResult = Invoke-CapturedProcess `
             -FilePath $AdbPath `
@@ -2269,6 +2266,7 @@ patched_project_renderer_rendering_method_mobile=$patchedProjectRenderingMethodM
         AndroidPackage = $androidPackageName
         AndroidActivity = $androidActivityName
         AndroidPid = $androidPid
+        RenderingMethod = $effectiveRenderingMethod
         ExportApkPath = $exportApkPath
         DeviceLogcatPath = $deviceLogcatPath
         DeviceLogcatText = $logcatText
@@ -2300,6 +2298,7 @@ $commandText = ""
 $deviceLogcatPath = $null
 $androidPackageName = ""
 $androidActivityName = ""
+$androidRenderingMethod = ""
 $androidDeviceSerialResolved = ""
 $androidApkPath = ""
 $androidSawHarnessVerdict = $false
@@ -2448,6 +2447,7 @@ else {
         $deviceLogcatPath = $androidResult.DeviceLogcatPath
         $androidPackageName = $androidResult.AndroidPackage
         $androidActivityName = $androidResult.AndroidActivity
+        $androidRenderingMethod = $androidResult.RenderingMethod
         $androidApkPath = $androidResult.ExportApkPath
         $androidSawHarnessVerdict = $androidResult.SawHarnessVerdict
         $androidHarnessVerdict = $androidResult.HarnessVerdict
@@ -2476,6 +2476,9 @@ $deviceLogcatText = if ($null -ne $deviceLogcatPath -and (Test-Path $deviceLogca
 }
 else {
     ""
+}
+if ($null -eq $deviceLogcatText) {
+    $deviceLogcatText = ""
 }
 $combinedText = "$stdoutText`n$stderrText`n$deviceLogcatText"
 $harnessVerdicts = @(ConvertFrom-HarnessVerdictMarkers -Text $combinedText)
@@ -2723,7 +2726,7 @@ if ($TargetOs -eq "android") {
     $meta["android_sdk_root"] = $(Resolve-AndroidSdkRootPath -ExplicitSdkRoot $AndroidSdkRoot)
     $meta["adb_exe"] = $(Resolve-AdbExePath -ExplicitAdbExe $AdbExe -SdkRoot $meta["android_sdk_root"])
     $meta["android_export_preset"] = $AndroidExportPreset
-    $meta["android_rendering_method"] = $(if ($androidLaunchSettings.HasRenderingMethod) { $androidLaunchSettings.RenderingMethod } else { "mobile" })
+    $meta["android_rendering_method"] = $androidRenderingMethod
     $meta["android_device_serial"] = $androidDeviceSerialResolved
     $meta["android_package"] = $androidPackageName
     $meta["android_activity"] = $androidActivityName

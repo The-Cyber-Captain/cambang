@@ -33,6 +33,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <future>
 #include <initializer_list>
 #include <unordered_set>
 #include <vector>
@@ -77,12 +78,55 @@ struct LiveRetainedCalibrationMetrics final {
   uint64_t observe_capture_pending_capture_count = 0;
   uint64_t process_pending_stream_count = 0;
   uint64_t process_pending_capture_count = 0;
+  uint64_t capture_cpu_jobs_started = 0;
+  uint64_t capture_cpu_jobs_completed = 0;
+  uint64_t capture_calibrations_started = 0;
+  uint64_t capture_calibrations_completed = 0;
+  uint64_t capture_calibration_total_ns = 0;
+  uint64_t capture_calibration_max_ns = 0;
+  std::vector<uint64_t> capture_calibration_elapsed_ns;
 };
 
 static LiveRetainedCalibrationMetrics g_live_retained_calibration_metrics;
 
 static double ns_to_ms_u64(uint64_t ns) noexcept {
   return static_cast<double>(ns) / 1'000'000.0;
+}
+
+static void record_capture_calibration_elapsed_ns(uint64_t elapsed_ns) {
+  ++g_live_retained_calibration_metrics.capture_calibrations_completed;
+  g_live_retained_calibration_metrics.capture_calibration_total_ns += elapsed_ns;
+  g_live_retained_calibration_metrics.capture_calibration_max_ns = std::max(
+      g_live_retained_calibration_metrics.capture_calibration_max_ns, elapsed_ns);
+  g_live_retained_calibration_metrics.capture_calibration_elapsed_ns.push_back(
+      elapsed_ns);
+}
+
+// CPU payload materialisation is covered by the public any-thread result
+// contract.  A GPU materialiser is deliberately excluded: its implementation
+// may touch Godot's rendering services and therefore belongs on the Godot
+// thread until that service has its own explicit asynchronous contract.
+//
+// Returning false also covers unsupported-only results, which have no CPU work
+// to move.  Those retain the existing cheap main-thread bookkeeping path.
+static bool capture_calibration_is_cpu_only(const SharedCaptureResultData& data) {
+  if (!data) {
+    return false;
+  }
+  bool has_cpu_materialization = false;
+  for (uint32_t i = 0; i < data->image_member_count(); ++i) {
+    const auto* member = data->image_member_at(i);
+    if (!member || member->retained_access_truth.to_image == ResultCapability::UNSUPPORTED) {
+      continue;
+    }
+    if (member->access_posture.has_retained_gpu_backing &&
+        member->access_posture.gpu_materialization_available) {
+      return false;
+    }
+    has_cpu_materialization = has_cpu_materialization ||
+        member->access_posture.has_retained_cpu_payload;
+  }
+  return has_cpu_materialization;
 }
 
 
@@ -408,6 +452,25 @@ static godot::Dictionary live_retained_calibration_metrics_snapshot() {
       static_cast<uint64_t>(g_live_retained_calibration_metrics.process_pending_stream_count);
   d["live_retained_calibration_process_pending_capture_count"] =
       static_cast<uint64_t>(g_live_retained_calibration_metrics.process_pending_capture_count);
+  d["live_retained_calibration_capture_cpu_jobs_started"] =
+      static_cast<uint64_t>(g_live_retained_calibration_metrics.capture_cpu_jobs_started);
+  d["live_retained_calibration_capture_cpu_jobs_completed"] =
+      static_cast<uint64_t>(g_live_retained_calibration_metrics.capture_cpu_jobs_completed);
+  d["live_retained_calibration_capture_calibrations_started"] =
+      static_cast<uint64_t>(g_live_retained_calibration_metrics.capture_calibrations_started);
+  d["live_retained_calibration_capture_calibrations_completed"] =
+      static_cast<uint64_t>(g_live_retained_calibration_metrics.capture_calibrations_completed);
+  d["live_retained_calibration_capture_calibration_total_ms"] =
+      ns_to_ms_u64(g_live_retained_calibration_metrics.capture_calibration_total_ns);
+  d["live_retained_calibration_capture_calibration_max_ms"] =
+      ns_to_ms_u64(g_live_retained_calibration_metrics.capture_calibration_max_ns);
+  godot::Array calibration_elapsed_ms;
+  for (const uint64_t elapsed_ns :
+       g_live_retained_calibration_metrics.capture_calibration_elapsed_ns) {
+    calibration_elapsed_ms.append(ns_to_ms_u64(elapsed_ns));
+  }
+  d["live_retained_calibration_capture_calibration_elapsed_ms"] =
+      calibration_elapsed_ms;
   return d;
 }
 
@@ -1557,6 +1620,9 @@ CamBANGServer::~CamBANGServer() {
   _remove_capture_image_timing_listener_();
 
   // Ensure graceful stop if the extension is torn down.
+  // A calibration job posts its evidence through CoreRuntime, so it must be
+  // joined while that runtime still exists.
+  _clear_live_retained_result_access_calibration_state_();
   runtime_.stop();
   if (runtime_.core_thread_failed()) {
     // Mirror stop(): the member unique_ptr must not destroy a broker the
@@ -1565,7 +1631,6 @@ CamBANGServer::~CamBANGServer() {
     (void)provider_.release();
   }
   result_access_cost_evidence::clear();
-  _clear_live_retained_result_access_calibration_state_();
   if (singleton_ == this) {
     singleton_ = nullptr;
   }
@@ -1814,6 +1879,10 @@ void CamBANGServer::stop() {
   synthetic_gpu_backing_warn_and_abandon_live_display_wrappers_before_stop();
   abandon_all_live_cpu_display_wrappers_before_stop();
 
+  // This is a lifecycle boundary, not a frame path.  Join the bounded
+  // calibration before CoreRuntime can no longer accept its observation.
+  _clear_live_retained_result_access_calibration_state_();
+
   // CoreRuntime owns attached-provider shutdown while the core thread is live.
   runtime_.stop();
   runtime_.attach_provider(nullptr);
@@ -1836,7 +1905,6 @@ void CamBANGServer::stop() {
   synthetic_gpu_backing_drain_render_releases_before_stop();
   drain_live_cpu_display_bridge_before_stop();
   result_access_cost_evidence::clear();
-  _clear_live_retained_result_access_calibration_state_();
 
   strict_scenario_unmet_logged_ = false;
   _reset_scenario_session_state_();
@@ -2535,7 +2603,8 @@ bool CamBANGServer::_is_stream_result_live_by_identity_(uint64_t stream_id) cons
   return false;
 }
 
-void CamBANGServer::_emit_capture_completion_signals_() {
+void CamBANGServer::_emit_capture_completion_signals_(
+    const CompletionDispatchPreworkTiming* maintainer_prework_timing) {
   // Drained once per Godot tick and emitted on the Godot thread, which is the
   // only thread a signal may be emitted from. Core queues settlements as they
   // happen on its own thread; nothing is emitted from there.
@@ -2554,6 +2623,29 @@ void CamBANGServer::_emit_capture_completion_signals_() {
     info["disposition"] = disposition;
     info["closed_reason"] = -1;
     info["error_code"] = error_code;
+    // Maintainer-only timing evidence, not capture API state. Keep it out of
+    // normal signal dictionaries and timestamp immediately before dispatch so
+    // it measures Core terminalisation to this Godot-thread boundary.
+    if (maintainer_prework_timing) {
+      const uint64_t signal_steady_ns = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now().time_since_epoch())
+              .count());
+      info["maintainer_core_terminal_to_signal_us"] = static_cast<int64_t>(
+          signal_steady_ns >= settled.terminalized_steady_ns
+              ? (signal_steady_ns - settled.terminalized_steady_ns) / 1000
+              : 0);
+      info["maintainer_signal_dispatch_ticks_usec"] = static_cast<int64_t>(
+          godot::Time::get_singleton()->get_ticks_usec());
+      info["maintainer_pre_signal_godot_tick_us"] = static_cast<int64_t>(
+          maintainer_prework_timing->godot_tick_ns / 1000);
+      info["maintainer_pre_signal_image_timing_drain_us"] = static_cast<int64_t>(
+          maintainer_prework_timing->image_timing_drain_ns / 1000);
+      info["maintainer_pre_signal_gpu_backing_drain_us"] = static_cast<int64_t>(
+          maintainer_prework_timing->gpu_backing_drain_ns / 1000);
+      info["maintainer_pre_signal_off_main_observation_drain_us"] = static_cast<int64_t>(
+          maintainer_prework_timing->off_main_observation_drain_ns / 1000);
+    }
     emit_signal("capture_finished",
                 device_capture_public_id(settled.capture_id),
                 info);
@@ -3727,18 +3819,49 @@ void CamBANGServer::_on_godot_process_frame() {
   // idle. See CoreRuntime::check_core_thread_liveness()'s doc comment.
   runtime_.check_core_thread_liveness();
 
-  _on_godot_tick(delta_s);
+  const bool trace_completion_prework = calibration_probe_trace_enabled();
+  CompletionDispatchPreworkTiming completion_prework_timing;
+  auto measure_prework = [trace_completion_prework](auto&& operation) -> uint64_t {
+    if (!trace_completion_prework) {
+      operation();
+      return 0;
+    }
+    const auto started = std::chrono::steady_clock::now();
+    operation();
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - started)
+            .count());
+  };
+  completion_prework_timing.godot_tick_ns = measure_prework(
+      [this, delta_s]() { _on_godot_tick(delta_s); });
   // Ahead of capture_finished: an early timing notice must never be heard
   // after the settlement of the capture it belongs to.
-  _drain_capture_image_timing();
-  _drain_capture_gpu_backings_();
-  _drain_off_main_capture_observations_();
+  completion_prework_timing.image_timing_drain_ns = measure_prework(
+      [this]() { _drain_capture_image_timing(); });
+  completion_prework_timing.gpu_backing_drain_ns = measure_prework(
+      [this]() { _drain_capture_gpu_backings_(); });
+  completion_prework_timing.off_main_observation_drain_ns = measure_prework(
+      [this]() { _drain_off_main_capture_observations_(); });
   // Deliberately outside _consume_latest_core_snapshot(): that function has
   // several early returns (no publish this tick, no session, gen gate), and a
   // settlement queue that only drains when a snapshot happens to be consumed
   // would hold completions back for as long as publication stalls -- exactly
   // when a caller most needs to hear that its capture ended.
-  _emit_capture_completion_signals_();
+  _emit_capture_completion_signals_(
+      trace_completion_prework ? &completion_prework_timing : nullptr);
+  // Access-cost calibration can materialize a retained CPU image.  It is
+  // CamBANG's own internal classification work, never a prerequisite for a
+  // completed capture becoming visible to its consumer.  In particular, do
+  // not put that conversion in front of capture_finished: a consumer must not
+  // inherit an unannounced full-frame conversion before it can receive and
+  // decide what to do with its result.
+  //
+  // Arming and identity observation remain in _on_godot_tick(); this merely
+  // moves execution behind the public completion boundary.  CPU-only capture
+  // calibration is then dispatched asynchronously below; rendering-bound GPU
+  // materialisation remains separately bounded on this thread.
+  _process_armed_live_retained_result_access_calibration_(last_tick_time_ns_);
   _drain_pending_stop_and_quit_();
 }
 
@@ -3924,14 +4047,33 @@ void CamBANGServer::_on_godot_tick(double delta) {
   const auto& backing_reports = ensure_backing_plan_reports();
   _observe_active_stream_evaluation_calibration_identities_(now_ns, backing_reports);
   _observe_active_capture_evaluation_calibration_identities_(now_ns, backing_reports);
-  _process_armed_live_retained_result_access_calibration_(now_ns);
 }
 
 void CamBANGServer::_clear_live_retained_result_access_calibration_state_() {
+  _wait_for_live_capture_cpu_calibration_();
   pending_live_stream_retained_result_calibrations_.clear();
   completed_live_stream_retained_result_calibrations_.clear();
   pending_live_capture_retained_result_calibrations_.clear();
   completed_live_capture_retained_result_calibrations_.clear();
+}
+
+void CamBANGServer::_wait_for_live_capture_cpu_calibration_() {
+  if (!in_flight_live_capture_cpu_calibration_) {
+    return;
+  }
+  try {
+    const uint64_t calibration_elapsed_ns =
+        in_flight_live_capture_cpu_calibration_->completion.get();
+    ++g_live_retained_calibration_metrics.capture_cpu_jobs_completed;
+    record_capture_calibration_elapsed_ns(calibration_elapsed_ns);
+  } catch (const std::exception& error) {
+    ERR_PRINT(godot::vformat(
+        "CamBANG: CPU retained-result calibration failed during lifecycle drain: %s",
+        error.what()));
+  } catch (...) {
+    ERR_PRINT("CamBANG: CPU retained-result calibration failed during lifecycle drain.");
+  }
+  in_flight_live_capture_cpu_calibration_.reset();
 }
 
 void CamBANGServer::_arm_live_retained_result_access_calibration_from_snapshot_(
@@ -4430,6 +4572,44 @@ void CamBANGServer::_process_armed_live_retained_result_access_calibration_(
     return;
   }
 
+  // Poll only: an ordinary Godot tick never waits for a CPU conversion.  The
+  // job owns the immutable result data and posts its observation through the
+  // thread-safe CoreRuntime path before it becomes ready here.
+  if (in_flight_live_capture_cpu_calibration_ &&
+      in_flight_live_capture_cpu_calibration_->completion.wait_for(
+          std::chrono::seconds(0)) == std::future_status::ready) {
+    std::unique_ptr<InFlightLiveCaptureCpuCalibration> finished =
+        std::move(in_flight_live_capture_cpu_calibration_);
+    bool succeeded = true;
+    uint64_t calibration_elapsed_ns = 0;
+    try {
+      calibration_elapsed_ns = finished->completion.get();
+    } catch (const std::exception& error) {
+      succeeded = false;
+      ERR_PRINT(godot::vformat(
+          "CamBANG: CPU retained-result calibration failed: %s", error.what()));
+    } catch (...) {
+      succeeded = false;
+      ERR_PRINT("CamBANG: CPU retained-result calibration failed.");
+    }
+    const auto pending = pending_live_capture_retained_result_calibrations_.find(
+        finished->device_instance_id);
+    if (succeeded && pending != pending_live_capture_retained_result_calibrations_.end() &&
+        pending->second.capture_id == finished->armed.capture_id &&
+        pending->second.acquisition_session_id == finished->armed.acquisition_session_id &&
+        pending->second.evaluation_identity == finished->armed.evaluation_identity &&
+        pending->second.member_identity_signature ==
+            finished->armed.member_identity_signature) {
+      completed_live_capture_retained_result_calibrations_[finished->device_instance_id] =
+          finished->armed;
+      pending_live_capture_retained_result_calibrations_.erase(pending);
+    }
+    if (succeeded) {
+      ++g_live_retained_calibration_metrics.capture_cpu_jobs_completed;
+      record_capture_calibration_elapsed_ns(calibration_elapsed_ns);
+    }
+  }
+
   const auto same_stream_identity =
       [](const ArmedLiveStreamRetainedResultCalibration& armed,
          const SharedStreamResultData& data) noexcept {
@@ -4480,11 +4660,44 @@ void CamBANGServer::_process_armed_live_retained_result_access_calibration_(
       it = pending_live_capture_retained_result_calibrations_.erase(it);
       continue;
     }
+    if (in_flight_live_capture_cpu_calibration_) {
+      // One conversion at a time avoids turning automatic calibration into
+      // competing background full-frame work.  Keep this item armed; its
+      // identity will be rechecked once the current job finishes.
+      ++it;
+      continue;
+    }
+    if (capture_calibration_is_cpu_only(result)) {
+      auto job = std::make_unique<InFlightLiveCaptureCpuCalibration>();
+      job->device_instance_id = it->first;
+      job->armed = it->second;
+      job->result = result;
+      CoreRuntime* const runtime = &runtime_;
+      job->completion = std::async(
+          std::launch::async,
+          [result, runtime]() {
+            const auto calibration_started = std::chrono::steady_clock::now();
+            retained_result_access_calibration::calibrate_capture_result(result, runtime);
+            return static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - calibration_started)
+                    .count());
+          });
+      in_flight_live_capture_cpu_calibration_ = std::move(job);
+      ++g_live_retained_calibration_metrics.capture_cpu_jobs_started;
+      ++g_live_retained_calibration_metrics.capture_calibrations_started;
+      ++it;
+      continue;
+    }
     const auto cal_t0 = std::chrono::steady_clock::now();
+    ++g_live_retained_calibration_metrics.capture_calibrations_started;
     retained_result_access_calibration::calibrate_capture_result(result, &runtime_);
-    const double cal_ms =
-        static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now() - cal_t0).count()) / 1000.0;
+    const uint64_t calibration_elapsed_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - cal_t0)
+            .count());
+    const double cal_ms = ns_to_ms_u64(calibration_elapsed_ns);
+    record_capture_calibration_elapsed_ns(calibration_elapsed_ns);
     // Maintainer trace, off by default -- see calibration_probe_trace_enabled().
     // The calibration itself always runs; only the reporting is gated.
     if (calibration_probe_trace_enabled()) {
@@ -4574,6 +4787,7 @@ godot::Variant CamBANGServer::get_backing_plan_evaluation_diagnostics() const {
 
 godot::Dictionary CamBANGServer::get_result_access_timing_evidence() const {
   godot::Dictionary d = result_access_cost_evidence::snapshot();
+  d["live_retained_calibration"] = live_retained_calibration_metrics_snapshot();
   d["capture_materializations"] = capture_materialization_stats();
   d["capture_compute_textures"] = capture_compute_texture_metrics();
   d["stream_compute_textures"] = stream_compute_texture_metrics();
