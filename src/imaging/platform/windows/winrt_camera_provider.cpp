@@ -99,13 +99,32 @@ winrt::hstring utf8_to_hstring(const std::string& s) {
   return winrt::hstring(w);
 }
 
+struct AsyncWaitObservation {
+  wf::AsyncStatus status_before_cancel = wf::AsyncStatus::Started;
+  bool has_error_code = false;
+  uint32_t error_code = 0;
+};
+
 // Bounded completion wait for a WinRT async op on the control thread. On
 // timeout the operation is cancelled so the control thread does not stay
-// wedged behind it. Returns true only for successful completion.
+// wedged behind it. Optional diagnostics are captured before cancellation can
+// change the operation's observable status.
 template <typename Async>
-bool wait_async_bounded(const Async& op, uint32_t timeout_ms) {
-  if (op.wait_for(std::chrono::milliseconds(timeout_ms)) ==
-      wf::AsyncStatus::Completed) {
+bool wait_async_bounded(const Async& op,
+                        uint32_t timeout_ms,
+                        AsyncWaitObservation* observation = nullptr) {
+  const wf::AsyncStatus status = op.wait_for(std::chrono::milliseconds(timeout_ms));
+  if (observation) {
+    observation->status_before_cancel = status;
+    if (status == wf::AsyncStatus::Error || status == wf::AsyncStatus::Canceled) {
+      try {
+        observation->error_code = static_cast<uint32_t>(op.ErrorCode());
+        observation->has_error_code = true;
+      } catch (...) {
+      }
+    }
+  }
+  if (status == wf::AsyncStatus::Completed) {
     return true;
   }
   try {
@@ -2818,6 +2837,9 @@ ProviderResult WinrtCameraProvider::ensure_low_lag_photo_realized_(
     backend->photo_w = width;
     backend->photo_h = height;
   }
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+  low_lag_prepare_count_for_smoke_.fetch_add(1, std::memory_order_release);
+#endif
   return ProviderResult::success();
 }
 
@@ -2841,10 +2863,23 @@ WinrtCameraProvider::CapturedMemberFrame WinrtCameraProvider::capture_one_member
 
   auto captured = std::make_shared<CapturedMemberFrame>();
   auto token = std::make_shared<BoundedControlExecutor::AbandonToken>();
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+  const bool inject_capture_failure_for_smoke =
+      fail_next_low_lag_capture_for_smoke_.exchange(false, std::memory_order_acq_rel);
+#else
+  constexpr bool inject_capture_failure_for_smoke = false;
+#endif
   const bool completed = control_.run_bounded(
       [captured, backend, width, height, format_fourcc, notice, strand = &strand_,
-       callbacks = callbacks_](const BoundedControlExecutor::AbandonToken& t) {
+       callbacks = callbacks_, inject_capture_failure_for_smoke](
+          const BoundedControlExecutor::AbandonToken& t) {
         CapturedMemberFrame local{};
+        (void)inject_capture_failure_for_smoke;
+        // Keep the exact prepared pipeline used by this attempt so a failed or
+        // cancelled CaptureAsync can retire that instance without clearing a
+        // newer pipeline installed by another operation.
+        wmc::LowLagPhotoCapture attempted{nullptr};
+        bool capture_op_ok = false;
         try {
           wmc::LowLagPhotoCapture low_lag{nullptr};
           wmcf::MediaFrameSource source{nullptr};
@@ -2861,9 +2896,38 @@ WinrtCameraProvider::CapturedMemberFrame WinrtCameraProvider::capture_one_member
           if (!low_lag) {
             local.error = ProviderError::ERR_BAD_STATE;
           } else {
+            attempted = low_lag;
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+            if (inject_capture_failure_for_smoke) {
+              // Exercise the same exception/recovery path without relying on
+              // camera timing or inducing a hardware failure.
+              throw winrt::hresult_error(E_FAIL);
+            }
+#endif
             auto op = low_lag.CaptureAsync();
-            if (!winrt_detail::wait_async_bounded(op, kCaptureSampleWaitMs)) {
-              local.error = ProviderError::ERR_TIMEOUT;
+            winrt_detail::AsyncWaitObservation wait_observation{};
+            if (!winrt_detail::wait_async_bounded(
+                    op, kCaptureSampleWaitMs, &wait_observation)) {
+              if (wait_observation.status_before_cancel ==
+                  winrt_detail::wf::AsyncStatus::Started) {
+                local.error = ProviderError::ERR_TIMEOUT;
+              } else if (wait_observation.status_before_cancel ==
+                             winrt_detail::wf::AsyncStatus::Error &&
+                         wait_observation.has_error_code) {
+                local.error = winrt_detail::provider_error_from_hresult(
+                    winrt::hresult{static_cast<int32_t>(wait_observation.error_code)});
+              } else {
+                local.error = ProviderError::ERR_PROVIDER_FAILED;
+              }
+              winrt_detail::log_line(
+                  "LowLagPhotoCapture.CaptureAsync did not complete successfully within "
+                  "kCaptureSampleWaitMs=%u ms "
+                  "(status_before_cancel=%d error_code_available=%u hr_before_cancel=0x%08X); "
+                  "cancellation requested",
+                  kCaptureSampleWaitMs,
+                  static_cast<int>(wait_observation.status_before_cancel),
+                  wait_observation.has_error_code ? 1u : 0u,
+                  wait_observation.error_code);
             } else {
               // Provider-observed mark: the photo pipeline exposes no frame
               // timestamp of its own (neither ICapturedFrame nor
@@ -2889,6 +2953,7 @@ WinrtCameraProvider::CapturedMemberFrame WinrtCameraProvider::capture_one_member
               }
 
               const wmc::CapturedPhoto photo = op.GetResults();
+              capture_op_ok = true;
               const wmc::CapturedFrame frame = photo ? photo.Frame() : nullptr;
               const auto with_bitmap =
                   frame ? frame.try_as<wmc::ICapturedFrameWithSoftwareBitmap>() : nullptr;
@@ -2954,7 +3019,48 @@ WinrtCameraProvider::CapturedMemberFrame WinrtCameraProvider::capture_one_member
           }
         } catch (const winrt::hresult_error& e) {
           local.error = winrt_detail::provider_error_from_hresult(e.code());
+          if (attempted && !capture_op_ok) {
+            winrt_detail::log_line("LowLagPhotoCapture.CaptureAsync failed hr=0x%08X",
+                                   static_cast<uint32_t>(e.code()));
+          }
         } catch (...) {
+        }
+        // Retire a poisoned pipeline: take it out of the backend (only if it is
+        // still the installed one) so the next capture re-prepares, then finish
+        // it bounded, as ensure_low_lag_photo_realized_ does for a stale one.
+        // Runs whether or not the caller has abandoned this job -- the backend
+        // must not keep serving a cancelled pipeline either way.
+        if (attempted && !capture_op_ok) {
+          bool retired = false;
+          {
+            std::lock_guard<std::mutex> bl(backend->m);
+            if (backend->low_lag_photo == attempted) {
+              backend->low_lag_photo = nullptr;
+              backend->photo_w = 0;
+              backend->photo_h = 0;
+              retired = true;
+            }
+          }
+          if (retired) {
+            try {
+              auto finish_op = attempted.FinishAsync();
+              const bool finish_completed =
+                  winrt_detail::wait_async_bounded(finish_op, kControlJobTimeoutMs - 500);
+              if (!finish_completed) {
+                winrt_detail::log_line(
+                    "retired LowLagPhotoCapture FinishAsync did not complete within %u ms",
+                    kControlJobTimeoutMs - 500);
+              } else {
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+                local.recovery_finish_completed_for_smoke = true;
+#endif
+              }
+            } catch (const winrt::hresult_error& e) {
+              winrt_detail::log_line("retired LowLagPhotoCapture FinishAsync failed hr=0x%08X",
+                                     static_cast<uint32_t>(e.code()));
+            } catch (...) {
+            }
+          }
         }
         if (!t.abandoned.load(std::memory_order_acquire)) {
           *captured = local;
@@ -2962,10 +3068,19 @@ WinrtCameraProvider::CapturedMemberFrame WinrtCameraProvider::capture_one_member
       },
       token, kCaptureSampleWaitMs + kControlJobTimeoutMs);
   if (!completed) {
+    winrt_detail::log_line(
+        "still-capture control job did not complete within %u ms "
+        "(kCaptureSampleWaitMs + kControlJobTimeoutMs); abandoned",
+        kCaptureSampleWaitMs + kControlJobTimeoutMs);
     result.error = ProviderError::ERR_TIMEOUT;
     return result;
   }
   result = *captured;
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+  if (result.recovery_finish_completed_for_smoke) {
+    low_lag_recovery_finish_count_for_smoke_.fetch_add(1, std::memory_order_release);
+  }
+#endif
   if (result.ok && !result.bytes) {
     result.ok = false;
     result.error = ProviderError::ERR_PROVIDER_FAILED;

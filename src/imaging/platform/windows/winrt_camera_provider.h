@@ -271,6 +271,20 @@ public:
 
   ProviderResult shutdown() override;
 
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+  // Deterministic recovery coverage for the Windows runtime validator only.
+  // This is absent from GDE builds and is not part of the provider contract.
+  void inject_next_low_lag_capture_failure_for_smoke() noexcept {
+    fail_next_low_lag_capture_for_smoke_.store(true, std::memory_order_release);
+  }
+  uint64_t low_lag_prepare_count_for_smoke() const noexcept {
+    return low_lag_prepare_count_for_smoke_.load(std::memory_order_acquire);
+  }
+  uint64_t low_lag_recovery_finish_count_for_smoke() const noexcept {
+    return low_lag_recovery_finish_count_for_smoke_.load(std::memory_order_acquire);
+  }
+#endif
+
 private:
   // ---- Bounds (admission saturation is ERR_BUSY, never hidden queue growth).
   // Worst-case admitted-capture latency must stay under Core's 30s default
@@ -448,6 +462,9 @@ private:
   struct CapturedMemberFrame {
     bool ok = false;
     ProviderError error = ProviderError::ERR_PROVIDER_FAILED;
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+    bool recovery_finish_completed_for_smoke = false;
+#endif
     std::shared_ptr<std::vector<uint8_t>> bytes;
     // True when bytes hold NV12 planes taken through unconverted rather than
     // a packed buffer.
@@ -504,6 +521,12 @@ private:
   std::atomic<bool> shutting_down_{false};
 
   winrt_detail::BoundedControlExecutor control_;
+
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+  std::atomic<bool> fail_next_low_lag_capture_for_smoke_{false};
+  std::atomic<uint64_t> low_lag_prepare_count_for_smoke_{0};
+  std::atomic<uint64_t> low_lag_recovery_finish_count_for_smoke_{0};
+#endif
 
   // Provider bookkeeping state. Lock ordering when both are needed:
   // capture_mutex_ before state_mutex_ (matches SyntheticProvider).
