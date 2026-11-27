@@ -413,6 +413,10 @@ struct SyntheticProviderConfig {
   TimelineReconciliation timeline_reconciliation = TimelineReconciliation::CompletionGated;
 
   uint32_t endpoint_count = 2;
+  // Bounded reusable CPU frame slots. A synthetic catch-up verifier may raise
+  // this for its one-tick burst so the scheduler is not tested through a
+  // smaller buffer-pool bottleneck.
+  uint32_t stream_frame_pool_size = 8;
 
   SyntheticNominalDefaults nominal{};
   SyntheticPatternDefaults pattern{};

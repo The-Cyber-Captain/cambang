@@ -247,6 +247,11 @@ public:
   std::vector<SyntheticStagedRigTopology> get_staged_rig_topology_for_host() const;
 
 #if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+  uint64_t stream_frame_pool_slot_drops_for_test() const {
+    std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
+    return triage_frame_pool_slot_drops_total_;
+  }
+
   // Section 11 machinery (do not imitate); maintainer builds only, never in a
   // GDE artifact.
   //
@@ -741,6 +746,7 @@ private:
   uint32_t triage_catchup_cap_per_tick_ = 0;
   uint64_t triage_next_log_ns_ = 0;
   uint64_t triage_frames_emitted_total_ = 0;
+  uint64_t triage_frame_pool_slot_drops_total_ = 0;
   uint64_t triage_catchup_bursts_total_ = 0;
   uint64_t triage_catchup_ticks_capped_total_ = 0;
   uint64_t triage_catchup_frames_dropped_total_ = 0;

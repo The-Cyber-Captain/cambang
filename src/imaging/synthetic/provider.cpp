@@ -1589,7 +1589,7 @@ ProviderResult SyntheticProvider::start_stream(
     }
   }
 
-  constexpr size_t kPoolSize = 8;
+  const size_t kPoolSize = std::max<size_t>(1, cfg_.stream_frame_pool_size);
   const uint32_t stride = w * 4u;
   const size_t size_bytes = static_cast<size_t>(stride) * static_cast<size_t>(h);
   const size_t existing0 = (s.pool.empty() || !s.pool[0]) ? 0 : s.pool[0]->bytes.size();
@@ -3852,6 +3852,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   std::shared_ptr<StreamState::BufferSlot> slot;
   const size_t n = s.pool.size();
   if (n == 0) {
+    ++triage_frame_pool_slot_drops_total_;
     return;
   }
   for (size_t probe = 0; probe < n; ++probe) {
@@ -3888,6 +3889,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   }
   if (!slot) {
     // Drop if every slot is either mid-frame or still published.
+    ++triage_frame_pool_slot_drops_total_;
     return;
   }
 
