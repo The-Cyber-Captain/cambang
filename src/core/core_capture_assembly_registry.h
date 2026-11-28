@@ -125,6 +125,9 @@ public:
     TerminalState disposition = TerminalState::NONE;
     bool has_error_code = false;
     uint32_t error_code = 0;
+    // Maintainer timing evidence: recorded at the Core transition that queues
+    // this settlement, then consumed by the Godot-thread handoff.
+    uint64_t terminalized_steady_ns = 0;
   };
   std::vector<FinishedCapture> drain_finished_captures();
 

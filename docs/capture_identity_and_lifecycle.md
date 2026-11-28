@@ -74,8 +74,9 @@ payload. §9.1 lists what is actually bound.
 
 **Hardware validation is thin, and should not be assumed from the commits.**
 The arbitration rules (§3) are proven host-native and mutation-proved, but have
-no hardware coverage: scene 870 stalls on the S20+ for reasons unrelated to
-this work, and the one platform-backed run that completed cleanly (WinRT, after
+no hardware coverage: scene 870 has encountered a separate S20+ error, which is
+not evidence about the Quest frame-stall investigation, and the one
+platform-backed run that completed cleanly (WinRT, after
 the provider fix in `60d1533`) exercises capture and rig capture rather than
 contention. §5.3's `DEVICE_LOST` has no hardware coverage at all — no existing
 scene closes a device mid-capture.

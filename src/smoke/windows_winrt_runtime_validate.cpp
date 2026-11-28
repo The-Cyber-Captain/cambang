@@ -7,8 +7,9 @@
 //
 // Exercises, against the first enumerated physical endpoint:
 //   enumeration -> open -> stream create/start -> live frame arrival ->
-//   still capture while streaming -> bracketed (multi-image) still capture ->
-//   geometry-conflict rejection -> stop/destroy/close -> shutdown, and
+//   still capture while streaming -> injected LowLagPhotoCapture failure and
+//   same-geometry recovery -> bracketed (multi-image) still capture ->
+//   geometry-conflict arbitration response -> stop/destroy/close -> shutdown, and
 //   asserts provider fact ordering (started-before-frames, exactly-one-
 //   terminal, no frames after stopped) plus, for the bracket, per-member
 //   FIFO ordering/routing and distinct truthful realized exposure values.
@@ -419,6 +420,79 @@ int main(int argc, char** argv) {
          harness.capture_image_facts_has_focus_state ? "true" : "false");
   }
 
+  // A CaptureAsync failure must retire its prepared LowLagPhotoCapture, finish
+  // it, and allow the next same-geometry request to prepare a fresh pipeline.
+  // The failure is injected immediately before the WinRT CaptureAsync call so
+  // the test is deterministic while the FinishAsync and recovery preparation
+  // still run against the real camera backend.
+  if (pr.ok()) {
+    const uint64_t prepares_before_failure = provider.low_lag_prepare_count_for_smoke();
+    const uint64_t finishes_before_failure =
+        provider.low_lag_recovery_finish_count_for_smoke();
+    int terminals_before_failure = 0;
+    {
+      std::lock_guard<std::mutex> lock(harness.m);
+      terminals_before_failure = harness.capture_terminals;
+    }
+    check(prepares_before_failure > 0,
+          "recovery_test_initial_low_lag_pipeline_prepared");
+
+    harness.begin_new_capture_expectation();
+    provider.inject_next_low_lag_capture_failure_for_smoke();
+    CaptureRequest failed_req = creq;
+    failed_req.capture_id = kCaptureId + 10;
+    pr = provider.trigger_capture(failed_req);
+    check(pr.ok(), "injected_failure_capture_admitted");
+    const bool failure_terminal_seen = pr.ok() && harness.wait_for(
+        [&] { return harness.capture_terminals > terminals_before_failure; }, 15000);
+    check(failure_terminal_seen, "injected_failure_reaches_terminal");
+    if (failure_terminal_seen) {
+      std::lock_guard<std::mutex> lock(harness.m);
+      check(harness.capture_started, "injected_failure_capture_started");
+      check(!harness.capture_completed, "injected_failure_not_completed");
+      check(harness.capture_failed_error == ProviderError::ERR_PROVIDER_FAILED,
+            "injected_failure_reports_provider_error");
+      check(!harness.capture_frame_seen, "injected_failure_emits_no_image_frame");
+      check(harness.capture_terminals == terminals_before_failure + 1,
+            "injected_failure_has_one_terminal");
+    }
+    check(provider.low_lag_recovery_finish_count_for_smoke() ==
+              finishes_before_failure + 1,
+          "failed_pipeline_finished_once");
+    check(provider.low_lag_prepare_count_for_smoke() == prepares_before_failure,
+          "failed_capture_does_not_prepare_replacement_prematurely");
+
+    if (failure_terminal_seen) {
+      int terminals_before_recovery = 0;
+      {
+        std::lock_guard<std::mutex> lock(harness.m);
+        terminals_before_recovery = harness.capture_terminals;
+      }
+      harness.begin_new_capture_expectation();
+      CaptureRequest retry_req = creq;
+      retry_req.capture_id = kCaptureId + 11;
+      pr = provider.trigger_capture(retry_req);
+      check(pr.ok(), "same_geometry_recovery_capture_admitted");
+      const bool recovery_terminal_seen = pr.ok() && harness.wait_for(
+          [&] { return harness.capture_terminals > terminals_before_recovery; }, 15000);
+      check(recovery_terminal_seen, "same_geometry_recovery_capture_reaches_terminal");
+      if (recovery_terminal_seen) {
+        std::lock_guard<std::mutex> lock(harness.m);
+        check(harness.capture_started, "same_geometry_recovery_capture_started");
+        check(harness.capture_completed, "same_geometry_recovery_capture_completed");
+        check(harness.capture_failed_error == ProviderError::OK,
+              "same_geometry_recovery_has_no_failure");
+        check(harness.capture_frame_seen, "same_geometry_recovery_delivers_frame");
+        check(harness.capture_frame_has_payload_owner,
+              "same_geometry_recovery_frame_has_payload_owner");
+        check(harness.capture_terminals == terminals_before_recovery + 1,
+              "same_geometry_recovery_has_one_terminal");
+      }
+      check(provider.low_lag_prepare_count_for_smoke() == prepares_before_failure + 1,
+            "same_geometry_recovery_prepares_fresh_pipeline");
+    }
+  }
+
   // Real WinRT-native bracketed capture: default-metered + two additional
   // exposure-compensation brackets, matching this repo's canonical 3-member
   // bundle shape (tests/cambang_gde/scenes/01_basic_ux.tscn's
@@ -476,21 +550,24 @@ int main(int argc, char** argv) {
     }
   }
 
-  // Deterministic geometry-conflict rejection: a capture needing different
-  // geometry while a started stream pins the shared reader must be refused at
-  // admission with ERR_PLATFORM_CONSTRAINT and emit no facts.
+  // This validator calls the provider directly, without CoreRuntime. It can
+  // therefore verify the provider's arbitration answer, but it cannot expect
+  // Core's resulting stream preemption or capture admission behavior. For a
+  // producing stream at a different geometry, WinRT requires that stream to
+  // yield; Core owns stopping it before it submits the capture.
   {
-    CaptureRequest conflict = creq;
-    conflict.capture_id = kCaptureId + 1;
-    conflict.width = 320;
-    conflict.height = 240;
-    const int terminals_before = harness.capture_terminals;
-    pr = provider.trigger_capture(conflict);
-    check(pr.code == ProviderError::ERR_PLATFORM_CONSTRAINT,
-          "geometry_conflict_rejected_at_admission");
-    std::lock_guard<std::mutex> lock(harness.m);
-    check(harness.capture_terminals == terminals_before,
-          "rejected_capture_emits_no_facts");
+    AcquisitionUseSet proposed{};
+    proposed.has_stream = true;
+    proposed.stream = sreq.profile;
+    proposed.has_still = true;
+    proposed.still.width = 320;
+    proposed.still.height = 240;
+    proposed.still.format_fourcc = creq.format_fourcc;
+    const AcquisitionCoexistence decision =
+        provider.acquisition_coexistence(kDeviceInstanceId, proposed);
+    check(decision.verdict == CoexistenceVerdict::StreamMustYield &&
+              decision.yielded_stream_restorable,
+          "geometry_conflict_requires_restorable_stream_yield");
   }
 
   check(provider.stop_stream(kStreamId).ok(), "stop_stream");

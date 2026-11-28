@@ -1,6 +1,7 @@
 #include "core/core_capture_assembly_registry.h"
 
 #include <algorithm>
+#include <chrono>
 
 namespace cambang {
 
@@ -227,9 +228,17 @@ bool CoreCaptureAssemblyRegistry::has_admitted_non_terminal_capture_for_device(
 
 void CoreCaptureAssemblyRegistry::note_finished_locked_(
     const DeviceCaptureAssembly& assembly) {
-  finished_pending_.push_back(FinishedCapture{
-      assembly.capture_id, assembly.device_instance_id, assembly.terminal_state,
-      assembly.has_failure_error_code, assembly.failure_error_code});
+  FinishedCapture finished;
+  finished.capture_id = assembly.capture_id;
+  finished.device_instance_id = assembly.device_instance_id;
+  finished.disposition = assembly.terminal_state;
+  finished.has_error_code = assembly.has_failure_error_code;
+  finished.error_code = assembly.failure_error_code;
+  finished.terminalized_steady_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+  finished_pending_.push_back(finished);
 }
 
 std::vector<CoreCaptureAssemblyRegistry::FinishedCapture>

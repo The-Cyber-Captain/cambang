@@ -1,5 +1,5 @@
 param(
-    [string]$GodotExe = "C:\Program Files\Godot4.5\Godot_v4.5.1-stable_win64_console.exe",
+    [string]$GodotExe = "C:\Program Files\Godot\godot4v5\Godot_v4.5.2-stable_win64_console.exe",
     [string]$ProjectPath = ".",
     [string]$LogPath = ".\godot-suite.log",
     [string]$ArtifactDir = ".\artifacts",

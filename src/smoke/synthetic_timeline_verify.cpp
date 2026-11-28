@@ -60,6 +60,7 @@ constexpr uint64_t kRootId = 1;
 constexpr uint64_t kStreamId = 1;
 
 constexpr uint64_t kOneSecNs = 1'000'000'000ull;
+constexpr uint64_t kCatchupStressNs = 300'000'000ull;
 
 struct Options {
   std::string verify_case = "basic_lifecycle";
@@ -609,6 +610,11 @@ static int run_invalid_sequence(CoreRuntime& rt, StateSnapshotBuffer& buf, const
 }
 
 static int run_catchup_stress_uncapped(CoreRuntime& rt, StateSnapshotBuffer& buf, const Options& opt, uint64_t period) {
+  auto* synthetic = dynamic_cast<SyntheticProvider*>(rt.attached_provider());
+  if (!synthetic) {
+    std::cerr << "FAIL: attached provider is not SyntheticProvider\n";
+    return 1;
+  }
   {
     const auto cs = rt.try_create_stream(kStreamId, kDeviceInstanceId, StreamIntent::PREVIEW, nullptr, nullptr, 1);
     if (cs != TryCreateStreamStatus::OK) {
@@ -644,7 +650,6 @@ static int run_catchup_stress_uncapped(CoreRuntime& rt, StateSnapshotBuffer& buf
   // runtime queue-pressure threshold: a full one-second / 31-frame burst is a
   // stress-pressure scenario and is not a stable exact-count verifier under the
   // current dispatcher/backpressure model.
-  constexpr uint64_t kCatchupStressNs = 300'000'000ull;
   tick_synthetic(rt, kCatchupStressNs);
 
   // Expected frames in the bounded catch-up window with first frame at t=0:
@@ -676,8 +681,26 @@ static int run_catchup_stress_uncapped(CoreRuntime& rt, StateSnapshotBuffer& buf
     }
   }
   if (!reached_expected) {
+    const SyntheticMetricsSnapshot metrics = synthetic->get_metrics_snapshot_for_host();
     std::cerr << "FAIL: expected frames_received >= " << expected
-              << " after catch-up tick, best_seen=" << best_seen << "\n";
+              << " after catch-up tick, best_seen=" << best_seen
+              << " synthetic_frames_emitted=" << metrics.total_emitted_frames
+              << " pool_slots=" << expected
+              << " pool_slot_drops=" << synthetic->stream_frame_pool_slot_drops_for_test()
+              << " catchup_cap_drops=" << metrics.catchup_frames_dropped << "\n";
+    return 1;
+  }
+
+  const SyntheticMetricsSnapshot catchup_metrics = synthetic->get_metrics_snapshot_for_host();
+  const uint64_t pool_slot_drops = synthetic->stream_frame_pool_slot_drops_for_test();
+  if (catchup_metrics.total_emitted_frames != expected ||
+      catchup_metrics.catchup_frames_dropped != 0 || pool_slot_drops != 0) {
+    std::cerr << "FAIL: catch-up tick did not emit the exact untruncated burst"
+              << " expected=" << expected
+              << " synthetic_frames_emitted=" << catchup_metrics.total_emitted_frames
+              << " catchup_cap_drops=" << catchup_metrics.catchup_frames_dropped
+              << " pool_slots=" << expected
+              << " pool_slot_drops=" << pool_slot_drops << "\n";
     return 1;
   }
 
@@ -900,6 +923,12 @@ int main(int argc, char** argv) {
   cfg.nominal.height = 180;
   cfg.nominal.fps_num = 30;
   cfg.nominal.fps_den = 1;
+  if (opt.verify_case == "catchup_stress_uncapped") {
+    const uint64_t frame_period_ns =
+        (kOneSecNs * cfg.nominal.fps_den) / cfg.nominal.fps_num;
+    cfg.stream_frame_pool_size = static_cast<uint32_t>(
+        (kCatchupStressNs / frame_period_ns) + 1);
+  }
   cfg.pattern.preset = PatternPreset::XyXor;
   cfg.pattern.seed = 1;
 

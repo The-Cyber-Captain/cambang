@@ -170,6 +170,9 @@ Build / platform scaffolding:
 - `dev/build_and_scaffolding.md`
 - `dev/upstream_discrepancies.md`
 
+GPU-import research (historical, non-canonical):
+- `dev/gpu_import_spike_results.md`
+
 Maintainer tooling / provider validation:
 - `dev/maintainer_tools.md`
 

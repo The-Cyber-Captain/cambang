@@ -3076,8 +3076,13 @@ int retained_stream_payload_immutability(VerifyCaseProviderKind provider_kind) {
   }
   h.tick();
 
-  if (!h.open_device(error) || !h.create_stream(error) || !h.start_stream(error) ||
-      !h.emit_frame(error)) {
+  if (!h.open_device(error) || !h.create_stream(error) || !h.start_stream(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!h.emit_frame(error) ||
+      !h.wait_for_retained_stream_advance(VerifyCaseHarness::kStreamId, 0, error) ||
+      !h.wait_for_stream_quiescence(VerifyCaseHarness::kStreamId, error)) {
     cli::error("FAIL: ", error);
     return 1;
   }
@@ -3112,14 +3117,37 @@ int retained_stream_payload_immutability(VerifyCaseProviderKind provider_kind) {
   // Sanity gate. If successive frames render identical pixels, mutation of the
   // held buffer would be invisible and a PASS here would mean nothing. Prove
   // the payload actually varies before trusting the comparison below.
-  if (!h.emit_frame(error)) {
+  uint64_t frames_before_next = 0;
+  if (const auto before_next = h.snapshot_buffer().snapshot_copy(); before_next) {
+    if (const auto* stream = VerifyCaseHarness::find_stream(*before_next, VerifyCaseHarness::kStreamId); stream) {
+      frames_before_next = stream->frames_received;
+    }
+  }
+  // Settle this explicit frame before checking its retained result. The
+  // provider and Core publish asynchronously, so a pending prior frame must
+  // not satisfy this step's frames_received threshold.
+  if (!h.emit_frame(error) ||
+      !h.wait_for_retained_stream_advance(VerifyCaseHarness::kStreamId, held_frame_id, error) ||
+      !h.wait_for_stream_quiescence(VerifyCaseHarness::kStreamId, error)) {
     cli::error("FAIL: ", error);
     return 1;
   }
   h.tick();
   SharedStreamResultData next = h.runtime().get_latest_stream_result(VerifyCaseHarness::kStreamId);
   if (!next || next->retained_frame_id == held_frame_id) {
-    fail_step(1, "stream did not advance to a new retained frame");
+    const uint64_t latest_frame_id = next ? next->retained_frame_id : 0;
+    uint64_t frames_after_next = 0;
+    if (const auto after_next = h.snapshot_buffer().snapshot_copy(); after_next) {
+      if (const auto* stream = VerifyCaseHarness::find_stream(*after_next, VerifyCaseHarness::kStreamId); stream) {
+        frames_after_next = stream->frames_received;
+      }
+    }
+    fail_step(1,
+              "stream did not advance to a new retained frame (held_frame_id=" +
+                  std::to_string(held_frame_id) + ", latest_frame_id=" +
+                  std::to_string(latest_frame_id) + ", frames_received=" +
+                  std::to_string(frames_before_next) + "->" +
+                  std::to_string(frames_after_next) + ")");
     return 1;
   }
   if (next->payload.size_bytes() == at_hold.size() &&
@@ -3127,11 +3155,17 @@ int retained_stream_payload_immutability(VerifyCaseProviderKind provider_kind) {
     cli::line("SKIP: successive frames render identical payloads; this case cannot detect mutation");
     return kVerifyCaseSkipped;
   }
+  uint64_t latest_retained_frame_id = next->retained_frame_id;
   next.reset();
   cli::line("step 1 OK (successive frames differ; comparison is meaningful)");
 
   for (int i = 0; i < kFramesAfterHold; ++i) {
-    if (!h.emit_frame(error)) {
+    if (!h.emit_frame(error) ||
+        !h.wait_for_retained_stream_advance(VerifyCaseHarness::kStreamId,
+                                            latest_retained_frame_id,
+                                            error,
+                                            &latest_retained_frame_id) ||
+        !h.wait_for_stream_quiescence(VerifyCaseHarness::kStreamId, error)) {
       cli::error("FAIL: ", error);
       return 1;
     }

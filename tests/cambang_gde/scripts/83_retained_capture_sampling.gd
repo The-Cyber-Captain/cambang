@@ -21,8 +21,27 @@ var _regions: Array[Rect2] = []
 var _last_output := PackedByteArray()
 var _compute_us: Array[int] = []
 var _capture_us: Array[int] = []
+var _trigger_api_us: Array[int] = []
+var _result_delivery_wait_us: Array[int] = []
+var _worker_to_image_us: Array[int] = []
+var _worker_baseline_to_image_us: Array[int] = []
+var _worker_later_to_image_us: Array[int] = []
+var _worker_save_png_us: Array[int] = []
+var _signal_dispatch_ms: Array[float] = []
+var _signal_acquired_handler_us: Array[int] = []
+var _capture_finished_handler_us: Array[int] = []
+var _gpu_ready_handler_us: Array[int] = []
+var _gpu_claim_us: Array[int] = []
+var _compute_submit_call_us: Array[int] = []
+var _result_lookup_us: Array[int] = []
+var _preview_texture_upload_us: Array[int] = []
+var _startup_metrics := {}
 var _frame_ms: Array[float] = []
+var _frame_observations: Array[Dictionary] = []
+var _phase_intervals := {}
+var _previous_process_tick_us := -1
 var _performance_window := false
+var _frame_phase := ""
 var _xr_active := false
 var _busy := true
 var _verdict := false
@@ -36,7 +55,9 @@ var _next_region := 0
 
 
 func _ready() -> void:
+	var panel_started_us := Time.get_ticks_usec()
 	_make_panel()
+	_startup_metrics["make_panel_us"] = Time.get_ticks_usec() - panel_started_us
 	var want_xr := bool(ProjectSettings.get_setting("xr/openxr/enabled", false))
 	if want_xr and not _enable_xr():
 		_fail("OpenXR was requested but did not initialize")
@@ -125,18 +146,29 @@ func _enable_xr() -> bool:
 
 
 func _on_acquired(id: String, info: Dictionary) -> void:
+	var handler_started_us := Time.get_ticks_usec()
 	if int(info.get("image_member_index", -1)) == 0 and not _finished.has(id):
 		_early[id] = info.get("acquisition_timing", {})
+		var observed_us := int(info.get("observed_ticks_usec", -1))
+		var emitted_us := int(info.get("emitted_ticks_usec", -1))
+		var dispatch_ms := float(emitted_us - observed_us) / 1000.0 if observed_us >= 0 and emitted_us >= observed_us else -1.0
+		_signal_dispatch_ms.append(dispatch_ms)
+	_signal_acquired_handler_us.append(Time.get_ticks_usec() - handler_started_us)
 
 
 func _on_finished(id: String, _info: Dictionary) -> void:
+	var handler_started_us := Time.get_ticks_usec()
 	_finished[id] = true
+	_capture_finished_handler_us.append(Time.get_ticks_usec() - handler_started_us)
 
 
 func _on_gpu_backing_ready(id: String, info: Dictionary) -> void:
 	if not _claim_on_ready:
 		return
+	var handler_started_us := Time.get_ticks_usec()
+	var claim_started_us := handler_started_us
 	var claim := CamBANGServer.claim_capture_gpu_backing(id, int(info["image_member_index"]))
+	_gpu_claim_us.append(Time.get_ticks_usec() - claim_started_us)
 	if int(claim["error"]) != OK:
 		_fail("GPU backing claim from readiness signal failed: %s" % [claim])
 		return
@@ -145,21 +177,46 @@ func _on_gpu_backing_ready(id: String, info: Dictionary) -> void:
 	_backing = claim["backing"]
 	# The ready handler can start GPU work before the CPU result is delivered.
 	_first_sample = _submit_sample(0)
-	if not _first_sample.is_empty():
-		print("Submitted region A from GPU readiness for %s member 0" % id)
+	_gpu_ready_handler_us.append(Time.get_ticks_usec() - handler_started_us)
 
 
 func _process(delta: float) -> void:
+	var frame_end_us := Time.get_ticks_usec()
+	var frame_start_us := _previous_process_tick_us if _previous_process_tick_us >= 0 else frame_end_us - int(delta * 1000000.0)
+	_previous_process_tick_us = frame_end_us
 	if _performance_window:
-		_frame_ms.append(delta * 1000.0)
+		var frame_wall_ms := float(frame_end_us - frame_start_us) / 1000.0
+		var engine_delta_ms := delta * 1000.0
+		_frame_ms.append(frame_wall_ms)
+		_frame_observations.append({"start_us": frame_start_us, "end_us": frame_end_us,
+			"frame_ms": frame_wall_ms, "engine_delta_ms": engine_delta_ms})
+		if frame_wall_ms >= 16.67:
+			print("[CamBANG][frameprobe] start_us=%d end_us=%d wall_ms=%.3f engine_delta_ms=%.3f" %
+				[frame_start_us, frame_end_us, frame_wall_ms, engine_delta_ms])
 
 
-func _capture(keep: bool) -> CamBANGCaptureResult:
+func _begin_frame_phase(name: String) -> void:
+	_frame_phase = name
+	_phase_intervals[name] = {"start_us": Time.get_ticks_usec(), "end_us": -1}
+
+
+func _end_frame_phase() -> void:
+	if not _frame_phase.is_empty():
+		var interval: Dictionary = _phase_intervals[_frame_phase]
+		interval["end_us"] = Time.get_ticks_usec()
+		_phase_intervals[_frame_phase] = interval
+	_frame_phase = ""
+
+
+func _capture(keep: bool, phase_label: String = "capture") -> CamBANGCaptureResult:
 	var start := Time.get_ticks_usec()
 	var deadline := Time.get_ticks_msec() + WAIT_MS
 	var request: Dictionary = {}
+	_begin_frame_phase(phase_label + "_trigger_retry")
 	while Time.get_ticks_msec() < deadline:
+		var trigger_start := Time.get_ticks_usec()
 		request = _device.trigger_capture({"keep_gpu_backing": true}) if keep else _device.trigger_capture()
+		_trigger_api_us.append(Time.get_ticks_usec() - trigger_start)
 		if int(request.get("error", FAILED)) != ERR_BUSY:
 			break
 		await get_tree().process_frame
@@ -167,9 +224,16 @@ func _capture(keep: bool) -> CamBANGCaptureResult:
 		_fail("Capture trigger failed: %s" % [request])
 		return null
 	var id := str(request["id"])
+	_end_frame_phase()
+	_begin_frame_phase(phase_label + "_capture_finished_wait")
+	var delivery_wait_start := Time.get_ticks_usec()
 	while not _finished.has(id) and Time.get_ticks_msec() < deadline:
 		await get_tree().process_frame
+	_result_delivery_wait_us.append(Time.get_ticks_usec() - delivery_wait_start)
+	_end_frame_phase()
+	var lookup_started_us := Time.get_ticks_usec()
 	var result := CamBANGServer.get_capture_result_by_id(id)
+	_result_lookup_us.append(Time.get_ticks_usec() - lookup_started_us)
 	if result == null or not _finished.has(id):
 		_fail("No completed still for %s" % id)
 		return null
@@ -182,39 +246,66 @@ func _capture(keep: bool) -> CamBANGCaptureResult:
 
 
 func _run() -> void:
-	if CamBANGServer.start(CamBANGServer.PROVIDER_KIND_PLATFORM_BACKED) != OK:
+	var start_started_us := Time.get_ticks_usec()
+	var start_error := CamBANGServer.start(CamBANGServer.PROVIDER_KIND_PLATFORM_BACKED)
+	_startup_metrics["server_start_us"] = Time.get_ticks_usec() - start_started_us
+	if start_error != OK:
 		_fail("Could not start Camera2")
 		return
 	var deadline := Time.get_ticks_msec() + WAIT_MS
+	var snapshot_wait_started_us := Time.get_ticks_usec()
+	var snapshot_calls := 0
 	while CamBANGServer.get_state_snapshot() == null and Time.get_ticks_msec() < deadline:
+		snapshot_calls += 1
 		await get_tree().process_frame
+	_startup_metrics["snapshot_wait_us"] = Time.get_ticks_usec() - snapshot_wait_started_us
+	_startup_metrics["snapshot_wait_calls"] = snapshot_calls
+	var device_lookup_started_us := Time.get_ticks_usec()
 	_device = CamBANGServer.get_device_for_hardware_id(hardware_id)
+	_startup_metrics["device_lookup_us"] = Time.get_ticks_usec() - device_lookup_started_us
 	if _device == null:
 		_fail("Camera endpoint %s was not available" % hardware_id)
 		return
+	var engage_started_us := Time.get_ticks_usec()
 	var error := _device.engage()
+	var engage_calls := 1
 	while error == ERR_BUSY and Time.get_ticks_msec() < deadline:
 		await get_tree().process_frame
 		error = _device.engage()
+		engage_calls += 1
+	_startup_metrics["engage_total_us"] = Time.get_ticks_usec() - engage_started_us
+	_startup_metrics["engage_calls"] = engage_calls
 	if error != OK:
 		_fail("Camera engage failed: %d" % error)
 		return
+	var profile_set_started_us := Time.get_ticks_usec()
 	error = _device.set_still_capture_profile(
 		{"width": 1280, "height": 1280, "format_fourcc": CamBANGServer.PIXEL_FORMAT_NV12})
+	_startup_metrics["set_still_profile_us"] = Time.get_ticks_usec() - profile_set_started_us
 	if error != OK:
 		_fail("Still profile refused: %d" % error)
 		return
+	var profile_wait_started_us := Time.get_ticks_usec()
+	var profile_get_calls := 1
 	while int(_device.get_still_capture_profile().get("width", 0)) != 1280 and Time.get_ticks_msec() < deadline:
+		profile_get_calls += 1
 		await get_tree().process_frame
+	_startup_metrics["profile_wait_us"] = Time.get_ticks_usec() - profile_wait_started_us
+	_startup_metrics["profile_get_calls"] = profile_get_calls
 	_performance_window = true
-	var baseline := await _capture(false)
+	var baseline := await _capture(false, "baseline")
 	if baseline == null:
 		return
-	if baseline.to_image() == null or int(baseline.claim_gpu_backing()["error"]) != ERR_UNAVAILABLE:
+	_begin_frame_phase("baseline_to_image_worker")
+	var baseline_worker := await _to_image_on_worker(baseline)
+	var baseline_image: Image = baseline_worker["image"]
+	_worker_baseline_to_image_us.append(int(baseline_worker["elapsed_us"]))
+	_end_frame_phase()
+	if baseline_image == null or int(baseline.claim_gpu_backing()["error"]) != ERR_UNAVAILABLE:
 		_fail("Ordinary capture behavior changed")
 		return
 	_claim_on_ready = true
-	var retained := await _capture(true)
+	var retained := await _capture(true, "retained")
 	_claim_on_ready = false
 	if retained == null:
 		return
@@ -228,12 +319,17 @@ func _run() -> void:
 	var timing: Dictionary = _early[id]
 	var saved := {}
 	_save_task = WorkerThreadPool.add_task(func():
+		var image_start := Time.get_ticks_usec()
 		var image := retained.to_image()
+		saved["to_image_us"] = Time.get_ticks_usec() - image_start
+		var save_start := Time.get_ticks_usec()
 		saved["image"] = image
-		saved["error"] = ERR_UNAVAILABLE if image == null else image.save_png(SAVE_PATH))
+		saved["error"] = ERR_UNAVAILABLE if image == null else image.save_png(SAVE_PATH)
+		saved["save_png_us"] = Time.get_ticks_usec() - save_start)
 	_status.text = "Capture %s\nEarly acquisition matched member 0\nSampling and saving…" % id
 	if _first_sample.is_empty():
 		return
+	_begin_frame_phase("retained_worker_conversion_and_gpu_sample_overlap")
 	var first: Array[PackedByteArray] = await _sample_both(_first_sample)
 	_first_sample.clear()
 	if first.size() != REGIONS.size():
@@ -242,19 +338,31 @@ func _run() -> void:
 		await get_tree().process_frame
 	WorkerThreadPool.wait_for_task_completion(_save_task)
 	_save_task = -1
+	_worker_to_image_us.append(int(saved.get("to_image_us", -1)))
+	_worker_save_png_us.append(int(saved.get("save_png_us", -1)))
+	_end_frame_phase()
 	if int(saved.get("error", FAILED)) != OK:
 		_fail("Saving %s failed (%s)" % [SAVE_PATH, saved.get("error", FAILED)])
 		return
+	var texture_upload_started_us := Time.get_ticks_usec()
 	_preview.texture = ImageTexture.create_from_image(saved["image"])
+	_preview_texture_upload_us.append(Time.get_ticks_usec() - texture_upload_started_us)
 	print("Saved %s member 0 (acquisition mark %s) to %s" %
 		[id, timing["acquisition_mark"], ProjectSettings.globalize_path(SAVE_PATH)])
-	var next := await _capture(false)
+	var next := await _capture(false, "later")
 	if next == null:
 		return
-	if next.to_image() == null:
+	_begin_frame_phase("later_to_image_worker")
+	var later_worker := await _to_image_on_worker(next)
+	var later_image: Image = later_worker["image"]
+	_worker_later_to_image_us.append(int(later_worker["elapsed_us"]))
+	_end_frame_phase()
+	if later_image == null:
 		_fail("Later ordinary capture lost its pixels")
 		return
+	_begin_frame_phase("gpu_sample_after_later_capture")
 	var repeated: Array[PackedByteArray] = await _sample_both()
+	_end_frame_phase()
 	if repeated != first:
 		_fail("The first backing changed after another capture")
 		return
@@ -265,8 +373,15 @@ func _run() -> void:
 		+ "Saved %s\nBoth colours matched after a later still\n\nClick the image to move a region.") % [
 			id, timing["acquisition_mark"], SAVE_PATH]
 	var renderer := RenderingServer.get_current_rendering_method()
-	print("Retained capture metrics renderer=%s openxr=%s capture_us=%s compute_us=%s frame_ms=%s" %
-		[renderer, _xr_active, _capture_us, _compute_us, _frame_summary()])
+	print("Retained capture metrics renderer=%s openxr=%s startup=%s capture_us=%s trigger_api_us=%s result_delivery_wait_us=%s compute_us=%s submit_call_us=%s gpu_claim_us=%s acquired_handler_us=%s finished_handler_us=%s gpu_ready_handler_us=%s result_lookup_us=%s signal_dispatch_ms=%s worker_to_image_us=%s worker_baseline_to_image_us=%s worker_later_to_image_us=%s worker_save_png_us=%s preview_texture_upload_us=%s wall_frame_ms=%s" %
+		[renderer, _xr_active, _startup_metrics, _capture_us, _trigger_api_us, _result_delivery_wait_us,
+		_compute_us, _compute_submit_call_us, _gpu_claim_us, _signal_acquired_handler_us,
+		_capture_finished_handler_us, _gpu_ready_handler_us, _result_lookup_us, _signal_dispatch_ms,
+		_worker_to_image_us, _worker_baseline_to_image_us,
+		_worker_later_to_image_us, _worker_save_png_us, _preview_texture_upload_us,
+		_frame_summary()])
+	for phase in _phase_frame_summary():
+		print("[CamBANG][phaseprobe] phase=%s stats=%s" % [phase, _phase_frame_summary()[phase]])
 	if OS.has_feature("cambang_verify_backing") and not await _verify_lifecycle(first[0]):
 		return
 	_verdict = true
@@ -279,6 +394,18 @@ func _submit_check(backing: CamBANGGpuBacking, shader: RDShaderSPIRV, answer: Di
 		func(error: int, bytes: PackedByteArray):
 			answer["error"] = error
 			answer["bytes"] = bytes)
+
+
+func _to_image_on_worker(result) -> Dictionary:
+	var outcome := {"image": null, "elapsed_us": 0}
+	var task := WorkerThreadPool.add_task(func():
+		var started_us := Time.get_ticks_usec()
+		outcome["image"] = result.to_image()
+		outcome["elapsed_us"] = Time.get_ticks_usec() - started_us)
+	while not WorkerThreadPool.is_task_completed(task):
+		await get_tree().process_frame
+	WorkerThreadPool.wait_for_task_completion(task)
+	return outcome
 
 
 func _wait_check(answer: Dictionary) -> int:
@@ -362,12 +489,14 @@ func _parameters(region: Rect2) -> PackedByteArray:
 func _submit_sample(index: int) -> Dictionary:
 	var result := {"done": false, "error": FAILED, "bytes": PackedByteArray(),
 		"start": Time.get_ticks_usec()}
+	var submit_started_us := Time.get_ticks_usec()
 	var admitted := _backing.submit_compute(SHADER, _parameters(_regions[index]), Vector3i.ONE, 16,
 		func(error: int, bytes: PackedByteArray):
 			result["error"] = error
 			result["bytes"] = bytes
 			result["elapsed_us"] = Time.get_ticks_usec() - int(result["start"])
 			result["done"] = true)
+	_compute_submit_call_us.append(Time.get_ticks_usec() - submit_started_us)
 	if admitted != OK:
 		_fail("Compute request refused: %d" % admitted)
 		return {}
@@ -432,6 +561,43 @@ func _frame_summary() -> Dictionary:
 		return {}
 	return {"count": _frame_ms.size(), "p50": _frame_ms[int(_frame_ms.size() * 0.5)],
 		"p95": _frame_ms[int((_frame_ms.size() - 1) * 0.95)], "max": _frame_ms.back()}
+
+
+func _phase_frame_summary() -> Dictionary:
+	var summary := {}
+	for phase in _phase_intervals:
+		var interval: Dictionary = _phase_intervals[phase]
+		var phase_start_us := int(interval["start_us"])
+		var phase_end_us := int(interval["end_us"])
+		if phase_end_us < phase_start_us:
+			continue
+		var contained_frame_ms: Array[float] = []
+		var long_frame_overlaps: Array[Dictionary] = []
+		var overlapping_frame_count := 0
+		var max_overlap_ms := 0.0
+		for frame in _frame_observations:
+			var overlap_start_us: int = maxi(phase_start_us, int(frame["start_us"]))
+			var overlap_end_us: int = mini(phase_end_us, int(frame["end_us"]))
+			if overlap_end_us <= overlap_start_us:
+				continue
+			overlapping_frame_count += 1
+			var overlap_ms := float(overlap_end_us - overlap_start_us) / 1000.0
+			max_overlap_ms = maxf(max_overlap_ms, overlap_ms)
+			var frame_ms := float(frame["frame_ms"])
+			if int(frame["start_us"]) >= phase_start_us and int(frame["end_us"]) <= phase_end_us:
+				contained_frame_ms.append(frame_ms)
+			if frame_ms >= 16.67:
+				long_frame_overlaps.append({"frame_ms": frame_ms, "phase_overlap_ms": overlap_ms})
+		var phase_summary := {"duration_ms": float(phase_end_us - phase_start_us) / 1000.0,
+			"overlapping_frames": overlapping_frame_count, "max_frame_overlap_ms": max_overlap_ms,
+			"fully_contained_frames": contained_frame_ms.size(), "long_frame_overlaps": long_frame_overlaps}
+		if not contained_frame_ms.is_empty():
+			contained_frame_ms.sort()
+			phase_summary["contained_frame_p50_ms"] = contained_frame_ms[int(contained_frame_ms.size() * 0.5)]
+			phase_summary["contained_frame_p95_ms"] = contained_frame_ms[int((contained_frame_ms.size() - 1) * 0.95)]
+			phase_summary["contained_frame_max_ms"] = contained_frame_ms.back()
+		summary[phase] = phase_summary
+	return summary
 
 
 func _fail(message: String) -> void:

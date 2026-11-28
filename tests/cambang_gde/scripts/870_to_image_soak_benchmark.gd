@@ -157,6 +157,8 @@ const MAX_STREAM_TO_IMAGE_DRAIN_PER_FRAME := 8
 const MAX_CAPTURE_DRAIN_PER_FRAME := 8
 const MAX_RIG_DRAIN_PER_FRAME := 4
 const MAX_SLOW_SAMPLES := 12
+const LONG_FRAME_DIAGNOSTIC_THRESHOLD_MS := 12.0
+const MAX_LONG_FRAME_DIAGNOSTICS := 64
 const PRINT_DECIMALS := 3
 const STILL_PROFILE_WIDTH := 1280
 const STILL_PROFILE_HEIGHT := 720
@@ -237,6 +239,9 @@ var _max_inflight_captures_per_device := 1
 # states which capture ended; nothing has to be inferred by comparing ids, and
 # the per-device last_capture_id bookkeeping that fed the baseline is gone.
 var _finished_captures := {}
+# Gated by maintainer/calibration_probe_trace in CamBANG. These samples split
+# the Core-terminal-to-signal delay from the dispatch-to-handler interval.
+var _completion_boundary_samples: Array = []
 var _materialize_textures_in_headless := false
 
 var _started_us := 0
@@ -338,6 +343,20 @@ var _acq_probe_bundle_label := ""
 var _acq_probe_required_member_count := 0
 var _acq_probe_devices := {}
 var _run_frame_ms := []
+var _long_frame_diagnostics := []
+var _startup_stage_us := PackedInt64Array()
+var _bootstrap_stage_us := PackedInt64Array()
+var _last_setup_operation := ""
+var _last_setup_operation_us := 0
+var _last_process_state := "before_first_process"
+var _last_process_phase := ""
+var _last_process_phase_index := -1
+var _last_process_preflight_stage := ""
+var _last_process_settlement_stage := ""
+var _last_process_capture_jobs := 0
+var _last_process_rig_jobs := 0
+var _last_process_stream_jobs := 0
+var _last_process_stage_us := PackedInt64Array()
 var _frame_count := 0
 var _last_frame_us := 0
 var _benchmark_finished_us: int = 0
@@ -366,6 +385,7 @@ var _rig_textures := {}
 var _rig_rows := {}
 
 func _ready() -> void:
+	var ready_started_us := _now_us()
 	# One server-wide subscription for the whole soak (section 4.2). It covers
 	# both capture kinds -- a device capture and a rig closure arrive through the
 	# same signal, told apart by info.capture_origin -- so the poll below has a
@@ -381,28 +401,54 @@ func _ready() -> void:
 	_last_stats_update_us = _started_us
 	_last_stream_observation_us = _started_us
 	_last_frame_us = _started_us
+	var stage_started_us := _now_us()
 	_parse_args()
+	var parse_args_us := _now_us() - stage_started_us
 	_rng.seed = _seed
+	stage_started_us = _now_us()
 	_build_ui()
+	var build_ui_us := _now_us() - stage_started_us
 	_log("RUN: %s provider=%s seed=%d headless=%s" % [SCENE_LABEL, _provider_arg, _seed, str(_is_headless)])
 	if _provider_arg == "synthetic" and _synthetic_producer_output_form_effective_selection() == "gpu_only" and _scene870_is_compatibility_renderer():
 		_finish(0, true, "compatibility_gpu_only")
 		return
 	set_process(true)
+	stage_started_us = _now_us()
 	_bootstrap()
+	var bootstrap_us := _now_us() - stage_started_us
+	_startup_stage_us = PackedInt64Array([parse_args_us, build_ui_us, bootstrap_us, _now_us() - ready_started_us])
 
 
 func _process(delta: float) -> void:
 	if _done:
 		return
 	_record_frame(delta)
+	var process_state := _state
+	var process_phase := _current_process_phase_label()
+	var process_phase_index := _phase_index
+	var process_started_us := _now_us()
+	var stage_started_us := process_started_us
 	_drain_visual_thumbnail_jobs(MAX_THUMBNAILS_PER_FRAME)
+	var thumbnail_drain_us := _now_us() - stage_started_us
+	stage_started_us = _now_us()
 	_update_stream_display_views(false)
+	var stream_view_update_us := _now_us() - stage_started_us
+	stage_started_us = _now_us()
 	_poll_capture_jobs()
+	var capture_poll_us := _now_us() - stage_started_us
+	stage_started_us = _now_us()
 	_poll_rig_jobs()
+	var rig_poll_us := _now_us() - stage_started_us
+	stage_started_us = _now_us()
 	_poll_acquisition_session_settlement_probe()
+	var settlement_poll_us := _now_us() - stage_started_us
+	stage_started_us = _now_us()
 	_drain_stream_jobs(MAX_STREAM_TO_IMAGE_DRAIN_PER_FRAME)
+	var stream_drain_us := _now_us() - stage_started_us
+	stage_started_us = _now_us()
 	_update_stats_label(false)
+	var stats_update_us := _now_us() - stage_started_us
+	stage_started_us = _now_us()
 
 	match _state:
 		PHASE_SETUP:
@@ -417,6 +463,40 @@ func _process(delta: float) -> void:
 			_poll_active_phase()
 		PHASE_SETTLEMENT_PROBE:
 			pass
+
+	_last_process_state = process_state
+	_last_process_phase = process_phase
+	_last_process_phase_index = process_phase_index
+	_last_process_preflight_stage = _preflight_stage if process_state == PHASE_PREFLIGHT else ""
+	_last_process_settlement_stage = _acq_probe_stage if process_state == PHASE_SETTLEMENT_PROBE else ""
+	_last_process_capture_jobs = _capture_jobs.size()
+	_last_process_rig_jobs = _rig_jobs.size()
+	_last_process_stream_jobs = _stream_jobs.size()
+	_last_process_stage_us = PackedInt64Array([
+		thumbnail_drain_us,
+		stream_view_update_us,
+		capture_poll_us,
+		rig_poll_us,
+		settlement_poll_us,
+		stream_drain_us,
+		stats_update_us,
+		_now_us() - stage_started_us,
+		_now_us() - process_started_us,
+	])
+
+
+func _current_process_phase_label() -> String:
+	if not _active_phase.is_empty():
+		return "%s/%s/%s" % [
+			str(_active_phase.get("mode", "")),
+			str(_active_phase.get("scope", "")),
+			str(_active_phase.get("action_label", "")),
+		]
+	if _state == PHASE_PREFLIGHT:
+		return "preflight/%s" % _preflight_stage
+	if _state == PHASE_SETTLEMENT_PROBE:
+		return "settlement/%s" % _acq_probe_stage
+	return _state
 
 
 func _bootstrap() -> void:
@@ -471,15 +551,23 @@ func _bootstrap_from_known_ids(equip: Dictionary, synthetic: bool) -> void:
 	var device_pair: Array = rig_pair if not _skip_rig else [cameras[0], cameras[1]]
 	_devices[DEV_A]["hardware_id"] = str(device_pair[0])
 	_devices[DEV_B]["hardware_id"] = str(device_pair[1])
+	var stage_started_us := _now_us()
 	CamBANGServer.stop()
+	_bootstrap_stage_us.append(_now_us() - stage_started_us)
+	stage_started_us = _now_us()
 	var truth := _build_concurrency_truth(cameras, combinations)
+	_bootstrap_stage_us.append(_now_us() - stage_started_us)
+	stage_started_us = _now_us()
 	if int(CamBANGServer.ingest_camera_description(truth)) != OK:
 		_fail("bootstrap failed: ingest_camera_description")
 		return
+	_bootstrap_stage_us.append(_now_us() - stage_started_us)
+	stage_started_us = _now_us()
 	var start_err := int(
 		CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC) if synthetic
 		else CamBANGServer.start()
 	)
+	_bootstrap_stage_us.append(_now_us() - stage_started_us)
 	if start_err != OK:
 		_fail("bootstrap failed: start(%s) returned %d" % [_provider_arg, start_err])
 		return
@@ -998,19 +1086,27 @@ func _poll_setup() -> void:
 		_fail("setup timeout: devices/streams/rig did not become ready")
 		return
 
+	var setup_started_us := _now_us()
 	var snapshot = CamBANGServer.get_state_snapshot()
 	if snapshot == null:
+		_record_setup_operation("snapshot_null", setup_started_us)
 		return
 	_refresh_device_snapshot_cache(snapshot)
+	_record_setup_operation("snapshot_and_cache", setup_started_us)
 
 	# Stage 1: engage the two enumerated devices (once). Waits for the provider
 	# baseline to advertise them first.
 	if not _topology_engaged:
+		setup_started_us = _now_us()
 		var endpoints: Array = CamBANGServer.enumerate_devices()
+		_record_setup_operation("enumerate_devices", setup_started_us)
 		if endpoints.size() < 2:
 			return
+		setup_started_us = _now_us()
 		if not _engage_setup_devices(endpoints):
+			_record_setup_operation("engage_devices_failed", setup_started_us)
 			return  # _fail already reported the hard error
+		_record_setup_operation("engage_devices", setup_started_us)
 		_topology_engaged = true
 		return
 
@@ -1020,14 +1116,18 @@ func _poll_setup() -> void:
 	if not _topology_streamed:
 		if not (_setup_device_live(DEV_A) and _setup_device_live(DEV_B)):
 			return
+		setup_started_us = _now_us()
 		if not _create_setup_streams():
+			_record_setup_operation("create_start_streams_failed", setup_started_us)
 			return
+		_record_setup_operation("create_start_streams", setup_started_us)
 		_topology_streamed = true
 		return
 
 	# Stage 3: form the rig from the two engaged devices via the public API (once).
 	# Skipped outright when the equipment declares no authorized rig pair.
 	if _rig == null and not _skip_rig:
+		setup_started_us = _now_us()
 		var rig_dev_a = _devices[DEV_A].get("device", null)
 		var rig_dev_b = _devices[DEV_B].get("device", null)
 		if rig_dev_a == null or rig_dev_b == null:
@@ -1035,8 +1135,10 @@ func _poll_setup() -> void:
 			return
 		_rig = CamBANGServer.create_rig([rig_dev_a, rig_dev_b] as Array[CamBANGDevice])
 		if _rig == null:
+			_record_setup_operation("create_rig_failed", setup_started_us)
 			_fail("setup: create_rig returned null (concurrency truth not authorizing the combination?)")
 			return
+		_record_setup_operation("create_rig", setup_started_us)
 		_log("setup: rig formed via create_rig id=%d" % int(_rig.get_id()))
 		return
 
@@ -1191,7 +1293,10 @@ func _update_stream_display_views(require_bind: bool) -> void:
 	var observe_result_advancement := now_us - _last_stream_observation_us >= 10000
 	if observe_result_advancement:
 		_last_stream_observation_us = now_us
-	var _displayed_sample_due := _state == PHASE_PREFLIGHT
+	var _displayed_sample_due := (
+		_state == PHASE_PREFLIGHT
+		and (_displayed_sample_first_us == 0 or now_us - _last_displayed_sample_us >= 250000)
+	)
 	if _displayed_sample_due:
 		if _displayed_sample_first_us == 0:
 			_displayed_sample_first_us = now_us
@@ -2493,11 +2598,25 @@ func _request_device_capture(device_key: String, request_us: int) -> void:
 
 
 func _on_capture_finished(capture_id: String, info: Dictionary) -> void:
+	var handler_entry_us := _now_us()
 	# Both kinds land here. The id alone is enough for the polls -- they hold the
 	# id their own trigger returned -- and the disposition is kept so a sample can
 	# say how a capture ended rather than only that it did.
 	if capture_id == "":
 		return
+	# These maintainer keys are absent in ordinary API operation. The server
+	# measures Core terminalisation to immediately before this signal; this scene
+	# measures that dispatch boundary to the first instruction in the handler.
+	if info.has("maintainer_core_terminal_to_signal_us") and info.has("maintainer_signal_dispatch_ticks_usec"):
+		_completion_boundary_samples.append({
+			"capture_id": capture_id,
+			"core_terminal_to_signal_us": int(info.get("maintainer_core_terminal_to_signal_us", 0)),
+			"signal_to_handler_us": maxi(0, handler_entry_us - int(info.get("maintainer_signal_dispatch_ticks_usec", handler_entry_us))),
+			"pre_signal_godot_tick_us": int(info.get("maintainer_pre_signal_godot_tick_us", 0)),
+			"pre_signal_image_timing_drain_us": int(info.get("maintainer_pre_signal_image_timing_drain_us", 0)),
+			"pre_signal_gpu_backing_drain_us": int(info.get("maintainer_pre_signal_gpu_backing_drain_us", 0)),
+			"pre_signal_off_main_observation_drain_us": int(info.get("maintainer_pre_signal_off_main_observation_drain_us", 0)),
+		})
 	var origin := int(info.get("capture_origin", -1))
 	if origin == CamBANGCaptureResult.CAPTURE_ORIGIN_RIG:
 		_finished_captures[capture_id] = int(info.get("closed_reason", -1))
@@ -3028,6 +3147,60 @@ func _record_frame(delta: float) -> void:
 		var frame_samples = _active_phase.get("frame_ms", [])
 		frame_samples.append(frame_ms)
 		_active_phase["frame_ms"] = frame_samples
+	if frame_ms >= LONG_FRAME_DIAGNOSTIC_THRESHOLD_MS:
+		_store_long_frame_diagnostic(frame_ms)
+
+
+func _store_long_frame_diagnostic(frame_ms: float) -> void:
+	var event := {
+		"frame_index": _frame_count,
+		"frame_us": _now_us(),
+		"frame_ms": frame_ms,
+		"startup_stage_us": _startup_stage_us,
+		"bootstrap_stage_us": _bootstrap_stage_us,
+		"preceding_setup_operation": _last_setup_operation,
+		"preceding_setup_operation_us": _last_setup_operation_us,
+		"preceding_process_state": _last_process_state,
+		"preceding_process_phase": _last_process_phase,
+		"preceding_process_phase_index": _last_process_phase_index,
+		"preceding_preflight_stage": _last_process_preflight_stage,
+		"preceding_settlement_stage": _last_process_settlement_stage,
+		"pending_capture_jobs": _last_process_capture_jobs,
+		"pending_rig_jobs": _last_process_rig_jobs,
+		"pending_stream_jobs": _last_process_stream_jobs,
+		"preceding_process_stage_us": {
+			"thumbnail_drain": int(_last_process_stage_us[0]) if _last_process_stage_us.size() > 0 else 0,
+			"stream_view_update": int(_last_process_stage_us[1]) if _last_process_stage_us.size() > 1 else 0,
+			"capture_poll": int(_last_process_stage_us[2]) if _last_process_stage_us.size() > 2 else 0,
+			"rig_poll": int(_last_process_stage_us[3]) if _last_process_stage_us.size() > 3 else 0,
+			"settlement_poll": int(_last_process_stage_us[4]) if _last_process_stage_us.size() > 4 else 0,
+			"stream_drain": int(_last_process_stage_us[5]) if _last_process_stage_us.size() > 5 else 0,
+			"stats_update": int(_last_process_stage_us[6]) if _last_process_stage_us.size() > 6 else 0,
+			"state_poll": int(_last_process_stage_us[7]) if _last_process_stage_us.size() > 7 else 0,
+			"total_process": int(_last_process_stage_us[8]) if _last_process_stage_us.size() > 8 else 0,
+		},
+	}
+	if _long_frame_diagnostics.size() < MAX_LONG_FRAME_DIAGNOSTICS:
+		_long_frame_diagnostics.append(event)
+		return
+	var shortest_index := 0
+	for index in range(1, _long_frame_diagnostics.size()):
+		if float(_long_frame_diagnostics[index].get("frame_ms", 0.0)) < float(_long_frame_diagnostics[shortest_index].get("frame_ms", 0.0)):
+			shortest_index = index
+	if frame_ms > float(_long_frame_diagnostics[shortest_index].get("frame_ms", 0.0)):
+		_long_frame_diagnostics[shortest_index] = event
+
+
+func _long_frame_diagnostics_summary() -> Array:
+	var sorted := _long_frame_diagnostics.duplicate(true)
+	sorted.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a.get("frame_ms", 0.0)) > float(b.get("frame_ms", 0.0)))
+	return sorted
+
+
+func _record_setup_operation(label: String, started_us: int) -> void:
+	_last_setup_operation = label
+	_last_setup_operation_us = _now_us() - started_us
 
 
 func _freeze_benchmark_metrics() -> void:
@@ -3231,6 +3404,7 @@ func _build_summary(exit_code: int, expected_unsupported: bool) -> Dictionary:
 		"scenario": "none (public-api topology, no scenario)",
 		"capture_bundle_runs": _group_phase_records_by_bundle(_completed_phase_records),
 		"benchmark_frame_stats": _numeric_stats(_run_frame_ms),
+		"long_frame_diagnostics": _long_frame_diagnostics_summary(),
 		"run_frame_stats": _numeric_stats(_run_frame_ms),
 		"exit_visual_hold": _exit_visual_hold_summary(),
 		"stream_display_observation": _stream_display_observation_summary(),
@@ -3243,6 +3417,7 @@ func _build_summary(exit_code: int, expected_unsupported: bool) -> Dictionary:
 		# one), which is the only direct evidence of whether memoising the
 		# conversion would ever hit on a real access pattern.
 		"result_access_timing_evidence": access_evidence,
+		"completion_signal_boundary": _completion_signal_boundary_summary(),
 		"acquisition_session_settlement_probe": acquisition_session_settlement_probe,
 		"run_quality_warnings": _run_quality_warnings_summary(
 			acquisition_session_settlement_probe,
@@ -3254,6 +3429,35 @@ func _build_summary(exit_code: int, expected_unsupported: bool) -> Dictionary:
 		"synthetic_metrics": synthetic_metrics,
 		"elapsed_us": _benchmark_elapsed_us(),
 		"whole_scene_elapsed_us": _now_us() - _started_us,
+	}
+
+
+func _completion_signal_boundary_summary() -> Dictionary:
+	var core_to_signal_us: Array = []
+	var signal_to_handler_us: Array = []
+	var godot_tick_us: Array = []
+	var image_timing_drain_us: Array = []
+	var gpu_backing_drain_us: Array = []
+	var off_main_observation_drain_us: Array = []
+	for sample_v in _completion_boundary_samples:
+		if typeof(sample_v) != TYPE_DICTIONARY:
+			continue
+		var sample: Dictionary = sample_v
+		core_to_signal_us.append(int(sample.get("core_terminal_to_signal_us", 0)))
+		signal_to_handler_us.append(int(sample.get("signal_to_handler_us", 0)))
+		godot_tick_us.append(int(sample.get("pre_signal_godot_tick_us", 0)))
+		image_timing_drain_us.append(int(sample.get("pre_signal_image_timing_drain_us", 0)))
+		gpu_backing_drain_us.append(int(sample.get("pre_signal_gpu_backing_drain_us", 0)))
+		off_main_observation_drain_us.append(int(sample.get("pre_signal_off_main_observation_drain_us", 0)))
+	return {
+		"enabled": not _completion_boundary_samples.is_empty(),
+		"sample_count": _completion_boundary_samples.size(),
+		"core_terminal_to_signal_us": _numeric_stats(core_to_signal_us),
+		"signal_to_handler_us": _numeric_stats(signal_to_handler_us),
+		"pre_signal_godot_tick_us": _numeric_stats(godot_tick_us),
+		"pre_signal_image_timing_drain_us": _numeric_stats(image_timing_drain_us),
+		"pre_signal_gpu_backing_drain_us": _numeric_stats(gpu_backing_drain_us),
+		"pre_signal_off_main_observation_drain_us": _numeric_stats(off_main_observation_drain_us),
 	}
 
 

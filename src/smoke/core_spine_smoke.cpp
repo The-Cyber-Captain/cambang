@@ -41,6 +41,7 @@ Non-Goals
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
@@ -194,6 +195,7 @@ struct Options {
   int loops = 1;           // default non-stress
   int jitter_ms = 0;       // 0 = deterministic/no sleep jitter
   uint32_t seed = 1;       // only used if jitter_ms > 0
+  std::string only_test{};
 };
 
 enum class ParseOptsResult {
@@ -315,10 +317,17 @@ private:
 
 class CheckReporter final {
 public:
-  explicit CheckReporter(bool verbose) : verbose_(verbose) {}
+  explicit CheckReporter(bool verbose, std::string only_test = {})
+      : verbose_(verbose), only_test_(std::move(only_test)) {}
 
   template <typename Fn>
   int run(const char* name, Fn&& fn) {
+    if (!only_test_.empty() && only_test_ != name) {
+      return 0;
+    }
+    if (!only_test_.empty()) {
+      matched_filter_ = true;
+    }
     if (verbose_) {
       std::cout << "[ RUN      ] " << name << "\n";
     }
@@ -383,12 +392,15 @@ public:
   }
 
   bool verbose() const noexcept { return verbose_; }
+  bool matched_filter() const noexcept { return matched_filter_; }
   int run_count() const noexcept { return run_count_; }
   int ok_count() const noexcept { return ok_count_; }
   int failed_count() const noexcept { return failed_count_; }
 
 private:
   bool verbose_ = false;
+  std::string only_test_{};
+  bool matched_filter_ = false;
   int run_count_ = 0;
   int ok_count_ = 0;
   int failed_count_ = 0;
@@ -396,13 +408,14 @@ private:
 
 static void usage(const char* argv0) {
   std::cerr
-      << "Usage: " << argv0 << " [--stress] [--verbose] [--loops=N] [--jitter_ms=K] [--seed=S]\n"
+      << "Usage: " << argv0 << " [--stress] [--verbose] [--loops=N] [--jitter_ms=K] [--seed=S] [--only=TEST_NAME]\n"
       << "Default: run once (smoke).\n"
       << "  --stress        Enable stress loop (default loops=50).\n"
       << "  --verbose       Print per-check [RUN]/[OK] reporting.\n"
       << "  --loops=N       Number of stress iterations.\n"
       << "  --jitter_ms=K   Max jitter sleep per step (0 disables).\n"
-      << "  --seed=S        RNG seed for jitter (default 1).\n";
+      << "  --seed=S        RNG seed for jitter (default 1).\n"
+      << "  --only=NAME     Run one named smoke check (default suite stays unchanged).\n";
 }
 
 static bool starts_with(const std::string& s, const std::string& prefix) {
@@ -448,6 +461,14 @@ static ParseOptsResult parse_opts(int argc, char** argv, Options& opt) {
       opt.verbose = true;
       continue;
     }
+    if (starts_with(a, "--only=")) {
+      opt.only_test = a.substr(7);
+      if (opt.only_test.empty()) {
+        std::cerr << "Invalid --only (name must not be empty)\n";
+        return ParseOptsResult::Error;
+      }
+      continue;
+    }
     if (starts_with(a, "--loops=")) {
       int v = 0;
       if (!parse_int(a.substr(8), v) || v <= 0) {
@@ -482,6 +503,10 @@ static ParseOptsResult parse_opts(int argc, char** argv, Options& opt) {
 
   if (opt.stress && opt.loops == 1) {
     opt.loops = 50; // default stress loops
+  }
+  if (opt.stress && !opt.only_test.empty()) {
+    std::cerr << "--only cannot be combined with --stress\n";
+    return ParseOptsResult::Error;
   }
   return ParseOptsResult::Ok;
 }
@@ -5150,17 +5175,23 @@ static int test_rig_capture_releases_stream_preemption_smoke() {
 
   std::atomic<uint64_t> releases{0};
   uint64_t mark = 1000;
-  auto push_stream_frame = [&](uint8_t tag) {
-    rt.provider_callbacks()->on_frame(
-        make_runtime_queue_smoke_frame(7701, ++mark, tag, releases));
-    prov.flush_callbacks_for_smoke();
-    (void)wait_for_core_barrier(rt);
-  };
-  // retained_frame_id changes with each integrated frame, so it is the
-  // observable for "did this frame actually land".
   auto stream_frame_id = [&]() -> uint64_t {
     const SharedStreamResultData r = rt.get_latest_stream_result(kStreamId);
     return r ? r->retained_frame_id : 0;
+  };
+  auto push_stream_frame = [&](uint8_t tag, uint64_t previous_frame_id) {
+    rt.provider_callbacks()->on_frame(
+        make_runtime_queue_smoke_frame(7701, ++mark, tag, releases));
+    if (!wait_for_core_barrier(rt, std::chrono::milliseconds(500))) {
+      return false;
+    }
+    // The barrier proves callback ingress ran, but Core integrates provider
+    // facts on its following timer pump. Wait for the retained-result boundary
+    // itself so this smoke cannot mistake a queued frame for a suppressed one.
+    return wait_until([&]() {
+      const uint64_t current_frame_id = stream_frame_id();
+      return current_frame_id != 0 && current_frame_id != previous_frame_id;
+    }, 100, 1);
   };
 
   // Baseline: frames reach the stream result before any capture exists.
@@ -5169,7 +5200,8 @@ static int test_rig_capture_releases_stream_preemption_smoke() {
   // itself as a preemption failure.
   uint64_t before_capture = 0;
   for (int i = 0; i < 40 && before_capture == 0; ++i) {
-    push_stream_frame(static_cast<uint8_t>(1 + (i % 200)));
+    const uint64_t previous_frame_id = stream_frame_id();
+    (void)push_stream_frame(static_cast<uint8_t>(1 + (i % 200)), previous_frame_id);
     before_capture = stream_frame_id();
   }
   if (before_capture == 0) {
@@ -5232,6 +5264,19 @@ static int test_rig_capture_releases_stream_preemption_smoke() {
     rt.stop();
     return 1;
   }
+  if (!wait_until([&]() {
+        return static_cast<bool>(
+            rt.capture_result_unguarded_for_smoke(member_capture_id, member_device_id));
+      }, 4000, 5)) {
+    const auto assembly = rt.capture_assembly_for_smoke(member_capture_id, member_device_id);
+    std::cerr << "Stream preemption: cohort closed without a result-safe retained capture"
+              << " (assembly=" << static_cast<bool>(assembly)
+              << ", terminal=" << (assembly ? static_cast<unsigned>(assembly->terminal_state) : 0u)
+              << ", default_image_retained="
+              << (assembly && assembly->has_default_image_retained ? 1 : 0) << ")\n";
+    rt.stop();
+    return 1;
+  }
 
   // THE POINT. With the capture finished, stream frames must reach the
   // stream result again. A revision that never advances means the
@@ -5239,8 +5284,7 @@ static int test_rig_capture_releases_stream_preemption_smoke() {
   const uint64_t after_close = stream_frame_id();
   bool resumed = false;
   for (int i = 0; i < 40 && !resumed; ++i) {
-    push_stream_frame(static_cast<uint8_t>(2 + (i % 200)));
-    resumed = stream_frame_id() != after_close && stream_frame_id() != 0;
+    resumed = push_stream_frame(static_cast<uint8_t>(2 + (i % 200)), after_close);
   }
   if (!resumed) {
     std::cerr << "Stream preemption: stream frames still suppressed after the rig "
@@ -5987,7 +6031,7 @@ int main(int argc, char** argv) {
     std::fflush(stdout);
     return 2;
   }
-  CheckReporter reporter(opt.verbose);
+  CheckReporter reporter(opt.verbose, opt.only_test);
 
   if (reporter.verbose()) {
     std::cout << "[smoke] compiled provider: " << compiled_provider_name() << "\n";
@@ -6364,6 +6408,11 @@ int main(int argc, char** argv) {
 
     if (reporter.verbose()) {
       if (reporter.verbose()) reporter.print_summary();
+    }
+    if (!opt.only_test.empty() && !reporter.matched_filter()) {
+      std::cerr << "No core_spine_smoke check named '" << opt.only_test << "'\n";
+      reporter.print_fail_line("core_spine_smoke", "selected_smoke_not_found", 2);
+      return 2;
     }
     reporter.print_pass_line("core_spine_smoke");
     return 0;

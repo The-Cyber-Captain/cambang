@@ -914,6 +914,24 @@ public:
 
   bool emit_frame(std::string& error) { return emit_frame_for_stream(kStreamId, error); }
 
+  bool wait_for_retained_stream_advance(uint64_t stream_id,
+                                        uint64_t previous_frame_id,
+                                        std::string& error,
+                                        uint64_t* advanced_frame_id = nullptr,
+                                        int max_iters = 500,
+                                        int sleep_ms = 5) {
+    return wait_until([&]() {
+      const SharedStreamResultData latest = runtime_.get_latest_stream_result(stream_id);
+      if (!latest || latest->retained_frame_id == previous_frame_id) {
+        return false;
+      }
+      if (advanced_frame_id) {
+        *advanced_frame_id = latest->retained_frame_id;
+      }
+      return true;
+    }, error, max_iters, sleep_ms, "timed out waiting for retained stream result to advance");
+  }
+
   bool wait_for_stream_quiescence(uint64_t stream_id,
                                   std::string& error,
                                   uint64_t* stable_frames_out = nullptr,

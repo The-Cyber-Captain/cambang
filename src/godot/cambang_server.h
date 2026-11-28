@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <atomic>
 #include <deque>
+#include <future>
 #include <mutex>
 #include <memory>
 #include <unordered_map>
@@ -364,6 +365,7 @@ private:
       uint64_t now_ns,
       const std::vector<CoreBackingPlanEvaluationReport>& backing_plan_reports);
   void _process_armed_live_retained_result_access_calibration_(uint64_t now_ns);
+  void _wait_for_live_capture_cpu_calibration_();
   void _clear_live_retained_result_access_calibration_state_();
   void _drain_pending_stop_and_quit_();
   void _reconcile_endpoint_lifecycle_from_snapshot(const CamBANGStateSnapshot& snap);
@@ -385,8 +387,17 @@ private:
   godot::Error _start_scenario_now_();
   void _drain_pending_scenario_start_after_baseline_();
   void _refresh_tracked_wrapper_live_states_from_snapshot_();
+  // Trace-only breakdown of the Godot work immediately ahead of a completion
+  // signal.  It is passed by the process-frame tick, never retained.
+  struct CompletionDispatchPreworkTiming {
+    uint64_t godot_tick_ns = 0;
+    uint64_t image_timing_drain_ns = 0;
+    uint64_t gpu_backing_drain_ns = 0;
+    uint64_t off_main_observation_drain_ns = 0;
+  };
   // Drains Core's settlement queues and emits, once per Godot tick.
-  void _emit_capture_completion_signals_();
+  void _emit_capture_completion_signals_(
+      const CompletionDispatchPreworkTiming* maintainer_prework_timing = nullptr);
 
   // Early acquisition timing (capture_image_acquired).
   //
@@ -538,6 +549,19 @@ private:
       pending_live_capture_retained_result_calibrations_;
   std::unordered_map<uint64_t, ArmedLiveCaptureRetainedResultCalibration>
       completed_live_capture_retained_result_calibrations_;
+
+  // One bounded CamBANG-owned CPU calibration at a time.  It holds immutable
+  // result data and may use the same thread-safe CPU conversion as public
+  // to_image(); it never waits in a Godot frame.  GPU materialisation is not
+  // admitted here because its bridge may require the Godot rendering thread.
+  struct InFlightLiveCaptureCpuCalibration {
+    uint64_t device_instance_id = 0;
+    ArmedLiveCaptureRetainedResultCalibration armed{};
+    SharedCaptureResultData result;
+    std::future<uint64_t> completion;
+  };
+  std::unique_ptr<InFlightLiveCaptureCpuCalibration>
+      in_flight_live_capture_cpu_calibration_;
 
   // Editor/debugger diagnostic flush workaround for stop_and_quit().
   static constexpr uint32_t kEditorDiagnosticQuitFlushFrames = 30;
